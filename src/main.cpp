@@ -8479,7 +8479,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             if (!GatherFinalitySettlementVotes(pindex->pprev, nSettlementEpoch, vSettlementVotes, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement set unavailable: %s", strSettleError.c_str()));
             const int64_t nSettlementBudget =
-                GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch, pindex->nHeight);
+                GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch);
             if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
                                                 nFinalityRewardOut, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));

@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include <string>
+
 class CBlockIndex;
 
 // One subsidy per block, split at payment into finality reserve, collateralnode
@@ -27,6 +29,15 @@ int64_t GetBlockSubsidySchedule(int nHeight);
  *  sum(paid) + sum(reserved) == sum(schedule). */
 int64_t GetFinalityReservePerBlock(int nHeight);
 
+/** The height range [H_{E-1}, H_E) whose reserve funds epoch nSettlementEpoch's
+ *  settlement, and whether that epoch has one. Bounds the epoch number before
+ *  narrowing, and requires the epoch functions to agree on both boundaries. */
+bool GetFinalityAccrualRange(int nSettlementEpoch, int& nBeginOut, int& nEndOut);
+
+/** Sum of the per-block reserve over [nBegin, nEnd). Total over any range: the
+ *  reserve is defined at every height and is zero below the DAG fork. */
+int64_t SumFinalityReserve(int nBegin, int nEnd);
+
 /** Budget available to the settlement of epoch nSettlementEpoch: the reserve
  *  accrued over the epoch BEFORE it, [H_{E-1}, H_E).
  *
@@ -36,7 +47,34 @@ int64_t GetFinalityReservePerBlock(int nHeight);
  *  block, so producer and validator sum the identical range. The first post-DAG
  *  settlement therefore pays nothing: its predecessor accrued at the pre-DAG
  *  rate, which is zero. */
-int64_t GetFinalityEpochBudget(int nSettlementEpoch, int nHeightHint);
+int64_t GetFinalityEpochBudget(int nSettlementEpoch);
+
+/** One block's reward at a height, for display surfaces. Derived from the
+ *  consensus schedule and CBlockSubsidySplit; never restate the ladder or rates. */
+struct CBlockRewardSummary
+{
+    int nHeight;
+    int nTargetSpacing;         // seconds between blocks at nHeight
+    bool fPostDag;              // nHeight is at or above this network's DAG fork
+    int64_t nSubsidy;           // issuance at nHeight: clamped, fees excluded
+    int64_t nProducer;          // producer's share when a collateralnode is paid
+    int64_t nCollateralnode;
+    int64_t nFinalityReserve;
+    int64_t nPerDay;            // nSubsidy over one day at nHeight's spacing
+};
+
+/** Evaluate the schedule at nHeight. pindexPrev is the parent of the block at
+ *  nHeight, as ConnectBlock would pass it, so the supply-cap clamp is the one
+ *  that block would actually meet; NULL leaves the clamp unreached. */
+CBlockRewardSummary GetBlockRewardSummary(int nHeight, const CBlockIndex* pindexPrev);
+
+/** "0.01333333 INN per block (~1152 INN/day)". Both figures are shown because
+ *  only the per-day one is comparable across the spacing change at the fork. */
+std::string FormatBlockRewardPerBlock(const CBlockRewardSummary& summary);
+
+/** "65% of the block reward -- 0.00866666 INN per block". The rate is divided
+ *  back out of the split, never restated. */
+std::string FormatCollateralnodeReward(const CBlockRewardSummary& summary);
 
 /** Whether this block pays a collateralnode. Not a bool: a bare true/false at a
  *  call site is the shape that silently takes the wrong branch. */

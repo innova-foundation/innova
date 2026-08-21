@@ -34,6 +34,39 @@ struct MainnetGuard
     }
 };
 
+// Evaluation on a named network, restored on scope exit. The epoch layout and the
+// DAG fork height are read from these two globals, so a rule that must hold on
+// every network has to be evaluated on every network rather than argued about.
+struct NetworkGuard
+{
+    bool fRegTestSaved;
+    bool fTestNetSaved;
+    NetworkGuard(bool fRegTestWanted, bool fTestNetWanted)
+        : fRegTestSaved(fRegTest), fTestNetSaved(fTestNet)
+    {
+        fRegTest = fRegTestWanted;
+        fTestNet = fTestNetWanted;
+    }
+    ~NetworkGuard()
+    {
+        fRegTest = fRegTestSaved;
+        fTestNet = fTestNetSaved;
+    }
+};
+
+struct NetworkCase
+{
+    const char* strName;
+    bool fRegTest;
+    bool fTestNet;
+};
+
+const NetworkCase vAllNetworks[] = {
+    { "mainnet", false, false },
+    { "testnet", false, true  },
+    { "regtest", true,  false },
+};
+
 // Regtest evaluation with an explicit supply-cap height and amount.
 struct SupplyCapGuard
 {
@@ -244,7 +277,7 @@ BOOST_AUTO_TEST_CASE(epoch_budget_is_the_sum_of_the_preceding_epoch_reserves)
         for (int h = nPrevBoundary; h < nBoundary; h++)
             nExpected += GetFinalityReservePerBlock(h);
 
-        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch, GetForkHeightDAG()), nExpected);
+        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch), nExpected);
         BOOST_CHECK(nExpected > 0);
 
         // The accrual window closes at the epoch boundary, which is at or below
@@ -279,7 +312,7 @@ BOOST_AUTO_TEST_CASE(withheld_and_settled_are_the_same_quantity)
 
     BOOST_CHECK_EQUAL(nPaidOut + nWithheld, nSchedule);
     // ...and the settlement of the NEXT epoch pays out precisely that reserve.
-    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch + 1, GetForkHeightDAG()), nWithheld);
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch + 1), nWithheld);
 }
 
 // Unspent reserve is neither rolled forward nor returned to the producer. The settled
@@ -552,6 +585,285 @@ BOOST_AUTO_TEST_CASE(a_settlement_built_on_the_wrong_budget_is_rejected)
     int64_t nChecked = -1;
     BOOST_CHECK(!CheckFinalitySettlementOutputs(block, vVotes, 10 * COIN, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
+}
+
+// ---------------------------------------------------------------------------
+// 2b. THE ACCRUAL RANGE.
+// ---------------------------------------------------------------------------
+
+// An epoch accrues over the boundary pair the epoch functions place for E-1 and E.
+// Checked as an identity, not a width, so it holds under any spacing regime.
+// Evaluated on every network, since each has its own epoch layout.
+BOOST_AUTO_TEST_CASE(accrual_range_is_the_adjacent_boundary_pair_on_every_network)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirstPostDAG = GetEpochForHeight(GetForkHeightDAG());
+        const int vEpochs[] = { 1, nFirstPostDAG - 1, nFirstPostDAG,
+                                nFirstPostDAG + 1, nFirstPostDAG + 2,
+                                nFirstPostDAG + 1000 };
+
+        for (int nEpoch : vEpochs)
+        {
+            if (nEpoch < 1)
+                continue;
+
+            int nBegin = -1;
+            int nEnd = -1;
+            BOOST_REQUIRE_MESSAGE(GetFinalityAccrualRange(nEpoch, nBegin, nEnd),
+                                  net.strName << " epoch " << nEpoch << " has no accrual range");
+
+            // Exactly the boundaries, and strictly increasing: an overlapping or
+            // reversed pair would pay one epoch's withheld reserve twice.
+            BOOST_CHECK_EQUAL(nBegin, GetEpochBoundaryHeight(nEpoch - 1, 0));
+            BOOST_CHECK_EQUAL(nEnd, GetEpochBoundaryHeight(nEpoch, 0));
+            BOOST_CHECK(nBegin < nEnd);
+
+            // ...and the heights really do belong to those epochs, which is what
+            // makes the range a partition of history rather than a window.
+            BOOST_CHECK_EQUAL(GetEpochForHeight(nBegin), nEpoch - 1);
+            BOOST_CHECK_EQUAL(GetEpochForHeight(nEnd), nEpoch);
+
+            // The budget is the fold over exactly that range and nothing else.
+            BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch),
+                              SumFinalityReserve(nBegin, nEnd));
+        }
+    }
+}
+
+// Outside the epoch domain nothing settles. The check runs on the epoch number before the
+// boundary multiplication, which would overflow the height type.
+BOOST_AUTO_TEST_CASE(accrual_range_is_undefined_outside_the_epoch_domain)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        // The highest epoch whose boundary still fits a block height. Above it the
+        // range is undefined; at and below it the range exists.
+        const int64_t nFork = GetForkHeightDAG();
+        const int64_t nPreDAGEpochs =
+            (nFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
+        const int64_t nMaxEpoch64 =
+            nPreDAGEpochs + ((int64_t)std::numeric_limits<int>::max() - nFork)
+                                / FINALITY_EPOCH_INTERVAL_POST_DAG;
+        BOOST_REQUIRE(nMaxEpoch64 > 0 && nMaxEpoch64 < (int64_t)std::numeric_limits<int>::max());
+        const int nMaxEpoch = (int)nMaxEpoch64;
+
+        const int vOutside[] = { std::numeric_limits<int>::min(), -300, -1, 0,
+                                 nMaxEpoch + 1, std::numeric_limits<int>::max() };
+        for (int nEpoch : vOutside)
+        {
+            int nBegin = -1;
+            int nEnd = -1;
+            BOOST_CHECK_MESSAGE(!GetFinalityAccrualRange(nEpoch, nBegin, nEnd),
+                                net.strName << " epoch " << nEpoch << " must have no accrual range");
+            // A rejected range leaves no half-written pair behind for a caller to
+            // read past the bool.
+            BOOST_CHECK_EQUAL(nBegin, 0);
+            BOOST_CHECK_EQUAL(nEnd, 0);
+            BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch), 0);
+        }
+
+        // The domain is not empty and its edge is where it is claimed to be.
+        int nBegin = -1;
+        int nEnd = -1;
+        BOOST_CHECK(GetFinalityAccrualRange(nMaxEpoch, nBegin, nEnd));
+    }
+}
+
+// The DAG transition epoch spans the last pre-DAG epoch (60 blocks on mainnet and
+// testnet, 11 on regtest) and settles zero, since nothing was withheld below the
+// fork. Checked as an identity against what the blocks withheld, plus the zero.
+BOOST_AUTO_TEST_CASE(the_dag_transition_epoch_settles_what_the_pre_dag_epoch_withheld)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFork = GetForkHeightDAG();
+        const int nTransition = GetEpochForHeight(nFork);
+        BOOST_REQUIRE(nTransition >= 1);
+
+        // The fork is an epoch boundary, which is what makes the transition epoch
+        // a whole epoch rather than a split one.
+        BOOST_CHECK_EQUAL(GetEpochBoundaryHeight(nTransition, 0), nFork);
+
+        int nBegin = -1;
+        int nEnd = -1;
+        BOOST_REQUIRE(GetFinalityAccrualRange(nTransition, nBegin, nEnd));
+        BOOST_CHECK_EQUAL(nEnd, nFork);
+        BOOST_CHECK(nBegin < nEnd);
+        // The short gap: a pre-DAG interval on mainnet and testnet, and on regtest
+        // whatever is left below a fork height that is not a multiple of one.
+        BOOST_CHECK_EQUAL(nEnd - nBegin,
+                          net.fRegTest ? nFork : FINALITY_EPOCH_INTERVAL_PRE_DAG);
+        BOOST_CHECK(nEnd - nBegin < FINALITY_EPOCH_INTERVAL_POST_DAG);
+
+        // What the blocks of that range actually withheld, taken from the split
+        // the producer applies rather than from the sum being checked.
+        int64_t nWithheld = 0;
+        for (int h = nBegin; h < nEnd; h++)
+        {
+            const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+                h, GetBlockSubsidySchedule(h), 0, CollateralnodeShare::Paid);
+            nWithheld += split.FinalityReserve();
+        }
+        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nTransition), nWithheld);
+        BOOST_CHECK_EQUAL(nWithheld, 0);
+
+        // The first epoch that accrued anything pays out all of it, so the short
+        // range costs the voters of the next epoch nothing.
+        int64_t nNextWithheld = 0;
+        for (int h = nFork; h < GetEpochBoundaryHeight(nTransition + 1, 0); h++)
+        {
+            const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+                h, GetBlockSubsidySchedule(h), 0, CollateralnodeShare::Paid);
+            nNextWithheld += split.FinalityReserve();
+        }
+        BOOST_CHECK(nNextWithheld > 0);
+        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nTransition + 1), nNextWithheld);
+    }
+}
+
+// Consecutive settlement ranges abut with no overlap or gap, and across the DAG fork their
+// budgets sum to the reserve withheld. A width check alone accepts an overlapping pair.
+BOOST_AUTO_TEST_CASE(consecutive_budgets_partition_the_withheld_reserve)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirst = GetEpochForHeight(GetForkHeightDAG());
+        const int nLast = nFirst + 6;
+
+        int nPrevEnd = -1;
+        int64_t nBudgets = 0;
+        int nRunBegin = -1;
+        int nRunEnd = -1;
+
+        for (int nEpoch = nFirst; nEpoch <= nLast; nEpoch++)
+        {
+            int nBegin = -1;
+            int nEnd = -1;
+            BOOST_REQUIRE(GetFinalityAccrualRange(nEpoch, nBegin, nEnd));
+            if (nRunBegin < 0)
+                nRunBegin = nBegin;
+            else
+                BOOST_CHECK_EQUAL(nBegin, nPrevEnd);   // abutting, so nothing skipped
+            BOOST_CHECK(nBegin < nEnd);                 // and nothing counted twice
+            nPrevEnd = nEnd;
+            nRunEnd = nEnd;
+            nBudgets += GetFinalityEpochBudget(nEpoch);
+        }
+
+        int64_t nWithheld = 0;
+        for (int h = nRunBegin; h < nRunEnd; h++)
+        {
+            const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+                h, GetBlockSubsidySchedule(h), 0, CollateralnodeShare::Paid);
+            nWithheld += split.FinalityReserve();
+        }
+        BOOST_CHECK(nWithheld > 0);
+        BOOST_CHECK_EQUAL(nBudgets, nWithheld);
+    }
+}
+
+// The accrual range is an identity on GetEpochForHeight, so the map itself must be
+// non-decreasing and never skip; the identity check cannot detect that.
+BOOST_AUTO_TEST_CASE(the_epoch_map_is_non_decreasing_and_never_skips)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nDAG = GetForkHeightDAG();
+        const int nSpan = 4 * FINALITY_EPOCH_INTERVAL_POST_DAG;
+        const int nFrom = (nDAG > nSpan) ? (nDAG - nSpan) : 0;
+        const int nTo = nDAG + nSpan;
+
+        int nPrev = GetEpochForHeight(nFrom);
+        for (int h = nFrom + 1; h <= nTo; h++)
+        {
+            const int nEpoch = GetEpochForHeight(h);
+            // Decreasing would order two boundaries backwards, and the identity
+            // check would still pass: it only asks which epoch each end names.
+            BOOST_REQUIRE_MESSAGE(nEpoch >= nPrev,
+                net.strName << " epoch map decreased at height " << h
+                            << ": " << nPrev << " -> " << nEpoch);
+            // Skipping would leave an epoch with an empty preimage while its
+            // settlement still comes due against a range built from boundaries.
+            BOOST_REQUIRE_MESSAGE(nEpoch - nPrev <= 1,
+                net.strName << " epoch map skipped at height " << h
+                            << ": " << nPrev << " -> " << nEpoch);
+            nPrev = nEpoch;
+        }
+    }
+}
+
+// A boundary inside its epoch passes the other range checks while settling blocks one
+// epoch early.
+BOOST_AUTO_TEST_CASE(each_boundary_is_the_first_height_of_its_epoch)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirstPostDAG = GetEpochForHeight(GetForkHeightDAG());
+        const int vEpochs[] = { 1, nFirstPostDAG - 1, nFirstPostDAG,
+                                nFirstPostDAG + 1, nFirstPostDAG + 2,
+                                nFirstPostDAG + 1000 };
+
+        for (int nEpoch : vEpochs)
+        {
+            if (nEpoch < 1)
+                continue;
+            const int nBoundary = GetEpochBoundaryHeight(nEpoch, 0);
+            BOOST_CHECK_EQUAL(GetEpochForHeight(nBoundary), nEpoch);
+            if (nBoundary > 0)
+                BOOST_CHECK_MESSAGE(GetEpochForHeight(nBoundary - 1) == nEpoch - 1,
+                    net.strName << " boundary " << nBoundary << " is not the first"
+                                << " height of epoch " << nEpoch);
+        }
+    }
+}
+
+// The half-open pair is exactly the preimage of its epoch, stronger than the endpoints
+// agreeing.
+BOOST_AUTO_TEST_CASE(the_accrual_range_is_exactly_the_preimage_of_its_epoch)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirstPostDAG = GetEpochForHeight(GetForkHeightDAG());
+        for (int nEpoch = nFirstPostDAG; nEpoch <= nFirstPostDAG + 3; nEpoch++)
+        {
+            int nBegin = -1;
+            int nEnd = -1;
+            BOOST_REQUIRE(GetFinalityAccrualRange(nEpoch, nBegin, nEnd));
+
+            for (int h = nBegin; h < nEnd; h++)
+                BOOST_REQUIRE_MESSAGE(GetEpochForHeight(h) == nEpoch - 1,
+                    net.strName << " height " << h << " is in epoch "
+                                << GetEpochForHeight(h) << " but settles in "
+                                << nEpoch);
+
+            // Nothing outside it belongs to the epoch that withheld.
+            if (nBegin > 0)
+                BOOST_CHECK(GetEpochForHeight(nBegin - 1) != nEpoch - 1);
+            BOOST_CHECK(GetEpochForHeight(nEnd) != nEpoch - 1);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

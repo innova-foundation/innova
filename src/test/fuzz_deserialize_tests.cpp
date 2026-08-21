@@ -2425,4 +2425,48 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
     BOOST_CHECK(ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE) > 7750000);
 }
 
+// A gate that is already behind the chain activates the moment the release
+// ships, with no window to get the network onto the new binary.
+//
+// The floor below is a mainnet tip established by a self-verifying getheaders
+// walk from the hardcoded 7,750,000 checkpoint, cross-checked against further
+// peers -- the same reading v5activation.h sets the shift against. A tip only
+// ever moves forward, so a shift that clears it today cannot silently stop
+// clearing it; the check goes stale in the safe direction.
+//
+// NOTE for the release preflight: v5activation.h states two different floors.
+// Its opening paragraph says a shift "is only valid while the tip is at least
+// 100,000 blocks below the effective first gate"; the recheck paragraph says
+// the release policy enforces 50,000. The current lead is 62,702, which
+// satisfies the second and fails the first. This asserts the 50,000 figure
+// because that is the one the tree currently satisfies -- settle which floor is
+// the policy before tagging rather than letting the ambiguity decide.
+static const int MAINNET_TIP_OBSERVED = 7917298;          // 2026-08-16 02:15 UTC
+static const int MAINNET_V5_MIN_GATE_MARGIN = 50000;
+
+BOOST_AUTO_TEST_CASE(v5_activation_first_gate_clears_the_release_margin_floor)
+{
+    NetFlagGuard guard;
+    fRegTest = false;
+    fTestNet = false;
+
+    const int nFirst = ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE);
+
+    // The catastrophic case, independent of which floor is policy.
+    BOOST_CHECK_MESSAGE(nFirst > MAINNET_TIP_OBSERVED,
+                        "first gate " << nFirst << " is at or behind the last"
+                        " verified mainnet tip " << MAINNET_TIP_OBSERVED
+                        << " -- it would activate on release with no deployment"
+                           " window");
+
+    BOOST_CHECK_MESSAGE(nFirst - MAINNET_TIP_OBSERVED >= MAINNET_V5_MIN_GATE_MARGIN,
+                        "first gate " << nFirst << " leads the verified tip by "
+                        << (nFirst - MAINNET_TIP_OBSERVED) << " blocks, under the "
+                        << MAINNET_V5_MIN_GATE_MARGIN << "-block release floor");
+
+    // Every later gate is above the first, so clearing the floor once clears it
+    // for the whole ladder.
+    BOOST_CHECK(GetForkHeightDAG() > nFirst);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
