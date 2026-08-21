@@ -148,6 +148,75 @@ mod tests {
         );
     }
 
+    // Transcripts length-prefix only the fields, not the domain, so label separation relies on
+    // no label being a prefix of another. Changing that would change every derived point
+    // (fork), so the invariant is checked here against labels read from the sources.
+    #[test]
+    fn no_hashing_domain_is_a_prefix_of_another() {
+        const LIB: &str = include_str!("lib.rs");
+        const SOURCES: &[&str] = &[
+            include_str!("disclosure.rs"),
+            include_str!("fcmp.rs"),
+            include_str!("hash_to_point.rs"),
+            LIB,
+            include_str!("note.rs"),
+            include_str!("nullifier.rs"),
+            include_str!("payload.rs"),
+            include_str!("tree.rs"),
+            include_str!("value.rs"),
+            include_str!("vote.rs"),
+        ];
+        // Written escaped so the scan does not match its own needle.
+        const NEEDLE: &str = "b\"Innova/";
+
+        // The source list is hand-written; it is checked against the crate's module list.
+        let declared = LIB
+            .lines()
+            .filter(|line| line.starts_with("mod ") && line.ends_with(';'))
+            .count();
+        assert_eq!(
+            declared + 1,
+            SOURCES.len(),
+            "every module lib.rs declares must be scanned for hashing domains"
+        );
+
+        let mut domains: Vec<&str> = Vec::new();
+        for source in SOURCES {
+            let mut rest: &str = source;
+            while let Some(start) = rest.find(NEEDLE) {
+                rest = &rest[start + 2..];
+                let end = rest.find('"').expect("a domain literal must be closed");
+                let domain = &rest[..end];
+                rest = &rest[end + 1..];
+                // The fixtures above are deliberately prefix-related and are never hashed
+                // into consensus data.
+                if !domain.starts_with("Innova/IV5/Test") && !domains.contains(&domain) {
+                    domains.push(domain);
+                }
+            }
+        }
+
+        // A scan that matched nothing would satisfy every check below.
+        let count = domains.len();
+        assert!(count >= 30, "expected the crate's domain set, found {count}");
+
+        for domain in &domains {
+            assert!(
+                domain.bytes().all(|byte| (0x20..0x7f).contains(&byte)),
+                "domain {domain} must stay printable NUL-free ASCII"
+            );
+        }
+        for (i, shorter) in domains.iter().enumerate() {
+            for (j, longer) in domains.iter().enumerate() {
+                assert!(
+                    i == j || !longer.starts_with(shorter),
+                    "domain {shorter} is a prefix of {longer}, so the unprefixed domain no \
+                     longer separates their transcripts"
+                );
+            }
+        }
+    }
+
     // The epoch must reach the transcript at a fixed width.
     #[test]
     fn the_epoch_and_its_domain_both_separate_bases() {

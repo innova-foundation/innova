@@ -52,6 +52,9 @@ struct PrivacyVNextNewOutput
 // recipients and amounts disclosed). Disclosed fields are proved against the commitments;
 // disclosed amounts replace the range proof.
 
+// `pvchChainParameterDigest` must come from the same finalized epoch state as the anchor
+// root. NULL only below the chain's first IV5 epoch (bootstrap seed).
+
 // Build a transfer payload. `transparentBinding` is GetPrivacyVNextTransparentBinding of
 // the carrying transaction; it is part of the proved prefix.
 bool BuildPrivacyVNextTransferPayload(
@@ -66,7 +69,8 @@ bool BuildPrivacyVNextTransferPayload(
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut);
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
 // Build an unshield payload. Spent notes must cover `nTransparentValueOut` + fee + change;
 // `outputs` are the change notes only.
@@ -83,7 +87,8 @@ bool BuildPrivacyVNextUnshieldPayload(
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut);
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
 // Build a shield payload (no membership proof). `nTransparentValueIn` must equal outputs
 // plus fee.
@@ -99,7 +104,8 @@ bool BuildPrivacyVNextShieldPayload(
     uint64_t nFee,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut);
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
 // Build a collateralnode attestation payload. The note is named, not spent; its key image
 // goes to the collateral watch set. `registrationContext` (node identity, endpoint, payout)
@@ -114,7 +120,8 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
-    std::string& strErrorOut);
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
 // Build a finality-committee member registration payload: the attestation plus
 // `vchMemberKey`, a 33-byte compressed secp256k1 key covered by the signing hash.
@@ -129,6 +136,7 @@ bool BuildPrivacyVNextFinalityMemberRegistrationPayload(
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
-    std::string& strErrorOut);
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
 #endif // INNOVA_PRIVACY_VNEXT_BUILDER_H

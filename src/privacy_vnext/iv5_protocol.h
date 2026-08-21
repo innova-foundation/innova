@@ -11,21 +11,22 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b";
-// Protocol-contract digests still accepted on a payload built before this one.
+    "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280";
+// Contract texts this build's lineage has published, besides the current one.
 //
-// The digest is a provenance tag no validation rule branches on -- it is only ever
-// compared for equality -- so accepting a bounded prior set weakens no rule and is what
-// stops a contract edit from invalidating re-validation of every payload already on
-// chain. An entry belongs here only when the contract text changed without changing a
-// rule; a rule change needs a fork, not a digest.
-//
-// The list is mirrored from the linked Rust library rather than trusted on its own:
-// LoadPrivacyVNextAbiInfo refuses a build whose two lists disagree.
+// Provenance only. No consensus rule may branch on this list: a payload is judged against
+// the digest the chain carries, so that two builds whose lists differ still reach the same
+// verdict on the same block. Reused here only to hold the two halves of one build to the
+// same list -- LoadPrivacyVNextAbiInfo refuses a build whose C++ and Rust lists disagree.
 //
 // e65eaaa6: operation 8 was written into the contract text and operation 9 was added.
+// f0259ccc: the parameter-digest acceptance rule was written down as the chain's own, and
+// the text still declared all four authorization modes on 2005 and 2008 after the decoders
+// were narrowed to owner. The digest selects no rule, so a payload carrying it is judged by
+// the narrowed table like any other.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
-    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f"
+    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
+    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b"
 };
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
@@ -34,7 +35,21 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "40b4747fa008d1762201243aab12f2d319e395da4fd5e019e9dbca00c9815e6a";
+    "c8b32ed8046429ee7a9825670b8d4b313c56721e95622fe5469463371db6b526";
+// The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
+// payload is judged against below that epoch.
+//
+// Consensus, not provenance. Nothing earlier exists to inherit from there, so something
+// must choose; taking the linked contract text's hash would make the choice a property
+// of the binary and Boundary B a flag day.
+//
+// FROZEN. It was derived once, as sha256("Innova/IV5/GenesisParameterDigest/v1" || a
+// contract digest), only to land on a value provably unequal to any contract text's hash.
+// The derivation is spent: it is now an opaque constant and must NOT be re-derived when
+// the contract text changes. Re-deriving it forks every chain that has stamped an epoch.
+// genesis_parameter_digest_is_frozen pins the literal so an edit fails rather than forks.
+static const char GENESIS_PARAMETER_DIGEST_SHA256[] =
+    "e34a1abae989c66e6d06906a83e419adac4ba04dc0a5dd7804a52fdad9df0387";
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50
@@ -173,7 +188,8 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
                authorization == AUTH_OWNER;
     case 2005:
         return (profile == FINALITY_NULLSTAKE_V3 ||
-                operation == NOTE_DELEGATION_CREATE);
+                operation == NOTE_DELEGATION_CREATE) &&
+               authorization == AUTH_OWNER;
     case 2006:
         return operation == NOTE_M_OF_N_MINT &&
                (authorization == AUTH_M_OF_N_PUBLIC_SIGNERS ||
@@ -181,17 +197,21 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
     case 2007:
         return operation == NOTE_RECLAIM && authorization == AUTH_OWNER;
     case 2008:
-        // An attestation publishes a persistent per-node pseudonym by design; the rest of
-        // the note must stay hidden, so the fully private mask is the only one allowed and
-        // the sender authority a lower mask would publish never exists.
-        return !IsAttestationOperation(operation) ||
-               (disclosureMask == DISCLOSURE_MASK && authorization == AUTH_OWNER);
+        // No verifier dispatches on the authorization field, so owner is the only mode any
+        // proof actually enforces; admitting a mode nothing verifies would take a fork to
+        // withdraw. An attestation also publishes a persistent per-node pseudonym by
+        // design, so the fully private mask is the only one it may carry.
+        return authorization == AUTH_OWNER &&
+               (!IsAttestationOperation(operation) ||
+                disclosureMask == DISCLOSURE_MASK);
     default:
         return false;
     }
 }
 
-// Whether a hex digest is one this build judges payloads under.
+// Whether a hex digest names a contract text this build's lineage published.
+//
+// Provenance reporting only -- never a validity test. See PROTOCOL_CONTRACT_SHA256_PRIOR.
 inline bool IsAcceptedContractDigestHex(const char* pszDigest)
 {
     if (pszDigest == 0)
@@ -202,6 +222,31 @@ inline bool IsAcceptedContractDigestHex(const char* pszDigest)
         if (strcmp(pszDigest, PROTOCOL_CONTRACT_SHA256_PRIOR[i]) == 0)
             return true;
     return false;
+}
+
+// Decode a 64-character lowercase hex digest into 32 bytes. False on anything else.
+inline bool DecodeDigestHex(const char* pszHex, unsigned char* pOut)
+{
+    if (pszHex == 0 || pOut == 0 || strlen(pszHex) != 64)
+        return false;
+    for (size_t i = 0; i < 32; ++i)
+    {
+        unsigned int nByte = 0;
+        for (size_t nNibble = 0; nNibble < 2; ++nNibble)
+        {
+            const char c = pszHex[i * 2 + nNibble];
+            unsigned int nValue;
+            if (c >= '0' && c <= '9')
+                nValue = (unsigned int)(c - '0');
+            else if (c >= 'a' && c <= 'f')
+                nValue = (unsigned int)(c - 'a') + 10;
+            else
+                return false;
+            nByte = (nByte << 4) | nValue;
+        }
+        pOut[i] = (unsigned char)nByte;
+    }
+    return true;
 }
 } // namespace iv5
 

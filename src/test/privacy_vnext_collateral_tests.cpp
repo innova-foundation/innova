@@ -702,7 +702,9 @@ BOOST_AUTO_TEST_CASE(a_spend_and_an_attestation_of_one_note_never_wait_together)
                       .IsValid());
     BOOST_REQUIRE_EQUAL(attestationEffects.attestationKeyImages.size(), 1U);
     BOOST_REQUIRE_EQUAL(spendEffects.keyImages.size(), 1U);
-    // The same note, so the same key image on both sides.
+    // Same note, same key image. Deregistration depends on this (the attestation row
+    // is read from the spent-key index); it also links the closing spend to the
+    // collateralnode. Neither side of this equality may change alone.
     BOOST_REQUIRE(spendEffects.keyImages[0] ==
                   attestationEffects.attestationKeyImages[0]);
     const uint256 watched = AsUint256(keyImage);

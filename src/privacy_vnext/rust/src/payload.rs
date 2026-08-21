@@ -8,8 +8,8 @@ use sha2::Digest;
 use zeroize::Zeroize;
 
 use crate::{
-    disclosure, envelope_allows, fcmp, is_attestation_operation, parameter_digest_is_accepted,
-    validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
+    disclosure, envelope_allows, fcmp, is_attestation_operation, validate_public_key, value,
+    ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
     COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE, MAX_INPUTS,
     MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD,
     NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, TREE_LAYERS,
@@ -337,13 +337,9 @@ fn parse_payload_prefix<'a>(
     if expected_genesis.is_some_and(|expected| *expected != genesis) {
         return Err(ResultCode::ConsensusInvalid);
     }
+    // Parsed, never judged here: the caller compares it against the digest the chain
+    // carries, so validity never depends on the local build.
     let parameter_digest = cursor.array::<32>()?;
-    // The bounded accepted set, not this binary's own digest alone: the digest is a
-    // provenance tag no rule branches on, and pinning it to one value makes a contract
-    // edit invalidate re-validation of every payload already on chain.
-    if !parameter_digest_is_accepted(&parameter_digest) {
-        return Err(ResultCode::ConsensusInvalid);
-    }
     let finalized_root = cursor.array()?;
     validate_helios_point(finalized_root)?;
     let finalized_tree_size = cursor.u64()?;
@@ -366,6 +362,12 @@ fn parse_payload_prefix<'a>(
         pseudo_outs.push(pseudo_out);
         let key_image = cursor.array()?;
         validate_ed25519_point(key_image)?;
+        // Each SAL is verified on its own, so a payload that lists one key image twice
+        // spends one note twice and still proves. The ledger rejects it at every site; this
+        // keeps the proof layer from certifying a payload that double-spends inside itself.
+        if key_images.contains(&key_image) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
         key_images.push(key_image);
     }
 
@@ -951,7 +953,10 @@ mod tests {
     use sha2::Sha256;
 
     use super::*;
-    use crate::{tree, NOTE_COLLATERAL_REGISTER, PRIOR_PARAMETER_DIGESTS, PRODUCT_CONTRACT};
+    use crate::{
+        parameter_digest_is_accepted, tree, NOTE_COLLATERAL_REGISTER, PRIOR_PARAMETER_DIGESTS,
+        PRODUCT_CONTRACT,
+    };
 
     // Stands in for whatever the caller commits its transparent side to; the payload
     // decoder carries these bytes and never interprets them.
@@ -2002,6 +2007,61 @@ mod tests {
         );
     }
 
+    // A payload naming one key image twice is refused at the proof layer, matching the
+    // rule for output owners.
+    #[test]
+    fn payload_rejects_a_repeated_key_image() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, _, _) = encrypted_output(&genesis, 0);
+        let first_key_image = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let two_inputs = |second_key_image: &[u8; 32]| -> Vec<u8> {
+            let state =
+                tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+            let root = tree::root(&state).expect("empty canonical tree root");
+            let pseudo_out = ED25519_BASEPOINT_POINT.compress().to_bytes();
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            payload.extend_from_slice(&[NOTE_TRANSFER, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+            payload.extend_from_slice(&genesis);
+            payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+            payload.extend_from_slice(&root[12..44]);
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&0_i64.to_le_bytes());
+            payload.extend_from_slice(&1_u64.to_le_bytes());
+            payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+            compact_size(&mut payload, 2);
+            for key_image in [&first_key_image, second_key_image] {
+                payload.extend_from_slice(&pseudo_out);
+                payload.extend_from_slice(key_image);
+            }
+            compact_size(&mut payload, 1);
+            put_output(&mut payload, &encrypted);
+            payload
+        };
+
+        assert_eq!(
+            parse_payload_prefix(
+                2008,
+                &two_inputs(&first_key_image),
+                TEST_NETWORK,
+                Some(&genesis)
+            )
+            .err(),
+            Some(ResultCode::ConsensusInvalid)
+        );
+
+        let distinct = (ED25519_BASEPOINT_POINT * Scalar::from(6_u64))
+            .compress()
+            .to_bytes();
+        assert!(
+            parse_payload_prefix(2008, &two_inputs(&distinct), TEST_NETWORK, Some(&genesis))
+                .is_ok(),
+            "distinct key images must still parse"
+        );
+    }
+
     // The declared network and genesis must be compared against the local chain.
     #[test]
     fn payload_pins_the_declared_chain_to_the_local_one() {
@@ -2146,54 +2206,62 @@ mod tests {
             }
         }
     }
-    // A contract edit that changes no rule must not invalidate re-validation of every
-    // payload already on chain, and the digest is the only thing that would make it: it
-    // sits inside the signing hash, so a payload built under the old text cannot be
-    // edited into the new one, only rebuilt.
+    // The decoder must not judge the parameter digest; the caller checks it against
+    // the digest the chain carries.
     #[test]
-    fn a_payload_under_a_prior_contract_digest_still_validates() {
+    fn the_decoder_does_not_judge_the_parameter_digest() {
         let mut current = [0_u8; 32];
         current.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
-        assert!(parameter_digest_is_accepted(&current));
-        assert!(
-            !PRIOR_PARAMETER_DIGESTS.contains(&current),
-            "this build's own digest must not also be listed as a prior one"
-        );
-
         validate(&validation_request(&valid_payload().0))
-            .expect("a payload under this build's own digest must validate");
+            .expect("a payload under this build's own digest must decode");
 
+        // Digests this build happens to list get no special treatment...
         for prior in &PRIOR_PARAMETER_DIGESTS {
             assert!(parameter_digest_is_accepted(prior));
             validate(&validation_request(&valid_payload_with_digest(prior).0))
-                .expect("a payload under an accepted prior digest must validate");
+                .expect("a listed prior digest must decode");
         }
-    }
 
-    // The set stays bounded, or the tag stops meaning anything.
-    #[test]
-    fn a_payload_under_an_unlisted_contract_digest_is_refused() {
+        // ...and digests it does not list are treated no differently. Both classes reach
+        // the same verdict here, which is what makes the verdict independent of the list.
         for stray in [[0_u8; 32], [0xff_u8; 32], [0x5a_u8; 32]] {
             assert!(!parameter_digest_is_accepted(&stray));
-            assert_eq!(
-                validate(&validation_request(&valid_payload_with_digest(&stray).0)),
-                Err(ResultCode::ConsensusInvalid),
-                "a payload naming an unknown contract must be refused"
+            validate(&validation_request(&valid_payload_with_digest(&stray).0)).expect(
+                "an unlisted digest must decode: refusing it here makes block validity a \
+                 property of this binary's compile-time list",
             );
         }
 
-        // One bit off an accepted digest is an unknown digest.
-        let mut current = [0_u8; 32];
-        current.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        // One bit off this build's own digest is an unlisted digest, and decodes too.
         for bit in [0_usize, 7, 31] {
             let mut near = current;
             near[bit] ^= 1;
             assert!(!parameter_digest_is_accepted(&near));
-            assert_eq!(
-                validate(&validation_request(&valid_payload_with_digest(&near).0)),
-                Err(ResultCode::ConsensusInvalid)
-            );
+            validate(&validation_request(&valid_payload_with_digest(&near).0))
+                .expect("a near-miss digest must decode");
         }
+    }
+
+    // The digest sits inside the signing hash, so it cannot be edited after proving --
+    // only chosen at build time. That is what lets the caller treat it as a field the
+    // payload committed to rather than one a relay could rewrite.
+    #[test]
+    fn the_parameter_digest_is_bound_by_the_signing_hash() {
+        let mut stray = [0_u8; 32];
+        stray.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        stray[0] ^= 1;
+
+        let mut forged = valid_payload().0;
+        let at = forged
+            .windows(32)
+            .position(|w| w == Sha256::digest(PRODUCT_CONTRACT).as_slice())
+            .expect("the built payload carries this build's digest");
+        forged[at..at + 32].copy_from_slice(&stray);
+        assert_eq!(
+            validate(&validation_request(&forged)),
+            Err(ResultCode::ConsensusInvalid),
+            "rewriting the digest of an already-proved payload must break its proofs"
+        );
     }
 
     // The two attestation operations are one shape apart from one field, and the parser

@@ -84,9 +84,11 @@ bool BuildPayloadSet(PayloadSet& out, std::string& error)
     PrivacyVNextDerivedKeys owner;
     PrivacyVNextDerivedKeys destA;
     PrivacyVNextDerivedKeys destB;
+    // Distinct by index, which is what a wallet varies; the address type is fixed at the one
+    // type a scan covers.
     if (!DerivePrivacyVNextKeys(FillDigest(0x71), genesis, 0, nNetwork, 0, owner, error) ||
-        !DerivePrivacyVNextKeys(FillDigest(0x71), genesis, 0, nNetwork, 1, destA, error) ||
-        !DerivePrivacyVNextKeys(FillDigest(0x71), genesis, 0, nNetwork, 2, destB, error))
+        !DerivePrivacyVNextKeys(FillDigest(0x71), genesis, 1, nNetwork, 0, destA, error) ||
+        !DerivePrivacyVNextKeys(FillDigest(0x71), genesis, 2, nNetwork, 0, destB, error))
         return false;
 
     PrivacyVNextEpochSeed epochSeed;
