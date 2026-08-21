@@ -2316,6 +2316,26 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary B stays unset on mainnet until privacy vNext is scheduled.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);
 
+    // The slots co-batched at the reviewed Boundary-B rung sit above the DAG
+    // gate, not merely above NullStake v3: they run on DAG-ordered blocks.
+    BOOST_CHECK(GetForkHeightNullStakeDelegSet() > GetForkHeightDAG());
+    BOOST_CHECK(GetForkHeightNullStakeReclaim() > GetForkHeightDAG());
+    BOOST_CHECK(GetForkHeightNullStakeB2C() > GetForkHeightDAG());
+    BOOST_CHECK(GetForkHeightNullStakeB2C() >= GetForkHeightNullStakeDelegSet());
+
+    // No mainnet gate may fall below the first gate; a rung that did would
+    // activate against a pre-v5 network.
+    const int nGates[] = {
+        GetForkHeightShielded(), GetForkHeightDSP(), GetForkHeightFCMP(),
+        GetForkHeightNullSend(), GetForkHeightNullStake(), GetForkHeightNullStakeV2(),
+        GetForkHeightNullStakeV3(), GetForkHeightSerialV2(), GetForkHeightIDNSReset(),
+        GetForkHeightPoem(), GetForkHeightFinality(), GetForkHeightDAG(),
+        GetForkHeightDAGKnight(), GetForkHeightNullStakeDelegSet(),
+        GetForkHeightNullStakeReclaim(), GetForkHeightNullStakeB2C(),
+    };
+    for (size_t i = 0; i < sizeof(nGates) / sizeof(nGates[0]); i++)
+        BOOST_CHECK(nGates[i] >= nFirst);
+
     // B restores what A quarantines, so B never precedes A on any rung.
     BOOST_CHECK(BoundaryOrderingHolds());
 
@@ -2378,6 +2398,31 @@ BOOST_AUTO_TEST_CASE(boundary_b_never_precedes_boundary_a)
     BOOST_CHECK(BoundaryOrderingHolds());
     BOOST_CHECK(!IsBoundaryBActiveAtHeight(nA));
     BOOST_CHECK(IsBoundaryAActiveAtHeight(nA));
+}
+
+// The three SHIFT constraints from v5activation.h; the DAG gate sits strictly between
+// 8,000,000 and 8,250,000.
+BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
+{
+    NetFlagGuard guard;
+    fRegTest = false;
+    fTestNet = false;
+
+    // 1. The DAG gate must itself be an epoch boundary, so SHIFT must be a
+    //    multiple of the pre-DAG epoch interval.
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % FINALITY_EPOCH_INTERVAL_PRE_DAG, 0);
+    BOOST_CHECK_EQUAL(GetForkHeightDAG() % FINALITY_EPOCH_INTERVAL_PRE_DAG, 0);
+
+    // 2. The release policy works in 10,000-block granules.
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 10000, 0);
+
+    // 3. Emission-literal window on the gate.
+    BOOST_CHECK(GetForkHeightDAG() > 8000000);
+    BOOST_CHECK(GetForkHeightDAG() < 8250000);
+
+    // The ladder must start above the top hardened checkpoint, or a gate would
+    // land inside history already pinned against reorg.
+    BOOST_CHECK(ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE) > 7750000);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
