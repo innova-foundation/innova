@@ -314,10 +314,10 @@ Value z_importiv5seed(const Array& params, bool fHelp)
     if (params.size() > 1)
     {
         const int64_t nHint = params[1].get_int64();
-        if (nHint < 0 || nHint > (int64_t)PRIVACY_VNEXT_MAX_SCAN_KEYS)
+        if (nHint < 0 || nHint > (int64_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
             throw JSONRPCError(RPC_INVALID_PARAMETER,
                                strprintf("addressindexcount must be between 0 and %u",
-                                         PRIVACY_VNEXT_MAX_SCAN_KEYS));
+                                         PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES));
         nAddressIndexHint = (uint32_t)nHint;
     }
     const bool fRescan = params.size() > 2 ? params[2].get_bool() : true;
