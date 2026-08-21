@@ -541,8 +541,11 @@
   "parameter_digest": {
     "hash": "sha256",
     "status": "unfrozen-until-benchmark-caps-and-abi-v2-are-final",
-    "acceptance": "a-payload-is-accepted-under-this-digest-or-any-digest-in-the-implementations-bounded-accepted-prior-list",
-    "acceptance_rule": "the-digest-is-a-provenance-tag-that-no-validation-rule-branches-on-so-a-prior-digest-may-be-added-to-that-list-only-when-the-contract-text-changed-without-changing-a-rule",
+    "acceptance": "a-payload-is-accepted-only-under-the-digest-the-chain-carries-in-its-finalized-epoch-state",
+    "acceptance_rule": "no-implementation-may-accept-or-refuse-a-payload-on-a-digest-list-compiled-into-the-binary-because-two-builds-with-different-lists-would-disagree-about-the-same-block",
+    "inheritance": "a-chains-digest-is-chosen-once-when-its-first-iv5-epoch-is-built-and-every-later-epoch-inherits-it-unchanged",
+    "genesis": "the-digest-a-chains-first-iv5-epoch-is-stamped-with-is-a-pinned-consensus-constant-not-the-hash-of-the-contract-text-the-validating-binary-was-compiled-from",
+    "genesis_rule": "below-a-chains-first-iv5-epoch-there-is-no-record-to-inherit-so-the-pinned-constant-is-what-a-payload-is-judged-against-and-repinning-it-after-boundary-b-activates-on-a-network-is-a-fork",
     "required_components": [
       "upstream_revision",
       "vendored_source_sha256",

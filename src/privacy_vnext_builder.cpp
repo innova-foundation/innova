@@ -134,6 +134,36 @@ void PrivacyVNextSpendNote::Clear()
     nAmount = 0;
 }
 
+// The parameter digest the payload stamps: the chain's, read from the anchor's finalized
+// epoch state, or the bootstrap seed below the first IV5 epoch. Never this build's own
+// contract digest.
+static bool ResolvePrivacyVNextParameterDigest(
+    const std::vector<unsigned char>* pvchChainDigest,
+    PrivacyVNextDigest& digestOut,
+    std::string& strErrorOut)
+{
+    if (pvchChainDigest != NULL)
+    {
+        if (pvchChainDigest->size() != 32)
+        {
+            strErrorOut = "the chain's IV5 parameter digest is malformed";
+            return false;
+        }
+        std::memcpy(digestOut.data(), &(*pvchChainDigest)[0], 32);
+        return true;
+    }
+    PrivacyVNextEpochSeed seed;
+    if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
+        return false;
+    if (seed.vchParameterDigest.size() != 32)
+    {
+        strErrorOut = "IV5 parameter digest is unavailable";
+        return false;
+    }
+    std::memcpy(digestOut.data(), &seed.vchParameterDigest[0], 32);
+    return true;
+}
+
 // One path for every payload shape.
 //
 // A shield is simply the case with no notes spent: it takes its value from the transparent
@@ -153,7 +183,8 @@ static bool BuildPrivacyVNextPayload(
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     vchPayloadOut.clear();
     strErrorOut.clear();
@@ -230,16 +261,10 @@ static bool BuildPrivacyVNextPayload(
         return false;
     }
 
-    PrivacyVNextEpochSeed seed;
-    if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
-        return false;
-    if (seed.vchParameterDigest.size() != 32)
-    {
-        strErrorOut = "IV5 parameter digest is unavailable";
-        return false;
-    }
     PrivacyVNextDigest parameterDigest;
-    std::memcpy(parameterDigest.data(), &seed.vchParameterDigest[0], 32);
+    if (!ResolvePrivacyVNextParameterDigest(pvchChainParameterDigest,
+                                            parameterDigest, strErrorOut))
+        return false;
 
     PrivacyVNextDigest entropy;
     if (!RandomScalar(entropy, strErrorOut))
@@ -563,7 +588,8 @@ bool BuildPrivacyVNextTransferPayload(
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     if (spends.empty())
     {
@@ -577,7 +603,7 @@ bool BuildPrivacyVNextTransferPayload(
                                     outgoingViewSecret, finalizedRoot,
                                     nFinalizedTreeSize, transparentBinding, 0,
                                     nFee, spends, outputs, vchPayloadOut,
-                                    strErrorOut);
+                                    strErrorOut, pvchChainParameterDigest);
 }
 
 bool BuildPrivacyVNextUnshieldPayload(
@@ -593,7 +619,8 @@ bool BuildPrivacyVNextUnshieldPayload(
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     vchPayloadOut.clear();
     strErrorOut.clear();
@@ -617,7 +644,7 @@ bool BuildPrivacyVNextUnshieldPayload(
         nNetwork, VNEXT_OPERATION_UNSHIELD, nDisclosureMask, genesis,
         outgoingViewSecret, finalizedRoot, nFinalizedTreeSize,
         transparentBinding, -(int64_t)nTransparentValueOut, nFee, spends,
-        outputs, vchPayloadOut, strErrorOut);
+        outputs, vchPayloadOut, strErrorOut, pvchChainParameterDigest);
 }
 
 bool BuildPrivacyVNextShieldPayload(
@@ -632,7 +659,8 @@ bool BuildPrivacyVNextShieldPayload(
     uint64_t nFee,
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     vchPayloadOut.clear();
     strErrorOut.clear();
@@ -648,7 +676,7 @@ bool BuildPrivacyVNextShieldPayload(
         outgoingViewSecret, finalizedRoot, nFinalizedTreeSize,
         transparentBinding, (int64_t)nTransparentValueIn, nFee,
         std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
-        strErrorOut);
+        strErrorOut, pvchChainParameterDigest);
 }
 
 // Attestation payload (no note, no value, no balance proof): proves the named commitment
@@ -665,7 +693,8 @@ static bool BuildPrivacyVNextAttestationPayload(
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     vchPayloadOut.clear();
     keyImageOut.fill(0);
@@ -715,16 +744,10 @@ static bool BuildPrivacyVNextAttestationPayload(
         return false;
     }
 
-    PrivacyVNextEpochSeed seed;
-    if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
-        return false;
-    if (seed.vchParameterDigest.size() != 32)
-    {
-        strErrorOut = "IV5 parameter digest is unavailable";
-        return false;
-    }
     PrivacyVNextDigest parameterDigest;
-    std::memcpy(parameterDigest.data(), &seed.vchParameterDigest[0], 32);
+    if (!ResolvePrivacyVNextParameterDigest(pvchChainParameterDigest,
+                                            parameterDigest, strErrorOut))
+        return false;
 
     PrivacyVNextDigest entropy;
     if (!RandomScalar(entropy, strErrorOut))
@@ -860,13 +883,14 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     return BuildPrivacyVNextAttestationPayload(
         iv5::NOTE_COLLATERAL_REGISTER, nNetwork, genesis, finalizedRoot,
         nFinalizedTreeSize, transparentBinding, registrationContext,
         std::vector<unsigned char>(), collateral, vchPayloadOut, keyImageOut,
-        strErrorOut);
+        strErrorOut, pvchChainParameterDigest);
 }
 
 bool BuildPrivacyVNextFinalityMemberRegistrationPayload(
@@ -880,10 +904,12 @@ bool BuildPrivacyVNextFinalityMemberRegistrationPayload(
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
 {
     return BuildPrivacyVNextAttestationPayload(
         iv5::NOTE_FINALITY_MEMBER_REGISTER, nNetwork, genesis, finalizedRoot,
         nFinalizedTreeSize, transparentBinding, registrationContext,
-        vchMemberKey, collateral, vchPayloadOut, keyImageOut, strErrorOut);
+        vchMemberKey, collateral, vchPayloadOut, keyImageOut, strErrorOut,
+        pvchChainParameterDigest);
 }

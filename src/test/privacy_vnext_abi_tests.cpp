@@ -1362,10 +1362,10 @@ BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_operation_the_decoder_ad
                       (int)INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE);
 }
 
-// A contract edit that changes no rule must not invalidate re-validation of every payload
-// already on chain, so this build accepts a bounded set of prior digests. The set exists
-// twice -- once in the decoder, once in the C++ header -- and a build whose two lists
-// disagree admits a payload on one side of the boundary and refuses it on the other.
+// The contract texts this build's lineage published, recorded once in the decoder and
+// once in the C++ header. Build integrity, not consensus: no rule branches on the list --
+// a payload is judged against the digest the chain carries -- but the two halves of one
+// build disagreeing about it means the C++ side and the decoder were not built together.
 //
 // Mutation proving this: add or remove an entry from PROTOCOL_CONTRACT_SHA256_PRIOR
 // without matching PRIOR_PARAMETER_DIGESTS and LoadPrivacyVNextAbiInfo fails, which the
@@ -1394,8 +1394,8 @@ BOOST_AUTO_TEST_CASE(the_accepted_contract_digest_set_is_one_bounded_list)
     BOOST_REQUIRE_EQUAL((size_t)encoded[0],
                         iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT + 1);
 
-    // This build's own digest is the first entry, and it is the one a payload is built
-    // with; the rest are accept-only.
+    // This build's own contract digest is the first entry; the rest are superseded.
+    // What a payload is built with is the chain's digest, not any of these.
     BOOST_CHECK(IsAcceptedPrivacyVNextParameterDigest(
         &encoded[1], INNOVA_PRIVACY_VNEXT_DIGEST_SIZE));
     for (size_t i = 0; i < (size_t)encoded[0]; ++i)

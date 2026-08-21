@@ -182,26 +182,32 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
     )
 }
 
-/// Protocol-contract digests this binary accepts on a payload, besides its own.
+/// Contract texts this binary's lineage has published, besides the current one.
 ///
-/// The parameter digest is a provenance tag, not a rule selector: nothing in the validator
-/// branches on its value, it is only ever compared for equality. Accepting a bounded prior
-/// set therefore weakens no rule, and it is what stops a contract edit from invalidating
-/// re-validation of every payload already on chain.
+/// Provenance only. No consensus rule may branch on this list: the decoder sees a payload
+/// and nothing else, so any verdict it reached from a compile-time list would differ
+/// between two binaries and split the chain on the block carrying that payload. Which
+/// digest a payload must carry is decided against the digest the chain carries, once, on
+/// the C++ side.
 ///
-/// An entry may be added only when the contract text changed without changing a rule --
-/// documentation catching up to code. The list stays short and append-only; a rule change
-/// needs a fork, not a digest.
-///
-/// e65eaaa6: the text before operation 8 was written down and operation 9 was added. Both
-/// were already enforced by this binary's predecessor, so payloads carrying it are judged
-/// by exactly the rules they were built under.
-const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 1] = [[
-    0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70, 0x99,
-    0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c, 0x9d, 0x5f,
-]];
+/// e65eaaa6: the text before operation 8 was written down and operation 9 was added.
+/// f0259ccc: the parameter-digest acceptance rule was written down as the chain's own.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 2] = [
+    [
+        0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
+        0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
+        0x9d, 0x5f,
+    ],
+    [
+        0xf0, 0x25, 0x9c, 0xcc, 0xfe, 0x96, 0xb0, 0x66, 0x5a, 0x26, 0xb1, 0x77, 0x4e, 0x27, 0x94,
+        0x22, 0x2c, 0xeb, 0x80, 0x93, 0xd8, 0x00, 0xd8, 0x86, 0xcb, 0x16, 0x46, 0xf7, 0x60, 0xf3,
+        0x71, 0x0b,
+    ],
+];
 
-/// Whether a payload's declared parameter digest is one this binary judges payloads under.
+/// Whether a digest names a contract text this binary's lineage published.
+///
+/// Provenance reporting only -- never a validity test. See PRIOR_PARAMETER_DIGESTS.
 #[must_use]
 pub fn parameter_digest_is_accepted(digest: &[u8; 32]) -> bool {
     if digest[..] == Sha256::digest(PRODUCT_CONTRACT)[..] {
