@@ -333,18 +333,27 @@ inline int GetEpochForHeight(int nHeight)
     return nHeight / FINALITY_EPOCH_INTERVAL_PRE_DAG;
 }
 
-/** Get the block height of an epoch boundary */
-inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
+/** Epoch boundary height computed in 64 bits, for callers that must range-check an
+ *  unvalidated epoch number without int overflow. */
+inline int64_t GetEpochBoundaryHeight64(int nEpoch)
 {
-    // GetForkHeightDAG declared above
-    int nDAGFork = GetForkHeightDAG();
-    int nPreDAGEpochs = (nDAGFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
-    if (nEpoch >= nPreDAGEpochs)
+    const int64_t nDAGFork = GetForkHeightDAG();
+    const int64_t nPreDAGEpochs = (nDAGFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
+    const int64_t nEpoch64 = nEpoch;
+    if (nEpoch64 >= nPreDAGEpochs)
     {
         // Post-DAG epoch: compute relative to DAG fork
-        return nDAGFork + (nEpoch - nPreDAGEpochs) * FINALITY_EPOCH_INTERVAL_POST_DAG;
+        return nDAGFork + (nEpoch64 - nPreDAGEpochs) * FINALITY_EPOCH_INTERVAL_POST_DAG;
     }
-    return nEpoch * FINALITY_EPOCH_INTERVAL_PRE_DAG;
+    return nEpoch64 * FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Get the block height of an epoch boundary. One definition, narrowed: the
+ *  boundary is placed once in GetEpochBoundaryHeight64 and this is the view of it
+ *  in the height type, so the two can never drift. */
+inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
+{
+    return (int)GetEpochBoundaryHeight64(nEpoch);
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,8 +1316,8 @@ bool CheckFinalitySettlementOutputs(const CBlock& block,
                                     int64_t& nTotalOut,
                                     std::string* pstrError = NULL);
 
-/** The settlement budget for the epoch settling at nSettlementHeight, clamped to the
- *  issuance headroom left under the supply cap for the block extending pindexPrev.
+/** The settlement budget for epoch nSettlementEpoch, clamped to the issuance
+ *  headroom left under the supply cap for the block extending pindexPrev.
  *
  *  THE one function both the producer and every validator call. It is what makes the
  *  settlement payable in every case: the clamp can only lower it, both sides lower it
@@ -1317,8 +1326,7 @@ bool CheckFinalitySettlementOutputs(const CBlock& block,
  *  exceed what the block is allowed to mint, so there is no height at which no valid
  *  block exists. */
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
-                                           int nSettlementEpoch,
-                                           int nSettlementHeight);
+                                           int nSettlementEpoch);
 
 /** Structural check for the vote commitments a non-settlement block carries. Carrying a
  *  vote pays nothing, so this validates shape only (per-block cap, no duplicate

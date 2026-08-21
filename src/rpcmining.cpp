@@ -974,7 +974,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
                                            vTmplSettlementVotes, &strTmplSettleError) ||
             !BuildFinalitySettlementOutputs(vTmplSettlementVotes,
                                             GetClampedFinalitySettlementBudget(
-                                                pindexPrev, nTmplSettlementEpoch, nTmplHeight),
+                                                pindexPrev, nTmplSettlementEpoch),
                                             vTmplSettlementLeg,
                                             nTmplFinalityReward, &strTmplSettleError))
             throw JSONRPCError(RPC_INTERNAL_ERROR,

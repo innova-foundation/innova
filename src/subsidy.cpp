@@ -7,6 +7,8 @@
 #include "main.h"
 #include "finality.h"
 
+#include <limits>
+
 // Basis-point share of nValue, taken as quotient plus scaled remainder so a
 // large value cannot overflow the intermediate product. Same shape the
 // collateralnode rate has always used.
@@ -31,35 +33,67 @@ int64_t GetFinalityReservePerBlock(int nHeight)
     return BpsShare(nSchedule, FINALITY_RESERVE_BPS);
 }
 
-int64_t GetFinalityEpochBudget(int nSettlementEpoch, int nHeightHint)
+bool GetFinalityAccrualRange(int nSettlementEpoch, int& nBeginOut, int& nEndOut)
 {
+    nBeginOut = 0;
+    nEndOut = 0;
     if (nSettlementEpoch <= 0)
-        return 0;
+        return false;
 
-    const int nAccrualEnd = GetEpochBoundaryHeight(nSettlementEpoch, nHeightHint);
-    const int nAccrualBegin = GetEpochBoundaryHeight(nSettlementEpoch - 1, nHeightHint);
-    if (nAccrualBegin < 0 || nAccrualBegin >= nAccrualEnd)
-        return 0;
-    // Adjacent boundaries are one epoch apart by construction. Fail closed on
-    // anything wider rather than walk a range a corrupted epoch number chose:
-    // a zero budget settles nothing, which is a state the rule already handles.
-    if (nAccrualEnd - nAccrualBegin > FINALITY_EPOCH_INTERVAL_POST_DAG)
-        return 0;
+    // Compute both boundaries in 64 bits before narrowing: an out-of-range epoch number
+    // would overflow the multiply.
+    const int64_t nBegin64 = GetEpochBoundaryHeight64(nSettlementEpoch - 1);
+    const int64_t nEnd64 = GetEpochBoundaryHeight64(nSettlementEpoch);
+    if (nBegin64 < 0 || nBegin64 >= nEnd64)
+        return false;
+    if (nEnd64 > (int64_t)std::numeric_limits<int>::max())
+        return false;
 
-    // A closed sum over a height range. No block bodies, no index, no disk: the
-    // per-block reserve is a function of height alone, so producer and validator
-    // evaluate the same arithmetic from the same two integers.
-    int64_t nBudget = 0;
-    for (int nHeight = nAccrualBegin; nHeight < nAccrualEnd; nHeight++)
+    const int nBegin = (int)nBegin64;
+    const int nEnd = (int)nEnd64;
+
+    // The range is the pair of boundaries the epoch functions themselves place for
+    // E-1 and E: an identity on the range, not a bound on its width. A width
+    // compared against one regime's interval constant is a zero budget for every
+    // epoch under any later regime -- voter pay silently going to zero, which is
+    // the direction this channel exists to defend. This holds under every regime
+    // because both sides move together, and it also rejects a boundary function
+    // that stopped being strictly increasing, which a width check would accept and
+    // which would pay the same withheld reserve to two settlements.
+    if (GetEpochForHeight(nBegin) != nSettlementEpoch - 1)
+        return false;
+    if (GetEpochForHeight(nEnd) != nSettlementEpoch)
+        return false;
+
+    nBeginOut = nBegin;
+    nEndOut = nEnd;
+    return true;
+}
+
+int64_t SumFinalityReserve(int nBegin, int nEnd)
+{
+    // Closed sum over heights: the reserve is a function of height alone (zero below the
+    // DAG fork), so producer and validator agree and any range sums correctly.
+    int64_t nSum = 0;
+    for (int nHeight = nBegin; nHeight < nEnd; nHeight++)
     {
         const int64_t nReserve = GetFinalityReservePerBlock(nHeight);
         if (nReserve <= 0)
             continue;
-        if (nBudget > MAX_MONEY - nReserve)
+        if (nSum > MAX_MONEY - nReserve)
             return MAX_MONEY;
-        nBudget += nReserve;
+        nSum += nReserve;
     }
-    return nBudget;
+    return nSum;
+}
+
+int64_t GetFinalityEpochBudget(int nSettlementEpoch)
+{
+    int nAccrualBegin = 0;
+    int nAccrualEnd = 0;
+    if (!GetFinalityAccrualRange(nSettlementEpoch, nAccrualBegin, nAccrualEnd))
+        return 0;
+    return SumFinalityReserve(nAccrualBegin, nAccrualEnd);
 }
 
 int64_t CBlockSubsidySplit::CollateralnodeShareOfBase(int64_t nBase)

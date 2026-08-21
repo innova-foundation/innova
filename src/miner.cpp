@@ -496,7 +496,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // Same budget function the validator calls, off the same parent: the
             // reserve earlier blocks withheld, clamped to the issuance headroom.
             const int64_t nSettlementBudget =
-                GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch, nHeight);
+                GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch);
             if (!GatherFinalitySettlementVotes(pindexPrev, nSettlementEpoch, vSettlementVotes, &strSettleError) ||
                 !BuildFinalitySettlementOutputs(vSettlementVotes, nSettlementBudget,
                                                 vFinalitySettlementOutputs,

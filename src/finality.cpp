@@ -2151,10 +2151,9 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
 }
 
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
-                                           int nSettlementEpoch,
-                                           int nSettlementHeight)
+                                           int nSettlementEpoch)
 {
-    const int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch, nSettlementHeight);
+    const int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch);
     if (nBudget <= 0)
         return 0;
 

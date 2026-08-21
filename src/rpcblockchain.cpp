@@ -265,8 +265,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             if (GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
                 BuildFinalitySettlementOutputs(vSettlementVotes,
                                                GetClampedFinalitySettlementBudget(
-                                                   blockindex->pprev, nSettlementEpoch,
-                                                   blockindex->nHeight),
+                                                   blockindex->pprev, nSettlementEpoch),
                                                vSettlementLeg, nFinalityReward))
             {
                 Object settleObj;

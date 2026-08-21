@@ -27,6 +27,15 @@ int64_t GetBlockSubsidySchedule(int nHeight);
  *  sum(paid) + sum(reserved) == sum(schedule). */
 int64_t GetFinalityReservePerBlock(int nHeight);
 
+/** The height range [H_{E-1}, H_E) whose reserve funds epoch nSettlementEpoch's
+ *  settlement, and whether that epoch has one. Bounds the epoch number before
+ *  narrowing, and requires the epoch functions to agree on both boundaries. */
+bool GetFinalityAccrualRange(int nSettlementEpoch, int& nBeginOut, int& nEndOut);
+
+/** Sum of the per-block reserve over [nBegin, nEnd). Total over any range: the
+ *  reserve is defined at every height and is zero below the DAG fork. */
+int64_t SumFinalityReserve(int nBegin, int nEnd);
+
 /** Budget available to the settlement of epoch nSettlementEpoch: the reserve
  *  accrued over the epoch BEFORE it, [H_{E-1}, H_E).
  *
@@ -36,7 +45,7 @@ int64_t GetFinalityReservePerBlock(int nHeight);
  *  block, so producer and validator sum the identical range. The first post-DAG
  *  settlement therefore pays nothing: its predecessor accrued at the pre-DAG
  *  rate, which is zero. */
-int64_t GetFinalityEpochBudget(int nSettlementEpoch, int nHeightHint);
+int64_t GetFinalityEpochBudget(int nSettlementEpoch);
 
 /** Whether this block pays a collateralnode. Not a bool: a bare true/false at a
  *  call site is the shape that silently takes the wrong branch. */
