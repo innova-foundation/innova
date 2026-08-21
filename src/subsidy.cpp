@@ -44,22 +44,15 @@ bool GetFinalityAccrualRange(int nSettlementEpoch, int& nBeginOut, int& nEndOut)
     // would overflow the multiply.
     const int64_t nBegin64 = GetEpochBoundaryHeight64(nSettlementEpoch - 1);
     const int64_t nEnd64 = GetEpochBoundaryHeight64(nSettlementEpoch);
-    if (nBegin64 < 0 || nBegin64 >= nEnd64)
-        return false;
     if (nEnd64 > (int64_t)std::numeric_limits<int>::max())
         return false;
 
     const int nBegin = (int)nBegin64;
     const int nEnd = (int)nEnd64;
 
-    // The range is the pair of boundaries the epoch functions themselves place for
-    // E-1 and E: an identity on the range, not a bound on its width. A width
-    // compared against one regime's interval constant is a zero budget for every
-    // epoch under any later regime -- voter pay silently going to zero, which is
-    // the direction this channel exists to defend. This holds under every regime
-    // because both sides move together, and it also rejects a boundary function
-    // that stopped being strictly increasing, which a width check would accept and
-    // which would pay the same withheld reserve to two settlements.
+    // The range must be exactly the boundaries of E-1 and E (an identity, not a width
+    // check), which holds under every regime and rejects a non-increasing boundary function.
+    // GetEpochForHeight is monotonic, so this also orders the pair.
     if (GetEpochForHeight(nBegin) != nSettlementEpoch - 1)
         return false;
     if (GetEpochForHeight(nEnd) != nSettlementEpoch)
