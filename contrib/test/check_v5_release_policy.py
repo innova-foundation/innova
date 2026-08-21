@@ -269,14 +269,19 @@ def configured_post_dag_epoch_interval(finality_h: Path) -> int:
 
 
 def configured_boundary_b_height(text: str, constants: Mapping[str, str],
-                                 source: Path) -> int:
+                                 source: Path, boundary_a: int) -> int:
     body = fork_function_body(text, "GetForkHeightBoundaryB", source)
     match = re.search(r"return\s+fRegTest\s*\?[^:]+:\s*([^;]+);", body)
     if not match:
         match = re.search(r"return\s+([^;]+);", body)
     if not match:
         raise PolicyError("non-regtest return path not found in GetForkHeightBoundaryB()")
-    return int_literal(match.group(1), constants)
+    expression = match.group(1).strip()
+    # B ships as an alias of A -- one release, one boundary -- so the public
+    # value is whatever A resolved to, not a literal of its own.
+    if re.fullmatch(r"GetForkHeightBoundaryA\s*\(\s*\)", expression):
+        return boundary_a
+    return int_literal(expression, constants)
 
 
 def validate_testnet_activation_ladder(main_h: Path) -> Dict[str, int]:
@@ -307,7 +312,7 @@ def validate_testnet_activation_ladder(main_h: Path) -> Dict[str, int]:
     finality = testnet_fork_height(text, constants, "GetForkHeightFinality", main_h)
     dag = testnet_fork_height(text, constants, "GetForkHeightDAG", main_h)
     boundary_a = testnet_fork_height(text, constants, "GetForkHeightEpochStateV3", main_h)
-    boundary_b = configured_boundary_b_height(text, constants, main_h)
+    boundary_b = configured_boundary_b_height(text, constants, main_h, boundary_a)
 
     alias = fork_function_body(text, "GetForkHeightBoundaryA", main_h)
     if not re.search(r"return\s+GetForkHeightEpochStateV3\s*\(\s*\)\s*;", alias):
@@ -1455,7 +1460,7 @@ def selftest() -> int:
             " return GetForkHeightDAG() + 300;\n}\n"
             "inline int GetForkHeightBoundaryA()\n{\n return GetForkHeightEpochStateV3();\n}\n"
             "inline int GetForkHeightBoundaryB()\n"
-            "{\n return fRegTest ? nRegtestBoundaryBHeight : PRIVACY_VNEXT_HEIGHT_UNSET;\n}\n",
+            "{\n return fRegTest ? nRegtestBoundaryBHeight : GetForkHeightBoundaryA();\n}\n",
             encoding="utf-8",
         )
         finality_h.write_text(

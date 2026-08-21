@@ -444,27 +444,26 @@ inline int GetForkHeightBoundaryA()
 }
 #define FORK_HEIGHT_BOUNDARY_A (GetForkHeightBoundaryA())
 
-// Boundary B cannot be scheduled until the exact vendored FCMP++/GBP/Helios-
-// Selene candidate and Innova composition have passed independent review.
-// Keeping one shared sentinel makes accidental activation fail closed on every
-// network, including regtest, until that implementation is intentionally
-// introduced with its own tests.
+// Boundary B restores the modes Boundary A quarantines, and ships on the same
+// flag day: one release, one boundary. It is an alias of Boundary A rather than
+// a second literal, so a re-base of the ladder moves both or neither and the
+// pair cannot drift apart. Equality is what BoundaryOrderingHolds() already
+// permits (B >= A) and leaves no height where a restored encoding runs outside
+// the quarantine.
 //
-// Tag-time gates, all three required before a height replaces the sentinel:
-//   1. FCMP++ candidate has passed independent review.
-//   2. Real post-DAG block rate confirmed on the live network.
-//   3. B set strictly after Boundary A (DAG + 300 = 8,130,300 on mainnet) with
-//      room before the post-Boundary-B staking slots.
+// A height is not an activation. The v2008 verifier stays fail-closed behind
+// IsShieldedVNextConsensusReady(), which is regtest-only, so scheduling B turns
+// on the pool's state machinery (schema-V4 epoch records, pool accounting, tree
+// store) and nothing that validates a proof.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
-// Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
-// on mainnet and testnet. A height alone never activates Boundary B; readiness is
-// a separate switch (IsShieldedVNextConsensusReady).
+// Regtest-only rehearsal height for Boundary B (-regtestboundaryb); defaults to
+// the sentinel.
 extern int nRegtestBoundaryBHeight;
 
 inline int GetForkHeightBoundaryB()
 {
     extern bool fRegTest;
-    return fRegTest ? nRegtestBoundaryBHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
+    return fRegTest ? nRegtestBoundaryBHeight : GetForkHeightBoundaryA();
 }
 #define FORK_HEIGHT_BOUNDARY_B (GetForkHeightBoundaryB())
 

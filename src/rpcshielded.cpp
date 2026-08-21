@@ -1742,7 +1742,8 @@ Value z_shieldall(const Array& params, bool fHelp)
     // The transaction being built lands in the next block, so gate on the height it
     // would occupy. Gating on the tip refuses a transaction consensus would accept in
     // the activation block itself.
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
+        !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
@@ -1935,7 +1936,8 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "}\n");
 
     // Gate on the next block's height, not the tip.
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
+        !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
@@ -2134,7 +2136,8 @@ Value z_iv5transfer(const Array& params, bool fHelp)
     // The transaction being built lands in the next block, so gate on the height it
     // would occupy. Gating on the tip refuses a transaction consensus would accept in
     // the activation block itself.
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
+        !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
@@ -2191,7 +2194,8 @@ Value z_iv5unshield(const Array& params, bool fHelp)
     // The transaction being built lands in the next block, so gate on the height it
     // would occupy. Gating on the tip refuses a transaction consensus would accept in
     // the activation block itself.
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
+        !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
