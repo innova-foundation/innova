@@ -8081,6 +8081,37 @@ bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
            nBlockTime > nNow - CollateralnodePaymentWindowSeconds();
 }
 
+// The cold-stake CN payee check reads the same gossiped state, so it carries the same
+// window. fPaymentsEnabled is true: the fork height scopes activation.
+bool ColdStakeCNPayeeRuleApplies(bool fJustCheck, int nHeight, int64_t nCNPayment,
+                                 int64_t nBlockTime, int64_t nNow)
+{
+    return nCNPayment > 0 && nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION &&
+           CollateralnodePaymentRuleApplies(fJustCheck, nBlockTime, nNow, true);
+}
+
+// Whether this node's gossiped view recognises the payee. Not derivable from the chain,
+// so two nodes can answer differently for the same block.
+bool ColdStakeCNPayeeIsRegistered(int nHeight, const CScript& payeeScript)
+{
+    CScript expectedPayee;
+    if (collateralnodePayments.GetBlockPayee(nHeight, expectedPayee) &&
+        payeeScript == expectedPayee)
+        return true;
+
+    LOCK(cs_collateralnodes);
+    for (CCollateralNode& mn : vecCollateralnodes)
+    {
+        if (!mn.IsEnabled())
+            continue;
+        CScript mnPayee;
+        mnPayee.SetDestination(mn.pubkey.GetID());
+        if (payeeScript == mnPayee)
+            return true;
+    }
+    return false;
+}
+
 // Whether a ConnectBlock result may be written down as BLOCK_FAILED_VALID. That flag
 // is serialized and cleared only by reconsiderblock, so only a verdict every node
 // reproduces qualifies. Both best-chain sites call this rather than comparing the
@@ -9186,38 +9217,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                             return DoS(100, error("ConnectBlock() : cold stake CN payment %" PRId64 " exceeds 30%% of reward %" PRId64,
                                                   nCNPayment, nReward));
 
-                        // Verify CN payment goes to a legitimate collateralnode (post-fork only)
-                        if (nCNPayment > 0 && pindex->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION)
+                        // The payee comes from gossiped state, so it has the same node-local gate as the
+                        // payment rule and its refusal is never written into the block index.
+                        if (ColdStakeCNPayeeRuleApplies(fJustCheck, pindex->nHeight, nCNPayment,
+                                                        pindex->GetBlockTime(), GetTime()) &&
+                            !ColdStakeCNPayeeIsRegistered(pindex->nHeight,
+                                                          coinstake.vout[i].scriptPubKey))
                         {
-                            CScript expectedPayee;
-                            bool fValidCNPayee = false;
-
-                            if (collateralnodePayments.GetBlockPayee(pindex->nHeight, expectedPayee))
-                            {
-                                fValidCNPayee = (coinstake.vout[i].scriptPubKey == expectedPayee);
-                            }
-
-                            // Fallback: check against active collateralnodes
-                            if (!fValidCNPayee && vecCollateralnodes.size() > 0)
-                            {
-                                LOCK(cs_collateralnodes);
-                                for (CCollateralNode& mn : vecCollateralnodes)
-                                {
-                                    if (mn.IsEnabled())
-                                    {
-                                        CScript mnPayee;
-                                        mnPayee.SetDestination(mn.pubkey.GetID());
-                                        if (coinstake.vout[i].scriptPubKey == mnPayee)
-                                        {
-                                            fValidCNPayee = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (!fValidCNPayee)
-                                return DoS(100, error("ConnectBlock() : cold stake CN payment to invalid payee (not a registered collateralnode)"));
+                            return TransientFailure(error("ConnectBlock() : cold stake CN payment to invalid payee (not a registered collateralnode)"));
                         }
                         continue;
                     }
