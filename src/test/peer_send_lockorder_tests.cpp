@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(send_messages_does_not_wait_on_cs_vnodes)
     node.nPingNonceSent = 1; // the socket is not real, so send no ping
 
     g_fNodesLockHeld = false;
-    boost::thread holder(boost::bind(&HoldVNodesLock, 3000));
+    boost::thread holder([]() { HoldVNodesLock(3000); });
     for (int i = 0; i < 1000 && !g_fNodesLockHeld; i++)
         MilliSleep(5);
     BOOST_REQUIRE(g_fNodesLockHeld);
