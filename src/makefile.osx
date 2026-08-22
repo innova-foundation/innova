@@ -264,6 +264,7 @@ TEST_OBJS= \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \
+    obj/test/reorg_finality_anchor_tests.o \
     obj/test/dagknight_anchor_cache_tests.o \
     obj/test/dag_privacy_interaction_tests.o \
     obj/test/finality_committee_draw_tests.o \
@@ -386,6 +387,9 @@ check-halfagg-stake: test_innova
 
 check-epoch-state-determinism: test_innova
 	./test_innova --run_test=epoch_state_determinism_tests
+
+check-reorg-finality-anchor: test_innova
+	./test_innova --run_test=reorg_finality_anchor_tests
 
 check-dag-privacy-interaction: test_innova
 	./test_innova --run_test=dag_privacy_interaction_tests

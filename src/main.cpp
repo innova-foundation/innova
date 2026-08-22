@@ -10850,6 +10850,100 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
     return true;
 }
 
+// Reorg finality guard (R-FIN-001), shared by Reorganize and CBlock::SetBestChain.
+//
+// The anchor stays derived from the evaluating node's own tip. It cannot be taken from
+// the candidate branch or the fork point: the evidence that a height is finalized lives
+// on the chain being abandoned, so any anchor computed purely from data at or below the
+// fork point is vacuous, and a candidate-derived anchor is both attacker-selectable (the
+// attacker picks the branch length, hence the epoch) and unavailable -- epoch state is
+// staged as blocks connect, so a candidate that has crossed a boundary this node has not
+// completed has no state to read and the guard would fail closed onto the losing branch.
+//
+// What is fixed instead is the severity. Two anchors are computed: the current one, as of
+// epoch(tip)-1, which decides rejection, and a lagged one, an epoch older, which decides
+// whether the rejection is persisted. Every node whose tip is within one epoch of this one
+// computes at least the lagged anchor (nFinalizedHeightAsOf is non-decreasing in epoch),
+// so the persisted half of the verdict is identical across nodes that straddle an epoch
+// boundary -- which is the property the guard must hold, since BLOCK_FAILED_VALID survives
+// restart and is cleared only by reconsiderblock. Inside the one-epoch band the verdict is
+// a plain rejection that latches nothing, and it hardens on its own once the lagged anchor
+// advances past the fork point.
+ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
+                                               int nBestHeight, int nForkHeight,
+                                               int& nFinalCurOut, int& nFinalLatchOut,
+                                               int& nAsOfEpochOut)
+{
+    nFinalCurOut = 0;
+    nFinalLatchOut = 0;
+    nAsOfEpochOut = GetEpochForHeight(nBestHeight) - 1;
+
+    if (nBestHeight < FORK_HEIGHT_FINALITY)
+        return REORG_FINALITY_ALLOW;
+
+    if (nBestHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        if (!dag.TryGetDeterministicFinalizedHeight(nAsOfEpochOut, nFinalCurOut))
+            return REORG_FINALITY_STATE_MISSING;
+        // A missing lagged record is the bottom edge of epoch-state history, not corruption:
+        // LoadEpochStates fails closed on interior holes, so absent here means no record was
+        // ever written. Degrade to "nothing latchable yet" rather than failing closed, which
+        // would brick every node for one epoch after the V3 gate.
+        if (!dag.TryGetDeterministicFinalizedHeight(nAsOfEpochOut - 1, nFinalLatchOut))
+            nFinalLatchOut = 0;
+    }
+    else
+    {
+        nFinalCurOut = dag.GetDeterministicFinalizedHeight(nAsOfEpochOut);
+        nFinalLatchOut = dag.GetDeterministicFinalizedHeight(nAsOfEpochOut - 1);
+    }
+
+    // Monotone by the loader's regression check; clamp so a latch can never outrun the
+    // anchor that gates rejection.
+    if (nFinalLatchOut > nFinalCurOut)
+        nFinalLatchOut = nFinalCurOut;
+
+    if (nFinalCurOut <= 0 || nForkHeight >= nFinalCurOut)
+        return REORG_FINALITY_ALLOW;
+    if (nForkHeight < nFinalLatchOut)
+        return REORG_FINALITY_REJECT_PERMANENT;
+    return REORG_FINALITY_REJECT_TRANSIENT;
+}
+
+ReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight, int nForkHeight,
+                                               int& nFinalCurOut, int& nFinalLatchOut,
+                                               int& nAsOfEpochOut)
+{
+    return CheckReorgAgainstFinality(g_dagManager, nBestHeight, nForkHeight,
+                                     nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
+}
+
+// Records the verdict as well as reaching it, so neither call site carries its own copy
+// of the persistence rule. Only REJECT_PERMANENT may set the flag: it is the one verdict
+// every node within an epoch of this tip also reaches, and BLOCK_FAILED_VALID is
+// serialized and cleared only by reconsiderblock.
+ReorgFinalityVerdict ApplyReorgFinalityGuard(const CDAGManager& dag,
+                                             int nBestHeight, int nForkHeight,
+                                             bool* pfPermanentInvalid,
+                                             int& nFinalCurOut, int& nFinalLatchOut,
+                                             int& nAsOfEpochOut)
+{
+    const ReorgFinalityVerdict verdict = CheckReorgAgainstFinality(
+        dag, nBestHeight, nForkHeight, nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
+    if (verdict == REORG_FINALITY_REJECT_PERMANENT && pfPermanentInvalid)
+        *pfPermanentInvalid = true;
+    return verdict;
+}
+
+ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, int nForkHeight,
+                                             bool* pfPermanentInvalid,
+                                             int& nFinalCurOut, int& nFinalLatchOut,
+                                             int& nAsOfEpochOut)
+{
+    return ApplyReorgFinalityGuard(g_dagManager, nBestHeight, nForkHeight, pfPermanentInvalid,
+                                   nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects)
@@ -10861,28 +10955,13 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     printf("REORGANIZE\n");
 
     {
-        // The deterministic epoch-state anchor (HIGH#2) is immutable ONLY if reorgs never descend below
-        // the finalized height its consumers use -- GetDeterministicFinalizedHeight (CheckVote /
-        // CheckTallyCertificate / FCMP-spend). Guard this boundary on ONLY that deterministic,
-        // fleet-identical height. The node-local live streak GetFinalizedHeight() must NOT enter this
-        // decision: it can transiently STALL below the deterministic value (out-of-order vote arrival
-        // resets the consecutive-HARD streak) and it differs between nodes, so folding it in via max()
-        // reintroduces path-dependent state into a consensus reorg -- two nodes with different live
-        // heights would latch pfPermanentInvalid on different reorgs -> non-self-healing split. The
-        // deterministic anchor is exactly what the vote/cert/FCMP-spend consumers treat as final, so it
-        // fully covers the immutability boundary on its own.
-        int nFinalHeight = 0;
+        // Deterministic-ONLY anchor: the node-local live streak GetFinalizedHeight() must never enter
+        // this decision. It can transiently stall below the deterministic value (out-of-order vote
+        // arrival resets the consecutive-HARD streak) and it differs between nodes, so folding it in
+        // reintroduces path-dependent state into a consensus reorg. Severity is split by anchor age in
+        // CheckReorgAgainstFinality so nodes whose tips straddle an epoch boundary cannot latch
+        // pfPermanentInvalid on different reorgs.
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-        {
-            const int nAsOfEpoch = GetEpochForHeight(pindexBest->nHeight) - 1;
-            if (pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3 &&
-                !g_dagManager.TryGetDeterministicFinalizedHeight(nAsOfEpoch, nFinalHeight))
-                return error("Reorganize() : missing deterministic finalized-height state for "
-                             "epoch %d; -reindex/resync required", nAsOfEpoch);
-            if (pindexBest->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
-                nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
-        }
-        if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
             CBlockIndex* pCheck = pindexBest;
             CBlockIndex* pLonger = pindexNew;
@@ -10895,12 +10974,25 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                 if (pCheck)
                     pCheck = pCheck->pprev;
             }
-            if (pCheck && pCheck->nHeight < nFinalHeight)
             {
-                if (pfPermanentInvalid)
-                    *pfPermanentInvalid = true;
-                return error("Reorganize() : rejected - fork point height %d is below finalized height %d",
-                             pCheck->nHeight, nFinalHeight);
+                // No common ancestor is unreachable with a single genesis; pass a fork height
+                // that cannot be rejected so the missing-state fail-closed below still runs.
+                const int nForkHeight = pCheck ? pCheck->nHeight : std::numeric_limits<int>::max();
+                int nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+                const ReorgFinalityVerdict verdict = ApplyReorgFinalityGuard(
+                    pindexBest->nHeight, nForkHeight, pfPermanentInvalid,
+                    nFinalCur, nFinalLatch, nAsOfEpoch);
+                if (verdict == REORG_FINALITY_STATE_MISSING)
+                    return error("Reorganize() : missing deterministic finalized-height state for "
+                                 "epoch %d; -reindex/resync required", nAsOfEpoch);
+                if (verdict != REORG_FINALITY_ALLOW)
+                {
+                    return error("Reorganize() : rejected - fork point height %d is below finalized "
+                                 "height %d (latch anchor %d, %s)",
+                                 nForkHeight, nFinalCur, nFinalLatch,
+                                 verdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent"
+                                                                            : "retryable");
+                }
             }
         }
     }
@@ -11522,26 +11614,12 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
     else
     {
         {
-            // MEDIUM-1 (see Reorganize): guard on the deterministic, fleet-identical finalized height so
-            // a sub-deterministic-finalized reorg can never re-anchor a finalized epoch's roots -> split.
-            // Deterministic-ONLY: never mix the node-local live finalized height into this reorg
-            // decision, else divergent nodes latch pfPermanentInvalid on different reorgs -> split.
-            int nFinalHeight = 0;
+            // Same guard as Reorganize, same shared decision: a sub-finalized reorg can never
+            // re-anchor a finalized epoch's roots. Deterministic-ONLY -- never mix the node-local
+            // live finalized height in. Only a fork below the LAGGED anchor is condemned
+            // permanently, because that is the only verdict every node within an epoch of this
+            // tip agrees on; inside the band the block is rejected but left re-requestable.
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-            {
-                const int nAsOfEpoch = GetEpochForHeight(pindexBest->nHeight) - 1;
-                if (pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3 &&
-                    !g_dagManager.TryGetDeterministicFinalizedHeight(nAsOfEpoch,
-                                                                    nFinalHeight))
-                {
-                    txdb.TxnAbort();
-                    return error("SetBestChain() : missing deterministic finalized-height state "
-                                 "for epoch %d; -reindex/resync required", nAsOfEpoch);
-                }
-                if (pindexBest->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
-                    nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
-            }
-            if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
                 CBlockIndex* pWalk = pindexNew;
                 while (pWalk && pWalk->nHeight > nBestHeight)
@@ -11559,13 +11637,27 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
                         pWalk = pWalk->pprev;
                     }
                 }
-                if (pOld && pOld->nHeight < nFinalHeight)
                 {
-                    txdb.TxnAbort();
-                    // A fork below the finalized height can NEVER become best (finality is immutable),
-                    // so this candidate is permanently unconnectable -> flag it, don't re-request forever.
-                    if (pfPermanentInvalid) *pfPermanentInvalid = true;
-                    return error("SetBestChain() : rejected reorg - fork below finalized height %d", nFinalHeight);
+                    const int nForkHeight = pOld ? pOld->nHeight : std::numeric_limits<int>::max();
+                    int nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+                    const ReorgFinalityVerdict verdict = ApplyReorgFinalityGuard(
+                        pindexBest->nHeight, nForkHeight, pfPermanentInvalid,
+                        nFinalCur, nFinalLatch, nAsOfEpoch);
+                    if (verdict == REORG_FINALITY_STATE_MISSING)
+                    {
+                        txdb.TxnAbort();
+                        return error("SetBestChain() : missing deterministic finalized-height state "
+                                     "for epoch %d; -reindex/resync required", nAsOfEpoch);
+                    }
+                    if (verdict != REORG_FINALITY_ALLOW)
+                    {
+                        txdb.TxnAbort();
+                        return error("SetBestChain() : rejected reorg - fork height %d below "
+                                     "finalized height %d (latch anchor %d, %s)",
+                                     nForkHeight, nFinalCur, nFinalLatch,
+                                     verdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent"
+                                                                                : "retryable");
+                    }
                 }
             }
         }
