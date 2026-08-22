@@ -889,7 +889,6 @@ public:
         return nChange;
     }
     bool SetBestChainChecked(const CBlockLocator& loc);
-    void SetBestChain(const CBlockLocator& loc);
 
     DBErrors LoadWallet(bool& fFirstRunRet);
     DBErrors ZapWalletTx();
