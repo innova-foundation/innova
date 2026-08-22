@@ -203,10 +203,13 @@ BOOST_AUTO_TEST_CASE(finality_vote_modes_select_the_intended_private_note_kind)
     BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("nullstakecold", false));
     BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("nullstakecold", true));
 
-    // Auto may select either available private note kind. Transparent and
-    // unknown modes must never enter private proof generation.
-    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("auto", false));
-    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("auto", true));
+    // Auto is the identity lane, so it never enters private proof generation:
+    // casting a private vote beside its transparent one is what links the two.
+    // Transparent, note and unknown modes stay out of the legacy path too.
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("auto", false));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("auto", true));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("note", false));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("note", true));
     BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("transparent", false));
     BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("transparent", true));
     BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("unknown", false));

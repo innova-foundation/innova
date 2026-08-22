@@ -146,6 +146,37 @@ bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
 bool FinalityVoteModeAllowsPrivateNote(const std::string& strVoteMode,
                                        bool fIsMofN);
 
+/** Finality-vote emission lanes. A node emits in exactly one lane: emitting in both
+ *  would link its identity-lane key to its anonymous tags. */
+enum FinalityVoteLane
+{
+    FINALITY_VOTE_LANE_NONE = 0,
+    FINALITY_VOTE_LANE_IDENTITY = 1,
+    FINALITY_VOTE_LANE_ANONYMOUS = 2
+};
+
+/** The lane a vote mode selects.  Every accepted mode selects exactly one, and
+ * an unrecognised mode selects the identity lane, which is what the default does. */
+FinalityVoteLane GetFinalityVoteLaneForMode(const std::string& strVoteMode);
+
+/** The lane -finalityvotemode puts this node in. */
+FinalityVoteLane GetConfiguredFinalityVoteLane();
+
+/** True when lane is this node's configured lane and no other lane has emitted. */
+bool FinalityVoteEmissionLaneAllows(FinalityVoteLane lane);
+
+/** Latch the lane an emission is about to use.  False means do not emit: either
+ * the lane is not the configured one, or the other lane has already emitted and
+ * emitting now would correlate the two. */
+bool RecordFinalityVoteEmission(FinalityVoteLane lane, int nEpoch);
+
+/** The lane this node has emitted in, and the epoch it first did. */
+FinalityVoteLane GetEmittedFinalityVoteLane();
+int GetEmittedFinalityVoteEpoch();
+
+/** Clear the latch.  Tests only; a node never changes lane while it runs. */
+void ResetFinalityVoteEmissionLane();
+
 static const int FINALITY_MAX_BLOCK_VOTES = 32;      // per-block vote inclusion cap
 static const int FINALITY_MAX_TALLY_COMMITTEE = 64;  // bounded m-of-n committee descriptor
 static const unsigned char FINALITY_VOTE_TAG[4] = { 0x49, 0x46, 0x56, 0x54 }; // "IFVT"

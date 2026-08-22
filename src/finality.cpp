@@ -9763,7 +9763,7 @@ void ThreadFinalityVoter(void* parg)
 static std::string GetFinalityVoteModeArg()
 {
     std::string strMode = ToLowerASCII(GetArg("-finalityvotemode", "auto"));
-    if (strMode != "auto" && strMode != "transparent" &&
+    if (strMode != "auto" && strMode != "transparent" && strMode != "note" &&
         strMode != "nullstake" && strMode != "nullstakecold")
     {
         printf("WARNING: Unknown -finalityvotemode '%s', using auto\n", strMode.c_str());
@@ -9772,11 +9772,86 @@ static std::string GetFinalityVoteModeArg()
     return strMode;
 }
 
+FinalityVoteLane GetFinalityVoteLaneForMode(const std::string& strVoteMode)
+{
+    if (strVoteMode == "note" || strVoteMode == "nullstake" ||
+        strVoteMode == "nullstakecold")
+        return FINALITY_VOTE_LANE_ANONYMOUS;
+    // auto takes the identity lane: the tally counts only transparent voters, so an anonymous
+    // default would stop HARD finality. The anonymous lane is opt-in.
+    return FINALITY_VOTE_LANE_IDENTITY;
+}
+
+FinalityVoteLane GetConfiguredFinalityVoteLane()
+{
+    return GetFinalityVoteLaneForMode(GetFinalityVoteModeArg());
+}
+
+// The lane latch.  Configuration already pins one lane, so this only ever catches
+// a caller that reached an emission site it had no business reaching; it is here
+// because the cost of the leak is the whole anonymity of the note tier.
+static CCriticalSection cs_voteEmissionLane;
+static FinalityVoteLane g_emittedVoteLane = FINALITY_VOTE_LANE_NONE;
+static int g_nEmittedVoteLaneEpoch = -1;
+
+static bool VoteLaneAllowsLocked(FinalityVoteLane lane)
+{
+    if (lane == FINALITY_VOTE_LANE_NONE)
+        return false;
+    if (lane != GetConfiguredFinalityVoteLane())
+        return false;
+    return g_emittedVoteLane == FINALITY_VOTE_LANE_NONE || g_emittedVoteLane == lane;
+}
+
+bool FinalityVoteEmissionLaneAllows(FinalityVoteLane lane)
+{
+    LOCK(cs_voteEmissionLane);
+    return VoteLaneAllowsLocked(lane);
+}
+
+bool RecordFinalityVoteEmission(FinalityVoteLane lane, int nEpoch)
+{
+    LOCK(cs_voteEmissionLane);
+    if (!VoteLaneAllowsLocked(lane))
+    {
+        printf("FINALITY vote emission refused: lane=%d epoch=%d configured=%d "
+               "already-emitted=%d\n", (int)lane, nEpoch,
+               (int)GetConfiguredFinalityVoteLane(), (int)g_emittedVoteLane);
+        return false;
+    }
+    if (g_emittedVoteLane == FINALITY_VOTE_LANE_NONE)
+    {
+        g_emittedVoteLane = lane;
+        g_nEmittedVoteLaneEpoch = nEpoch;
+        printf("FINALITY vote lane latched: lane=%s epoch=%d\n",
+               lane == FINALITY_VOTE_LANE_ANONYMOUS ? "anonymous" : "identity",
+               nEpoch);
+    }
+    return true;
+}
+
+FinalityVoteLane GetEmittedFinalityVoteLane()
+{
+    LOCK(cs_voteEmissionLane);
+    return g_emittedVoteLane;
+}
+
+int GetEmittedFinalityVoteEpoch()
+{
+    LOCK(cs_voteEmissionLane);
+    return g_nEmittedVoteLaneEpoch;
+}
+
+void ResetFinalityVoteEmissionLane()
+{
+    LOCK(cs_voteEmissionLane);
+    g_emittedVoteLane = FINALITY_VOTE_LANE_NONE;
+    g_nEmittedVoteLaneEpoch = -1;
+}
+
 bool FinalityVoteModeAllowsPrivateNote(const std::string& strVoteMode,
                                        bool fIsMofN)
 {
-    if (strVoteMode == "auto")
-        return true;
     if (strVoteMode == "nullstake")
         return !fIsMofN;
     if (strVoteMode == "nullstakecold")
@@ -10171,9 +10246,13 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
 {
     if (!pwalletMain || !pEpochBlock)
         return false;
-    // The note vote is the private tier; an operator who asked for transparent only gets
-    // transparent only.
-    if (strVoteMode == "transparent")
+    // The note vote is the anonymous lane. A node whose configured lane is the identity
+    // one never casts it: the two emitted together from one node let any directly
+    // connected peer read the tag as the transparent voter's, whatever the tag algebra
+    // does. The latch is the second check, for a caller that got here anyway.
+    if (GetFinalityVoteLaneForMode(strVoteMode) != FINALITY_VOTE_LANE_ANONYMOUS)
+        return false;
+    if (!FinalityVoteEmissionLaneAllows(FINALITY_VOTE_LANE_ANONYMOUS))
         return false;
     // A note vote must target a proof-of-work epoch block, so proving against any other
     // kind only produces something every peer rejects.
@@ -10309,6 +10388,11 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
         return false;
     }
 
+    // Latch the lane before the note is spent on this epoch, so a refusal costs
+    // nothing.
+    if (!RecordFinalityVoteEmission(FINALITY_VOTE_LANE_ANONYMOUS, nCurrentEpoch))
+        return false;
+
     if (!g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError))
     {
         printf("ProduceNoteFinalityVote: epoch %d vote was refused locally: %s\n",
@@ -10368,20 +10452,18 @@ bool ProduceFinalityVote()
 
     std::string strVoteMode = GetFinalityVoteModeArg();
     CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
-    // Cold-start: a private (hidden-weight) vote cannot bootstrap finality because it
-    // must anchor to an ALREADY-finalized epoch root. So in auto mode, only begin
-    // casting private votes once finality has bootstrapped (finalized height > 0, which
-    // transparent votes establish). After that we cast BOTH a transparent vote (keeps
-    // finality advancing, using transparent coins) AND a private vote (drives the v3
-    // tally certificate, using shielded notes) -- different stake, no double-count.
-    bool fFinalityBootstrapped =
-        (g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nCurrentHeight)) > 0);
-    bool fAllowPrivate = !LegacyPrivateFinalityTrafficDisabledAtTip() &&
+    // One lane per node: an identity vote and a note vote from one node link the tag to the
+    // wallet. The tally counts identity votes only, so the anonymous lane relies on
+    // FINALITY_MIN_VOTERS identity voters elsewhere.
+    const FinalityVoteLane lane = GetFinalityVoteLaneForMode(strVoteMode);
+    bool fAllowPrivate = (lane == FINALITY_VOTE_LANE_ANONYMOUS) &&
+                           FinalityVoteEmissionLaneAllows(FINALITY_VOTE_LANE_ANONYMOUS) &&
+                           !LegacyPrivateFinalityTrafficDisabledAtTip() &&
                            ((strVoteMode == "nullstake") ||
-                            (strVoteMode == "nullstakecold") ||
-                            (strVoteMode == "auto" && fFinalityBootstrapped)) &&
+                            (strVoteMode == "nullstakecold")) &&
                            tallyConfig.CanRelayPrivateVotes();
-    bool fAllowTransparent = (strVoteMode == "auto" || strVoteMode == "transparent");
+    bool fAllowTransparent = (lane == FINALITY_VOTE_LANE_IDENTITY) &&
+                             FinalityVoteEmissionLaneAllows(FINALITY_VOTE_LANE_IDENTITY);
 
     struct CFinalityVoteCoinGroup
     {
@@ -10395,9 +10477,10 @@ bool ProduceFinalityVote()
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
 
-    // Both private tiers, in one place so every exit below casts them: the legacy
-    // nullstake vote where it is still allowed, and the IV5 note vote that replaces it.
-    // Each gates itself, so a node holding stake for only one of them casts only that.
+    // Both anonymous tiers in one place: the legacy nullstake vote where it is still
+    // allowed, and the IV5 note vote that replaces it. Each gates itself, so a node
+    // holding stake for only one of them casts only that. Reached from the single
+    // anonymous-lane exit below and nowhere else.
     PruneNoteVotesCast(nCurrentEpoch);
     auto castPrivateVotes = [&]() -> bool {
         bool fCast = fAllowPrivate && ProducePrivateNullStakeFinalityVote(
@@ -10409,10 +10492,8 @@ bool ProduceFinalityVote()
         return fCast;
     };
 
-    // Cast the FAST transparent vote FIRST so it lands within the epoch inclusion
-    // window [H_E, H_E+K) and keeps finality advancing; cast the slower private (FCMP)
-    // vote afterwards. The private vote's proof generation can otherwise push the
-    // transparent vote past the window on heavily-loaded nodes, stalling finalization.
+    // The one branch point between the lanes. Everything below this line is the
+    // identity lane and returns without touching the anonymous one.
     if (!fAllowTransparent)
         return castPrivateVotes();
 
@@ -10477,7 +10558,7 @@ bool ProduceFinalityVote()
     }
 
     if (!pBestGroup || pBestGroup->nWeight <= 0)
-        return castPrivateVotes();
+        return false;
 
     CHashWriter nullifierHash(SER_GETHASH, 0);
     CPubKey pubkey = pBestGroup->key.GetPubKey();
@@ -10501,10 +10582,15 @@ bool ProduceFinalityVote()
         vote.MarkCanonicalEnvelope();
 
     if (!vote.Sign(pBestGroup->key))
-        return castPrivateVotes();
+        return false;
+
+    // Latch the lane before the vote enters the tracker: an fvreq serves tracker
+    // votes, so a vote this node must not emit must not be recorded either.
+    if (!RecordFinalityVoteEmission(FINALITY_VOTE_LANE_IDENTITY, nCurrentEpoch))
+        return false;
 
     if (!g_finalityTracker.AddVote(vote))
-        return castPrivateVotes();
+        return false;
 
     printf("ProduceFinalityVote: epoch=%d height=%d weight=%s\n",
            nCurrentEpoch, nEpochHeight, FormatMoney(pBestGroup->nWeight).c_str());
@@ -10517,9 +10603,5 @@ bool ProduceFinalityVote()
         }
     }
 
-    // Transparent vote is in; now cast the private (hidden-weight) votes. Done last so
-    // their slower proofs can't delay the finality-advancing transparent vote past the
-    // inclusion window.
-    castPrivateVotes();
     return true;
 }
