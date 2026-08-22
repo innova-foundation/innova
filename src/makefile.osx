@@ -95,6 +95,12 @@ CFLAGS = $(OPT_FLAGS) -std=c99 $(WARN_FLAGS) $(HARDENING_FLAGS) $(DEBUGFLAGS) $(
 # C++ flags (for .cpp files)
 CXXFLAGS = $(OPT_FLAGS) -std=c++17 -stdlib=libc++ $(WARN_FLAGS) $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS)
 
+# Lock-order checking and the held-lock watchdog. Off by default: it serialises
+# every lock operation through one mutex.
+ifdef DEBUG_LOCKORDER
+    CXXFLAGS += -DDEBUG_LOCKORDER
+endif
+
 LDFLAGS = -stdlib=libc++ -pie $(LIBPATHS)
 
 # Native Tor support (disabled by default for OpenSSL 3)

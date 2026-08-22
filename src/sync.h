@@ -86,11 +86,15 @@ typedef AnnotatedMixin<boost::mutex> CWaitableCriticalSection;
 
 #ifdef DEBUG_LOCKORDER
 void EnterCritical(const char* pszName, const char* pszFile, int nLine, void* cs, bool fTry = false);
+// Marks the pending top-of-stack entry as taken. EnterCritical runs before the
+// blocking acquire, so an entry still unmarked is a thread waiting, not holding.
+void EnterCriticalAcquired();
 void LeaveCritical();
 std::string LocksHeld();
 void AssertLockHeldInternal(const char* pszName, const char* pszFile, int nLine, void *cs);
 #else
 void static inline EnterCritical(const char* pszName, const char* pszFile, int nLine, void* cs, bool fTry = false) {}
+void static inline EnterCriticalAcquired() {}
 void static inline LeaveCritical() {}
 void static inline AssertLockHeldInternal(const char* pszName, const char* pszFile, int nLine, void *cs) {}
 #endif
@@ -119,6 +123,7 @@ private:
 #ifdef DEBUG_LOCKCONTENTION
         }
 #endif
+        EnterCriticalAcquired();
     }
 
     bool TryEnter(const char* pszName, const char* pszFile, int nLine)
@@ -127,6 +132,8 @@ private:
         lock.try_lock();
         if (!lock.owns_lock())
             LeaveCritical();
+        else
+            EnterCriticalAcquired();
         return lock.owns_lock();
     }
 
@@ -161,6 +168,7 @@ typedef CMutexLock<CCriticalSection> CCriticalBlock;
     { \
         EnterCritical(#cs, __FILE__, __LINE__, (void*)(&cs)); \
         (cs).lock(); \
+        EnterCriticalAcquired(); \
     }
 
 #define LEAVE_CRITICAL_SECTION(cs) \

@@ -180,6 +180,12 @@ ifdef SANITIZE
     xLDFLAGS += -fsanitize=$(SANITIZE)
 endif
 
+# Lock-order checking and the held-lock watchdog. Off by default: it serialises
+# every lock operation through one mutex.
+ifdef DEBUG_LOCKORDER
+    xCXXFLAGS += -DDEBUG_LOCKORDER
+endif
+
 ifeq (${USE_NATIVETOR}, 1)
 OBJS= \
 	obj/address.o \
