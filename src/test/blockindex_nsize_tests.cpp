@@ -574,9 +574,25 @@ struct ChainStateGuard
     uint256 nBestChainTrustSaved;
     uint256 nBestInvalidTrustSaved;
     int nBestHeightSaved;
-    std::string strCheckLevelSaved;
-    std::string strCheckBlocksSaved;
+    std::map<std::string, std::string> mapArgsSaved;
     std::vector<uint256> vEraseOnExit;
+
+    // GetArg keys off presence, so a restore has to remove a key that was not
+    // there rather than leave it set to the empty string.
+    void SetArg(const char* pszKey, const char* pszValue)
+    {
+        if (mapArgs.count(pszKey))
+            mapArgsSaved[pszKey] = mapArgs[pszKey];
+        mapArgs[pszKey] = pszValue;
+    }
+
+    void RestoreArg(const char* pszKey)
+    {
+        if (mapArgsSaved.count(pszKey))
+            mapArgs[pszKey] = mapArgsSaved[pszKey];
+        else
+            mapArgs.erase(pszKey);
+    }
 
     ChainStateGuard()
     {
@@ -587,11 +603,9 @@ struct ChainStateGuard
         nBestChainTrustSaved = nBestChainTrust;
         nBestInvalidTrustSaved = nBestInvalidTrust;
         nBestHeightSaved = nBestHeight;
-        strCheckLevelSaved = mapArgs["-checklevel"];
-        strCheckBlocksSaved = mapArgs["-checkblocks"];
         // The re-verification pass is not what is under test here.
-        mapArgs["-checklevel"] = "0";
-        mapArgs["-checkblocks"] = "1";
+        SetArg("-checklevel", "0");
+        SetArg("-checkblocks", "1");
         mapSaved.swap(mapBlockIndex);
     }
 
@@ -609,8 +623,8 @@ struct ChainStateGuard
         nBestChainTrust = nBestChainTrustSaved;
         nBestInvalidTrust = nBestInvalidTrustSaved;
         nBestHeight = nBestHeightSaved;
-        mapArgs["-checklevel"] = strCheckLevelSaved;
-        mapArgs["-checkblocks"] = strCheckBlocksSaved;
+        RestoreArg("-checklevel");
+        RestoreArg("-checkblocks");
 
         CBlockIndexRecordDB txdb;
         for (size_t i = 0; i < vEraseOnExit.size(); i++)
