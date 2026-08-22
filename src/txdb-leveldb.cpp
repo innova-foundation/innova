@@ -3646,22 +3646,7 @@ bool CTxDB::LoadBlockIndex()
         CBlockIndex* pindexNew    = InsertBlockIndex(blockHash);
         pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
         pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
-        pindexNew->nFile          = diskindex.nFile;
-        pindexNew->nBlockPos      = diskindex.nBlockPos;
-        pindexNew->nHeight        = diskindex.nHeight;
-        pindexNew->nMint          = diskindex.nMint;
-        pindexNew->nMoneySupply   = diskindex.nMoneySupply;
-        pindexNew->nFlags         = diskindex.nFlags;
-        pindexNew->nStakeModifier = diskindex.nStakeModifier;
-        pindexNew->prevoutStake   = diskindex.prevoutStake;
-        pindexNew->nStakeTime     = diskindex.nStakeTime;
-        pindexNew->hashProof      = diskindex.hashProof;
-        pindexNew->nVersion       = diskindex.nVersion;
-        pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-        pindexNew->nTime          = diskindex.nTime;
-        pindexNew->nBits          = diskindex.nBits;
-        pindexNew->nNonce         = diskindex.nNonce;
-        // nSize populated later during chain trust calculation pass (not serialized for backward compat)
+        ApplyDiskBlockIndexFields(diskindex, pindexNew);
 
         // Watch for genesis block
         if (pindexGenesisBlock == NULL && blockHash == GetGenesisBlockHash())
@@ -3682,6 +3667,41 @@ bool CTxDB::LoadBlockIndex()
 
     if (fRequestShutdown)
         return true;
+
+    // Restore nSize for records predating the field; it is consensus (adaptive size limit,
+    // coinbase size penalty). Only entries a size window reaches, written back once.
+    {
+        const int nFloor = GetBlockIndexSizeBackfillFloor();
+        std::vector<CBlockIndex*> vNeedSize;
+        for (const PAIRTYPE(uint256, CBlockIndex*)& item : mapBlockIndex)
+        {
+            CBlockIndex* pindex = item.second;
+            if (BlockIndexNeedsSizeRestore(pindex, nFloor))
+                vNeedSize.push_back(pindex);
+        }
+        int nRestored = 0;
+        std::string strSizeError;
+        if (!BackfillBlockIndexSizes(vNeedSize, nRestored, strSizeError))
+            return error("CTxDB::LoadBlockIndex() : FATAL -- block size restore failed: %s. "
+                         "Recover with -reindex/resync.", strSizeError.c_str());
+        if (nRestored > 0 && !fReadOnly)
+        {
+            if (!TxnBegin())
+                return error("CTxDB::LoadBlockIndex() : could not begin block size restore write");
+            bool fWritesOK = true;
+            for (std::vector<CBlockIndex*>::const_iterator it = vNeedSize.begin();
+                 fWritesOK && it != vNeedSize.end(); ++it)
+                if ((*it)->nSize > 0)
+                    fWritesOK = WriteBlockIndex(CDiskBlockIndex(*it));
+            if (!fWritesOK || !TxnCommit(true))
+            {
+                TxnAbort();
+                return error("CTxDB::LoadBlockIndex() : could not persist restored block sizes");
+            }
+        }
+        if (nRestored > 0)
+            printf("LoadBlockIndex(): restored serialized size for %d block indexes\n", nRestored);
+    }
 
     // Calculate nChainTrust
     vector<pair<int, CBlockIndex*> > vSortedByHeight;

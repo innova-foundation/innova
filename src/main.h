@@ -77,7 +77,13 @@ static const unsigned int ADAPTIVE_BLOCK_CEILING = 8000000;       // 8 MB absolu
 static const unsigned int ADAPTIVE_BLOCK_FLOOR = 300000;          // 300 KB penalty-free zone
 static const unsigned int ADAPTIVE_MEDIAN_WINDOW = 1000;          // 1000-block short-term median (~17 min at 1s)
 static const unsigned int ADAPTIVE_LONG_MEDIAN_WINDOW = 100000;   // 100K-block long-term anchor (~28h at 1s)
+// The long-term walk has always been clamped to 50,000 samples. It is a named
+// constant because the backfill depth below is derived from it: widening the
+// clamp widens the consensus window and must widen the backfill together.
+static const unsigned int ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW = 50000;
 static const unsigned int ADAPTIVE_LONG_MEDIAN_CAP = 50;          // short-term median <= 50x long-term median
+static_assert(ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW <= ADAPTIVE_LONG_MEDIAN_WINDOW,
+              "effective long-median window must stay within the declared window");
 
 // Effective block size: pre-DAG uses legacy, post-DAG uses adaptive
 inline unsigned int GetMaxBlockSize(int nHeight)
@@ -2215,8 +2221,15 @@ public:
         if (!fileout)
             return error("CBlock::WriteToDisk() : AppendBlockFile failed");
 
-        // Write index header
+        // Write index header. This prefix is the only on-disk record of the
+        // block's serialized size and is what CBlockIndex::nSize is restored
+        // from, so it must equal the SER_NETWORK measure the index constructor
+        // and both adaptive-size consumers use. Refuse to store a block whose
+        // two encodings disagree rather than let restarted and freshly-synced
+        // nodes read different sizes for it.
         unsigned int nSize = fileout.GetSerializeSize(*this);
+        if (nSize != ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION))
+            return error("CBlock::WriteToDisk() : disk and network serialized sizes disagree");
         fileout << FLATDATA(pchMessageStart) << nSize;
 
         // Write block
@@ -2650,8 +2663,14 @@ public:
         READWRITE(nBits);
         READWRITE(nNonce);
         READWRITE(blockHash);
-        // nSize is NOT serialized here for backward compatibility with existing DB.
-        // It is populated during LoadBlockIndex from the block data on disk.
+        // nSize is an optional trailing field; an older record ends at blockHash and
+        // reads nSize = 0, which CTxDB::LoadBlockIndex backfills from the block file.
+        if (!fRead)
+            READWRITE(nSize);
+        else if (SerBytesRemaining(s) >= sizeof(nSize))
+            READWRITE(nSize);
+        else
+            const_cast<CDiskBlockIndex*>(this)->nSize = 0;
     )
 
     uint256 GetBlockHash() const
@@ -2689,12 +2708,44 @@ public:
     }
 };
 
+/** Copy the persisted fields of a block-index record onto an in-memory index.
+ *  pprev/pnext are resolved by the caller. */
+inline void ApplyDiskBlockIndexFields(const CDiskBlockIndex& diskindex, CBlockIndex* pindexNew)
+{
+    pindexNew->nFile          = diskindex.nFile;
+    pindexNew->nBlockPos      = diskindex.nBlockPos;
+    pindexNew->nHeight        = diskindex.nHeight;
+    pindexNew->nMint          = diskindex.nMint;
+    pindexNew->nMoneySupply   = diskindex.nMoneySupply;
+    pindexNew->nFlags         = diskindex.nFlags;
+    pindexNew->nStakeModifier = diskindex.nStakeModifier;
+    pindexNew->prevoutStake   = diskindex.prevoutStake;
+    pindexNew->nStakeTime     = diskindex.nStakeTime;
+    pindexNew->hashProof      = diskindex.hashProof;
+    pindexNew->nVersion       = diskindex.nVersion;
+    pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
+    pindexNew->nTime          = diskindex.nTime;
+    pindexNew->nBits          = diskindex.nBits;
+    pindexNew->nNonce         = diskindex.nNonce;
+    pindexNew->nSize          = diskindex.nSize;
+}
 
+/** How far below FORK_HEIGHT_DAG an adaptive-block-size window can reach. */
+int GetBlockIndexSizeBackfillDepth();
 
+/** Lowest height whose nSize can still enter an adaptive-block-size window.
+ *  Both consumers refuse to run below FORK_HEIGHT_DAG, so no window can reach
+ *  deeper than this, at any reorg depth. */
+int GetBlockIndexSizeBackfillFloor();
 
+/** True for an index that is missing nSize and is shallow enough for an
+ *  adaptive-block-size window to reach it. */
+bool BlockIndexNeedsSizeRestore(const CBlockIndex* pindex, int nFloor);
 
-
-
+/** Restore nSize for indexes loaded without it, from the size prefix that
+ *  CBlock::WriteToDisk stores ahead of every block. */
+bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
+                             int& nRestoredOut, std::string& strError);
 
 /** Describes a place in the block chain to another node such that if the
  * other node doesn't have the same branch, it can find a recent common trunk.

@@ -1042,6 +1042,12 @@ struct ser_streamplaceholder
     int nVersion;
 };
 
+/** Bytes a read stream still holds, for optional trailing fields. The
+ *  size-computing pass runs against a placeholder that carries no data. */
+template<typename Stream>
+inline size_t SerBytesRemaining(const Stream& s) { return s.size(); }
+inline size_t SerBytesRemaining(const ser_streamplaceholder&) { return 0; }
+
 
 
 
