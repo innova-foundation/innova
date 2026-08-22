@@ -831,9 +831,13 @@ write_config() {
         # every wallet is being funded.
         echo "staking=0"
         echo "nofinalityvoting=0"
-        # A note vote is the private tier: "transparent" makes the producer return
-        # before it is attempted at all.
-        echo "finalityvotemode=auto"
+        # One lane per node: emitting both vote kinds links the tag to the wallet. node0
+        # (the only note holder) takes the note lane; the two peers meet FINALITY_MIN_VOTERS.
+        if [ "$node" -eq 0 ]; then
+            echo "finalityvotemode=note"
+        else
+            echo "finalityvotemode=transparent"
+        fi
         echo "regtestboundaryb=$BOUNDARY_B"
         echo "regtestiv5rehearsal=1"
         echo "regtestiv5notevote=$NOTE_VOTE_HEIGHT"
@@ -1214,14 +1218,14 @@ fi
 header "3. Three distinct wallets hold votable transparent stake"
 # ============================================================
 
-# Negative control first: only node0 holds stake at the epoch-1 boundary, so its
-# vote connects but the epoch stays below FINALITY_MIN_VOTERS.
+# Negative control: peers hold no stake at the epoch-1 boundary and node0 is in
+# the anonymous lane, so epoch 1 has no transparent vote.
 vote_round 11 || { fail "epoch 1 vote round failed"; exit 1; }
 E1_VOTES="$(votes_in_range 0 11 14)"
-if [ "$E1_VOTES" = "1" ]; then
-    success "epoch 1 carried exactly one connected finality vote"
+if [ "$E1_VOTES" = "0" ]; then
+    success "epoch 1 carried no transparent finality vote: no peer holds stake yet and node0 is note-only"
 else
-    fail "epoch 1 carried $E1_VOTES finality votes, expected 1"
+    fail "epoch 1 carried $E1_VOTES finality votes, expected 0"
 fi
 
 mine_to 0 "$FUND_HEIGHT" || { fail "mining to the funding height failed"; exit 1; }
@@ -2241,6 +2245,68 @@ if [ "$RECEIVED_OK" -eq 1 ]; then
     success "both peers received the note vote over relay and none rejected it"
 else
     fail "the note vote did not reach both peers"
+fi
+
+
+# ------------------------------------------------------------
+# C6: no node originates both a named and an anonymous vote.
+#
+# A CFinalityVote names its voter -- pubkey, real staked outpoints, cleartext
+# weight and time -- and a CNoteFinalityVote carries only a per-epoch tag. The
+# two originated by one node put the name and the tag on the same connection,
+# and no tag construction undoes that. Origination is what this reads: relay
+# carries every object to every node, so the producer lines are the only place
+# the origin is visible.
+#   ProduceFinalityVote: epoch=      identity lane, one per epoch cast
+#   ProduceNoteFinalityVote: epoch=  anonymous lane, one per epoch cast
+# ------------------------------------------------------------
+LANE_OK=1
+LANE_TOTAL_ANON=0
+LANE_TOTAL_IDENT=0
+for ((n=0; n<NUM_NODES; n++)); do
+    L="$(node_log "$n")"
+    N_IDENT="$(grep -cF "ProduceFinalityVote: epoch=" "$L" 2>/dev/null)"
+    N_ANON="$(grep -cF "ProduceNoteFinalityVote: epoch=" "$L" 2>/dev/null)"
+    is_int "${N_IDENT:-x}" || N_IDENT=0
+    is_int "${N_ANON:-x}" || N_ANON=0
+    N_LANE="$(grep -oE "FINALITY vote lane latched: lane=[a-z]+" "$L" 2>/dev/null | \
+              sed -n 's/.*lane=//p' | sort -u | tr '\n' ' ' | tr -d '[:space:]')"
+    LANE_TOTAL_IDENT=$((LANE_TOTAL_IDENT + N_IDENT))
+    LANE_TOTAL_ANON=$((LANE_TOTAL_ANON + N_ANON))
+    log "  node$n originated $N_IDENT identity vote(s), $N_ANON note vote(s), lane='$N_LANE'"
+
+    # The invariant, on every node: never both.
+    if [ "$N_IDENT" -gt 0 ] && [ "$N_ANON" -gt 0 ]; then
+        LANE_OK=0
+        fail "node$n originated BOTH an identity vote and a note vote: the tag is linkable to its wallet"
+    fi
+    # A node latches one lane for the life of the process, and only one.
+    case "$N_LANE" in
+        identity|anonymous|"") ;;
+        *) LANE_OK=0; fail "node$n latched more than one vote lane: '$N_LANE'" ;;
+    esac
+
+    if [ "$n" -eq 0 ]; then
+        [ "$N_IDENT" -eq 0 ] || { LANE_OK=0; fail "node0 is note-only but originated $N_IDENT transparent vote(s)"; }
+        [ "$N_ANON" -gt 0 ]  || { LANE_OK=0; fail "node0 originated no note vote"; }
+        [ "$N_LANE" = "anonymous" ] || { LANE_OK=0; fail "node0 latched lane '$N_LANE', expected anonymous"; }
+    else
+        [ "$N_ANON" -eq 0 ] || { LANE_OK=0; fail "node$n is transparent-only but originated $N_ANON note vote(s)"; }
+        [ "$N_IDENT" -gt 0 ] || { LANE_OK=0; fail "node$n originated no transparent vote"; }
+        [ "$N_LANE" = "identity" ] || { LANE_OK=0; fail "node$n latched lane '$N_LANE', expected identity"; }
+    fi
+done
+if [ "$LANE_OK" -eq 1 ]; then
+    success "no node originated both lanes ($LANE_TOTAL_IDENT identity, $LANE_TOTAL_ANON anonymous, split across nodes)"
+fi
+
+# Liveness: node0 contributes nothing to the tally, so the identity voters
+# alone must finalize.
+FIN_NOW="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" finalized_height)"
+if is_int "${FIN_NOW:-x}" && [ "${FIN_NOW:-0}" -ge "$FINALIZED_HEIGHT" ]; then
+    success "finality still advances with node0 silent on the identity lane (finalized_height=$FIN_NOW)"
+else
+    fail "finality stalled once node0 left the identity lane (finalized_height=$FIN_NOW, need >= $FINALIZED_HEIGHT)"
 fi
 
 CARRIED_TOTAL=0

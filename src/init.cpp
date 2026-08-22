@@ -573,7 +573,7 @@ std::string HelpMessage()
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -stakingmode=<mode>    " + _("Staking mode: transparent or cold; legacy nullstake/coldprivate are regtest-only pending privacy vNext (default: transparent)") + "\n" +
-        "  -finalityvotemode=<m>  " + _("Post-DAG finality voting mode: auto or transparent; legacy private modes are regtest-only pending privacy vNext (default: auto)") + "\n" +
+        "  -finalityvotemode=<m>  " + _("Post-DAG finality voting lane, one per node: transparent (identity vote, the only lane the deterministic tally counts) or note (anonymous note vote only, needs transparent voters elsewhere); auto selects transparent; legacy nullstake modes are regtest-only pending privacy vNext (default: auto)") + "\n" +
         "  -finalitytallymode=<m> " + _("Hidden finality tally mode: off, committee, auto (default: off)") + "\n" +
         "  -finalitytallypubkey=<key> " + _("Advertise a finality tally committee public key") + "\n" +
         "  -finalitytallyprivkey=<key> " + _("Enable local finality tally share handling with a private key") + "\n" +
@@ -1538,6 +1538,20 @@ bool AppInit2()
 
         LOCK(cs_stakingMode);
         nStakingMode = eRequestedStakingMode;
+    }
+
+    {
+        // One node, one lane: an identity vote and an anonymous note vote emitted from
+        // the same node link the tag to the wallet on any single connection.
+        if (GetConfiguredFinalityVoteLane() == FINALITY_VOTE_LANE_ANONYMOUS)
+            printf("Finality vote lane: anonymous. This node casts no transparent finality "
+                   "vote, and the deterministic tally counts transparent voters only, so "
+                   "HARD finality needs at least %d of them elsewhere on the network.\n",
+                   FINALITY_MIN_VOTERS);
+        else
+            printf("Finality vote lane: identity (transparent). Anonymous note voting is "
+                   "never implicit: it needs -finalityvotemode=note on a node that casts "
+                   "no transparent vote.\n");
     }
 
     {
