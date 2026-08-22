@@ -1136,6 +1136,8 @@ uint256 WantedByOrphan(const CBlock* pblockOrphan);
 const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfStake);
 void StakeMiner(CWallet *pwallet);
 void ResendWalletTransactions(bool fForce = false);
+/** Per-loop node-global relay work; must run with no peer's cs_vSend held. */
+void SendMessagesGlobal();
 
 bool Finalise();
 /** Persist the deferred wallet best-block locator, if one is pending. */
