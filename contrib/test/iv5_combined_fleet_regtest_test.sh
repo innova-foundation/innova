@@ -246,6 +246,10 @@ RESULTS_PRINTED=0
 print_results() {
     RESULTS_PRINTED=1
     header "Results"
+    if [ -f "$TEST_DIR/rpc_timeouts" ]; then
+        echo -e "${RED}RPC timeouts: $(rpc_timeout_count)${NC}"
+        sed 's/^/  - /' "$TEST_DIR/rpc_timeouts"
+    fi
     echo -e "${GREEN}Passed: $PASSED${NC}"
     echo -e "${RED}Failed: $FAILED${NC}"
     echo -e "${YELLOW}Warnings: $WARNED${NC}"
@@ -263,10 +267,69 @@ node_rpc()  { echo $((BASE_RPC + $1)); }
 node_idns() { echo $((BASE_IDNS + $1)); }
 node_log()  { echo "$TEST_DIR/node$1/regtest/debug.log"; }
 
+# Every RPC is bounded. On the first timeout, capture the wedged daemon's state
+# before anything is killed.
+RPC_TIMEOUT="${IV5_COMBINED_RPC_TIMEOUT:-180}"
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
+
+# Set by the run, read back from a file: rpc() is nearly always called in a
+# subshell, so a shell variable would not survive.
+rpc_timeout_count() { [ -f "$TEST_DIR/rpc_timeouts" ] && wc -l < "$TEST_DIR/rpc_timeouts" || echo 0; }
+
+# Wait channel per thread plus the tail of the log, for every node still alive.
+capture_wedge() {
+    local why="$1" n p dir out
+    out="$TEST_DIR/wedge_evidence.txt"
+    {
+        echo "=== wedge: $why at $(date -u '+%Y-%m-%d %H:%M:%SZ') ==="
+        for n in 0 1 2 3 "$NEG_NODE"; do
+            for p in $(node_pids "$n"); do
+                echo "--- node$n pid $p threads ---"
+                for t in /proc/"$p"/task/*; do
+                    [ -d "$t" ] || continue
+                    echo "  tid=$(basename "$t") name=$(cat "$t/comm" 2>/dev/null) wchan=$(cat "$t/wchan" 2>/dev/null)"
+                done
+            done
+            dir="$(node_log "$n")"
+            [ -f "$dir" ] && { echo "--- node$n debug.log tail ---"; tail -400 "$dir"; }
+        done
+    } >> "$out" 2>&1
+}
+
 rpc() {
     local node="$1"; shift
-    "$INNOVAD" -datadir="$(node_dir "$node")" -regtest -rpcuser="$RPCUSER" \
-        -rpcpassword="$RPCPASS" -rpcport="$(node_rpc "$node")" "$@" 2>&1
+    local out rc
+    if [ -z "$TIMEOUT_BIN" ]; then
+        "$INNOVAD" -datadir="$(node_dir "$node")" -regtest -rpcuser="$RPCUSER" \
+            -rpcpassword="$RPCPASS" -rpcport="$(node_rpc "$node")" "$@" 2>&1
+        return $?
+    fi
+    out="$("$TIMEOUT_BIN" -k 5 "$RPC_TIMEOUT" \
+        "$INNOVAD" -datadir="$(node_dir "$node")" -regtest -rpcuser="$RPCUSER" \
+        -rpcpassword="$RPCPASS" -rpcport="$(node_rpc "$node")" "$@" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        echo "node$node $* (${RPC_TIMEOUT}s)" >> "$TEST_DIR/rpc_timeouts"
+        echo -e "${RED}[RPC-TIMEOUT]${NC} node$node $* did not answer in ${RPC_TIMEOUT}s" >&2
+        if [ ! -f "$TEST_DIR/wedge_evidence.txt" ]; then
+            capture_wedge "node$node $*"
+            echo -e "${RED}[RPC-TIMEOUT]${NC} wedge evidence written to $TEST_DIR/wedge_evidence.txt" >&2
+        fi
+        echo "RPC-TIMEOUT"
+        return "$rc"
+    fi
+    printf '%s\n' "$out"
+    return "$rc"
+}
+
+# A daemon that stops answering is the defect, not a slow run: stop here rather
+# than spending the remaining stall budget polling a wedged node.
+abort_if_wedged() {
+    [ -f "$TEST_DIR/rpc_timeouts" ] || return 0
+    fail "a node stopped answering RPC ($(rpc_timeout_count) timed-out call(s)); evidence in $TEST_DIR/wedge_evidence.txt"
+    exit 1
 }
 
 is_int() { echo "$1" | grep -qE '^-?[0-9]+$'; }
@@ -439,6 +502,7 @@ wait_peers() {
 wait_sync() {
     local target="$1" max="${2:-900}" n h
     for ((i=0; i<max; i++)); do
+        abort_if_wedged
         local ok=1
         for ((n=0; n<NUM_NODES; n++)); do
             h="$(height "$n")"
@@ -460,6 +524,7 @@ mine_chunk() {
     last="$h"
     rpc "$node" setgenerate true $((target - h)) "$MINE_THREADS_NOW" >/dev/null 2>&1
     for ((i=0; i<3000; i++)); do
+        abort_if_wedged
         h="$(height "$node")"
         if is_int "$h" && [ "$h" -ge "$target" ]; then
             rpc "$node" setgenerate false 0 >/dev/null 2>&1
@@ -799,6 +864,9 @@ write_config() {
 
 cleanup() {
     local n
+    # Teardown talks to nodes that may already be wedged; the run's budget is for
+    # the run, not for five stop calls that will not be answered.
+    RPC_TIMEOUT=20
     for n in 0 1 2 3 "$NEG_NODE"; do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
     for n in 0 1 2 3 "$NEG_NODE"; do rpc "$n" stop >/dev/null 2>&1 || true; done
     for n in 0 1 2 3 "$NEG_NODE"; do
