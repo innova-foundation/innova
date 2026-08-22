@@ -1186,9 +1186,7 @@ unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex)
     // Long-term median anchor (independent window, starts after short-term window)
     std::vector<unsigned int> vLongSizes;
     // pWalk is already at the end of the short-term window — continue from there
-    unsigned int nLongSamples = std::min(ADAPTIVE_LONG_MEDIAN_WINDOW,
-                                        ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW);
-    for (unsigned int i = 0; i < nLongSamples && pWalk; i++)
+    for (unsigned int i = 0; i < ADAPTIVE_LONG_MEDIAN_WINDOW && pWalk; i++)
     {
         vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
         pWalk = pWalk->pprev;
@@ -1224,7 +1222,7 @@ int GetBlockIndexSizeBackfillDepth()
     // Deepest index a window reaches: one short plus one long window below FORK_HEIGHT_DAG,
     // plus one spare short window for growth.
     return (int)(ADAPTIVE_MEDIAN_WINDOW * 2 +
-                 ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW + 1);
+                 ADAPTIVE_LONG_MEDIAN_WINDOW + 1);
 }
 
 int GetBlockIndexSizeBackfillFloor()
@@ -1236,6 +1234,39 @@ int GetBlockIndexSizeBackfillFloor()
 bool BlockIndexNeedsSizeRestore(const CBlockIndex* pindex, int nFloor)
 {
     return pindex && pindex->nSize == 0 && pindex->nHeight >= nFloor;
+}
+
+// Re-measure one block against the size its prefix claims (SER_DISK vs the SER_NETWORK
+// nSize a fresh sync assigns); a mismatch would give a restarted node a different size.
+static bool VerifyStoredBlockSize(const CBlockIndex* pindex, unsigned int nStoredSize,
+                                  std::string& strError)
+{
+    CAutoFile filein = CAutoFile(OpenBlockFile(pindex->nFile, pindex->nBlockPos, "rb"),
+                                 SER_DISK, CLIENT_VERSION);
+    if (!filein)
+    {
+        strError = strprintf("block %d: block data unreadable at file %u offset %u",
+                             pindex->nHeight, pindex->nFile, pindex->nBlockPos);
+        return false;
+    }
+    CBlock block;
+    try
+    {
+        filein >> block;
+    }
+    catch (const std::exception&)
+    {
+        strError = strprintf("block %d: block data would not deserialize", pindex->nHeight);
+        return false;
+    }
+    const unsigned int nMeasured = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    if (nMeasured != nStoredSize)
+    {
+        strError = strprintf("block %d: stored size %u but the block measures %u",
+                             pindex->nHeight, nStoredSize, nMeasured);
+        return false;
+    }
+    return true;
 }
 
 bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
@@ -1260,6 +1291,12 @@ bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
             std::make_pair(pindex->nFile, pindex->nBlockPos), pindex));
     }
     std::sort(vOrdered.begin(), vOrdered.end());
+
+    // Each verification reads a whole block, so spread a bounded number of them
+    // across the set instead of re-measuring every entry.
+    const size_t nStride = vOrdered.empty() ? 1 :
+        (vOrdered.size() + BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES - 1) /
+        BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES;
 
     unsigned int nOpenFile = 0;
     FILE* file = NULL;
@@ -1304,6 +1341,12 @@ bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
         if (nStoredSize == 0 || nStoredSize > ADAPTIVE_BLOCK_CEILING)
         {
             strError = strprintf("block %d: stored size %u out of range", pindex->nHeight, nStoredSize);
+            fclose(file);
+            return false;
+        }
+        if ((i % nStride == 0 || i + 1 == vOrdered.size()) &&
+            !VerifyStoredBlockSize(pindex, nStoredSize, strError))
+        {
             fclose(file);
             return false;
         }

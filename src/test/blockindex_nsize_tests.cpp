@@ -6,9 +6,12 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include "checkpoints.h"
 #include "main.h"
+#include "txdb.h"
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -71,12 +74,14 @@ struct WrittenChain
     std::vector<unsigned int> vFile;
     std::vector<unsigned int> vPos;
 
-    WrittenChain()
+    explicit WrittenChain(unsigned int nSeedBase = 1000)
     {
         vHashes.reserve(CHAIN_LEN);
         for (int i = 0; i < CHAIN_LEN; i++)
         {
-            CBlock block = MakeSizedBlock(TargetSizeAt(i), 1000 + i);
+            CBlock block = MakeSizedBlock(TargetSizeAt(i), nSeedBase + i);
+            // A fixed-width field, so linking the chain does not resize it.
+            block.hashPrevBlock = vHashes.empty() ? 0 : vHashes.back();
             unsigned int nFile = 0;
             unsigned int nPos = 0;
             BOOST_REQUIRE(block.WriteToDisk(nFile, nPos));
@@ -90,6 +95,8 @@ struct WrittenChain
             pindex->phashBlock = &vHashes.back();
             vIndex.push_back(pindex);
         }
+        for (size_t i = 0; i + 1 < vIndex.size(); i++)
+            vIndex[i]->pnext = vIndex[i + 1];
     }
 
     ~WrittenChain()
@@ -478,17 +485,257 @@ BOOST_AUTO_TEST_CASE(restore_depth_covers_every_adaptive_window)
     // ApplyBlockSizePenalty evaluates the parent, so the reach is one block
     // deeper than the two windows themselves.
     const int nNeeded = (int)ADAPTIVE_MEDIAN_WINDOW
-                      + (int)ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW + 1;
+                      + (int)ADAPTIVE_LONG_MEDIAN_WINDOW + 1;
     BOOST_CHECK_GE(GetBlockIndexSizeBackfillDepth(), nNeeded);
 
     const int nFloor = GetBlockIndexSizeBackfillFloor();
     BOOST_CHECK(nFloor >= 0);
     BOOST_CHECK_EQUAL(nFloor,
                       std::max(0, FORK_HEIGHT_DAG - GetBlockIndexSizeBackfillDepth()));
-    // The clamp the depth is derived from must not silently widen.
-    BOOST_CHECK_EQUAL(std::min(ADAPTIVE_LONG_MEDIAN_WINDOW,
-                               ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW),
-                      ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW);
+}
+
+// Pins the window constants and the depth derived from them.
+BOOST_AUTO_TEST_CASE(adaptive_window_constants_are_pinned)
+{
+    BOOST_CHECK_EQUAL(ADAPTIVE_MEDIAN_WINDOW, 1000u);
+    BOOST_CHECK_EQUAL(ADAPTIVE_LONG_MEDIAN_WINDOW, 50000u);
+    BOOST_CHECK_EQUAL(GetBlockIndexSizeBackfillDepth(), 52001);
+}
+
+// Pins the short-term window's sample count behaviourally. The long-term width
+// is not observable: FLOOR * LONG_MEDIAN_CAP exceeds the ceiling, so its cap never binds.
+BOOST_AUTO_TEST_CASE(short_median_window_takes_exactly_its_sample_count)
+{
+    const unsigned int nSmall = 350000;
+    const unsigned int nLarge = 450000;
+    const size_t nCount = ADAPTIVE_MEDIAN_WINDOW + 1;
+
+    std::vector<CBlockIndex> vChain(nCount);
+    for (size_t i = 0; i < nCount; i++)
+    {
+        // Index 0 is the tip. The window is [0, ADAPTIVE_MEDIAN_WINDOW), split
+        // evenly between the two sizes; the one entry past it is small.
+        vChain[i].nHeight = (int)(FORK_HEIGHT_DAG + nCount - 1 - i);
+        vChain[i].nSize = (i >= ADAPTIVE_MEDIAN_WINDOW || i % 2 == 0) ? nSmall : nLarge;
+        vChain[i].pprev = (i + 1 < nCount) ? &vChain[i + 1] : NULL;
+    }
+
+    // 1000 samples sort to 500 small then 500 large and the median is large.
+    // One more sample makes it 501 small and the median flips to small.
+    BOOST_CHECK_EQUAL(GetAdaptiveBlockSizeLimit(&vChain[0]), 2 * nLarge);
+    BOOST_CHECK(2 * nSmall != 2 * nLarge);
+}
+
+namespace {
+
+// Reads and writes raw block-index records the way CTxDB::LoadBlockIndex sees
+// them, so a record can be stored in the pre-nSize format.
+class CBlockIndexRecordDB : public CTxDB
+{
+public:
+    CBlockIndexRecordDB() : CTxDB("r+") {}
+
+    bool WriteRaw(const uint256& hash, const std::string& strValue)
+    {
+        CDataStream ss(strValue.data(), strValue.data() + strValue.size(),
+                       SER_DISK, CLIENT_VERSION);
+        return Write(std::make_pair(std::string("blockindex"), hash), ss);
+    }
+
+    bool ReadRecord(const uint256& hash, CDiskBlockIndex& diskindex)
+    {
+        return Read(std::make_pair(std::string("blockindex"), hash), diskindex);
+    }
+};
+
+// LoadBlockIndex refuses a populated map: swap in an empty one and restore afterwards.
+// std::map::swap moves nodes, so saved phashBlock pointers stay valid.
+struct ChainStateGuard
+{
+    std::map<uint256, CBlockIndex*> mapSaved;
+    CBlockIndex* pindexGenesisSaved;
+    CBlockIndex* pindexBestSaved;
+    uint256 hashBestChainSaved;
+    uint256 hashSyncCheckpointSaved;
+    uint256 nBestChainTrustSaved;
+    uint256 nBestInvalidTrustSaved;
+    int nBestHeightSaved;
+    std::string strCheckLevelSaved;
+    std::string strCheckBlocksSaved;
+    std::vector<uint256> vEraseOnExit;
+
+    ChainStateGuard()
+    {
+        pindexGenesisSaved = pindexGenesisBlock;
+        pindexBestSaved = pindexBest;
+        hashBestChainSaved = hashBestChain;
+        hashSyncCheckpointSaved = Checkpoints::hashSyncCheckpoint;
+        nBestChainTrustSaved = nBestChainTrust;
+        nBestInvalidTrustSaved = nBestInvalidTrust;
+        nBestHeightSaved = nBestHeight;
+        strCheckLevelSaved = mapArgs["-checklevel"];
+        strCheckBlocksSaved = mapArgs["-checkblocks"];
+        // The re-verification pass is not what is under test here.
+        mapArgs["-checklevel"] = "0";
+        mapArgs["-checkblocks"] = "1";
+        mapSaved.swap(mapBlockIndex);
+    }
+
+    ~ChainStateGuard()
+    {
+        for (std::map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.begin();
+             it != mapBlockIndex.end(); ++it)
+            delete it->second;
+        mapBlockIndex.clear();
+        mapBlockIndex.swap(mapSaved);
+        pindexGenesisBlock = pindexGenesisSaved;
+        pindexBest = pindexBestSaved;
+        hashBestChain = hashBestChainSaved;
+        Checkpoints::hashSyncCheckpoint = hashSyncCheckpointSaved;
+        nBestChainTrust = nBestChainTrustSaved;
+        nBestInvalidTrust = nBestInvalidTrustSaved;
+        nBestHeight = nBestHeightSaved;
+        mapArgs["-checklevel"] = strCheckLevelSaved;
+        mapArgs["-checkblocks"] = strCheckBlocksSaved;
+
+        CBlockIndexRecordDB txdb;
+        for (size_t i = 0; i < vEraseOnExit.size(); i++)
+            txdb.EraseBlockIndex(vEraseOnExit[i]);
+    }
+};
+
+} // namespace
+
+// Pre-nSize records through the real database and CTxDB::LoadBlockIndex must
+// rebuild a chain that computes the in-process limit.
+BOOST_AUTO_TEST_CASE(load_block_index_restores_nsize_from_the_database)
+{
+    LOCK(cs_main);
+
+    WrittenChain live(3000);
+    const unsigned int nLiveLimit = GetAdaptiveBlockSizeLimit(live.Tip());
+    // Non-vacuous: an index that lost every size computes 2 * the floor.
+    BOOST_REQUIRE(nLiveLimit != 2 * ADAPTIVE_BLOCK_FLOOR);
+
+    std::vector<std::string> vLegacy;
+    for (int i = 0; i < CHAIN_LEN; i++)
+    {
+        const std::string strFull = EncodeRecord(live.vIndex[i]);
+        vLegacy.push_back(strFull.substr(0, strFull.size() - sizeof(unsigned int)));
+    }
+
+    ChainStateGuard guard;
+    guard.vEraseOnExit = live.vHashes;
+
+    {
+        CBlockIndexRecordDB txdb;
+        for (int i = 0; i < CHAIN_LEN; i++)
+            BOOST_REQUIRE(txdb.WriteRaw(live.vHashes[i], vLegacy[i]));
+    }
+
+    {
+        CTxDB txdb;
+        BOOST_REQUIRE(txdb.LoadBlockIndex());
+    }
+
+    for (int i = 0; i < CHAIN_LEN; i++)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator mi =
+            mapBlockIndex.find(live.vHashes[i]);
+        BOOST_REQUIRE(mi != mapBlockIndex.end());
+        BOOST_REQUIRE(mi->second != NULL);
+        BOOST_CHECK_EQUAL(mi->second->nSize, live.vIndex[i]->nSize);
+        BOOST_CHECK_EQUAL(mi->second->nHeight, live.vIndex[i]->nHeight);
+    }
+
+    CBlockIndex* pindexReloadedTip = mapBlockIndex[live.vHashes[CHAIN_LEN - 1]];
+    BOOST_CHECK_EQUAL(GetAdaptiveBlockSizeLimit(pindexReloadedTip), nLiveLimit);
+
+    // The recovered sizes are written back, so the next start reads them out of
+    // the records instead of the block files.
+    CBlockIndexRecordDB txdb;
+    for (int i = 0; i < CHAIN_LEN; i++)
+    {
+        CDiskBlockIndex diskindex;
+        BOOST_REQUIRE(txdb.ReadRecord(live.vHashes[i], diskindex));
+        BOOST_CHECK_EQUAL(diskindex.nSize, live.vIndex[i]->nSize);
+    }
+}
+
+// Records already carrying nSize load through the same path unchanged.
+BOOST_AUTO_TEST_CASE(load_block_index_keeps_recorded_nsize)
+{
+    LOCK(cs_main);
+
+    WrittenChain live(4000);
+    const unsigned int nLiveLimit = GetAdaptiveBlockSizeLimit(live.Tip());
+
+    std::vector<std::string> vRecords;
+    for (int i = 0; i < CHAIN_LEN; i++)
+        vRecords.push_back(EncodeRecord(live.vIndex[i]));
+
+    ChainStateGuard guard;
+    guard.vEraseOnExit = live.vHashes;
+
+    {
+        CBlockIndexRecordDB txdb;
+        for (int i = 0; i < CHAIN_LEN; i++)
+            BOOST_REQUIRE(txdb.WriteRaw(live.vHashes[i], vRecords[i]));
+    }
+
+    {
+        CTxDB txdb;
+        BOOST_REQUIRE(txdb.LoadBlockIndex());
+    }
+
+    for (int i = 0; i < CHAIN_LEN; i++)
+        BOOST_CHECK_EQUAL(mapBlockIndex[live.vHashes[i]]->nSize, live.vIndex[i]->nSize);
+    BOOST_CHECK_EQUAL(GetAdaptiveBlockSizeLimit(mapBlockIndex[live.vHashes[CHAIN_LEN - 1]]),
+                      nLiveLimit);
+}
+
+// The restore re-measures the block and refuses a prefix that disagrees with it.
+BOOST_AUTO_TEST_CASE(restore_rejects_prefix_that_disagrees_with_the_block)
+{
+    CBlock block = MakeSizedBlock(360000, 90);
+    unsigned int nFile = 0, nPos = 0;
+    BOOST_REQUIRE(block.WriteToDisk(nFile, nPos));
+    const unsigned int nTrueSize =
+        ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    BOOST_REQUIRE(nTrueSize > 1000);
+
+    // A size that passes every range check but is not this block's size.
+    const unsigned int nWrongSize = nTrueSize - 1000;
+    FILE* file = OpenBlockFile(nFile, 0, "r+b");
+    BOOST_REQUIRE(file != NULL);
+    BOOST_REQUIRE_EQUAL(fseek(file, (long)nPos - 4, SEEK_SET), 0);
+    BOOST_REQUIRE_EQUAL(fwrite(&nWrongSize, 1, 4, file), (size_t)4);
+    fclose(file);
+
+    CBlockIndex stale;
+    stale.nFile = nFile;
+    stale.nBlockPos = nPos;
+    stale.nHeight = FORK_HEIGHT_DAG + 7;
+    std::vector<CBlockIndex*> v;
+    v.push_back(&stale);
+
+    int nRestored = 0;
+    std::string strError;
+    BOOST_CHECK(!BackfillBlockIndexSizes(v, nRestored, strError));
+    BOOST_CHECK(strError.find("measures") != std::string::npos);
+    BOOST_CHECK_EQUAL(nRestored, 0);
+    BOOST_CHECK_EQUAL(stale.nSize, 0u);
+
+    // Put the block file back; the same entry then restores cleanly.
+    file = OpenBlockFile(nFile, 0, "r+b");
+    BOOST_REQUIRE(file != NULL);
+    BOOST_REQUIRE_EQUAL(fseek(file, (long)nPos - 4, SEEK_SET), 0);
+    BOOST_REQUIRE_EQUAL(fwrite(&nTrueSize, 1, 4, file), (size_t)4);
+    fclose(file);
+
+    BOOST_REQUIRE(BackfillBlockIndexSizes(v, nRestored, strError));
+    BOOST_CHECK_EQUAL(nRestored, 1);
+    BOOST_CHECK_EQUAL(stale.nSize, nTrueSize);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

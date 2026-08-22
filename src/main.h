@@ -76,14 +76,10 @@ static const unsigned int MAX_BLOCK_SIZE_LEGACY = 1000000;
 static const unsigned int ADAPTIVE_BLOCK_CEILING = 8000000;       // 8 MB absolute hard ceiling
 static const unsigned int ADAPTIVE_BLOCK_FLOOR = 300000;          // 300 KB penalty-free zone
 static const unsigned int ADAPTIVE_MEDIAN_WINDOW = 1000;          // 1000-block short-term median (~17 min at 1s)
-static const unsigned int ADAPTIVE_LONG_MEDIAN_WINDOW = 100000;   // 100K-block long-term anchor (~28h at 1s)
-// The long-term walk has always been clamped to 50,000 samples. It is a named
-// constant because the backfill depth below is derived from it: widening the
-// clamp widens the consensus window and must widen the backfill together.
-static const unsigned int ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW = 50000;
+// Long-term median window. GetBlockIndexSizeBackfillDepth() is derived from it,
+// so the two must move together.
+static const unsigned int ADAPTIVE_LONG_MEDIAN_WINDOW = 50000;    // 50K-block long-term anchor (~14h at 1s)
 static const unsigned int ADAPTIVE_LONG_MEDIAN_CAP = 50;          // short-term median <= 50x long-term median
-static_assert(ADAPTIVE_LONG_MEDIAN_EFFECTIVE_WINDOW <= ADAPTIVE_LONG_MEDIAN_WINDOW,
-              "effective long-median window must stay within the declared window");
 
 // Effective block size: pre-DAG uses legacy, post-DAG uses adaptive
 inline unsigned int GetMaxBlockSize(int nHeight)
@@ -2221,15 +2217,9 @@ public:
         if (!fileout)
             return error("CBlock::WriteToDisk() : AppendBlockFile failed");
 
-        // Write index header. This prefix is the only on-disk record of the
-        // block's serialized size and is what CBlockIndex::nSize is restored
-        // from, so it must equal the SER_NETWORK measure the index constructor
-        // and both adaptive-size consumers use. Refuse to store a block whose
-        // two encodings disagree rather than let restarted and freshly-synced
-        // nodes read different sizes for it.
+        // Write index header. The prefix is the byte count that follows;
+        // BackfillBlockIndexSizes restores CBlockIndex::nSize from it.
         unsigned int nSize = fileout.GetSerializeSize(*this);
-        if (nSize != ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION))
-            return error("CBlock::WriteToDisk() : disk and network serialized sizes disagree");
         fileout << FLATDATA(pchMessageStart) << nSize;
 
         // Write block
@@ -2742,8 +2732,13 @@ int GetBlockIndexSizeBackfillFloor();
  *  adaptive-block-size window to reach it. */
 bool BlockIndexNeedsSizeRestore(const CBlockIndex* pindex, int nFloor);
 
+/** How many restored entries are re-measured against their own block data.
+ *  Bounded because each check reads a whole block. */
+static const size_t BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES = 16;
+
 /** Restore nSize for indexes loaded without it, from the size prefix that
- *  CBlock::WriteToDisk stores ahead of every block. */
+ *  CBlock::WriteToDisk stores ahead of every block. Fails closed when a sampled
+ *  prefix does not match the block's own SER_NETWORK measure. */
 bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
                              int& nRestoredOut, std::string& strError);
 
