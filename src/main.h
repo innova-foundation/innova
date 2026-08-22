@@ -960,6 +960,64 @@ bool LoadExternalBlockFile(FILE* fileIn);
 
 //void PushGetBlocks(CNode* pnode, CBlockIndex* pindexBegin, uint256 hashEnd);
 
+// Age of the permanence anchor, in epochs behind the evaluating node's epoch. The
+// rejection anchor is epoch(tip)-1, the newest completed epoch; the latch that gates
+// BLOCK_FAILED_VALID sits this many epochs back. Since the deterministic finalized
+// height is non-decreasing in epoch, one node can latch a fork another allows only
+// when their epochs differ by more than LAG-1, so tolerated honest tip skew is
+// LAG-1 epochs: 600 blocks / 10 min post-DAG, 120 blocks / 30 min pre-DAG. Raising
+// it widens that tolerance and delays hardening by the same amount.
+static const int REORG_LATCH_ANCHOR_LAG_EPOCHS = 3;
+
+// Verdict of the reorg finality guard (R-FIN-001).
+enum ReorgFinalityVerdict
+{
+    REORG_FINALITY_ALLOW = 0,
+    // Fork point is below the current anchor but not below the lagged one: reject
+    // this attempt without condemning the branch, so a node inside the tolerated
+    // skew that still accepts it does not disagree permanently.
+    REORG_FINALITY_REJECT_TRANSIENT,
+    // Fork point is below the lagged anchor, which every node inside the tolerated
+    // skew also computes: safe to persist BLOCK_FAILED_VALID.
+    REORG_FINALITY_REJECT_PERMANENT,
+    // Required epoch state is absent; the caller fails closed.
+    REORG_FINALITY_STATE_MISSING,
+};
+
+// Reorg finality guard, shared by Reorganize and CBlock::SetBestChain so the two
+// sites cannot drift apart. The rejection anchor is the deterministic finalized
+// height as of epoch(nBestHeight)-1; the permanence anchor is
+// REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs older.
+// Both are derived from the evaluating node's tip because the finalization
+// evidence lives on the chain being abandoned -- an anchor taken from the
+// candidate or the fork point cannot see it. Splitting the verdict by anchor age
+// is what keeps the persisted half of it identical across nodes whose tips
+// straddle an epoch boundary.
+//
+// Out-params carry the anchors and the epoch used, for the caller's error text.
+// The first form takes the epoch-state source explicitly so the decision can be
+// exercised against a standalone manager; the second reads the global one.
+class CDAGManager;
+ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
+                                               int nBestHeight, int nForkHeight,
+                                               int& nFinalCurOut, int& nFinalLatchOut,
+                                               int& nAsOfEpochOut);
+ReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight, int nForkHeight,
+                                               int& nFinalCurOut, int& nFinalLatchOut,
+                                               int& nAsOfEpochOut);
+
+// Reaches the verdict and records it. Both reorg sites call this rather than acting on
+// the verdict themselves, so the rule for which verdicts persist exists once.
+ReorgFinalityVerdict ApplyReorgFinalityGuard(const CDAGManager& dag,
+                                             int nBestHeight, int nForkHeight,
+                                             bool* pfPermanentInvalid,
+                                             int& nFinalCurOut, int& nFinalLatchOut,
+                                             int& nAsOfEpochOut);
+ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, int nForkHeight,
+                                             bool* pfPermanentInvalid,
+                                             int& nFinalCurOut, int& nFinalLatchOut,
+                                             int& nAsOfEpochOut);
+
 bool CheckProofOfWork(uint256 hash, unsigned int nBits);
 unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake);
 // Pure retarget arithmetic: nActualSpan over nWindow blocks vs nEffectiveSpacing * nWindow.
