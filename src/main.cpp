@@ -10861,14 +10861,22 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
 // completed has no state to read and the guard would fail closed onto the losing branch.
 //
 // What is fixed instead is the severity. Two anchors are computed: the current one, as of
-// epoch(tip)-1, which decides rejection, and a lagged one, an epoch older, which decides
-// whether the rejection is persisted. Every node whose tip is within one epoch of this one
-// computes at least the lagged anchor (nFinalizedHeightAsOf is non-decreasing in epoch),
-// so the persisted half of the verdict is identical across nodes that straddle an epoch
-// boundary -- which is the property the guard must hold, since BLOCK_FAILED_VALID survives
-// restart and is cleared only by reconsiderblock. Inside the one-epoch band the verdict is
-// a plain rejection that latches nothing, and it hardens on its own once the lagged anchor
-// advances past the fork point.
+// epoch(tip)-1, which decides rejection, and a lagged one, REORG_LATCH_ANCHOR_LAG_EPOCHS-1
+// epochs older, which decides whether the rejection is persisted. Inside the band the
+// verdict is a plain rejection that latches nothing and hardens on its own once the lagged
+// anchor advances past the fork point. BLOCK_FAILED_VALID survives restart and is cleared
+// only by reconsiderblock, so the persisted half is the half that has to agree.
+//
+// The guarantee, with F(k) the finalized height as of epoch k and L the lag: node A latches
+// only when f < F(e(A)-L), node B allows only when f >= F(e(B)-1), so a fork that one
+// condemns and the other follows needs F(e(B)-1) < F(e(A)-L). F is non-decreasing in epoch,
+// so that needs e(A)-e(B) > L-1: no such pair exists between tips within L-1 epochs. The
+// clamp below is load-bearing for it -- it is what makes f < latch imply f < cur.
+//
+// The tolerance is quantitative, not absolute. An anchor every node agrees on regardless of
+// tip does not exist here (a node holds F(k) only for epochs it has completed), so past L-1
+// epochs of skew the pair returns. L is the knob; raising it costs one more epoch of the
+// branch staying re-requestable before a condemnation hardens.
 ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
                                                int nBestHeight, int nForkHeight,
                                                int& nFinalCurOut, int& nFinalLatchOut,
@@ -10881,6 +10889,9 @@ ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
     if (nBestHeight < FORK_HEIGHT_FINALITY)
         return REORG_FINALITY_ALLOW;
 
+    // One expression for the latch epoch, so the two lookup paths cannot drift apart.
+    const int nLatchEpoch = nAsOfEpochOut - (REORG_LATCH_ANCHOR_LAG_EPOCHS - 1);
+
     if (nBestHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
     {
         if (!dag.TryGetDeterministicFinalizedHeight(nAsOfEpochOut, nFinalCurOut))
@@ -10888,14 +10899,14 @@ ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
         // A missing lagged record is the bottom edge of epoch-state history, not corruption:
         // LoadEpochStates fails closed on interior holes, so absent here means no record was
         // ever written. Degrade to "nothing latchable yet" rather than failing closed, which
-        // would brick every node for one epoch after the V3 gate.
-        if (!dag.TryGetDeterministicFinalizedHeight(nAsOfEpochOut - 1, nFinalLatchOut))
+        // would brick every node for the first few epochs after the V3 gate.
+        if (!dag.TryGetDeterministicFinalizedHeight(nLatchEpoch, nFinalLatchOut))
             nFinalLatchOut = 0;
     }
     else
     {
         nFinalCurOut = dag.GetDeterministicFinalizedHeight(nAsOfEpochOut);
-        nFinalLatchOut = dag.GetDeterministicFinalizedHeight(nAsOfEpochOut - 1);
+        nFinalLatchOut = dag.GetDeterministicFinalizedHeight(nLatchEpoch);
     }
 
     // Monotone by the loader's regression check; clamp so a latch can never outrun the
@@ -10920,8 +10931,8 @@ ReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight, int nForkHeight,
 
 // Records the verdict as well as reaching it, so neither call site carries its own copy
 // of the persistence rule. Only REJECT_PERMANENT may set the flag: it is the one verdict
-// every node within an epoch of this tip also reaches, and BLOCK_FAILED_VALID is
-// serialized and cleared only by reconsiderblock.
+// every node within REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs of this tip also reaches, and
+// BLOCK_FAILED_VALID is serialized and cleared only by reconsiderblock.
 ReorgFinalityVerdict ApplyReorgFinalityGuard(const CDAGManager& dag,
                                              int nBestHeight, int nForkHeight,
                                              bool* pfPermanentInvalid,
@@ -10959,8 +10970,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         // this decision. It can transiently stall below the deterministic value (out-of-order vote
         // arrival resets the consecutive-HARD streak) and it differs between nodes, so folding it in
         // reintroduces path-dependent state into a consensus reorg. Severity is split by anchor age in
-        // CheckReorgAgainstFinality so nodes whose tips straddle an epoch boundary cannot latch
-        // pfPermanentInvalid on different reorgs.
+        // CheckReorgAgainstFinality so nodes within REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs of
+        // each other cannot latch pfPermanentInvalid on different reorgs.
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
             CBlockIndex* pCheck = pindexBest;
@@ -11617,8 +11628,8 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             // Same guard as Reorganize, same shared decision: a sub-finalized reorg can never
             // re-anchor a finalized epoch's roots. Deterministic-ONLY -- never mix the node-local
             // live finalized height in. Only a fork below the LAGGED anchor is condemned
-            // permanently, because that is the only verdict every node within an epoch of this
-            // tip agrees on; inside the band the block is rejected but left re-requestable.
+            // permanently, because that is the only verdict every node within the tolerated
+            // skew agrees on; inside the band the block is rejected but left re-requestable.
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
                 CBlockIndex* pWalk = pindexNew;
