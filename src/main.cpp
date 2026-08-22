@@ -8067,6 +8067,29 @@ static CBlockSubsidySplit GetCoinStakeSubsidySplit(uint64_t nCoinAge, int64_t nF
                                         CollateralnodeShare::Paid);
 }
 
+// Collateralnode payment rule: node-local gate, node-local verdict (wall clock, own tip,
+// gossiped list, mempool). A rejection under this gate must not reach the block index.
+int64_t CollateralnodePaymentWindowSeconds()
+{
+    return 20 * (int64_t)nCoinbaseMaturity;
+}
+
+bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
+                                      int64_t nNow, bool fPaymentsEnabled)
+{
+    return !fJustCheck && fPaymentsEnabled &&
+           nBlockTime > nNow - CollateralnodePaymentWindowSeconds();
+}
+
+// Whether a ConnectBlock result may be written down as BLOCK_FAILED_VALID. That flag
+// is serialized and cleared only by reconsiderblock, so only a verdict every node
+// reproduces qualifies. Both best-chain sites call this rather than comparing the
+// enum themselves.
+bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result)
+{
+    return result == CBlock::CONNECT_RESULT_INVALID;
+}
+
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                           bool fWriteNames, ConnectResult* pResult)
 {
@@ -9239,7 +9262,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
-    if(!fJustCheck && pindex->GetBlockTime() > GetTime() - 20*nCoinbaseMaturity && CollateralnodePayments == true)
+    if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
+                                         CollateralnodePayments))
     {
         LOCK2(cs_main, mempool.cs);
 
@@ -9387,7 +9411,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
                         if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
-                        return DoS(100, error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
+                        // Node-local verdict: refuse this attempt without writing it down.
+                        return TransientFailure(error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
                     } else {
                         if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindex->nHeight+1); }
                     }
@@ -9522,7 +9547,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
                         if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
-                        return DoS(100, error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
+                        // Node-local verdict: refuse this attempt without writing it down.
+                        return TransientFailure(error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
                     } else {
                         if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %d\n", pindex->nHeight+1); }
                     }
@@ -11282,7 +11308,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
             if (pfPermanentInvalid &&
-                connectResult == CBlock::CONNECT_RESULT_INVALID)
+                ConnectResultMayPersistVerdict(connectResult))
                 *pfPermanentInvalid = true;
             return error("Reorganize() : ConnectBlock %s failed (%s)",
                          pindex->GetBlockHash().ToString().substr(0,20).c_str(),
@@ -11542,7 +11568,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     {
         txdb.TxnAbort();
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
-        if (connectResult == CONNECT_RESULT_INVALID)
+        if (ConnectResultMayPersistVerdict(connectResult))
         {
             InvalidChainFound(pindexNew);
             if (pfPermanentInvalid)

@@ -2374,6 +2374,17 @@ private:
                            CBestChainEffectJournal* pCommittedEffects = NULL);
 };
 
+// Collateralnode payment rule (S4): its gate depends on the local clock, tip, CN list
+// and mempool, so a rejection under it must stay in memory. Persisting
+// BLOCK_FAILED_VALID would split the network along clock offsets.
+int64_t CollateralnodePaymentWindowSeconds();
+bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
+                                      int64_t nNow, bool fPaymentsEnabled);
+
+// Whether a ConnectBlock result may be recorded as BLOCK_FAILED_VALID. Reorganize
+// and SetBestChainInner both call this so the persistence rule exists once.
+bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result);
+
 
 // bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos);
 // bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex);
