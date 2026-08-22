@@ -9438,6 +9438,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
                             CScript pubScript;
 
+                            // Checked before the list walk: an empty local list
+                            // must not push a burn payment onto the chain scan.
+                            if (payee == burnPayee) {
+                                printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[0].vout[i].nValue).c_str());
+                                foundPayee = true;
+                                continue;
+                            }
+
                             for (CCollateralNode& mn : vecCollateralnodes)
                             {
                                 pubScript = GetScriptForDestination(mn.pubkey.GetID());
@@ -9475,9 +9483,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                     foundPayee = true;
                                     paymentOK = true;
                                     break;
-                                } else if (payee == burnPayee) {
-                                    printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[0].vout[i].nValue).c_str());
-                                    foundPayee = true;
                                 }
                             }
 

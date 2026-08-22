@@ -559,6 +559,7 @@ TEST_OBJS= \
     obj/test/reward_display_tests.o \
     obj/test/ladder_pin_tests.o \
     obj/test/blockindex_nsize_tests.o \
+    obj/test/cn_rescan_tests.o \
     obj/test/supply_cap_tests.o \
     obj/test/subsidy_split_tests.o \
     obj/test/emission_schedule_walk_tests.o \
@@ -607,7 +608,7 @@ FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-po
 FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
 FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
 
-.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-nullstake-finality-only check-retarget check-blockindex-nsize check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-dagknight-anchor-cache check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-vote-schedule check-privacy-vnext-provenance check-privacy-vnext-freshness check-all release-check
+.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-nullstake-finality-only check-retarget check-blockindex-nsize check-cn-rescan check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-dagknight-anchor-cache check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-vote-schedule check-privacy-vnext-provenance check-privacy-vnext-freshness check-all release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -705,6 +706,10 @@ check-retarget: test_innova
 
 check-blockindex-nsize: test_innova
 	./test_innova --run_test=blockindex_nsize_tests
+
+check-cn-rescan: test_innova
+	./test_innova --run_test=cn_rescan_tests
+
 check-emission-curve: test_innova
 	./test_innova --run_test=emission_curve_tests
 	./test_innova --run_test=supply_cap_tests
@@ -772,7 +777,7 @@ check-smessage-bounds: test_innova
 check-all: test_innova
 	./test_innova
 
-release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-nullstake-finality-only check-retarget check-blockindex-nsize check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-dagknight-anchor-cache check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-vote-schedule check-privacy-vnext-provenance check-privacy-vnext-freshness
+release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-nullstake-finality-only check-retarget check-blockindex-nsize check-cn-rescan check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-dagknight-anchor-cache check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-vote-schedule check-privacy-vnext-provenance check-privacy-vnext-freshness
 
 #
 # LevelDB support

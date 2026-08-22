@@ -18,6 +18,9 @@
 #include "main.h"
 #include "script.h"
 
+#include <cstddef>
+#include <functional>
+
 class CCollateralNode;
 class CCollateralnodePayments;
 class uint256;
@@ -292,6 +295,15 @@ int GetCollateralnodeRank(CCollateralNode& tmn, CBlockIndex* pindex, int minProt
 int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);
 bool GetCollateralnodeRanks(CBlockIndex* pindex=pindexBest);
 extern int64_t nAverageCNIncome;
+// Per-block outcome of a CNWalkChain visit.
+enum class CNScanStep { Next, Stop };
+
+// Walks the index chain from pindex back towards nStopHeight (exclusive),
+// calling fn once per entry. The pprev advance lives in the loop header, so a
+// visit that skips its block cannot stall the walk. Returns entries visited.
+size_t CNWalkChain(const CBlockIndex* pindex, int nStopHeight,
+                   const std::function<CNScanStep(const CBlockIndex*)>& fn);
+
 bool FindCNPayment(CScript& payee, CBlockIndex* pindex=pindexBest);
 
 // for storing the winning payments
