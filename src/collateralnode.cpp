@@ -15,6 +15,7 @@
 #include "sync.h"
 #include "core.h"
 #include "hash.h"
+#include <algorithm>
 #include <deque>
 #include <boost/lexical_cast.hpp>
 
@@ -1811,14 +1812,13 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
     if (vCollaterals.size() > 0) return 0; //return should return value here
     printf("Setting up CN payment validation...\n");
     CTxDB txdb("r");
-    const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
     int nHeight = 0;
     if (fTestNet) {
-        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET; i++) {
+        CNWalkChain(pindex, BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET, [&](const CBlockIndex* BlockReading) {
             CBlock block;
             if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                continue;
+                return CNScanStep::Next;
 
             nHeight = BlockReading->nHeight;
 
@@ -1867,15 +1867,15 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                 }
             }
 
-            if (BlockReading->pprev == NULL) { break; }
-
-            BlockReading = BlockReading->pprev;
-        }
+            return CNScanStep::Next;
+        });
     } else { //For mainnet CN checking
-        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && BlockReading->nHeight > 2085000; i++) {
+        // Both height floors of the original condition; the higher one binds.
+        const int nStopHeight = std::max(BLOCK_START_COLLATERALNODE_PAYMENTS, 2085000);
+        CNWalkChain(pindex, nStopHeight, [&](const CBlockIndex* BlockReading) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                    continue;
+                    return CNScanStep::Next;
 
                 nHeight = BlockReading->nHeight;
 
@@ -1924,10 +1924,8 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { break; }
-
-            BlockReading = BlockReading->pprev;
-        }
+                return CNScanStep::Next;
+        });
     }
     if (fDebug){
         printf("finished at height %d\n-----------%zu collaterals------------",
@@ -1945,17 +1943,30 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
 
 }
 
+size_t CNWalkChain(const CBlockIndex* pindex, int nStopHeight,
+                   const std::function<CNScanStep(const CBlockIndex*)>& fn)
+{
+    size_t nVisited = 0;
+    for (const CBlockIndex* p = pindex; p && p->nHeight > nStopHeight; p = p->pprev) {
+        ++nVisited;
+        if (fn(p) == CNScanStep::Stop)
+            break;
+    }
+    return nVisited;
+}
+
 bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
 {
     if (fDebug) printf("Searching for CN collateral...\n");
     CTxDB txdb("r");
-    const CBlockIndex *BlockReading = pindex;
-    int blocksFound = 0;
     int nHeight = 0;
-    for (int i = 0; BlockReading && BlockReading->nHeight > 1; i++) {
+    bool fFound = false;
+    // AcceptableInputs() reads the mempool, so this verdict is node-local rather
+    // than chain-inherited. A deterministic collateral lookup is tracked separately.
+    CNWalkChain(pindex, 1, [&](const CBlockIndex* BlockReading) {
             CBlock block;
             if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                continue;
+                return CNScanStep::Next;
 
             nHeight = BlockReading->nHeight;
 
@@ -1983,22 +1994,21 @@ bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
                                 continue;
                             } else {
                                 found = true;
-                                return true;
+                                fFound = true;
+                                return CNScanStep::Stop;
                             }
 
                         }
                         n++;
                     }
-                    if (found) return true;
+                    if (found) { fFound = true; return CNScanStep::Stop; }
                 }
             }
 
-        if (BlockReading->pprev == NULL) { break; }
-
-        BlockReading = BlockReading->pprev;
-    }
+            return CNScanStep::Next;
+    });
     printf("finished at height %d\n",nHeight);
-    return (blocksFound > 0);
+    return fFound;
 
 }
 
@@ -2006,14 +2016,13 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
 {
     printf("CNPayment:");
     CTxDB txdb("r");
-    const CBlockIndex *BlockReading = pindex;
-    int blocksFound = 0;
     int nHeight = 0;
+    bool fFound = false;
     if (fTestNet) {
-        for (int i = 0; BlockReading && BlockReading->nHeight > MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET; i++) {
+        CNWalkChain(pindex, MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET, [&](const CBlockIndex* BlockReading) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                    continue;
+                    return CNScanStep::Next;
 
                 nHeight = BlockReading->nHeight;
 
@@ -2036,7 +2045,8 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                                     if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
                                     continue;
                                 }
-                                return true;
+                                fFound = true;
+                                return CNScanStep::Stop;
 
                             }
                             n++;
@@ -2044,15 +2054,13 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { break; }
-
-            BlockReading = BlockReading->pprev;
-        }
+                return CNScanStep::Next;
+        });
     } else {
-        for (int i = 0; BlockReading && BlockReading->nHeight > MN_ENFORCEMENT_ACTIVE_HEIGHT; i++) {
+        CNWalkChain(pindex, MN_ENFORCEMENT_ACTIVE_HEIGHT, [&](const CBlockIndex* BlockReading) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                    continue;
+                    return CNScanStep::Next;
 
                 nHeight = BlockReading->nHeight;
 
@@ -2075,7 +2083,8 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                                     if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
                                     continue;
                                 }
-                                return true;
+                                fFound = true;
+                                return CNScanStep::Stop;
 
                             }
                             n++;
@@ -2083,12 +2092,10 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { break; }
-
-            BlockReading = BlockReading->pprev;
-        }
+                return CNScanStep::Next;
+        });
     }
     printf("finished at height %d\n",nHeight);
-    return (blocksFound > 0);
+    return fFound;
 
 }
