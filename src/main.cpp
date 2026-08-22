@@ -15398,6 +15398,51 @@ bool ProcessMessages(CNode* pfrom)
 }
 
 
+// Node-global periodic work fans out to every peer, so it must not run from
+// SendMessages under cs_vSend (inverts the cs_vNodes -> cs_vSend order).
+void SendMessagesGlobal()
+{
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+        return;
+
+    if (dandelionState.IsEnabled())
+    {
+        std::vector<int> vPeerIds;
+        {
+            TRY_LOCK(cs_vNodes, lockNodes);
+            if (lockNodes)
+            {
+                for (CNode* pnode : vNodes)
+                    vPeerIds.push_back(pnode->GetId());
+            }
+        }
+        if (!vPeerIds.empty())
+            dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
+
+        std::vector<uint256> vFluff = dandelionState.CheckStemTimeouts(GetTime());
+        for (const uint256& txHash : vFluff)
+        {
+            CInv inv(MSG_TX, txHash);
+            bool fHaveRelay = false;
+            {
+                LOCK(cs_mapRelay);
+                std::map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
+                if (mi != mapRelay.end())
+                    fHaveRelay = true;
+            }
+            if (fHaveRelay)
+                RelayInventory(inv, true);
+        }
+    }
+
+    // Resend wallet transactions that haven't gotten in a block yet
+    // Except during reindex, importing and IBD, when old wallet
+    // transactions become unconfirmed and spams other nodes.
+    if (!fReindex && !IsInitialBlockDownload())
+        ResendWalletTransactions();
+}
+
 bool SendMessages(CNode* pto, bool fSendTrickle)
 {
     if (pto->nVersion == 0)
@@ -15520,44 +15565,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 
     TRY_LOCK(cs_main, lockMain);
     if (lockMain) {
-
-        if (dandelionState.IsEnabled())
-        {
-            std::vector<int> vPeerIds;
-            {
-                TRY_LOCK(cs_vNodes, lockNodes);
-                if (lockNodes)
-                {
-                    for (CNode* pnode : vNodes)
-                        vPeerIds.push_back(pnode->GetId());
-                }
-            }
-            if (!vPeerIds.empty())
-                dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
-
-            std::vector<uint256> vFluff = dandelionState.CheckStemTimeouts(GetTime());
-            for (const uint256& txHash : vFluff)
-            {
-                CInv inv(MSG_TX, txHash);
-                bool fHaveRelay = false;
-                {
-                    LOCK(cs_mapRelay);
-                    std::map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
-                    if (mi != mapRelay.end())
-                        fHaveRelay = true;
-                }
-                if (fHaveRelay)
-                    RelayInventory(inv, true);
-            }
-        }
-
-        // Resend wallet transactions that haven't gotten in a block yet
-        // Except during reindex, importing and IBD, when old wallet
-        // transactions become unconfirmed and spams other nodes.
-        if (!fReindex && !IsInitialBlockDownload())
-        {
-            ResendWalletTransactions();
-        }
 
         // Address refresh broadcast
         static int64_t nLastRebroadcast;

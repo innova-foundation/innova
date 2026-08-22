@@ -180,6 +180,12 @@ ifdef SANITIZE
     xLDFLAGS += -fsanitize=$(SANITIZE)
 endif
 
+# Lock-order checking and the held-lock watchdog. Off by default: it serialises
+# every lock operation through one mutex.
+ifdef DEBUG_LOCKORDER
+    xCXXFLAGS += -DDEBUG_LOCKORDER
+endif
+
 ifeq (${USE_NATIVETOR}, 1)
 OBJS= \
 	obj/address.o \
@@ -535,6 +541,7 @@ TEST_OBJS= \
     obj/test/finality_note_carrier_tests.o \
     obj/test/fcmp_root_tests.o \
     obj/test/pod_tests.o \
+    obj/test/peer_send_lockorder_tests.o \
     obj/test/privacy_vnext_abi_tests.o \
     obj/test/privacy_vnext_store_tests.o \
     obj/test/privacy_vnext_builder_tests.o \

@@ -2537,6 +2537,10 @@ void ThreadMessageHandler2(void* parg)
 		if (!fHaveSyncNode)
             StartSync(vNodesCopy);
 
+        // Before the per-peer loop: everything below holds a peer's cs_vSend.
+        if (!vNodesCopy.empty())
+            SendMessagesGlobal();
+
         bool fSleep = true;
 
         // Poll the connected nodes for messages
