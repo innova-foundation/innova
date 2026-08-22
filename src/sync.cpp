@@ -182,23 +182,25 @@ static void StartLockWatchdog()
 }
 
 
-static void potential_deadlock_detected(const std::pair<void*, void*>& mismatch, const LockStack& s1, const LockStack& s2)
+// Returns the report rather than printing it: the caller holds dd_mutex and the
+// logging path takes instrumented locks of its own.
+static std::string potential_deadlock_detected(const std::pair<void*, void*>& mismatch, const LockStack& s1, const LockStack& s2)
 {
-    printf("POTENTIAL DEADLOCK DETECTED\n");
-    printf("Previous lock order was:\n");
+    std::string r = "POTENTIAL DEADLOCK DETECTED\nPrevious lock order was:\n";
     BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)& i, s2)
     {
-        if (i.first == mismatch.first) printf(" (1)");
-        if (i.first == mismatch.second) printf(" (2)");
-        printf(" %s\n", i.second.ToString().c_str());
+        if (i.first == mismatch.first) r += " (1)";
+        if (i.first == mismatch.second) r += " (2)";
+        r += " " + i.second.ToString() + "\n";
     }
-    printf("Current lock order is:\n");
+    r += "Current lock order is:\n";
     BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)& i, s1)
     {
-        if (i.first == mismatch.first) printf(" (1)");
-        if (i.first == mismatch.second) printf(" (2)");
-        printf(" %s\n", i.second.ToString().c_str());
+        if (i.first == mismatch.first) r += " (1)";
+        if (i.first == mismatch.second) r += " (2)";
+        r += " " + i.second.ToString() + "\n";
     }
+    return r;
 }
 
 static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
@@ -220,6 +222,7 @@ static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
         livestacks[ThreadIdNum()] = tl;
     }
 
+    std::string strReport;
     if (!fTry) {
         BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)& i, (*lockstack)) {
             if (i.first == c) break;
@@ -232,12 +235,14 @@ static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
             std::pair<void*, void*> p2 = std::make_pair(c, i.first);
             if (lockorders.count(p2))
             {
-                potential_deadlock_detected(p1, lockorders[p2], lockorders[p1]);
+                strReport = potential_deadlock_detected(p1, lockorders[p2], lockorders[p1]);
                 break;
             }
         }
     }
     dd_mutex.unlock();
+    if (!strReport.empty())
+        printf("%s", strReport.c_str());
 }
 
 static void pop_lock()
