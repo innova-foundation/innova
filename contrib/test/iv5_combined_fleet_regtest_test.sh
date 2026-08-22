@@ -877,7 +877,7 @@ cleanup() {
     done
     for n in 0 1 2 3 "$NEG_NODE"; do force_kill_node "$n"; done
     wait_ports_free >/dev/null 2>&1 || warn "regtest ports were still held at exit"
-    if [ "${IV5_COMBINED_KEEP_DIR:-${KEEP_DIR:-0}}" = "1" ] || [ "$FAILED" -gt 0 ]; then
+    if [ "${IV5_COMBINED_KEEP_DIR:-${KEEP_DIR:-0}}" = "1" ] || [ "$FAILED" -gt 0 ] || [ -f "$TEST_DIR/rpc_timeouts" ]; then
         log "Preserving $TEST_DIR"
     else
         rm -rf "$TEST_DIR"
