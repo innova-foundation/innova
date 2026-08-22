@@ -1186,8 +1186,7 @@ unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex)
     // Long-term median anchor (independent window, starts after short-term window)
     std::vector<unsigned int> vLongSizes;
     // pWalk is already at the end of the short-term window — continue from there
-    unsigned int nLongSamples = std::min(ADAPTIVE_LONG_MEDIAN_WINDOW, (unsigned int)50000);
-    for (unsigned int i = 0; i < nLongSamples && pWalk; i++)
+    for (unsigned int i = 0; i < ADAPTIVE_LONG_MEDIAN_WINDOW && pWalk; i++)
     {
         vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
         pWalk = pWalk->pprev;
@@ -1216,6 +1215,147 @@ unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex)
         nEffectiveLimit = ADAPTIVE_BLOCK_CEILING;
 
     return nEffectiveLimit;
+}
+
+int GetBlockIndexSizeBackfillDepth()
+{
+    // Deepest index a window reaches: one short plus one long window below FORK_HEIGHT_DAG,
+    // plus one spare short window for growth.
+    return (int)(ADAPTIVE_MEDIAN_WINDOW * 2 +
+                 ADAPTIVE_LONG_MEDIAN_WINDOW + 1);
+}
+
+int GetBlockIndexSizeBackfillFloor()
+{
+    const int64_t nFloor = (int64_t)FORK_HEIGHT_DAG - GetBlockIndexSizeBackfillDepth();
+    return nFloor < 0 ? 0 : (int)nFloor;
+}
+
+bool BlockIndexNeedsSizeRestore(const CBlockIndex* pindex, int nFloor)
+{
+    return pindex && pindex->nSize == 0 && pindex->nHeight >= nFloor;
+}
+
+// Re-measure one block against the size its prefix claims (SER_DISK vs the SER_NETWORK
+// nSize a fresh sync assigns); a mismatch would give a restarted node a different size.
+static bool VerifyStoredBlockSize(const CBlockIndex* pindex, unsigned int nStoredSize,
+                                  std::string& strError)
+{
+    CAutoFile filein = CAutoFile(OpenBlockFile(pindex->nFile, pindex->nBlockPos, "rb"),
+                                 SER_DISK, CLIENT_VERSION);
+    if (!filein)
+    {
+        strError = strprintf("block %d: block data unreadable at file %u offset %u",
+                             pindex->nHeight, pindex->nFile, pindex->nBlockPos);
+        return false;
+    }
+    CBlock block;
+    try
+    {
+        filein >> block;
+    }
+    catch (const std::exception&)
+    {
+        strError = strprintf("block %d: block data would not deserialize", pindex->nHeight);
+        return false;
+    }
+    const unsigned int nMeasured = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    if (nMeasured != nStoredSize)
+    {
+        strError = strprintf("block %d: stored size %u but the block measures %u",
+                             pindex->nHeight, nStoredSize, nMeasured);
+        return false;
+    }
+    return true;
+}
+
+bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
+                             int& nRestoredOut, std::string& strError)
+{
+    nRestoredOut = 0;
+    strError.clear();
+
+    // Group by file/offset: the reads are sequential within a block file.
+    std::vector<std::pair<std::pair<unsigned int, unsigned int>, CBlockIndex*> > vOrdered;
+    vOrdered.reserve(vNeedSize.size());
+    for (std::vector<CBlockIndex*>::const_iterator it = vNeedSize.begin();
+         it != vNeedSize.end(); ++it)
+    {
+        CBlockIndex* pindex = *it;
+        if (!pindex || pindex->nSize > 0)
+            continue;
+        // Header-only entries carry no block payload to measure.
+        if (pindex->nFile == 0 || pindex->nBlockPos < 8)
+            continue;
+        vOrdered.push_back(std::make_pair(
+            std::make_pair(pindex->nFile, pindex->nBlockPos), pindex));
+    }
+    std::sort(vOrdered.begin(), vOrdered.end());
+
+    // Each verification reads a whole block, so spread a bounded number of them
+    // across the set instead of re-measuring every entry.
+    const size_t nStride = vOrdered.empty() ? 1 :
+        (vOrdered.size() + BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES - 1) /
+        BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES;
+
+    unsigned int nOpenFile = 0;
+    FILE* file = NULL;
+    for (size_t i = 0; i < vOrdered.size(); i++)
+    {
+        CBlockIndex* pindex = vOrdered[i].second;
+        if (file && nOpenFile != pindex->nFile)
+        {
+            fclose(file);
+            file = NULL;
+        }
+        if (!file)
+        {
+            file = OpenBlockFile(pindex->nFile, 0, "rb");
+            if (!file)
+            {
+                strError = strprintf("block file %u could not be opened", pindex->nFile);
+                return false;
+            }
+            nOpenFile = pindex->nFile;
+        }
+
+        // WriteToDisk lays down the network magic and the serialized size
+        // immediately before the block, so both sit at nBlockPos - 8.
+        unsigned char pchHeader[8];
+        if (fseek(file, (long)pindex->nBlockPos - 8, SEEK_SET) != 0 ||
+            fread(pchHeader, 1, sizeof(pchHeader), file) != sizeof(pchHeader))
+        {
+            strError = strprintf("block %d: size prefix unreadable at file %u offset %u",
+                                 pindex->nHeight, pindex->nFile, pindex->nBlockPos);
+            fclose(file);
+            return false;
+        }
+        if (memcmp(pchHeader, pchMessageStart, sizeof(pchMessageStart)) != 0)
+        {
+            strError = strprintf("block %d: bad network magic ahead of block data", pindex->nHeight);
+            fclose(file);
+            return false;
+        }
+        unsigned int nStoredSize = 0;
+        memcpy(&nStoredSize, pchHeader + 4, 4);
+        if (nStoredSize == 0 || nStoredSize > ADAPTIVE_BLOCK_CEILING)
+        {
+            strError = strprintf("block %d: stored size %u out of range", pindex->nHeight, nStoredSize);
+            fclose(file);
+            return false;
+        }
+        if ((i % nStride == 0 || i + 1 == vOrdered.size()) &&
+            !VerifyStoredBlockSize(pindex, nStoredSize, strError))
+        {
+            fclose(file);
+            return false;
+        }
+        pindex->nSize = nStoredSize;
+        nRestoredOut++;
+    }
+    if (file)
+        fclose(file);
+    return true;
 }
 
 int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize)
