@@ -193,31 +193,45 @@ unsigned int WriteBlockWithDecoy(const unsigned char* pchDecoy, unsigned int nSe
 
 } // namespace
 
-// The size prefix CBlock::WriteToDisk lays down ahead of every block is the
-// only on-disk record of the block's size, and it has to agree with the measure
-// CBlockIndex and both adaptive-size consumers use.
+// The WriteToDisk size prefix must equal the SER_NETWORK size CBlockIndex and
+// both adaptive-size consumers use.
 BOOST_AUTO_TEST_CASE(disk_size_prefix_equals_index_size)
 {
-    CBlock block = MakeSizedBlock(400000, 77);
-    unsigned int nFile = 0, nPos = 0;
-    BOOST_REQUIRE(block.WriteToDisk(nFile, nPos));
+    std::vector<CBlock> vShapes;
+    vShapes.push_back(MakeSizedBlock(400000, 77));
 
-    CBlockIndex index(nFile, nPos, block);
-    BOOST_CHECK_EQUAL(index.nSize,
-                      ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION));
-    BOOST_CHECK_EQUAL(index.nSize,
-                      ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION));
+    // More than one transaction and a block signature, so the equality is not
+    // asserted only over a single-transaction body.
+    CBlock blockSigned = MakeSizedBlock(320000, 76);
+    blockSigned.vtx.push_back(blockSigned.vtx[0]);
+    blockSigned.vtx.back().nTime += 1;
+    blockSigned.vchBlockSig.assign(72, 0x30);
+    blockSigned.hashMerkleRoot = blockSigned.BuildMerkleTree();
+    vShapes.push_back(blockSigned);
 
-    FILE* file = OpenBlockFile(nFile, 0, "rb");
-    BOOST_REQUIRE(file != NULL);
-    unsigned char pchHeader[8];
-    BOOST_REQUIRE_EQUAL(fseek(file, (long)nPos - 8, SEEK_SET), 0);
-    BOOST_REQUIRE_EQUAL(fread(pchHeader, 1, 8, file), (size_t)8);
-    fclose(file);
-    BOOST_CHECK_EQUAL(memcmp(pchHeader, pchMessageStart, 4), 0);
-    unsigned int nPrefix = 0;
-    memcpy(&nPrefix, pchHeader + 4, 4);
-    BOOST_CHECK_EQUAL(nPrefix, index.nSize);
+    for (size_t nShape = 0; nShape < vShapes.size(); nShape++)
+    {
+        CBlock& block = vShapes[nShape];
+        unsigned int nFile = 0, nPos = 0;
+        BOOST_REQUIRE(block.WriteToDisk(nFile, nPos));
+
+        CBlockIndex index(nFile, nPos, block);
+        BOOST_CHECK_EQUAL(index.nSize,
+                          ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION));
+        BOOST_CHECK_EQUAL(index.nSize,
+                          ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION));
+
+        FILE* file = OpenBlockFile(nFile, 0, "rb");
+        BOOST_REQUIRE(file != NULL);
+        unsigned char pchHeader[8];
+        BOOST_REQUIRE_EQUAL(fseek(file, (long)nPos - 8, SEEK_SET), 0);
+        BOOST_REQUIRE_EQUAL(fread(pchHeader, 1, 8, file), (size_t)8);
+        fclose(file);
+        BOOST_CHECK_EQUAL(memcmp(pchHeader, pchMessageStart, 4), 0);
+        unsigned int nPrefix = 0;
+        memcpy(&nPrefix, pchHeader + 4, 4);
+        BOOST_CHECK_EQUAL(nPrefix, index.nSize);
+    }
 }
 
 // A persisted record carries nSize, so a normal restart needs no file reads.
