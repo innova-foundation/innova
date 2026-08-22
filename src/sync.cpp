@@ -10,6 +10,7 @@
 #ifdef DEBUG_LOCKORDER
 #include <boost/thread.hpp>
 #include <map>
+#include <set>
 #ifdef __linux__
 #include <sys/prctl.h>
 #include <sys/syscall.h>
@@ -274,21 +275,34 @@ void LeaveCritical()
 std::string LocksHeld()
 {
     std::string result;
+    if (lockstack.get() == NULL)
+        return result;
     BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)&i, *lockstack)
         result += i.second.ToString() + std::string("\n");
     return result;
 }
 
+// Reports once per site and keeps running, so one violation does not stop the
+// lock-order detector. -lockassertfatal=1 aborts instead.
 void AssertLockHeldInternal(const char *pszName, const char* pszFile, int nLine, void *cs)
 {
-    BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)&i, *lockstack)
-        if (i.first == cs) return;
+    if (lockstack.get() != NULL)
+        BOOST_FOREACH(const PAIRTYPE(void*, CLockLocation)&i, *lockstack)
+            if (i.first == cs) return;
 
-    printf("Assertion failed: lock %s not held in %s:%i; locks held:\n%s\n",
+    static std::set<std::pair<std::string, int> > setReported;
+    {
+        boost::mutex::scoped_lock lock(dd_mutex);
+        if (!setReported.insert(std::make_pair(std::string(pszFile), nLine)).second)
+            return;
+    }
+
+    printf("LOCKASSERT: lock %s not held in %s:%i; locks held:\n%s\n",
             pszName, pszFile, nLine, LocksHeld().c_str());
-    fprintf(stderr, "Assertion failed: lock %s not held in %s:%i; locks held:\n%s",
+    fprintf(stderr, "LOCKASSERT: lock %s not held in %s:%i; locks held:\n%s",
             pszName, pszFile, nLine, LocksHeld().c_str());
-    abort();
+    if (GetBoolArg("-lockassertfatal", false))
+        abort();
 }
 
 #endif /* DEBUG_LOCKORDER */
