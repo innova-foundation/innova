@@ -266,4 +266,70 @@ BOOST_AUTO_TEST_CASE(a_decoy_commitment_never_reaches_the_dag_record)
     BOOST_CHECK(data.vDAGParents[0] == pindexNew->pprev->GetBlockHash());
 }
 
+// R-BA-012. GetMissingDAGMergeParents (in ProcessBlock) must use the canonical decoder,
+// or a decoy naming an unknown merge parent parks a valid block as a DAG orphan.
+// ProcessBlock returns true when parking, so assert index membership instead.
+BOOST_AUTO_TEST_CASE(a_decoy_merge_parent_never_diverts_the_parent_fetch)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(IsBoundaryAConfigured());
+    MineTo(FORK_HEIGHT_BOUNDARY_A + 4);
+
+    CBlockIndex* pindexPrev = BestIndex();
+    BOOST_REQUIRE(IsBoundaryAActiveAtHeight(pindexPrev->nHeight + 1));
+
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    unsigned int nExtraNonce = 0;
+    IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
+
+    const int nOut = FindCanonicalOutput(pblock->vtx[0]);
+    BOOST_REQUIRE(nOut >= 0);
+    std::vector<uint256> vCanonical;
+    std::string strError;
+    BOOST_REQUIRE_EQUAL(
+        DecodeCanonicalDAGParentScript(pblock->vtx[0].vout[nOut].scriptPubKey,
+                                       vCanonical, strError),
+        DAG_PARENT_VALID);
+    BOOST_REQUIRE(!vCanonical.empty());
+    BOOST_REQUIRE(vCanonical[0] == pblock->hashPrevBlock);
+    BOOST_REQUIRE(vCanonical.size() < (size_t)MAX_DAG_PARENTS);
+
+    // Decoy = the real commitment plus one merge parent nobody holds.
+    const uint256 hashAbsent(std::string(
+        "00000000000000000000000000000000000000000000000000000000000ba012"));
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE(mapBlockIndex.count(hashAbsent) == 0);
+    }
+    std::vector<uint256> vDecoy = vCanonical;
+    vDecoy.push_back(hashAbsent);
+
+    CTxOut decoyOut;
+    decoyOut.nValue = 0;
+    decoyOut.scriptPubKey = MakeWideDecoy(vDecoy);
+    pblock->vtx[0].vout.insert(pblock->vtx[0].vout.begin() + nOut, decoyOut);
+    BOOST_REQUIRE(ExtractDAGParents(pblock->vtx[0].vout[nOut].scriptPubKey) ==
+                  vDecoy);
+
+    pblock->hashMerkleRoot = pblock->BuildMerkleTree();
+    BOOST_REQUIRE(SolveBlock(pblock.get()));
+    const uint256 hash = pblock->GetHash();
+
+    BOOST_REQUIRE(ProcessBlock(NULL, pblock.get()));
+
+    {
+        LOCK(cs_main);
+        BOOST_CHECK_MESSAGE(mapOrphanBlocks.count(hash) == 0,
+                            "a valid block was parked as a DAG orphan against a "
+                            "merge parent only the decoy names");
+        BOOST_REQUIRE_MESSAGE(mapBlockIndex.count(hash) != 0,
+                              "the block never reached the index");
+    }
+
+    CBlockDAGData data;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hash, data));
+    BOOST_CHECK(data.vDAGParents == vCanonical);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
