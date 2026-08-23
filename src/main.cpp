@@ -4082,20 +4082,25 @@ void static PruneOrphanBlocks()
     }
 }
 
-static std::vector<uint256> GetDAGParentsFromBlock(const CBlock& block)
+// The parent fetch paths request and serve merge parents by this list, so they
+// read it with the same height-selected decoder the validity gate and the index
+// writer use. A reader of its own would chase a parent set no rule checked.
+static std::vector<uint256> GetDAGParentsFromBlock(const CBlock& block, int nHeight)
 {
     std::vector<uint256> vDAGParents;
 
     if (block.vtx.empty())
         return vDAGParents;
 
-    for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
-    {
-        vDAGParents = ExtractDAGParents(block.vtx[0].vout[i].scriptPubKey);
-        if (vDAGParents.empty())
-            continue;
-        break;
-    }
+    std::vector<CScript> vScripts;
+    for (std::vector<CTxOut>::const_iterator it = block.vtx[0].vout.begin();
+         it != block.vtx[0].vout.end(); ++it)
+        vScripts.push_back(it->scriptPubKey);
+
+    std::string strDAGError;
+    if (!ReadDAGParentCommitmentAtHeight(vScripts, nHeight, vDAGParents,
+                                         strDAGError))
+        vDAGParents.clear();
 
     return vDAGParents;
 }
@@ -4112,7 +4117,7 @@ static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
     if (nHeight < FORK_HEIGHT_DAG)
         return vMissing;
 
-    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block, nHeight);
     for (unsigned int j = 1; j < vDAGParents.size(); j++)
     {
         if (mapBlockIndex.count(vDAGParents[j]))
@@ -4190,7 +4195,7 @@ static void QueueDAGSideBlockWithAncestors(CNode* pfrom, const uint256& hash, st
     if (miPrev != mapBlockIndex.end() && !miPrev->second->IsInMainChain())
         QueueDAGSideBlockWithAncestors(pfrom, block.hashPrevBlock, setQueued, setVisiting, nDepth + 1);
 
-    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block, pindex->nHeight);
     for (unsigned int i = 1; i < vDAGParents.size(); i++)
         QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, nDepth + 1);
 
@@ -4207,7 +4212,7 @@ static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, st
     if (!block.ReadFromDisk(pindex))
         return;
 
-    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block, pindex->nHeight);
     std::set<uint256> setVisiting;
     for (unsigned int i = 1; i < vDAGParents.size(); i++)
         QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, 0);
@@ -12313,18 +12318,18 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     // Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
-        // Extract DAG parents from coinbase OP_RETURN
-        for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
-        {
-            vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
-            if (!vDAGParents.empty())
-                break;
-        }
-
-        if (vDAGParents.empty())
+        // Read the commitment with the decoder this height selects, the same one AcceptBlock
+        // validated with.
+        std::vector<CScript> vScripts;
+        for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
+             it != vtx[0].vout.end(); ++it)
+            vScripts.push_back(it->scriptPubKey);
+        std::string strDAGError;
+        if (!ReadDAGParentCommitmentAtHeight(vScripts, pindexNew->nHeight,
+                                             vDAGParents, strDAGError))
         {
             CleanupUncommittedIndex();
-            return error("AddToBlockIndex() : post-DAG block is missing its parent commitment");
+            return error("AddToBlockIndex() : %s", strDAGError.c_str());
         }
         else
         {
@@ -12972,29 +12977,15 @@ bool CBlock::AcceptBlock()
     if (nHeight >= FORK_HEIGHT_DAG)
     {
         std::vector<uint256> vDAGParents;
-        if (IsBoundaryAActiveAtHeight(nHeight))
         {
             std::vector<CScript> vScripts;
             for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
                  it != vtx[0].vout.end(); ++it)
                 vScripts.push_back(it->scriptPubKey);
             std::string strDAGError;
-            if (!ExtractCanonicalDAGParentCommitment(vScripts, vDAGParents,
-                                                     strDAGError))
+            if (!ReadDAGParentCommitmentAtHeight(vScripts, nHeight, vDAGParents,
+                                                 strDAGError))
                 return DoS(100, error("AcceptBlock() : %s", strDAGError.c_str()));
-        }
-        else
-        {
-            // Historical pre-A decoder intentionally retains its permissive
-            // shape for byte-identical replay.
-            for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
-            {
-                vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
-                if (!vDAGParents.empty())
-                    break;
-            }
-            if (vDAGParents.empty())
-                return DoS(100, error("AcceptBlock() : post-DAG-fork block missing DAG parent commitment"));
         }
 
         if (vDAGParents.size() > (unsigned int)MAX_DAG_PARENTS)
