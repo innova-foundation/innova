@@ -87,6 +87,15 @@ bool ExtractCanonicalDAGParentCommitment(
     std::vector<uint256>& vParents,
     std::string& strError);
 
+/** Read a block's committed parent set with the decoder its height selects
+ *  (canonical from Boundary A, permissive first match below). All parent readers use
+ *  this so validation and the index writer agree. */
+bool ReadDAGParentCommitmentAtHeight(
+    const std::vector<CScript>& vScripts,
+    int nHeight,
+    std::vector<uint256>& vParents,
+    std::string& strError);
+
 /** Build a coinbase OP_RETURN script committing to DAG parents.
  *  Format: OP_RETURN <IDAG tag(4) || count(1) || hash1(32) || hash2(32) || ...> */
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents);

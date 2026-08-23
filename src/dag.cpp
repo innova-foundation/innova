@@ -296,6 +296,32 @@ bool ExtractCanonicalDAGParentCommitment(
     return true;
 }
 
+bool ReadDAGParentCommitmentAtHeight(
+    const std::vector<CScript>& vScripts,
+    int nHeight,
+    std::vector<uint256>& vParents,
+    std::string& strError)
+{
+    vParents.clear();
+    strError.clear();
+
+    if (IsBoundaryAActiveAtHeight(nHeight))
+        return ExtractCanonicalDAGParentCommitment(vScripts, vParents, strError);
+
+    // Historical pre-A decoder intentionally retains its permissive shape for
+    // byte-identical replay.
+    for (std::vector<CScript>::const_iterator it = vScripts.begin();
+         it != vScripts.end(); ++it)
+    {
+        vParents = ExtractDAGParents(*it);
+        if (!vParents.empty())
+            return true;
+    }
+
+    strError = "post-DAG-fork block missing DAG parent commitment";
+    return false;
+}
+
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents)
 {
     if (vParents.empty() || vParents.size() > MAX_DAG_PARENTS)

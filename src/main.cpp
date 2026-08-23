@@ -12313,18 +12313,18 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     // Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
-        // Extract DAG parents from coinbase OP_RETURN
-        for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
-        {
-            vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
-            if (!vDAGParents.empty())
-                break;
-        }
-
-        if (vDAGParents.empty())
+        // Read the commitment with the decoder this height selects, the same one AcceptBlock
+        // validated with.
+        std::vector<CScript> vScripts;
+        for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
+             it != vtx[0].vout.end(); ++it)
+            vScripts.push_back(it->scriptPubKey);
+        std::string strDAGError;
+        if (!ReadDAGParentCommitmentAtHeight(vScripts, pindexNew->nHeight,
+                                             vDAGParents, strDAGError))
         {
             CleanupUncommittedIndex();
-            return error("AddToBlockIndex() : post-DAG block is missing its parent commitment");
+            return error("AddToBlockIndex() : %s", strDAGError.c_str());
         }
         else
         {
@@ -12972,29 +12972,15 @@ bool CBlock::AcceptBlock()
     if (nHeight >= FORK_HEIGHT_DAG)
     {
         std::vector<uint256> vDAGParents;
-        if (IsBoundaryAActiveAtHeight(nHeight))
         {
             std::vector<CScript> vScripts;
             for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
                  it != vtx[0].vout.end(); ++it)
                 vScripts.push_back(it->scriptPubKey);
             std::string strDAGError;
-            if (!ExtractCanonicalDAGParentCommitment(vScripts, vDAGParents,
-                                                     strDAGError))
+            if (!ReadDAGParentCommitmentAtHeight(vScripts, nHeight, vDAGParents,
+                                                 strDAGError))
                 return DoS(100, error("AcceptBlock() : %s", strDAGError.c_str()));
-        }
-        else
-        {
-            // Historical pre-A decoder intentionally retains its permissive
-            // shape for byte-identical replay.
-            for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
-            {
-                vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
-                if (!vDAGParents.empty())
-                    break;
-            }
-            if (vDAGParents.empty())
-                return DoS(100, error("AcceptBlock() : post-DAG-fork block missing DAG parent commitment"));
         }
 
         if (vDAGParents.size() > (unsigned int)MAX_DAG_PARENTS)
