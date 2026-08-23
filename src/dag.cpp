@@ -51,6 +51,63 @@ uint256 CEpochState::GetDigest() const
 // DAG Parent Commitment: coinbase OP_RETURN encoding
 // ---------------------------------------------------------------------------
 
+// A commitment payload is bounded by the count byte: at most 255 hashes.
+static const uint64_t DAG_PARENT_MAX_PAYLOAD = 5 + (uint64_t)255 * 32;
+
+// Read the one data push after OP_RETURN without GetOp's 520-byte element cap, which a
+// 32-parent commitment (1,029 bytes) exceeds. Otherwise acceptance matches GetOp.
+static bool ReadBoundedDataPush(const CScript& script,
+                                CScript::const_iterator& pc,
+                                std::vector<unsigned char>& vchData)
+{
+    vchData.clear();
+    if (pc >= script.end())
+        return false;
+
+    const unsigned int opcode = *pc++;
+    if (opcode > OP_PUSHDATA4)
+        return false;
+
+    uint64_t nSize = 0;
+    if (opcode < OP_PUSHDATA1)
+    {
+        nSize = opcode;
+    }
+    else if (opcode == OP_PUSHDATA1)
+    {
+        if (script.end() - pc < 1)
+            return false;
+        nSize = *pc++;
+    }
+    else if (opcode == OP_PUSHDATA2)
+    {
+        if (script.end() - pc < 2)
+            return false;
+        unsigned int nRead = 0;
+        memcpy(&nRead, &pc[0], 2);
+        nSize = nRead;
+        pc += 2;
+    }
+    else
+    {
+        if (script.end() - pc < 4)
+            return false;
+        unsigned int nRead = 0;
+        memcpy(&nRead, &pc[0], 4);
+        nSize = nRead;
+        pc += 4;
+    }
+
+    if (nSize > DAG_PARENT_MAX_PAYLOAD)
+        return false;
+    if ((uint64_t)(script.end() - pc) < nSize)
+        return false;
+
+    vchData.assign(pc, pc + (size_t)nSize);
+    pc += (size_t)nSize;
+    return true;
+}
+
 std::vector<uint256> ExtractDAGParents(const CScript& scriptCoinbase)
 {
     std::vector<uint256> vResult;
@@ -69,7 +126,7 @@ std::vector<uint256> ExtractDAGParents(const CScript& scriptCoinbase)
     if (opcode != OP_RETURN)
         return vResult;
 
-    if (!scriptCoinbase.GetOp(pc, opcode, vchData))
+    if (!ReadBoundedDataPush(scriptCoinbase, pc, vchData))
         return vResult;
 
     // Verify IDAG tag prefix
@@ -133,7 +190,7 @@ DAGParentDecodeStatus DecodeCanonicalDAGParentScript(
     // The count byte bounds malformed candidates to at most 255 hashes. Read
     // that bounded shape so max-plus-one is classified as malformed rather
     // than silently treated as an unrelated OP_RETURN.
-    if (nDataSize > 5 + (uint64_t)255 * 32 ||
+    if (nDataSize > DAG_PARENT_MAX_PAYLOAD ||
         nOffset + nDataSize > script.size())
         return DAG_PARENT_NOT_FOUND;
 

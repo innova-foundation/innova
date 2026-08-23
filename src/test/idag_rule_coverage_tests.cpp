@@ -220,12 +220,8 @@ BOOST_AUTO_TEST_CASE(post_poem_chain_trust_is_entropy_and_not_inverse_target)
     fTestNet = fOldTestNet;
 }
 
-// R-DAG-003. The declared bound, pinned at its value: a commitment naming more
-// than MAX_DAG_PARENTS parents is refused by both decoders. The count check
-// inside each decoder is redundant with what surrounds it -- the canonical
-// decoder re-encodes what it read and compares, and the permissive one cannot
-// read the payload at all -- so a mutation of the check alone changes no
-// observable, and the bound is only visible through its value.
+// R-DAG-003. Both decoders refuse more than MAX_DAG_PARENTS parents; in the permissive
+// decoder the count check is the only enforcement.
 BOOST_AUTO_TEST_CASE(a_parent_count_over_the_bound_is_refused_by_both_decoders)
 {
     BOOST_CHECK_EQUAL(MAX_DAG_PARENTS, 32);
@@ -250,15 +246,9 @@ BOOST_AUTO_TEST_CASE(a_parent_count_over_the_bound_is_refused_by_both_decoders)
     BOOST_CHECK(ExtractDAGParents(RawParentScript(255)).empty());
 }
 
-// The two decoders do not admit the same commitments. The permissive
-// pre-Boundary-A decoder reads its payload with CScript::GetOp, which refuses
-// any push above MAX_SCRIPT_ELEMENT_SIZE, so it stops well below
-// MAX_DAG_PARENTS; the canonical decoder parses the push itself and reaches the
-// declared bound. CreateNewBlock packs up to MAX_DAG_PARENTS, and
-// AddToBlockIndex reads every post-DAG block with the permissive decoder at
-// every height, so the difference is what a producer can commit and still have
-// its own block indexed.
-BOOST_AUTO_TEST_CASE(the_permissive_decoder_stops_at_one_script_element)
+// Both decoders must admit exactly what the encoder produces, up to MAX_DAG_PARENTS;
+// AddToBlockIndex reads every post-DAG block with the permissive decoder.
+BOOST_AUTO_TEST_CASE(the_permissive_decoder_reaches_the_declared_bound)
 {
     const size_t nElementCeiling = (MAX_SCRIPT_ELEMENT_SIZE - 5) / 32;
     BOOST_CHECK_EQUAL(nElementCeiling, (size_t)16);
@@ -277,17 +267,12 @@ BOOST_AUTO_TEST_CASE(the_permissive_decoder_stops_at_one_script_element)
                           DAG_PARENT_VALID);
         BOOST_CHECK(vCanonical.size() == (size_t)n);
 
-        const size_t nPermissive = ExtractDAGParents(script).size();
-        if ((size_t)n <= nElementCeiling)
-            BOOST_CHECK_MESSAGE(nPermissive == (size_t)n,
-                                "the permissive decoder read " << nPermissive
-                                    << " of " << n << " committed parents");
-        else
-            BOOST_CHECK_MESSAGE(nPermissive == 0,
-                                "the permissive decoder read " << nPermissive
-                                    << " parents from a " << n
-                                    << "-parent commitment, so the ceiling this "
-                                       "case pins has moved");
+        const std::vector<uint256> vPermissive = ExtractDAGParents(script);
+        BOOST_CHECK_MESSAGE(vPermissive.size() == (size_t)n,
+                            "the permissive decoder read " << vPermissive.size()
+                                << " of " << n << " committed parents");
+        BOOST_CHECK_MESSAGE(vPermissive == vCanonical,
+                            "the decoders disagree at " << n << " parents");
     }
 }
 
