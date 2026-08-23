@@ -42,6 +42,10 @@ struct ScopedRegistry
     CTxDB& txdb;
     std::vector<uint256> vKeyImages;
     std::vector<uint256> vSpent;
+    // Which epochs this registry has touched, kept apart from the originals it
+    // found there: an epoch it wrote to twice must still be restored to what the
+    // database held before the FIRST write.
+    std::set<int> setEpochStates;
     std::vector<int> vEpochStates;
     std::map<int, CEpochState> mapOriginalEpochStates;
 
@@ -78,7 +82,7 @@ struct ScopedRegistry
 
     void PutEpochState(const CEpochState& state)
     {
-        if (!mapOriginalEpochStates.count(state.nEpoch))
+        if (setEpochStates.insert(state.nEpoch).second)
         {
             CEpochState original;
             if (txdb.ReadEpochState(state.nEpoch, original))
