@@ -78,11 +78,13 @@ void RequireForkWindow()
 {
     BOOST_REQUIRE(!IsLegacyPrivacyPolicyDisabled());
     BOOST_REQUIRE(NfBindHeight() >= FORK_HEIGHT_SHIELDED);
-    BOOST_REQUIRE(NfBindHeight() >= FORK_HEIGHT_NULLIFIER_BINDING);
     BOOST_REQUIRE(NfBindHeight() < FORK_HEIGHT_DAG);
     BOOST_REQUIRE(NfBindHeight() < FORK_HEIGHT_BOUNDARY_A);
     BOOST_REQUIRE(NfBindHeight() < FORK_HEIGHT_EPOCH_ROOT_FCMP);
-    BOOST_REQUIRE(NFBIND_TX_VERSION >= SHIELDED_TX_VERSION_FCMP);
+    // The spend carries an FCMP-era version only because the FCMP gate sits at
+    // or below the binding gate. If that order flips, a pre-FCMP version is what
+    // reaches the rule and these cases stop exercising it.
+    BOOST_REQUIRE(NfBindHeight() >= FORK_HEIGHT_FCMP_VALIDATION);
     BOOST_REQUIRE(IsLegacyShieldedTransactionVersion(NFBIND_TX_VERSION));
 }
 
