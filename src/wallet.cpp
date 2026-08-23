@@ -1370,12 +1370,6 @@ bool CWallet::SetBestChainChecked(const CBlockLocator& loc)
     return walletdb.WriteBestBlock(loc);
 }
 
-void CWallet::SetBestChain(const CBlockLocator& loc)
-{
-    if (!SetBestChainChecked(loc))
-        error("CWallet::SetBestChain() : failed to persist wallet best-block locator");
-}
-
 bool CWallet::SetMinVersion(enum WalletFeature nVersion, CWalletDB* pwalletdbIn, bool fExplicit)
 {
     LOCK(cs_wallet); // nWalletVersion

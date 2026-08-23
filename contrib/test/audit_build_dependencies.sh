@@ -299,8 +299,48 @@ grep -q 'ReconcileShieldedNoteSpentStateChecked(' "$main_cpp" || \
     fail "live shielded wallet recovery does not reconcile canonical spent state"
 grep -q '&entry.setDAGSkippedTxs' "$main_cpp" || \
     fail "live shielded-wallet connect does not consume the precommitted effect plan"
-grep -q 'SetWalletBestChainChecked(effects.GetLocator()' "$main_cpp" || \
-    fail "wallet recovery locator is not checked after committed effects"
+# Batched wallet best-block locator: derived from committed effects, flushed via the
+# checked writer (fatal after a durable commit), drained at shutdown, repaired at startup
+# by a checked rescan covering shielded payloads, and never written outside that path.
+wallet_cpp="$ROOT/src/wallet.cpp"
+publish_replay_body=$(sed -n '/^static bool PublishAndReplayCommittedEffects(/,/^}/p' "$main_cpp")
+replay_line=$(echo "$publish_replay_body" | grep -n 'effects.Replay(txdb)' | head -1 | cut -d: -f1)
+defer_line=$(echo "$publish_replay_body" | grep -n 'DeferWalletBestChain(' | head -1 | cut -d: -f1)
+[ -n "$replay_line" ] || \
+    fail "committed effects are not replayed on the wallet locator's publication path"
+[ -n "$defer_line" ] || \
+    fail "wallet recovery locator is not advanced from the committed-effect publication path"
+[ "$replay_line" -lt "$defer_line" ] || \
+    fail "wallet recovery locator advances before committed effects are replayed"
+locator_branch=$(sed -n '/BLOCK_PHASE(BP_WALLET_LOCATOR)/,/^    }/p' "$main_cpp")
+echo "$locator_branch" | grep -q 'DeferWalletBestChain(effects.GetLocator()' || \
+    fail "wallet recovery locator is not derived from committed effects"
+echo "$locator_branch" | grep -q 'FlushWalletBestChainLocator(' || \
+    fail "wallet recovery locator is never flushed after committed effects"
+echo "$locator_branch" | grep -q 'StartShutdown()' || \
+    fail "a failed wallet locator flush after a durable commit is not fatal"
+flush_locator_body=$(sed -n '/^bool FlushWalletBestChainLocator(/,/^}/p' "$main_cpp")
+echo "$flush_locator_body" | grep -q 'SetWalletBestChainChecked(' || \
+    fail "the deferred wallet locator is flushed outside the checked writer"
+finalise_body=$(sed -n '/^bool Finalise()/,/^}/p' "$main_cpp")
+echo "$finalise_body" | grep -q 'FlushWalletBestChainLocator(' || \
+    fail "shutdown does not drain a pending wallet best-block locator"
+grep -q 'ScanForWalletTransactionsChecked(' "$init_cpp" || \
+    fail "startup does not repair a lagging wallet locator with a checked rescan"
+grep -q 'SetBestChainChecked(CBlockLocator(pindexBest)' "$init_cpp" || \
+    fail "startup does not re-persist the repaired wallet locator through the checked writer"
+rescan_body=$(sed -n '/^bool CWallet::ScanForWalletTransactionsChecked(/,/^}/p' "$wallet_cpp")
+echo "$rescan_body" | grep -q 'ScanBlockForShieldedNotesChecked(' || \
+    fail "the wallet catch-up rescan does not drive the block-level shielded/IV5 scan"
+checked_writer_body=$(sed -n '/^bool CWallet::SetBestChainChecked(/,/^}/p' "$wallet_cpp")
+echo "$checked_writer_body" | grep -q 'WriteBestBlock(' || \
+    fail "the checked wallet locator writer does not persist the locator"
+locator_writes=$(grep -c 'WriteBestBlock(' "$wallet_cpp")
+[ "$locator_writes" -eq 1 ] || \
+    fail "the wallet best-block locator is written outside the checked writer"
+if grep -Eq '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]+CWallet::SetBestChain\(' "$wallet_cpp"; then
+    fail "an unchecked wallet best-block locator writer is back"
+fi
 outbox_write_count=$(grep -c 'WriteShieldedWalletRecovery(' "$main_cpp")
 [ "$outbox_write_count" -ge 3 ] || \
     fail "shielded-wallet recovery outbox is not written on every best-chain commit path"
