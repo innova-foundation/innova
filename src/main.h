@@ -2381,6 +2381,13 @@ int64_t CollateralnodePaymentWindowSeconds();
 bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
                                       int64_t nNow, bool fPaymentsEnabled);
 
+// The cold-stake collateralnode payee check has the same shape: the expected payee
+// comes from the gossiped winner schedule and the gossiped node list, so it runs
+// only inside the same window and its refusal is not persistable either.
+bool ColdStakeCNPayeeRuleApplies(bool fJustCheck, int nHeight, int64_t nCNPayment,
+                                 int64_t nBlockTime, int64_t nNow);
+bool ColdStakeCNPayeeIsRegistered(int nHeight, const CScript& payeeScript);
+
 // Whether a ConnectBlock result may be recorded as BLOCK_FAILED_VALID. Reorganize
 // and SetBestChainInner both call this so the persistence rule exists once.
 bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result);
