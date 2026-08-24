@@ -6,6 +6,7 @@
 
 #include "../privacy_vnext/rust/include/innova_privacy_vnext.h"
 #include "../main.h"
+#include "../ed25519_zk.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
 #include "../privacy_vnext_store.h"
@@ -169,6 +170,188 @@ struct ScopedNoteVoteHeight
     }
     ~ScopedNoteVoteHeight() { nRegtestIV5NoteVoteHeight = nSaved; }
 };
+
+// Compact size the way the payload decoder reads it: the short form below 253, the
+// two-byte form above it. A membership proof is well past 253 bytes.
+void PutCompact(std::vector<unsigned char>& out, uint64_t nSize)
+{
+    if (nSize < 253)
+    {
+        out.push_back((unsigned char)nSize);
+        return;
+    }
+    if (nSize <= 0xffff)
+    {
+        out.push_back(253);
+        out.push_back((unsigned char)nSize);
+        out.push_back((unsigned char)(nSize >> 8));
+        return;
+    }
+    out.push_back(254);
+    for (size_t i = 0; i < 4; ++i)
+        out.push_back((unsigned char)(nSize >> (8 * i)));
+}
+
+void PutDigest(std::vector<unsigned char>& out, const PrivacyVNextDigest& d)
+{
+    out.insert(out.end(), d.begin(), d.end());
+}
+
+void PutLE64(std::vector<unsigned char>& out, uint64_t v)
+{
+    for (size_t i = 0; i < 8; ++i)
+        out.push_back((unsigned char)(v >> (8 * i)));
+}
+
+void PutSection(std::vector<unsigned char>& out, const std::vector<unsigned char>& v)
+{
+    PutCompact(out, v.size());
+    out.insert(out.end(), v.begin(), v.end());
+}
+
+std::vector<unsigned char> DigestBytes(const PrivacyVNextDigest& d)
+{
+    return std::vector<unsigned char>(d.begin(), d.end());
+}
+
+// Where the parameter digest a payload declares sits: schema, six envelope bytes, the
+// reserved byte, then the genesis hash.
+const size_t kParameterDigestOffset = 2 + 7 + 32;
+
+// The attestation builder's assembly with the shape-pinned fields left to the caller; every
+// proof verifies, so only the shape check can refuse it.
+bool BuildShapedAttestation(const FundedNote& note,
+                            const PrivacyVNextDigest& parameterDigest,
+                            uint8_t nDisclosureMask,
+                            int64_t nTransparentValueBalance,
+                            uint64_t nFee,
+                            std::vector<unsigned char>& vchPayloadOut,
+                            std::string& error)
+{
+    vchPayloadOut.clear();
+    const PrivacyVNextDigest entropy = CollateralScalar(0x27);
+
+    std::vector<PrivacyVNextSpendInput> vInputs(1);
+    vInputs[0].spendScalar = note.spend.spendSecret;
+    vInputs[0].commitmentScalar = note.spend.y;
+    vInputs[0].leaf = note.spend.leaf;
+    vInputs[0].vchWitnessRecord = note.spend.vchWitnessRecord;
+
+    // Two passes: the prefix names the pseudo-output, and the hash over that prefix is
+    // what the proof binds to.
+    PrivacyVNextDigest provisional;
+    provisional.fill(0);
+    provisional[0] = 1;
+    std::vector<PrivacyVNextSpendConstruction> vDraft;
+    std::vector<unsigned char> vchDraft;
+    if (!ProvePrivacyVNextMembership(note.finalizedRoot, provisional, entropy,
+                                     vInputs, vDraft, vchDraft, error))
+        return false;
+    if (vDraft.size() != 1)
+    {
+        error = "shaped attestation proving returned the wrong input count";
+        return false;
+    }
+
+    std::vector<unsigned char> prefix;
+    prefix.push_back((unsigned char)iv5::PROTOCOL_SCHEMA);
+    prefix.push_back(0);
+    prefix.push_back(iv5::NOTE_COLLATERAL_REGISTER);
+    prefix.push_back(0);                         // finality profile: none
+    prefix.push_back(iv5::AUTH_OWNER);
+    prefix.push_back(nDisclosureMask);
+    prefix.push_back(0);                         // finality object: none
+    prefix.push_back(LocalNetwork());
+    prefix.push_back(0);                         // reserved
+    PutDigest(prefix, LocalGenesis());
+    PutDigest(prefix, parameterDigest);
+    PutDigest(prefix, note.finalizedRoot);
+    PutLE64(prefix, note.nTreeSize);
+    PutLE64(prefix, (uint64_t)nTransparentValueBalance);
+    PutLE64(prefix, nFee);
+    PutDigest(prefix, NoTransparentSide());
+    PutCompact(prefix, 1);
+    PutDigest(prefix, vDraft[0].pseudoOut);
+    PutDigest(prefix, vDraft[0].keyImage);
+    PutCompact(prefix, 0);
+    PutDigest(prefix, CollateralDigest(0xe1));    // registration context
+    PutSection(prefix, std::vector<unsigned char>());
+
+    PrivacyVNextDigest signingHash;
+    if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                       prefix, signingHash, error))
+        return false;
+
+    std::vector<PrivacyVNextSpendConstruction> vFinal;
+    std::vector<unsigned char> vchMembership;
+    if (!ProvePrivacyVNextMembership(note.finalizedRoot, signingHash, entropy,
+                                     vInputs, vFinal, vchMembership, error))
+        return false;
+    if (vFinal.size() != 1 || vFinal[0].pseudoOut != vDraft[0].pseudoOut ||
+        vFinal[0].keyImage != vDraft[0].keyImage)
+    {
+        error = "shaped attestation proving is not deterministic in its entropy";
+        return false;
+    }
+
+    std::vector<unsigned char> vchMask;
+    if (!Ed25519ScalarAdd(DigestBytes(note.spend.mask),
+                          DigestBytes(vFinal[0].pseudoOutMaskDelta), vchMask) ||
+        vchMask.size() != 32)
+    {
+        error = "shaped attestation mask accumulation failed";
+        return false;
+    }
+    PrivacyVNextDigest amountMask;
+    std::memcpy(amountMask.data(), &vchMask[0], 32);
+
+    std::vector<unsigned char> vchAmountProof;
+    if (!ProvePrivacyVNextAmountEquality(vFinal[0].pseudoOut, kTier, amountMask,
+                                         signingHash, CollateralScalar(0x33),
+                                         vchAmountProof, error))
+        return false;
+
+    std::vector<unsigned char> payload = prefix;
+    PutSection(payload, vchMembership);
+    PutSection(payload, std::vector<unsigned char>());   // no range proof
+    PutSection(payload, std::vector<unsigned char>());   // no balance proof
+    PutSection(payload, vchAmountProof);                 // the tier proof
+    PutSection(payload, std::vector<unsigned char>());   // no disclosures
+    vchPayloadOut.swap(payload);
+    return true;
+}
+
+// A nine-byte v2008 envelope and nothing after it. Enough to reach every refusal the
+// parser makes before it reads a field, and short enough that anything past them ends
+// the payload instead.
+std::vector<unsigned char> EnvelopeOnly(uint8_t nOperation, uint8_t nProfile,
+                                        uint8_t nAuthorization, uint8_t nFinalityObject,
+                                        uint8_t nDisclosureMask)
+{
+    std::vector<unsigned char> out;
+    out.push_back((unsigned char)iv5::PROTOCOL_SCHEMA);
+    out.push_back(0);
+    out.push_back(nOperation);
+    out.push_back(nProfile);
+    out.push_back(nAuthorization);
+    out.push_back(nDisclosureMask);
+    out.push_back(nFinalityObject);
+    out.push_back(LocalNetwork());
+    out.push_back(0);
+    return out;
+}
+
+int32_t ValidationResult(const std::vector<unsigned char>& payload)
+{
+    return ValidatePrivacyVNextPayload(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                       payload).nResult;
+}
+
+// The result codes the ABI contract names, used here because two refusals a case apart
+// are the difference between a rule holding and a later check standing in for it.
+const int32_t kValid            = 0;
+const int32_t kConsensusInvalid = 1;
+const int32_t kUnsupported      = 3;
 
 } // namespace
 
@@ -1268,6 +1451,202 @@ BOOST_AUTO_TEST_CASE(a_member_key_off_the_curve_is_refused)
     BOOST_CHECK(!ValidatePrivacyVNextPayload(
                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, zeroed)
                      .IsValid());
+}
+
+
+// An attestation moves no value: no leaf, no transparent side, no fee, pinned by the
+// shape check before proofs run. Proofs are honest, so refusals are the shape check.
+BOOST_AUTO_TEST_CASE(an_attestation_moves_no_value_and_takes_no_fee)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xb1, kTier, note, error), error);
+
+    // The digest the chain answers with, taken from a payload the shipping builder made.
+    std::vector<unsigned char> reference;
+    PrivacyVNextDigest keyImage;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextCollateralAttestationPayload(
+            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
+            NoTransparentSide(), CollateralDigest(0xe1), note.spend, reference,
+            keyImage, error),
+        error);
+    BOOST_REQUIRE_GT(reference.size(), kParameterDigestOffset + 32);
+    PrivacyVNextDigest parameterDigest;
+    std::memcpy(parameterDigest.data(), &reference[kParameterDigestOffset], 32);
+
+    // Positive control: the same assembly at the shape the rule requires validates. A
+    // refusal below is therefore about the field that changed and nothing else.
+    std::vector<unsigned char> conforming;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedAttestation(note, parameterDigest, iv5::DISCLOSURE_MASK, 0, 0,
+                               conforming, error),
+        error);
+    BOOST_REQUIRE_EQUAL(ValidationResult(conforming), kValid);
+    PrivacyVNextStateEffects effects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, conforming, effects)
+                      .IsValid());
+    BOOST_CHECK_EQUAL(effects.attestationKeyImages.size(), 1U);
+    BOOST_CHECK_EQUAL(effects.nTransparentValueBalance, 0);
+    BOOST_CHECK_EQUAL(effects.nFee, 0U);
+
+    // Value out of the pool, proved as carefully as the conforming payload was.
+    std::vector<unsigned char> spending;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedAttestation(note, parameterDigest, iv5::DISCLOSURE_MASK, -1, 0,
+                               spending, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(spending), kConsensusInvalid);
+
+    // And value into it, which would credit the pool against no note at all.
+    std::vector<unsigned char> crediting;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedAttestation(note, parameterDigest, iv5::DISCLOSURE_MASK, 1, 0,
+                               crediting, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(crediting), kConsensusInvalid);
+
+    // A fee is value the block producer collects, and the attestation spends nothing to
+    // cover it.
+    std::vector<unsigned char> charging;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedAttestation(note, parameterDigest, iv5::DISCLOSURE_MASK, 0, 1,
+                               charging, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(charging), kConsensusInvalid);
+
+    // The three refused payloads differ from the accepted one in one field each: same
+    // length, same proofs, one number apart.
+    BOOST_CHECK_EQUAL(spending.size(), conforming.size());
+    BOOST_CHECK_EQUAL(crediting.size(), conforming.size());
+    BOOST_CHECK_EQUAL(charging.size(), conforming.size());
+}
+
+// Mask 7 (fully private) is the only mask a registration operation may carry;
+// disclosing the sender would link the pseudonym to its collateral note. Enforced by
+// the 2008 envelope table (proved here) and the attestation shape check.
+BOOST_AUTO_TEST_CASE(an_attestation_carries_only_the_private_mask)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xb2, kTier, note, error), error);
+    std::vector<unsigned char> reference;
+    PrivacyVNextDigest keyImage;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextCollateralAttestationPayload(
+            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
+            NoTransparentSide(), CollateralDigest(0xe1), note.spend, reference,
+            keyImage, error),
+        error);
+    PrivacyVNextDigest parameterDigest;
+    std::memcpy(parameterDigest.data(), &reference[kParameterDigestOffset], 32);
+
+    // Masks 0 (all disclosed), 6 (sender disclosed) and 7 (control); the full sweep is
+    // in privacy_vnext_abi_tests.
+    const uint8_t vMasks[3] = {0, 6, iv5::DISCLOSURE_MASK};
+    for (size_t i = 0; i < 3; ++i)
+    {
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedAttestation(note, parameterDigest, vMasks[i], 0, 0, payload, error),
+            error);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payload) ==
+                (vMasks[i] == iv5::DISCLOSURE_MASK ? kValid : kConsensusInvalid),
+            strprintf("attestation at mask %u answered %d", (unsigned)vMasks[i],
+                      (int)ValidationResult(payload)));
+    }
+
+    // Both registration operations are bound by it, on the table both decoders share.
+    for (uint8_t nMask = 0; nMask < iv5::DISCLOSURE_MASK; ++nMask)
+    {
+        BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_COLLATERAL_REGISTER, 0,
+                                         iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                         nMask));
+        BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_MEMBER_REGISTER, 0,
+                                         iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                         nMask));
+    }
+}
+
+// A v2008 payload declaring a finality object or an unbuilt operation is refused
+// "unsupported format" before any field is read. Matched on the code, since each
+// nine-byte payload would also fail parsing.
+BOOST_AUTO_TEST_CASE(a_v2008_payload_acts_on_no_finality_object_and_no_unbuilt_operation)
+{
+    // The envelope table admits these tuples, so the fail-closed branch is the only thing
+    // standing between them and a parser that would read their fields.
+    BOOST_REQUIRE(iv5::EnvelopeAllows(2008, iv5::NOTE_OPERATION_NONE,
+                                      iv5::FINALITY_NULLSTAKE_V1, iv5::AUTH_OWNER,
+                                      iv5::FINALITY_OBJECT_VOTE, iv5::DISCLOSURE_MASK));
+    BOOST_REQUIRE(iv5::EnvelopeAllows(2008, iv5::NOTE_DELEGATION_CREATE,
+                                      iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                      iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK));
+
+    // A finality object, at every profile and object the table admits with it.
+    for (uint8_t nProfile = iv5::FINALITY_NULLSTAKE_V1;
+         nProfile <= iv5::FINALITY_NULLSTAKE_V3; ++nProfile)
+    for (uint8_t nObject = iv5::FINALITY_OBJECT_VOTE;
+         nObject <= iv5::FINALITY_OBJECT_COMMITTEE_ROTATION; ++nObject)
+    {
+        const std::vector<unsigned char> payload =
+            EnvelopeOnly(iv5::NOTE_OPERATION_NONE, nProfile, iv5::AUTH_OWNER, nObject,
+                         iv5::DISCLOSURE_MASK);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payload) == kUnsupported,
+            strprintf("finality profile %u object %u answered %d", (unsigned)nProfile,
+                      (unsigned)nObject, (int)ValidationResult(payload)));
+    }
+
+    // And the operations the envelope admits that no v2008 verifier was written for.
+    const uint8_t vUnbuilt[4] = {iv5::NOTE_NULLSEND, iv5::NOTE_DELEGATION_CREATE,
+                                 iv5::NOTE_M_OF_N_MINT, iv5::NOTE_RECLAIM};
+    for (size_t i = 0; i < 4; ++i)
+    {
+        const std::vector<unsigned char> payload =
+            EnvelopeOnly(vUnbuilt[i], iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                         iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payload) == kUnsupported,
+            strprintf("operation %u answered %d", (unsigned)vUnbuilt[i],
+                      (int)ValidationResult(payload)));
+    }
+
+    // The control. The five operations a v2008 payload may act on get past the branch and
+    // are refused for running out of bytes, which is the ordinary refusal.
+    const uint8_t vBuilt[5] = {iv5::NOTE_SHIELD, iv5::NOTE_UNSHIELD, iv5::NOTE_TRANSFER,
+                               iv5::NOTE_COLLATERAL_REGISTER,
+                               iv5::NOTE_FINALITY_MEMBER_REGISTER};
+    for (size_t i = 0; i < 5; ++i)
+    {
+        const std::vector<unsigned char> payload =
+            EnvelopeOnly(vBuilt[i], iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                         iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payload) == kConsensusInvalid,
+            strprintf("operation %u answered %d", (unsigned)vBuilt[i],
+                      (int)ValidationResult(payload)));
+    }
+
+    // Owner is the only authorization mode a v2008 payload may declare, and the envelope
+    // refuses the rest with the consensus code rather than the fail-closed one.
+    const uint8_t vModes[3] = {iv5::AUTH_COLD_STAKER, iv5::AUTH_M_OF_N_PUBLIC_SIGNERS,
+                               iv5::AUTH_M_OF_N_HIDDEN_SIGNERS};
+    for (size_t i = 0; i < 3; ++i)
+    {
+        const std::vector<unsigned char> payload =
+            EnvelopeOnly(iv5::NOTE_TRANSFER, iv5::FINALITY_NONE, vModes[i],
+                         iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payload) == kConsensusInvalid,
+            strprintf("authorization %u answered %d", (unsigned)vModes[i],
+                      (int)ValidationResult(payload)));
+    }
 }
 
 
