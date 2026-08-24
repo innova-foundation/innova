@@ -100,6 +100,22 @@ CScript BurnPayee()
     return GetScriptForDestination(burnDestination.Get());
 }
 
+// A collateralnode record this binary can drive directly. unitTest suppresses
+// the collateral scan and a fresh lastTimeSeen keeps CCollateralNode::Check from
+// expiring it, so the node stays enabled for the length of a case.
+CCollateralNode MakeUnitTestNode(const CKey& key)
+{
+    CService addr;
+    CTxIn vin;
+    std::vector<unsigned char> sig;
+    CCollateralNode mn(addr, vin, key.GetPubKey(), sig, GetTime(),
+                       key.GetPubKey(), PROTOCOL_VERSION);
+    mn.unitTest = true;
+    mn.enabled = 1;
+    mn.UpdateLastSeen();
+    return mn;
+}
+
 void AnnounceCollateralnode(const CKey& key, bool fEnabled)
 {
     CService addr;
@@ -506,6 +522,107 @@ BOOST_AUTO_TEST_CASE(with_the_era_closed_the_payment_branch_never_runs)
     BOOST_CHECK_MESSAGE(accepted == CBlock::CONNECT_RESULT_OK,
                         "a block with no collateralnode payment must connect while "
                         "the era is closed, got result " << (int)accepted);
+}
+
+// R-CN-003: only a payment of at least 95% of the expected share counts as a
+// collateralnode's last payment.
+BOOST_AUTO_TEST_CASE(a_payment_below_the_expected_share_is_not_a_last_payment)
+{
+    CNPaymentEraGuard eraGuard;
+    CollateralnodeViewGuard cnGuard;
+    MockClockGuard clockGuard;
+    DetachedWalletGuard walletGuard;
+
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+
+    CKey shortKey, fullKey;
+    shortKey.MakeNewKey(true);
+    fullKey.MakeNewKey(true);
+    const CScript shortScript = PayToKey(shortKey);
+    const CScript fullScript = PayToKey(fullKey);
+
+    // Block one: a real collateralnode payment, in full, to the short-paid node.
+    // This is the payment the scan must find once it has walked past block two.
+    AnnounceCollateralnode(shortKey, true);
+    nRegtestCNPaymentsHeight = pindexBest->nHeight + 1;
+
+    CandidateBlock paid;
+    BOOST_REQUIRE(BuildCandidate(paid));
+    BOOST_REQUIRE(paid.Coinbase().vout.size() >= 2);
+    const int64_t nPaidExpected = ExpectedPayment(paid.Coinbase());
+    BOOST_REQUIRE_MESSAGE(nPaidExpected > 0,
+                          "the collateralnode share is zero at height "
+                          << paid.Height() << "; the case would be vacuous");
+    BOOST_REQUIRE_EQUAL(paid.Coinbase().vout.back().nValue, nPaidExpected);
+    paid.Coinbase().vout.back().scriptPubKey = shortScript;
+    BOOST_REQUIRE(Seal(paid));
+    RequirePaymentBranchEntered(paid);
+    BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(paid.Height(), shortScript));
+    BOOST_REQUIRE_MESSAGE(ProcessBlock(NULL, &paid.block),
+                          "the paying block was refused");
+    const int nHeightPaid = pindexBest->nHeight;
+    BOOST_REQUIRE_EQUAL(nHeightPaid, paid.Height());
+
+    // Block two, era closed: one satoshi to the short-paid node and the full share to the
+    // other, both from the producer's output so the coinbase value out does not move.
+    nRegtestCNPaymentsHeight = 0;
+    CandidateBlock mixed;
+    BOOST_REQUIRE(BuildCandidate(mixed));
+    BOOST_REQUIRE(mixed.Coinbase().vout.size() >= 1);
+    const int64_t nMixedValueOut = mixed.Coinbase().GetValueOut();
+    const int64_t nMixedExpected =
+        CBlockSubsidySplit::CollateralnodeShareOfBase(nMixedValueOut);
+    BOOST_REQUIRE_MESSAGE(nMixedExpected > 1,
+                          "the expected share is one satoshi or less, so a "
+                          "short payment cannot be distinguished from a full one");
+    BOOST_REQUIRE(mixed.Coinbase().vout[0].nValue > nMixedExpected + 1);
+    mixed.Coinbase().vout[0].nValue -= (nMixedExpected + 1);
+    mixed.Coinbase().vout.push_back(CTxOut(1, shortScript));
+    mixed.Coinbase().vout.push_back(CTxOut(nMixedExpected, fullScript));
+    BOOST_REQUIRE_EQUAL(mixed.Coinbase().GetValueOut(), nMixedValueOut);
+    BOOST_REQUIRE(Seal(mixed));
+    BOOST_REQUIRE(!CollateralnodePaymentsEnabledAtHeight(mixed.Height()));
+    BOOST_REQUIRE_MESSAGE(ProcessBlock(NULL, &mixed.block),
+                          "the mixed-payment block was refused");
+    const int nHeightMixed = pindexBest->nHeight;
+    BOOST_REQUIRE_EQUAL(nHeightMixed, nHeightPaid + 1);
+    // The two arms below are only distinguishable if one satoshi really is under
+    // the floor and the full share really is over it.
+    BOOST_REQUIRE(1 < nMixedExpected * 95 / 100);
+    BOOST_REQUIRE(nMixedExpected >= nMixedExpected * 95 / 100);
+
+    const int nScanBack = nHeightMixed + 1;
+
+    // The node paid in full on block two is credited with block two.
+    CCollateralNode mnFull = MakeUnitTestNode(fullKey);
+    mnFull.UpdateLastPaidBlock(pindexBest, nScanBack);
+    BOOST_CHECK_MESSAGE(mnFull.nBlockLastPaid == nHeightMixed,
+                        "a payment equal to the expected share must count as the "
+                        "last payment; expected height " << nHeightMixed
+                        << ", got " << mnFull.nBlockLastPaid);
+
+    // The node paid one satoshi on the same block is not: the scan walks past it
+    // and lands on the earlier block that paid it in full.
+    CCollateralNode mnShort = MakeUnitTestNode(shortKey);
+    mnShort.UpdateLastPaidBlock(pindexBest, nScanBack);
+    BOOST_CHECK_MESSAGE(mnShort.nBlockLastPaid != nHeightMixed,
+                        "one satoshi was credited as a collateralnode payment of "
+                        << nMixedExpected << " at height " << nHeightMixed);
+    BOOST_CHECK_MESSAGE(mnShort.nBlockLastPaid == nHeightPaid,
+                        "the short-paid node must fall back to the block that "
+                        "really paid it; expected height " << nHeightPaid
+                        << ", got " << mnShort.nBlockLastPaid);
+
+    // A node nothing ever paid is pinned at 1 rather than left at 0, which is
+    // what keeps it in the ranking instead of dropping out of the scan.
+    CKey unpaidKey;
+    unpaidKey.MakeNewKey(true);
+    CCollateralNode mnUnpaid = MakeUnitTestNode(unpaidKey);
+    mnUnpaid.UpdateLastPaidBlock(pindexBest, nScanBack);
+    BOOST_CHECK_MESSAGE(mnUnpaid.nBlockLastPaid == 1,
+                        "a never-paid collateralnode must end at 1; got "
+                        << mnUnpaid.nBlockLastPaid);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

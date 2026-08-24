@@ -655,6 +655,7 @@ std::string HelpMessage()
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestidnsreset=<n>  " + _("Regtest only: IDNS name-reset rehearsal height (default: 0, no reset)") + "\n" +
         "  -regtestcnpayments=<n>  " + _("Regtest only: collateralnode payment and enforcement activation height (default: 0, payments disabled)") + "\n" +
+        "  -regtestcoldstaking=<n> " + _("Regtest only: cold-staking (P2CS) activation height (default: 0, gate stays at block 1)") + "\n" +
         "  -regtestsupplycapheight=<n> " + _("Regtest only: total-supply-cap activation height") + "\n" +
         "  -regtestsupplycap=<n>  " + _("Regtest only: total-supply cap in satoshi (default MAX_MONEY)") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
@@ -1300,6 +1301,20 @@ bool AppInit2()
         nRegtestCNPaymentsHeight = (int)nCN;
         printf("Collateralnode payment rehearsal: height=%d enforcement=%d (regtest only)\n",
                COLLATERALNODE_PAYMENT_ERA_HEIGHT, CollateralnodeEnforcementHeight());
+    }
+
+    // Cold-staking rehearsal, regtest only, so ConnectBlock's pre-gate P2CS refusal branch
+    // executes.
+    if (mapArgs.count("-regtestcoldstaking"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestcoldstaking requires -regtest"));
+        const int64_t nCS = GetArg("-regtestcoldstaking", 0);
+        if (nCS < 0 || nCS > (int64_t)INT_MAX)
+            return InitError(_("-regtestcoldstaking is out of range"));
+        nRegtestColdStakingHeight = (int)nCS;
+        printf("Cold-staking rehearsal: height=%d (regtest only)\n",
+               FORK_HEIGHT_COLD_STAKING);
     }
 
     if (mapArgs.count("-regtestiv5feenote"))
