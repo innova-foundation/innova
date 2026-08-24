@@ -8,6 +8,11 @@
 extern bool fRegTest;
 extern bool fTestNet;
 
+// Defined in namecoin.cpp without a header declaration. The default height is not
+// repeated here so every call states the height it asks about.
+bool NameActive(const std::vector<unsigned char>& vchName,
+                int nCurrentBlockHeight);
+
 BOOST_AUTO_TEST_SUITE(name_rental_tests)
 
 namespace
@@ -222,6 +227,137 @@ CNameRecord MakeRecord(int nRegistrationHeight)
     rec.vtxPos.push_back(ind);
     rec.nLastActiveChainIndex = 0;
     return rec;
+}
+
+// Rehearsal reset height for the regtest knob. Low enough to sit under the DAG
+// gate, high enough to leave a parent block below it.
+const int RESET_REHEARSAL_HEIGHT = 8;
+
+std::vector<unsigned char> Vch(const std::string& str)
+{
+    return std::vector<unsigned char>(str.begin(), str.end());
+}
+
+// The persisted cursor records the reset era, so a fixture built under a
+// rehearsal reset would leave that era behind for every later name suite in the
+// same binary. Restore the knob and the cursor together.
+class CIDNSResetOverride
+{
+public:
+    CIDNSResetOverride(int nResetHeight)
+        : nSaved(nRegtestIDNSResetHeight)
+    {
+        nRegtestIDNSResetHeight = nResetHeight;
+    }
+    ~CIDNSResetOverride()
+    {
+        nRegtestIDNSResetHeight = nSaved;
+        CNameDB dbName("cr+");
+        if (dbName.TxnBegin())
+        {
+            dbName.WriteCursor(MakeChainCursor(-1, uint256(0)));
+            dbName.TxnCommit();
+        }
+    }
+private:
+    int nSaved;
+};
+
+void WriteNameRecordAt(const std::string& strName, int nRegistrationHeight,
+                       int nExpiresAt)
+{
+    const std::vector<unsigned char> vchName = Vch(strName);
+    CNameRecord rec = MakeRecord(nRegistrationHeight);
+    rec.nExpiresAt = nExpiresAt;
+    CNameDB dbName("cr+");
+    BOOST_REQUIRE(dbName.TxnBegin());
+    BOOST_REQUIRE(dbName.EraseName(vchName));
+    BOOST_REQUIRE(dbName.WriteName(vchName, rec));
+    BOOST_REQUIRE(dbName.TxnCommit());
+}
+
+// Connects one block with a name_new over an indexed name through
+// ApplyNameIndexConnectBlock -> namecoin ConnectInputs; returns the indexed record.
+CNameRecord ConnectNameNewOverExisting(const std::string& strName,
+                                       int nExistingRegistrationHeight,
+                                       int nExistingExpiresAt,
+                                       int nConnectHeight,
+                                       unsigned int nSeed)
+{
+    const std::vector<unsigned char> vchName = Vch(strName);
+
+    CBlock fundBlock;
+    AddCoinbaseAndCoinstake(fundBlock, nSeed);
+    CTransaction fundTx;
+    fundTx.nTime = nSeed + 3;
+    fundTx.vin.push_back(CTxIn(COutPoint(uint256(nSeed + 4), 0)));
+    fundTx.vout.push_back(CTxOut(100 * COIN, CScript() << OP_TRUE));
+    fundBlock.vtx.push_back(fundTx);
+    fundBlock.hashPrevBlock = uint256(nSeed + 5);
+    fundBlock.nTime = nSeed + 6;
+
+    unsigned int nFundFile = 0;
+    unsigned int nFundPos = 0;
+    StoreBlock(fundBlock, nConnectHeight - 1, nFundFile, nFundPos);
+
+    const CTransaction nameTx = MakeNameTx(
+        strName, 30, OP_NAME_NEW, "value", COutPoint(fundTx.GetHash(), 0),
+        1 * COIN, nSeed + 7);
+
+    CBlock nameBlock;
+    AddCoinbaseAndCoinstake(nameBlock, nSeed + 8);
+    nameBlock.vtx.push_back(nameTx);
+    nameBlock.hashPrevBlock = fundBlock.GetHash();
+    nameBlock.nTime = nSeed + 12;
+
+    unsigned int nNameFile = 0;
+    unsigned int nNamePos = 0;
+    StoreBlock(nameBlock, nConnectHeight, nNameFile, nNamePos);
+
+    uint256 hashPrevious = fundBlock.GetHash();
+    uint256 hashCurrent = nameBlock.GetHash();
+    CBlockIndex previous;
+    previous.phashBlock = &hashPrevious;
+    previous.nHeight = nConnectHeight - 1;
+    CBlockIndex current(nNameFile, nNamePos, nameBlock);
+    current.phashBlock = &hashCurrent;
+    current.pprev = &previous;
+    current.nHeight = nConnectHeight;
+
+    {
+        CNameDB dbName("cr+");
+        BOOST_REQUIRE(dbName.TxnBegin());
+        BOOST_REQUIRE(dbName.EraseName(vchName));
+        BOOST_REQUIRE(dbName.EraseEffectProgress());
+        CNameRecord existing = MakeRecord(nExistingRegistrationHeight);
+        existing.nExpiresAt = nExistingExpiresAt;
+        BOOST_REQUIRE(dbName.WriteName(vchName, existing));
+        BOOST_REQUIRE(dbName.WriteCursor(
+            MakeChainCursor(previous.nHeight, hashPrevious)));
+        BOOST_REQUIRE(dbName.TxnCommit());
+    }
+
+    std::string strError;
+    {
+        CTxDB txdb("r+");
+        BOOST_REQUIRE_MESSAGE(
+            ApplyNameIndexConnectBlock(txdb, &current, strError), strError);
+    }
+
+    CNameDB dbName("r");
+    CNameRecord after;
+    BOOST_REQUIRE(dbName.ReadName(vchName, after));
+    BOOST_REQUIRE(!after.vtxPos.empty());
+    return after;
+}
+
+// True when the connect above indexed the new registration: a second chain entry
+// mined at the connect height, and the active chain moved onto it.
+bool RegistrationWasIndexed(const CNameRecord& rec, int nConnectHeight)
+{
+    return rec.vtxPos.size() == 2 &&
+           rec.vtxPos.back().nHeight == nConnectHeight &&
+           rec.nLastActiveChainIndex == (int)rec.vtxPos.size() - 1;
 }
 } // namespace
 
@@ -524,6 +660,102 @@ BOOST_AUTO_TEST_CASE(undecodable_name_tx_survives_a_reorg)
     BOOST_CHECK_MESSAGE(PrepareNameIndexDisconnectTransition(
         block, &current, prepared, strError), strError);
     BOOST_CHECK(prepared.vEffects.empty());
+}
+
+// R-IDNS-001: the reset driven through NameActive against a record read from the name DB.
+// Every arm holds the term far past the reset, so an inactive name can only be the reset.
+BOOST_AUTO_TEST_CASE(name_active_expires_only_registrations_under_the_reset)
+{
+    CNetworkOverride regtest(true, false);
+    CIDNSResetOverride reset(RESET_REHEARSAL_HEIGHT);
+    const int nReset = FORK_HEIGHT_IDNS_RESET;
+    BOOST_REQUIRE_EQUAL(nReset, RESET_REHEARSAL_HEIGHT);
+    const int nFarPastTheReset = nReset + 100000;
+
+    // Positive control. Registered at the reset rather than under it, same term.
+    // Active on both sides of the gate, so a refusal below is not a record the
+    // read could not reach or a term that had already run out.
+    WriteNameRecordAt("atreset.inn", nReset, nFarPastTheReset);
+    BOOST_CHECK(NameActive(Vch("atreset.inn"), nReset - 1));
+    BOOST_CHECK(NameActive(Vch("atreset.inn"), nReset));
+    BOOST_CHECK(NameActive(Vch("atreset.inn"), nFarPastTheReset));
+
+    // The rule. One block lower is the only difference between the two records.
+    WriteNameRecordAt("prereset.inn", nReset - 1, nFarPastTheReset);
+    BOOST_CHECK(NameActive(Vch("prereset.inn"), nReset - 1));
+    BOOST_CHECK(!NameActive(Vch("prereset.inn"), nReset));
+    BOOST_CHECK(!NameActive(Vch("prereset.inn"), nFarPastTheReset));
+
+    // ...and the record it read is intact and unexpired, so the false above is
+    // the reset clause rather than a deleted or run-out record.
+    CNameDB dbName("r");
+    CNameRecord rec;
+    BOOST_REQUIRE(dbName.ReadName(Vch("prereset.inn"), rec));
+    BOOST_CHECK(!rec.deleted());
+    BOOST_CHECK_EQUAL(rec.nExpiresAt, nFarPastTheReset);
+    BOOST_CHECK(NameResetExpired(rec, nReset));
+
+    // With the gate off the same record is active at every height, which is what
+    // makes the gate, not the record, the discriminator.
+    {
+        CIDNSResetOverride off(0);
+        BOOST_REQUIRE_EQUAL(FORK_HEIGHT_IDNS_RESET, 0);
+        BOOST_CHECK(NameActive(Vch("prereset.inn"), nReset));
+        BOOST_CHECK(NameActive(Vch("prereset.inn"), nFarPastTheReset));
+    }
+}
+
+// R-IDNS-002: a name_new over a name registered under the reset must connect. The arms
+// differ in exactly one input; the accepted arm is the control for the refused ones.
+BOOST_AUTO_TEST_CASE(name_new_over_a_pre_reset_registration_connects)
+{
+    CNetworkOverride regtest(true, false);
+    CIDNSResetOverride reset(RESET_REHEARSAL_HEIGHT);
+    const int nReset = FORK_HEIGHT_IDNS_RESET;
+    BOOST_REQUIRE_EQUAL(nReset, RESET_REHEARSAL_HEIGHT);
+    const int nAfterReset = nReset + 1;
+    const int nBeforeReset = nReset - 1;
+    const int nFarPastTheReset = nReset + 1000000;
+
+    // The rule: incumbent registered one block under the reset, re-registered
+    // above it.
+    const CNameRecord expired = ConnectNameNewOverExisting(
+        "expired.inn", nReset - 1, nFarPastTheReset, nAfterReset, 0x55000);
+    BOOST_CHECK(RegistrationWasIndexed(expired, nAfterReset));
+    BOOST_CHECK_EQUAL(expired.vtxPos[0].nHeight, nReset - 1);
+
+    // Control on the record: incumbent registered at the reset, so it survives
+    // and the name_new is refused. Same term, same block shape, one block higher.
+    const CNameRecord live = ConnectNameNewOverExisting(
+        "live.inn", nReset, nFarPastTheReset, nAfterReset, 0x56000);
+    BOOST_CHECK(!RegistrationWasIndexed(live, nAfterReset));
+    BOOST_CHECK_EQUAL(live.vtxPos.size(), 1u);
+    BOOST_CHECK_EQUAL(live.vtxPos.back().nHeight, nReset);
+
+    // Control on the height: the reset is a chain event. The same under-the-reset
+    // incumbent is still live in a block mined below the gate, so the identical
+    // name_new is refused there.
+    const CNameRecord early = ConnectNameNewOverExisting(
+        "early.inn", nReset - 2, nFarPastTheReset, nBeforeReset, 0x57000);
+    BOOST_CHECK(!RegistrationWasIndexed(early, nBeforeReset));
+    BOOST_CHECK_EQUAL(early.vtxPos.size(), 1u);
+    BOOST_CHECK_EQUAL(early.vtxPos.back().nHeight, nReset - 2);
+}
+
+// Control: with the reset disabled the incumbent never expires, so the arm that connected
+// above is refused. Separate case because the knob must be off for the whole fixture.
+BOOST_AUTO_TEST_CASE(name_new_over_an_incumbent_is_refused_without_a_reset)
+{
+    CNetworkOverride regtest(true, false);
+    CIDNSResetOverride off(0);
+    BOOST_REQUIRE_EQUAL(FORK_HEIGHT_IDNS_RESET, 0);
+
+    const CNameRecord incumbent = ConnectNameNewOverExisting(
+        "noreset.inn", RESET_REHEARSAL_HEIGHT - 1, RESET_REHEARSAL_HEIGHT + 1000000,
+        RESET_REHEARSAL_HEIGHT + 1, 0x58000);
+    BOOST_CHECK(!RegistrationWasIndexed(incumbent, RESET_REHEARSAL_HEIGHT + 1));
+    BOOST_CHECK_EQUAL(incumbent.vtxPos.size(), 1u);
+    BOOST_CHECK_EQUAL(incumbent.vtxPos.back().nHeight, RESET_REHEARSAL_HEIGHT - 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
