@@ -12,12 +12,13 @@
 // rejection may never be written into the block index -- BLOCK_FAILED_VALID is
 // serialized and cleared only by reconsiderblock.
 //
-// Unlike the two payment-rule sites (unreachable on every test network, see
-// cn_payment_verdict_tests), this one activates at height 1 on regtest, so the
-// path is driven end to end here: a real chain, a real P2CS delegation, a real
-// cold-stake coinstake carrying a payment to a payee this node has not heard of,
-// and a real ConnectBlock. The three arms connect the same block bytes every
-// time; only the node-local state around it changes.
+// This site activates at height 1 on regtest, so the path is driven end to end
+// here: a real chain, a real P2CS delegation, a real cold-stake coinstake
+// carrying a payment to a payee this node has not heard of, and a real
+// ConnectBlock. The three arms connect the same block bytes every time; only the
+// node-local state around it changes. The proof-of-work payment sites needed
+// -regtestcnpayments before they could run at all and are driven in
+// cn_pow_payment_tests; cn_payment_verdict_tests keeps the structural half.
 //
 // The value half. OP_CHECKCOLDSTAKEVERIFY enforces its own copy of the output
 // structure and its own collateralnode-payment cap, and the interpreter runs
