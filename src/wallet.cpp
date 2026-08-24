@@ -5770,14 +5770,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                         // sighash covers, so signing first would invalidate every
                         // coinstake whenever a CN payee resolves.
                         {
-                            bool bCNPayment = false;
-                            if (fTestNet) {
-                                if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET)
-                                    bCNPayment = true;
-                            } else {
-                                if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS && pindexPrev->nHeight+1 > 2085000)
-                                    bCNPayment = true;
-                            }
+                            const bool bCNPayment =
+                                CollateralnodePaymentsEnabledAtHeight(pindexPrev->nHeight + 1);
 
                             if (bCNPayment)
                             {
@@ -6273,17 +6267,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 	// Collateralnode Payments
     int payments = 1;
     // start collateralnode payments
-    bool bCollateralNodePayment = false;
-
-    if (fTestNet) {
-        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET ) {
-            bCollateralNodePayment = true;
-        }
-    } else {
-        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS && pindexPrev->nHeight+1 > 2085000){
-            bCollateralNodePayment = true;
-        }
-    }
+    const bool bCollateralNodePayment =
+        CollateralnodePaymentsEnabledAtHeight(pindexPrev->nHeight + 1);
     if(fDebug) { printf("CreateCoinStake() : Collateralnode Payments = %i!\n", bCollateralNodePayment); }
 
     CScript payee;

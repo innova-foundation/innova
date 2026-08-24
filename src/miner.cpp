@@ -408,21 +408,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     unsigned int nBlockMinSize = GetArg("-blockminsize", 0);
     nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
 
-    // start collateralnode payments
+    // start collateralnode payments -- the same era condition the validator reads
     bool bCollateralNodePayment = false;
 
 	//Only if it isn't Proof of Stake?
 	if (!fProofOfStake)
     {
-		if (fTestNet) {
-			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){
-				bCollateralNodePayment = true;
-			}
-		} else {
-			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS && nHeight >= 2085000){
-				bCollateralNodePayment = true;
-			}
-		}
+        bCollateralNodePayment = CollateralnodePaymentsEnabledAtHeight(nHeight);
         if(fDebug && fDebugCN) { printf("CreateNewBlock(): Collateralnode Payments : %i\n", bCollateralNodePayment); }
 	}
 

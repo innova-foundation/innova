@@ -913,13 +913,8 @@ Value getblocktemplate(const Array& params, bool fHelp)
 
     // ---- Collateralnode info ---
 
-    bool bCollateralnodePayments = false;
-
-    if(fTestNet) {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
-    } else {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS && pindexPrev->nHeight+1 >= 2085000) bCollateralnodePayments = true;
-    }
+    const bool bCollateralnodePayments =
+        CollateralnodePaymentsEnabledAtHeight(pindexPrev->nHeight + 1);
     if(fDebug && fDebugCN) { printf("GetBlockTemplate(): Collateralnode Payments : %i\n", bCollateralnodePayments); }
 
     if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){

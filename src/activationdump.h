@@ -121,6 +121,12 @@ inline std::string GetActivationLadderJSON()
       &GetForkHeightTighterDrift, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_CN_PAYMENT_VALIDATION", "GetForkHeightCNPaymentValidation", "src/main.h",
       &GetForkHeightCNPaymentValidation, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+    // The payment era itself, which is older than the ladder: a raw literal on
+    // mainnet and testnet, and zero -- disabled -- on regtest until
+    // -regtestcnpayments names a height.
+    { "COLLATERALNODE_PAYMENT_ERA_HEIGHT", "GetCollateralnodePaymentEraHeight", "src/main.h",
+      &GetCollateralnodePaymentEraHeight, false, NULL, NULL, NULL, false, "-regtestcnpayments",
+      "activates_at", "disabled_when_zero", NULL },
     { "FORK_HEIGHT_COLD_STAKING", "GetForkHeightColdStaking", "src/main.h",
       &GetForkHeightColdStaking, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_SHIELDED", "GetForkHeightShielded", "src/main.h",
@@ -311,6 +317,7 @@ inline std::string GetActivationLadderJSON()
     ss << "    \"nRegtestBoundaryBHeight\": " << nRegtestBoundaryBHeight << ",\n";
     ss << "    \"nRegtestSupplyCapHeight\": " << nRegtestSupplyCapHeight << ",\n";
     ss << "    \"nRegtestSupplyCapAmount\": " << nRegtestSupplyCapAmount << ",\n";
+    ss << "    \"nRegtestCNPaymentsHeight\": " << nRegtestCNPaymentsHeight << ",\n";
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";

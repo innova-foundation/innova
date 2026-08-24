@@ -125,6 +125,44 @@ static const int64_t MAINNET_POSFIX = 500; // Mainnet Proof of Stake update not 
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 999999; // Enforce CN payments after this height for Innova Testnet!
 
+// Regtest-only collateralnode payment activation height (-regtestcnpayments).
+// 0 leaves the mainnet era condition in force, which no regtest chain reaches,
+// so the payment rules stay unreachable by default.
+extern int nRegtestCNPaymentsHeight;
+
+// First height at which a block owes a collateralnode payment. 0 means the
+// network never enables them.
+inline int GetCollateralnodePaymentEraHeight() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fTestNet) return BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET + 1;
+    if (fRegTest) return nRegtestCNPaymentsHeight; // 0 unless rehearsing
+    // Both mainnet floors, the higher binding. The shipped condition was
+    // strictly greater, so the first paying height is one above it.
+    return (BLOCK_START_COLLATERALNODE_PAYMENTS > 2085000
+                ? BLOCK_START_COLLATERALNODE_PAYMENTS : 2085000) + 1;
+}
+#define COLLATERALNODE_PAYMENT_ERA_HEIGHT (GetCollateralnodePaymentEraHeight())
+
+// The era condition, in one place. Producer and validator both read it, so a
+// block cannot carry a payment the validator does not require or omit one it
+// does.
+inline bool CollateralnodePaymentsEnabledAtHeight(int nHeight) {
+    const int nEra = GetCollateralnodePaymentEraHeight();
+    return nEra > 0 && nHeight >= nEra;
+}
+
+// Height from which an unrecognised payee is refused rather than warned about.
+// On mainnet payments begin long after enforcement, so paying implies enforced;
+// the regtest knob keeps that composite by moving both to the same height.
+inline int CollateralnodeEnforcementHeight() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fTestNet) return MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET;
+    if (fRegTest && nRegtestCNPaymentsHeight > 0) return nRegtestCNPaymentsHeight;
+    return MN_ENFORCEMENT_ACTIVE_HEIGHT;
+}
+
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
 /** Get the adaptive effective block size limit for a given height.

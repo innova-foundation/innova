@@ -265,6 +265,7 @@ int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIDNSResetHeight = 0;
+int nRegtestCNPaymentsHeight = 0;
 bool fRegtestShieldedVNextRehearsal = false;
 bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;
@@ -9249,26 +9250,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
-    bool CollateralnodePayments = false;
+    const bool CollateralnodePayments =
+        CollateralnodePaymentsEnabledAtHeight(pindex->nHeight);
     bool fIsInitialDownload = IsInitialBlockDownload();
 
-    if (fTestNet) {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){
-            CollateralnodePayments = true;
-            if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
-        }else{
-            CollateralnodePayments = false;
-            if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
-        }
-    } else {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2085000){
-            CollateralnodePayments = true;
-            if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
-        }else{
-            CollateralnodePayments = false;
-            if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
-        }
-    }
+    if(fDebug) { printf("CheckBlock() : Collateralnode payments %s\n",
+                        CollateralnodePayments ? "enabled" : "disabled"); }
 
     if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
                                          CollateralnodePayments))
@@ -9280,8 +9267,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         burnDestination.SetString(fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
         burnPayee = GetScriptForDestination(burnDestination.Get());
 
-        // Network-aware CN enforcement height
-        int nCNEnforcementHeight = fTestNet ? MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET : MN_ENFORCEMENT_ACTIVE_HEIGHT;
+        const int nCNEnforcementHeight = CollateralnodeEnforcementHeight();
 
         if(IsProofOfStake() && pindexBest != NULL){
             // (reward goes entirely to shielded pool, no MN payment)

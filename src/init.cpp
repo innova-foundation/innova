@@ -654,6 +654,7 @@ std::string HelpMessage()
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestidnsreset=<n>  " + _("Regtest only: IDNS name-reset rehearsal height (default: 0, no reset)") + "\n" +
+        "  -regtestcnpayments=<n>  " + _("Regtest only: collateralnode payment and enforcement activation height (default: 0, payments disabled)") + "\n" +
         "  -regtestsupplycapheight=<n> " + _("Regtest only: total-supply-cap activation height") + "\n" +
         "  -regtestsupplycap=<n>  " + _("Regtest only: total-supply cap in satoshi (default MAX_MONEY)") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
@@ -1285,6 +1286,20 @@ bool AppInit2()
         nRegtestIDNSResetHeight = (int)nReset;
         printf("IDNS reset rehearsal: height=%d (regtest only)\n",
                nRegtestIDNSResetHeight);
+    }
+
+    // Collateralnode payment rehearsal, regtest only. One height moves both payments and their
+    // enforcement; the mainnet era condition (> 2,085,000) is unreachable on regtest.
+    if (mapArgs.count("-regtestcnpayments"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestcnpayments requires -regtest"));
+        const int64_t nCN = GetArg("-regtestcnpayments", 0);
+        if (nCN < 0 || nCN > (int64_t)INT_MAX)
+            return InitError(_("-regtestcnpayments is out of range"));
+        nRegtestCNPaymentsHeight = (int)nCN;
+        printf("Collateralnode payment rehearsal: height=%d enforcement=%d (regtest only)\n",
+               COLLATERALNODE_PAYMENT_ERA_HEIGHT, CollateralnodeEnforcementHeight());
     }
 
     if (mapArgs.count("-regtestiv5feenote"))
