@@ -1213,19 +1213,69 @@ BOOST_AUTO_TEST_CASE(payload_results_are_never_reported_as_node_local)
     }
 }
 
-// The envelope table exists twice: the Rust decoder judges payloads with it, and the C++
-// header answers "what does this payload declare about itself" with a copy. A combination
-// the two disagree on is a payload one side admits and the other refuses, which is a
-// chain split at the first block carrying it.
-//
-// Checked exhaustively rather than by inspection, over every wire version either side
-// names and every enum value either side calls known, plus one past each so a table that
-// grew on one side alone is caught. This is how the operation-8 and operation-9 wiring
-// was verified.
-//
-// Mutation proving this: change any one arm of iv5::EnvelopeAllows -- for instance make
-// 2008 return true unconditionally, which is what it did before operation 9 -- and the
-// case fails naming the exact tuple.
+// The disclosure mask has three meaningful bits on every reader; values above seven are
+// refused.
+BOOST_AUTO_TEST_CASE(the_disclosure_mask_is_three_bits_on_every_reader)
+{
+    BOOST_CHECK_EQUAL((unsigned)iv5::DISCLOSURE_MASK,
+                      INNOVA_PRIVACY_VNEXT_DISCLOSURE_MODE_MAX);
+    BOOST_CHECK_EQUAL(INNOVA_PRIVACY_VNEXT_DISCLOSURE_MODE_MIN, 0U);
+    BOOST_CHECK_EQUAL((unsigned)iv5::DISCLOSURE_MASK,
+                      (unsigned)(iv5::DISCLOSURE_HIDE_SENDER |
+                                 iv5::DISCLOSURE_HIDE_RECEIVER |
+                                 iv5::DISCLOSURE_HIDE_AMOUNT));
+
+    // The nine bytes a payload header is, with the mask where the readers look for it.
+    unsigned char header[9] = {0};
+    header[0] = (unsigned char)(iv5::PROTOCOL_SCHEMA & 0xff);
+    header[1] = (unsigned char)((iv5::PROTOCOL_SCHEMA >> 8) & 0xff);
+    header[2] = iv5::NOTE_TRANSFER;
+
+    for (unsigned nMask = 0; nMask <= 0xff; ++nMask)
+    {
+        const bool fBounded = nMask <= iv5::DISCLOSURE_MASK;
+        BOOST_CHECK_MESSAGE(
+            iv5::IsKnownTypedContract(iv5::NOTE_TRANSFER, iv5::FINALITY_NONE,
+                                      iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                      (uint8_t)nMask) == fBounded,
+            strprintf("the typed contract disagrees on mask %u", nMask));
+        BOOST_CHECK_MESSAGE(
+            iv5::EnvelopeAllows(2008, iv5::NOTE_TRANSFER, iv5::FINALITY_NONE,
+                                iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                (uint8_t)nMask) == fBounded,
+            strprintf("the 2008 envelope disagrees on mask %u", nMask));
+        BOOST_CHECK_MESSAGE(
+            (innova_privacy_vnext_envelope_allows(
+                 2008, iv5::NOTE_TRANSFER, iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                 iv5::FINALITY_OBJECT_NONE, (uint8_t)nMask) ==
+             INNOVA_PRIVACY_VNEXT_VALID) == fBounded,
+            strprintf("the linked contract disagrees on mask %u", nMask));
+
+        header[5] = (unsigned char)nMask;
+        uint8_t nOperationOut = 0xff;
+        uint8_t nMaskOut = 0xff;
+        const bool fRead = iv5::ReadDeclaredEnvelope(header, sizeof(header),
+                                                     nOperationOut, nMaskOut);
+        BOOST_CHECK_MESSAGE(fRead == fBounded,
+                            strprintf("the header reader disagrees on mask %u", nMask));
+        if (fRead)
+        {
+            BOOST_CHECK_EQUAL((unsigned)nMaskOut, nMask);
+            BOOST_CHECK_EQUAL((unsigned)nOperationOut, (unsigned)iv5::NOTE_TRANSFER);
+        }
+    }
+
+    // A short header reports nothing rather than reading past its own bytes.
+    for (size_t nSize = 0; nSize < 9; ++nSize)
+    {
+        uint8_t nOperationOut = 0;
+        uint8_t nMaskOut = 0;
+        BOOST_CHECK_MESSAGE(
+            !iv5::ReadDeclaredEnvelope(header, nSize, nOperationOut, nMaskOut),
+            strprintf("the header reader accepted %u bytes", (unsigned)nSize));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(the_envelope_table_is_the_same_table_on_both_sides)
 {
     size_t nAdmitted = 0;
