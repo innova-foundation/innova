@@ -307,7 +307,8 @@ TEST_OBJS= \
     obj/test/coldstake_cn_payee_tests.o \
     obj/test/miner_tests.o \
     obj/test/dag_parent_commitment_tests.o \
-    obj/test/dag_index_extractor_tests.o
+    obj/test/dag_index_extractor_tests.o \
+    obj/test/cn_pow_payment_tests.o
 
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.
@@ -323,7 +324,7 @@ FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-po
 FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
 FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
 
-.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input
+.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -413,6 +414,9 @@ check-cn-payment-verdict: test_innova
 check-coldstake-cn-payee: test_innova
 	./test_innova --run_test=coldstake_cn_payee_tests
 
+check-cn-pow-payment: test_innova
+	./test_innova --run_test=cn_pow_payment_tests
+
 check-blockindex-nsize: test_innova
 	./test_innova --run_test=blockindex_nsize_tests
 
@@ -476,7 +480,7 @@ check-smessage-hmac: test_innova
 check-all: test_innova
 	./test_innova
 
-release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input
+release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input
 
 #
 # LevelDB support
