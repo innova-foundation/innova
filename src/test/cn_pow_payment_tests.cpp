@@ -202,6 +202,10 @@ CBlock::ConnectResult ConnectAndRollBack(CandidateBlock& cb)
 void RequirePaymentBranchEntered(CandidateBlock& cb)
 {
     SetMockTime(cb.block.GetBlockTime());
+    BOOST_TEST_MESSAGE("collateralnode payment branch at height "
+                       << cb.Height() << " (DAG fork " << FORK_HEIGHT_DAG
+                       << ", era " << GetCollateralnodePaymentEraHeight()
+                       << ", enforcement " << CollateralnodeEnforcementHeight() << ")");
     BOOST_REQUIRE_MESSAGE(CollateralnodePaymentsEnabledAtHeight(cb.Height()),
                           "the payment era is not enabled at height " << cb.Height());
     BOOST_REQUIRE_MESSAGE(
