@@ -1229,4 +1229,80 @@ BOOST_AUTO_TEST_CASE(anonymous_preimage_is_wallet_independent_and_bounded)
     BOOST_CHECK_NE(GetAnonTxnPreImage(tx, pureHash), 0);
 }
 
+
+// R-EPV2-003: V2-range epochs are staged in the best-chain batch, never at index insert.
+// No V2-range epoch exists at shipping values; if V3 moves, add a behavioural test.
+BOOST_AUTO_TEST_CASE(no_epoch_crossing_hands_a_v2_range_epoch_to_the_index_path)
+{
+    const bool fOldRegTest = fRegTest;
+    const bool fOldTestNet = fTestNet;
+
+    struct CNetworkArm { const char* strName; bool fRegTestArm; bool fTestNetArm; };
+    const CNetworkArm arms[] = { { "mainnet", false, false },
+                                 { "regtest", true,  false },
+                                 { "testnet", false, true  } };
+
+    int nIndexOwnedSeen = 0;
+    int nStagedSeen = 0;
+    int nNetworksSwept = 0;
+
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+    {
+        fRegTest = arms[i].fRegTestArm;
+        fTestNet = arms[i].fTestNetArm;
+        const std::string strArm(arms[i].strName);
+
+        if (!IsEpochStateV3Configured())
+            continue;               // covered by the sentinel arm of the case above
+
+        const int nV2 = FORK_HEIGHT_EPOCH_STATE_V2;
+        const int nV3 = FORK_HEIGHT_EPOCH_STATE_V3;
+        BOOST_REQUIRE_MESSAGE(nV3 > nV2, strArm + ": the V2 range is empty");
+        nNetworksSwept++;
+
+        const int nFrom = std::max(1, nV2 - 3 * FINALITY_EPOCH_INTERVAL_PRE_DAG);
+        for (int nHeight = nFrom; nHeight < nV3; nHeight++)
+        {
+            int nIndexEpoch = -1;
+            int nStagedEpoch = -1;
+            const bool fIndex = V2CompatEpochBuildsAtIndexCrossing(nHeight, nIndexEpoch);
+            const bool fStaged =
+                V2CompatEpochStagesAtBestChainCrossing(nHeight, nStagedEpoch);
+
+            // No crossing may be owned twice: two owners is two writes of the same
+            // epoch record, one of them reachable from a side branch.
+            BOOST_REQUIRE_MESSAGE(!(fIndex && fStaged),
+                                  strArm + ": height " + std::to_string(nHeight) +
+                                      " is owned by both the index and the best-chain "
+                                      "path");
+            if (fStaged)
+                nStagedSeen++;
+            if (!fIndex)
+                continue;
+
+            nIndexOwnedSeen++;
+            const int nEpochEnd = EpochEndHeightForTest(nIndexEpoch);
+            BOOST_CHECK_MESSAGE(nEpochEnd < nV2,
+                                strArm + ": the epoch ending at height " +
+                                    std::to_string(nEpochEnd) +
+                                    " reaches the V2 range but is built during "
+                                    "block-index insertion, where a side-branch "
+                                    "arrival reaches it");
+        }
+    }
+
+    fRegTest = fOldRegTest;
+    fTestNet = fOldTestNet;
+
+    BOOST_REQUIRE_MESSAGE(nNetworksSwept > 0, "no network had schema V3 configured");
+    BOOST_CHECK_MESSAGE(nIndexOwnedSeen > 0,
+                        "no epoch crossing was reached on any network, so the loop "
+                        "asserted nothing");
+    BOOST_CHECK_MESSAGE(nStagedSeen == 0,
+                        "the V2 best-chain staging branch is now reachable ("
+                            << nStagedSeen << " crossing(s)); it needs a behavioural "
+                            "test of its own, because this case only says it is not "
+                            "reached");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
