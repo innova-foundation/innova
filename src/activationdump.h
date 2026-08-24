@@ -128,7 +128,8 @@ inline std::string GetActivationLadderJSON()
       &GetCollateralnodePaymentEraHeight, false, NULL, NULL, NULL, false, "-regtestcnpayments",
       "activates_at", "disabled_when_zero", NULL },
     { "FORK_HEIGHT_COLD_STAKING", "GetForkHeightColdStaking", "src/main.h",
-      &GetForkHeightColdStaking, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+      &GetForkHeightColdStaking, true, NULL, NULL, NULL, false, "-regtestcoldstaking",
+      "activates_at", NULL, NULL },
     { "FORK_HEIGHT_SHIELDED", "GetForkHeightShielded", "src/main.h",
       &GetForkHeightShielded, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     // Zero here means active from genesis on every network -- the opposite of the
@@ -318,6 +319,7 @@ inline std::string GetActivationLadderJSON()
     ss << "    \"nRegtestSupplyCapHeight\": " << nRegtestSupplyCapHeight << ",\n";
     ss << "    \"nRegtestSupplyCapAmount\": " << nRegtestSupplyCapAmount << ",\n";
     ss << "    \"nRegtestCNPaymentsHeight\": " << nRegtestCNPaymentsHeight << ",\n";
+    ss << "    \"nRegtestColdStakingHeight\": " << nRegtestColdStakingHeight << ",\n";
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";

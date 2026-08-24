@@ -255,11 +255,17 @@ inline int GetForkHeightCNPaymentValidation() {
 // Forces CN operators to update to current software for continued payments
 static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 
+// Regtest-only cold-staking activation height (-regtestcoldstaking). 0 leaves
+// the gate at 1, and no coinstake can sit below height 1, so the pre-gate branch
+// stays unreachable by default.
+extern int nRegtestColdStakingHeight;
+
 // Hard fork height for cold staking (P2CS) support
 // In regtest/testnet mode, cold staking activates at block 1
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
     extern bool fTestNet;
+    if (fRegTest && nRegtestColdStakingHeight > 0) return nRegtestColdStakingHeight;
     return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7800000);
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())

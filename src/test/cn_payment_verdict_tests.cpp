@@ -2,32 +2,9 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// ConnectBlock has three collateralnode rejection sites that are entered on
-// inputs the chain does not supply -- the validator's own wall clock, its own
-// tip, the gossiped collateralnode list, the gossiped winner schedule, the
-// mempool -- and each of them once returned DoS(100), which keeps ConnectBlock's
-// default CONNECT_RESULT_INVALID. That result reaches pfPermanentInvalid,
-// AddToBlockIndex calls SetFailedValid(), and nFlags is serialized: a verdict a
-// 20-minute clock offset or an unsynced node list produced is written to disk and
-// survives restart, clearable only by reconsiderblock. One validator permanently
-// condemns a block the rest of the network accepted.
-//
-// The property pinned here is the general one, not the individual call sites:
-//
-//   no verdict reached under a node-local gate is persistable.
-//
-// The persistence rule is a function and is exercised directly. Which verdicts a
-// gated scope can produce is a property of code at depth 6 inside a 2,000-line
-// ConnectBlock, so it is pinned as a structural invariant over every gated scope:
-// every return under a gate routes through TransientFailure, and the gossiped
-// payee view is read nowhere else. Reading the source is what makes that work --
-// it catches the next rejection added under a gate, which is how all three arose.
-//
-// The two payment-rule sites are unreachable on every test network:
-// CollateralnodePayments needs height > 2085000 with fTestNet false, and -regtest
-// sets fRegTest, not fTestNet, so a regtest chain takes the mainnet branch and
-// never enables it. The cold-stake payee site is reachable on regtest and is
-// covered behaviourally in coldstake_cn_payee_tests.
+// No ConnectBlock verdict reached under a node-local gate may persist as BLOCK_FAILED_VALID.
+// The rule is tested directly; the gated scopes are pinned by scanning the source for
+// returns not routed through TransientFailure.
 
 #include <boost/test/unit_test.hpp>
 
