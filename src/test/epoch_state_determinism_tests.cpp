@@ -1876,4 +1876,72 @@ BOOST_AUTO_TEST_CASE(harness_blocks_carry_and_reread_their_transactions)
     BOOST_CHECK(trimmed.BuildMerkleTree() != readBack.hashMerkleRoot);
 }
 
+
+// R-CFC-002. A V2 build whose anchor does not reach the epoch's final height must
+// fail; the FindBlockByHeight fallback is gated out, and a zero hashBoundaryBlock
+// would enter a consensus digest.
+BOOST_AUTO_TEST_CASE(a_v2_epoch_build_without_a_canonical_anchor_fails_closed)
+{
+    DAGHarness h;
+
+    const int E = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V2);
+    const int hStart = GetEpochBoundaryHeight(E, FORK_HEIGHT_EPOCH_STATE_V2);
+    const int hEnd = GetEpochBoundaryHeight(E + 1, FORK_HEIGHT_EPOCH_STATE_V2) - 1;
+    BOOST_REQUIRE_MESSAGE(hEnd >= FORK_HEIGHT_EPOCH_STATE_V2,
+                          "the epoch under test ends below the V2 height, so the "
+                          "deterministic-anchor branch is not entered at all");
+
+    std::vector<uint256> none;
+    CBlockIndex* pBefore = h.add(0xCF000F00, hStart - 1, none, NULL);
+    CEpochState prev;
+    prev.nEpoch = E - 1;
+    prev.hashBoundaryBlock = pBefore->GetBlockHash();
+    prev.nHeightStart = GetEpochBoundaryHeight(E - 1, hStart);
+    prev.nHeightEnd = hStart - 1;
+    CCurveTree prevTree;
+
+    CBlockIndex* pTip = pBefore;
+    CBlockIndex* pShort = NULL;
+    for (int nHeight = hStart; nHeight <= hEnd; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pTip->GetBlockHash());
+        pTip = h.add(0xCF000000U + (unsigned int)(nHeight - hStart + 1), nHeight,
+                     parents, pTip);
+        if (nHeight == hEnd - 1)
+            pShort = pTip;
+    }
+    std::vector<uint256> crossingParents(1, pTip->GetBlockHash());
+    CBlockIndex* pCrossing = h.add(0xCF000FFF, hEnd + 1, crossingParents, pTip);
+
+    // The control: the canonical crossing block reaches the boundary, so the build
+    // succeeds and records it. Without this the failure below could be any of the
+    // other reasons the build refuses.
+    CEpochState stateOk;
+    CCurveTree treeOk;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochStateV2Compat(
+                              E, hEnd - hStart + 1, pCrossing, stateOk, treeOk,
+                              strError, &prev, &prevTree),
+                          strError);
+    BOOST_CHECK(stateOk.hashBoundaryBlock != 0);
+
+    // An anchor one block short of the epoch's final height. Its selected-parent
+    // walk can never land on hEnd, and the live-tip fallback is unreachable here,
+    // so the build must refuse rather than emit a state with no boundary block.
+    BOOST_REQUIRE(pShort != NULL && pShort->nHeight == hEnd - 1);
+    CEpochState stateShort;
+    CCurveTree treeShort;
+    std::string strShortError;
+    const bool fBuilt = g_dagManager.BuildEpochStateV2Compat(
+        E, hEnd - hStart + 1, pShort, stateShort, treeShort, strShortError,
+        &prev, &prevTree);
+    BOOST_CHECK_MESSAGE(!fBuilt,
+                        "an anchor that does not reach the boundary height built a "
+                        "V2 epoch anyway, with hashBoundaryBlock "
+                            << stateShort.hashBoundaryBlock.ToString());
+    BOOST_CHECK_MESSAGE(strShortError.find("does not reach boundary height") !=
+                            std::string::npos,
+                        "the build refused for another reason: " << strShortError);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

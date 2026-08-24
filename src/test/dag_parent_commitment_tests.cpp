@@ -9,10 +9,13 @@
 
 #include "../bignum.h"
 #include "../dag.h"
+#include "../finality.h"
 #include "../init.h"
 #include "../main.h"
 #include "../miner.h"
 #include "../script.h"
+#include "../subsidy.h"
+#include "../txdb.h"
 #include "../uint256.h"
 #include "../wallet.h"
 
@@ -501,6 +504,184 @@ BOOST_AUTO_TEST_CASE(a_full_parent_set_is_accepted_and_indexed)
     BOOST_REQUIRE(g_dagManager.GetDAGData(hash, data));
     BOOST_CHECK_EQUAL(data.vDAGParents.size(), (unsigned int)MAX_DAG_PARENTS);
     BOOST_CHECK(data.vDAGParents == vParents);
+}
+
+
+// R-SETTLE-005: post-DAG the coinbase may pay subsidy minus the withheld reserve plus the
+// settlement leg, never the reserve. Arithmetic is in subsidy_split_tests.
+
+namespace {
+
+CBlockIndex* ParentIndexOf(const CBlock& block)
+{
+    LOCK(cs_main);
+    std::map<uint256, CBlockIndex*>::const_iterator mi =
+        mapBlockIndex.find(block.hashPrevBlock);
+    return mi == mapBlockIndex.end() ? NULL : mi->second;
+}
+
+// A template on the tip with the stack index ConnectBlock is handed. Edit the
+// coinbase, then Seal: the merkle root and the work are recomputed there, so an
+// arm's edit rides a block that is otherwise what the producer emitted.
+struct AllowanceCandidate
+{
+    CBlock block;
+    uint256 hash;
+    CBlockIndex index;
+    CBlockIndex* pparent;
+
+    AllowanceCandidate() : pparent(NULL) {}
+    CBlockIndex* Index() { return &index; }
+    int Height() const { return pparent->nHeight + 1; }
+    CTransaction& Coinbase() { return block.vtx[0]; }
+};
+
+bool BuildAllowanceCandidate(AllowanceCandidate& out)
+{
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    if (pblock.get() == NULL)
+        return false;
+    CBlockIndex* pindexParent = ParentIndexOf(*pblock);
+    if (pindexParent == NULL)
+        return false;
+    unsigned int nExtraNonce = 0;
+    IncrementExtraNonce(pblock.get(), pindexParent, nExtraNonce);
+    out.block = *pblock;
+    out.pparent = pindexParent;
+    return true;
+}
+
+bool SealCandidate(AllowanceCandidate& out)
+{
+    out.block.hashMerkleRoot = out.block.BuildMerkleTree();
+    if (!SolveBlock(&out.block))
+        return false;
+    out.hash = out.block.GetHash();
+    out.index = CBlockIndex(0, 0, out.block);
+    out.index.pprev = out.pparent;
+    out.index.nHeight = out.pparent->nHeight + 1;
+    out.index.phashBlock = &out.hash;
+    return true;
+}
+
+// Connect and discard every write. Without the abort an accepted arm would spend
+// this chain's outputs for the rest of the binary.
+CBlock::ConnectResult ConnectAndRollBack(AllowanceCandidate& cb)
+{
+    LOCK(cs_main);
+    CTxDB txdb;
+    CBlock::ConnectResult result = CBlock::CONNECT_RESULT_INVALID;
+    BOOST_REQUIRE(txdb.TxnBegin());
+    const bool fConnected = cb.block.ConnectBlock(txdb, cb.Index(), false, false, &result);
+    BOOST_REQUIRE(txdb.TxnAbort());
+    BOOST_CHECK_EQUAL(fConnected, result == CBlock::CONNECT_RESULT_OK);
+    return result;
+}
+
+// The coinbase output carrying the producer's payout. Chosen by value rather
+// than by position: the IDAG commitment is a zero-value OP_RETURN and its index
+// is the producer's to choose.
+unsigned int LargestCoinbaseOutput(const CTransaction& coinbase)
+{
+    unsigned int nBest = 0;
+    for (unsigned int i = 1; i < coinbase.vout.size(); i++)
+        if (coinbase.vout[i].nValue > coinbase.vout[nBest].nValue)
+            nBest = i;
+    return nBest;
+}
+
+// Past the DAG fork, and past any settlement height: on a settlement block the
+// allowance carries a settlement leg as well, so the reserve arm below would no
+// longer name a single quantity.
+void MineToNonSettlementPostDAG()
+{
+    MineToPostDAG();
+    while (IsFinalitySettlementHeight(BestIndex()->nHeight + 1))
+        MineTo(BestIndex()->nHeight + 1);
+}
+
+// Every condition that makes the arms below adversarial rather than vacuous.
+void RequireAllowanceWindow(AllowanceCandidate& cb)
+{
+    BOOST_TEST_MESSAGE("coinbase allowance at height " << cb.Height()
+                       << " (DAG fork " << FORK_HEIGHT_DAG << ", reserve "
+                       << GetFinalityReservePerBlock(cb.Height()) << ")");
+    BOOST_REQUIRE_MESSAGE(cb.Height() >= FORK_HEIGHT_DAG,
+                          "below the DAG fork the reserve is zero and the arms "
+                          "prove nothing");
+    BOOST_REQUIRE_MESSAGE(GetFinalityReservePerBlock(cb.Height()) > 0,
+                          "the reserve is zero at height " << cb.Height());
+    BOOST_REQUIRE_MESSAGE(cb.block.IsProofOfWork(),
+                          "the allowance branch under test is the proof-of-work one");
+    int nSettlementEpoch = -1;
+    BOOST_REQUIRE_MESSAGE(!IsFinalitySettlementHeight(cb.Height(), &nSettlementEpoch),
+                          "height " << cb.Height() << " is a settlement height, so "
+                          "the allowance carries a settlement leg as well and the "
+                          "reserve arm no longer names one quantity");
+    BOOST_REQUIRE_MESSAGE(pindexBest != NULL &&
+                              pindexBest->GetBlockHash() == cb.block.hashPrevBlock,
+                          "the candidate does not extend this node's own tip");
+}
+
+} // namespace
+
+// The producer's block connects and one satoshi more does not, so the producer pays
+// exactly the validator's allowance.
+BOOST_AUTO_TEST_CASE(the_coinbase_allowance_is_exactly_what_the_producer_pays)
+{
+    MineToNonSettlementPostDAG();
+
+    AllowanceCandidate control;
+    BOOST_REQUIRE(BuildAllowanceCandidate(control));
+    BOOST_REQUIRE(SealCandidate(control));
+    RequireAllowanceWindow(control);
+    BOOST_REQUIRE_MESSAGE(ConnectAndRollBack(control) == CBlock::CONNECT_RESULT_OK,
+                          "the producer's own block was refused; every arm below "
+                          "would then pass for the wrong reason");
+
+    AllowanceCandidate over;
+    BOOST_REQUIRE(BuildAllowanceCandidate(over));
+    const unsigned int nOut = LargestCoinbaseOutput(over.Coinbase());
+    BOOST_REQUIRE(over.Coinbase().vout[nOut].nValue > 0);
+    const int64_t nPaid = over.Coinbase().GetValueOut();
+    over.Coinbase().vout[nOut].nValue += 1;
+    BOOST_REQUIRE_EQUAL(over.Coinbase().GetValueOut(), nPaid + 1);
+    BOOST_REQUIRE(SealCandidate(over));
+    RequireAllowanceWindow(over);
+    BOOST_CHECK_MESSAGE(ConnectAndRollBack(over) == CBlock::CONNECT_RESULT_INVALID,
+                        "a coinbase paying one satoshi above the producer's own "
+                        "figure was accepted, so the cap is not the allowance");
+}
+
+// A coinbase taking the withheld reserve too (allowance sized by Total() instead of
+// PaidToBlock()) would mint the settlement budget twice.
+BOOST_AUTO_TEST_CASE(a_coinbase_may_not_pay_out_the_withheld_finality_reserve)
+{
+    MineToNonSettlementPostDAG();
+
+    AllowanceCandidate cb;
+    BOOST_REQUIRE(BuildAllowanceCandidate(cb));
+    const int64_t nReserve = GetFinalityReservePerBlock(cb.pparent->nHeight + 1);
+    BOOST_REQUIRE_MESSAGE(nReserve > 0, "no reserve is withheld at this height");
+
+    const unsigned int nOut = LargestCoinbaseOutput(cb.Coinbase());
+    const int64_t nPaid = cb.Coinbase().GetValueOut();
+    cb.Coinbase().vout[nOut].nValue += nReserve;
+    BOOST_REQUIRE_EQUAL(cb.Coinbase().GetValueOut(), nPaid + nReserve);
+    BOOST_REQUIRE(SealCandidate(cb));
+    RequireAllowanceWindow(cb);
+
+    BOOST_CHECK_MESSAGE(ConnectAndRollBack(cb) == CBlock::CONNECT_RESULT_INVALID,
+                        "a coinbase carrying the withheld reserve was accepted; the "
+                        "epoch settlement would then be minted twice");
+
+    // And the reserve is the whole of what separates the two: the producer's own
+    // figure plus the reserve is the un-netted subsidy the pre-split code paid.
+    const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+        cb.Height(), GetBlockSubsidySchedule(cb.Height()), 0,
+        CollateralnodeShare::Paid);
+    BOOST_CHECK_EQUAL(split.PaidToBlock() + split.FinalityReserve(), split.Total());
+    BOOST_CHECK_EQUAL(split.FinalityReserve(), nReserve);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

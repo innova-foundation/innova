@@ -38,11 +38,16 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <boost/preprocessor/stringize.hpp>
+
 #include "../dag.h"
 #include "../finality.h"
 #include "../main.h"
 
+#include <fstream>
 #include <map>
+#include <sstream>
+#include <string>
 #include <vector>
 
 extern bool fRegTest;
@@ -181,6 +186,27 @@ void InstallStraddleFixture(CDAGManager& dag)
 // acceptance and would make a sweep vacuous rather than wrong.
 const int SWEEP_TIP_MIN = 311;    // first block of epoch 2
 const int SWEEP_TIP_MAX = 1510;   // last block of epoch 5
+
+// Reads a file under src/ by the path compiled in for the test data directory,
+// so the resolution does not depend on the caller's working directory.
+std::string ReadMainSource()
+{
+    const std::string strPath =
+        std::string(BOOST_PP_STRINGIZE(TEST_DATA_DIR)) + "/../../main.cpp";
+    std::ifstream in(strPath.c_str());
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+size_t CountOccurrences(const std::string& strHaystack, const std::string& strNeedle)
+{
+    size_t nCount = 0;
+    for (size_t nPos = strHaystack.find(strNeedle); nPos != std::string::npos;
+         nPos = strHaystack.find(strNeedle, nPos + strNeedle.size()))
+        nCount++;
+    return nCount;
+}
 
 } // namespace
 
@@ -747,6 +773,44 @@ BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_mainnet_finality_gate)
     BOOST_CHECK_EQUAL(nEpochAt, nAsOf);
     BOOST_CHECK_EQUAL(nCurAt, nGate - 100000);
     BOOST_CHECK_EQUAL(nLatchAt, nGate - 300000);
+}
+
+
+// Source-text check that both reorg sites still call the guard and act on its verdict.
+// The cases above drive the guard directly and cannot see the wiring; no unit test
+// builds a heavier branch forking below the anchor.
+BOOST_AUTO_TEST_CASE(both_reorg_sites_still_route_through_the_shared_guard)
+{
+    const std::string strMain = ReadMainSource();
+    BOOST_REQUIRE_MESSAGE(!strMain.empty(), "could not read src/main.cpp");
+
+    // Reorganize and CBlock::SetBestChain, plus the two overloads and the
+    // forwarding call between them.
+    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "ApplyReorgFinalityGuard("), 5u);
+
+    // Both sites fail closed on missing state and refuse every non-ALLOW verdict.
+    BOOST_CHECK_EQUAL(
+        CountOccurrences(strMain, "if (verdict == REORG_FINALITY_STATE_MISSING)"), 2u);
+    BOOST_CHECK_EQUAL(
+        CountOccurrences(strMain, "if (verdict != REORG_FINALITY_ALLOW)"), 2u);
+
+    // One comparison of a fork point against the anchor, inside the guard. A
+    // second copy at a call site is how the two sites drift apart.
+    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "nForkHeight >= nFinalCurOut"), 1u);
+
+    // The node-local live streak must not reach the decision. It stalls below the
+    // deterministic value on out-of-order vote arrival and differs between nodes,
+    // so folding it in puts path-dependent state back into a consensus reorg --
+    // which is the defect the deterministic anchor was introduced to close.
+    const size_t nGuard = strMain.find("ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,");
+    BOOST_REQUIRE(nGuard != std::string::npos);
+    const size_t nGuardEnd = strMain.find("\nReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight,", nGuard);
+    BOOST_REQUIRE(nGuardEnd != std::string::npos);
+    const std::string strBody = strMain.substr(nGuard, nGuardEnd - nGuard);
+    BOOST_CHECK_MESSAGE(strBody.find("GetFinalizedHeight()") == std::string::npos,
+                        "the guard reads the node-local live finalized height");
+    BOOST_CHECK_MESSAGE(strBody.find("REORG_LATCH_ANCHOR_LAG_EPOCHS") != std::string::npos,
+                        "the guard no longer derives the latch epoch from the lag");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include "../dag.h"
 #include "../finality.h"
 #include "../txdb-leveldb.h"
 #include "../util.h"
@@ -2178,6 +2179,507 @@ BOOST_AUTO_TEST_CASE(connect_context_rejects_note_votes_naming_unresolvable_epoc
     BOOST_CHECK(error !=
                 "note vote epoch block is not an ancestor of the including block");
     BOOST_CHECK(error != "note vote epoch block is not known");
+}
+
+
+// R-VOTE-001: an epoch-E vote is block-valid only inside
+// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW), checked before the block-index lookup.
+BOOST_AUTO_TEST_CASE(a_vote_outside_its_epoch_inclusion_window_is_rejected_at_connect)
+{
+    ScopedFinalityRegtest network;
+    CFinalityTracker tracker;
+    CTxDB txdb("r");
+
+    // The second post-DAG epoch: the window rule is gated on FORK_HEIGHT_VOTESET_ROOT,
+    // which sits on the first epoch's boundary.
+    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 1;
+    const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
+    BOOST_REQUIRE_GT(voteHeight - 1, FORK_HEIGHT_VOTESET_ROOT);
+
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote vote;
+    vote.nEpoch = voteEpoch;
+    vote.nHeight = voteHeight;
+    vote.hashBlock = uint256(0xFE010001);
+    vote.nTime = GetTime();
+    vote.nVoteWeight = COIN;
+    vote.nReward = GetFinalityVoteRewardAtHeight(vote.nVoteWeight, voteHeight);
+    vote.vStakeProof.push_back(COutPoint(uint256(0xFE010002), 0));
+    CPubKey pubkey = key.GetPubKey();
+    vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+    CHashWriter nullifierHash(SER_GETHASH, 0);
+    nullifierHash << vote.vchPubKey;
+    nullifierHash << vote.nEpoch;
+    vote.nullifier = nullifierHash.GetHash();
+    BOOST_REQUIRE(vote.Sign(key));
+    BOOST_REQUIRE_MESSAGE(vote.IsValid(),
+                          "the vote is rejected on structure before the window is "
+                          "ever read; every arm below would prove nothing");
+
+    const std::string strWindow = "finality vote outside epoch vote-inclusion window";
+    const auto checkAt = [&](int nContextHeight) {
+        std::string error;
+        FinalityResult result = FINALITY_RESULT_OK;
+        BOOST_CHECK(!tracker.CheckVote(vote, txdb, &error,
+                                       CFinalityVoteContext::ChainHeight(nContextHeight),
+                                       &result));
+        BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+        return error;
+    };
+
+    // Control: inside the window the vote gets past the window check and is
+    // rejected by the block-index lookup instead.
+    BOOST_CHECK_EQUAL(checkAt(voteHeight), "epoch block is not known");
+    BOOST_CHECK_EQUAL(checkAt(voteHeight + FINALITY_VOTE_INCLUSION_WINDOW - 1),
+                      "epoch block is not known");
+
+    // Below the boundary, and at the first height past the window.
+    BOOST_CHECK_EQUAL(checkAt(voteHeight - 1), strWindow);
+    BOOST_CHECK_EQUAL(checkAt(voteHeight + FINALITY_VOTE_INCLUSION_WINDOW), strWindow);
+    BOOST_CHECK_EQUAL(checkAt(voteHeight + FINALITY_VOTE_INCLUSION_WINDOW + 1), strWindow);
+
+    // Relay skips the window deliberately: a vote gossiped ahead of its carrier is
+    // not yet placeable, and calling it invalid there penalises an honest peer.
+    {
+        std::string error;
+        FinalityResult result = FINALITY_RESULT_OK;
+        BOOST_CHECK(!tracker.CheckVote(vote, txdb, &error,
+                                       CFinalityVoteContext::Relay(), &result));
+        BOOST_CHECK(error != strWindow);
+    }
+}
+
+// R-VOTE-002: an epoch-E certificate is block-valid at or after H_E + K and at most
+// FINALITY_CONFIRMATION_EPOCHS behind the containing epoch.
+BOOST_AUTO_TEST_CASE(a_tally_certificate_is_valid_only_inside_its_position_bounds)
+{
+    ScopedFinalityRegtest network;
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight), nTargetHeight);
+    const uint256 hashTarget(0xD301);
+    ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+    CFinalityTracker tracker;
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < FINALITY_MIN_VOTERS; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, hashTarget);
+        vote.MarkCanonicalEnvelope();
+        BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        votes.push_back(vote);
+    }
+
+    CFinalityTallyCertificate cert;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(votes, cert, &error), error);
+    CTxDB txdb("r");
+
+    const auto verdictAt = [&](int nContextHeight) {
+        std::string strError;
+        FinalityResult result = FINALITY_RESULT_OK;
+        const bool fOk = tracker.CheckTallyCertificate(
+            cert, txdb, &strError, NULL, false, nContextHeight, false, &result);
+        return std::make_pair(fOk, strError);
+    };
+
+    const int nOpen = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+
+    // The control. Without an accepted position there is no evidence the two
+    // rejections below are about position at all.
+    const std::pair<bool, std::string> accepted = verdictAt(nOpen);
+    BOOST_REQUIRE_MESSAGE(accepted.first,
+                          "the certificate is refused at the first legal height: "
+                              << accepted.second);
+
+    // One block before the window closes.
+    const std::pair<bool, std::string> early = verdictAt(nOpen - 1);
+    BOOST_CHECK(!early.first);
+    BOOST_CHECK_EQUAL(early.second,
+                      "tally certificate before epoch vote-inclusion window close");
+
+    // Past the confirmation depth. FINALITY_CONFIRMATION_EPOCHS epochs later is
+    // still legal; one more is stale.
+    const int nEpochSpan =
+        GetEpochBoundaryHeight(nEpoch + 1, nTargetHeight) - nTargetHeight;
+    BOOST_REQUIRE_GT(nEpochSpan, FINALITY_VOTE_INCLUSION_WINDOW);
+    const int nLastLegal = nTargetHeight + FINALITY_CONFIRMATION_EPOCHS * nEpochSpan;
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nLastLegal),
+                        nEpoch + FINALITY_CONFIRMATION_EPOCHS);
+    const std::pair<bool, std::string> lastLegal = verdictAt(nLastLegal);
+    BOOST_CHECK_MESSAGE(lastLegal.first,
+                        "a certificate exactly at the confirmation depth was refused: "
+                            << lastLegal.second);
+
+    const int nStale =
+        nTargetHeight + (FINALITY_CONFIRMATION_EPOCHS + 1) * nEpochSpan;
+    const std::pair<bool, std::string> stale = verdictAt(nStale);
+    BOOST_CHECK(!stale.first);
+    BOOST_CHECK_EQUAL(stale.second, "tally certificate finalizes a stale epoch");
+}
+
+// The "may not finalize a future epoch" clause is unreachable: the floor is measured
+// against the certificate's own boundary, so a future-epoch certificate is rejected by
+// the floor first. The check below asserts that.
+BOOST_AUTO_TEST_CASE(the_future_epoch_clause_is_unreachable_behind_the_window_floor)
+{
+    ScopedFinalityRegtest network;
+    // Four epochs above the fork, so three epochs of context still sit above the
+    // gate the floor is itself conditioned on.
+    const int nEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 4;
+    const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+    const uint256 hashTarget(0xD401);
+    ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+    CFinalityTracker tracker;
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < FINALITY_MIN_VOTERS; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, hashTarget);
+        vote.MarkCanonicalEnvelope();
+        BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        votes.push_back(vote);
+    }
+
+    CFinalityTallyCertificate cert;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(votes, cert, &error), error);
+    CTxDB txdb("r");
+
+    const int nEpochSpan =
+        GetEpochBoundaryHeight(nEpoch + 1, nTargetHeight) - nTargetHeight;
+    for (int nBack = 1; nBack <= 3; nBack++)
+    {
+        const int nContextHeight =
+            nTargetHeight - nBack * nEpochSpan + FINALITY_VOTE_INCLUSION_WINDOW;
+        BOOST_REQUIRE_MESSAGE(GetEpochForHeight(nContextHeight) < cert.nEpoch,
+                              "the context epoch is not behind the certificate's");
+        BOOST_REQUIRE_GE(nContextHeight, FORK_HEIGHT_VOTESET_ROOT);
+        std::string strError;
+        FinalityResult result = FINALITY_RESULT_OK;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(cert, txdb, &strError, NULL, false,
+                                                   nContextHeight, false, &result));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate before epoch vote-inclusion window close");
+    }
+}
+
+// R-VOTE-003: a certificate covers exactly the epoch's connected vote set (equal count
+// plus full containment).
+BOOST_AUTO_TEST_CASE(a_tally_certificate_covers_the_connected_vote_set_exactly)
+{
+    ScopedFinalityRegtest network;
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    const uint256 hashTarget(0xD501);
+    ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+    CFinalityTracker tracker;
+    std::vector<CFinalityVote> connected;
+    for (int i = 0; i < FINALITY_MIN_VOTERS + 1; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, hashTarget);
+        vote.MarkCanonicalEnvelope();
+        BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        connected.push_back(vote);
+    }
+    BOOST_REQUIRE_EQUAL(tracker.GetEpochVoteCount(nEpoch), (int)connected.size());
+
+    CTxDB txdb("r");
+    std::string error;
+
+    // The control: the certificate over the whole connected set is accepted.
+    CFinalityTallyCertificate full;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(connected, full, &error), error);
+    FinalityResult result = FINALITY_RESULT_INVALID;
+    BOOST_REQUIRE_MESSAGE(tracker.CheckTallyCertificate(full, txdb, &error, NULL, false,
+                                                        nContextHeight, false, &result),
+                          "the certificate over the full connected set was refused: "
+                              << error);
+
+    // Cardinality: one connected vote left out. Every nullifier it does name is
+    // still connected, so only the count separates it from the control.
+    std::vector<CFinalityVote> shortSet(connected.begin(), connected.end() - 1);
+    CFinalityTallyCertificate deflated;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(shortSet, deflated, &error), error);
+    BOOST_REQUIRE_EQUAL(deflated.vVoteNullifiers.size(), connected.size() - 1);
+    result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!tracker.CheckTallyCertificate(deflated, txdb, &error, NULL, false,
+                                               nContextHeight, false, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(
+        error, "tally certificate does not cover the full connected epoch vote set");
+
+    // Containment: the same cardinality, one member swapped for a vote the block
+    // carries but the chain has not connected. Cardinality alone cannot see this,
+    // which is why the rule needs both halves.
+    CKey substituteKey;
+    substituteKey.MakeNewKey(true);
+    CFinalityVote substitute = BuildTransparentVoteForCertificateCarrierTest(
+        substituteKey, nEpoch, nTargetHeight, hashTarget);
+    substitute.MarkCanonicalEnvelope();
+    std::vector<CFinalityVote> swapped = shortSet;
+    swapped.push_back(substitute);
+    CFinalityTallyCertificate substituted;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(swapped, substituted, &error), error);
+    BOOST_REQUIRE_EQUAL(substituted.vVoteNullifiers.size(), connected.size());
+
+    std::vector<CFinalityVote> vBlockVotes;
+    vBlockVotes.push_back(substitute);
+    result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!tracker.CheckTallyCertificate(substituted, txdb, &error, &vBlockVotes,
+                                               false, nContextHeight, false, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error, "tally certificate omits a connected epoch vote");
+}
+
+// ---------------------------------------------------------------------------
+// R-GOV-004: committee authorization of a tally certificate.
+//
+// The signer set is the only thing that makes a certificate's covered set and
+// tier proofs trustworthy, so with no committee seated for the term the
+// certificate has nothing to claim and is rejected. A committee record this node
+// cannot decode is a different thing entirely: it is local, no peer can induce
+// it, and turning it into a verdict would reject blocks every healthy peer
+// accepts.
+//
+// The private-weight leg reaches the branch on regtest only, and only in the
+// first post-DAG epoch: Boundary A quarantines the legacy private path and lands
+// exactly on the second epoch's boundary, and IsLegacyPrivacyPolicyDisabled is
+// true on every other network. That epoch's committee term is term 0, which
+// GetCommitteeForEpoch refuses because no epoch precedes it to carry a draw. So a
+// seated committee can never meet a private certificate, and the seated arms
+// below use the note leg -- which takes the same branch unconditionally and is
+// the live private path.
+//
+// The committee is read out of the epoch state that ends the term's lead-in, so
+// seating one here is a write of that record and nothing else.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical_committee)
+{
+    ScopedFinalityRegtest network;
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+
+    // Scoped: a BOOST_REQUIRE below would throw past a manual restore and leave the
+    // note-vote fork height set for every case after this one.
+    struct ScopedNoteVoteFork
+    {
+        int nSaved;
+        explicit ScopedNoteVoteFork(int nNew) : nSaved(nRegtestIV5NoteVoteHeight)
+        {
+            nRegtestIV5NoteVoteHeight = nNew;
+        }
+        ~ScopedNoteVoteFork() { nRegtestIV5NoteVoteHeight = nSaved; }
+    } scopedNoteVoteFork(1);
+
+    const std::string strUnseated =
+        "no finality committee is seated for this certificate's term";
+    const std::string strUnreadable =
+        "finality committee record cannot be read; -reindex/resync required";
+
+    // -- the private-weight leg, in the one position it can occupy --------------
+    {
+        const int nEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
+        const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+        const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+
+        BOOST_REQUIRE_MESSAGE(!IsLegacyPrivacyPolicyDisabled(),
+                              "private certificates are refused wholesale on this network");
+        BOOST_REQUIRE_MESSAGE(!IsBoundaryAActiveAtHeight(nContextHeight),
+                              "Boundary A quarantines the legacy private path at height "
+                                  << nContextHeight);
+        BOOST_REQUIRE_MESSAGE(nTargetHeight >= FORK_HEIGHT_TALLY_GOVERNANCE,
+                              "the certificate boundary " << nTargetHeight
+                                  << " is below the governance height "
+                                  << FORK_HEIGHT_TALLY_GOVERNANCE);
+
+        const uint256 hashTarget(0xD601);
+        ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+        CFinalityTallyCertificate cert;
+        cert.nVersion = 2;
+        cert.nEpoch = nEpoch;
+        cert.nHeight = nTargetHeight;
+        cert.hashBlock = hashTarget;
+        cert.nTier = FINALITY_HARD;
+        cert.hashCurveRoot = uint256(0xD602);
+        cert.hashNullifierRoot = uint256(0xD603);
+        cert.committeeSetHash = uint256(0xD604);
+        cert.activeWeightCommitment.vchCommitment[0] = 1;
+        cert.winningWeightCommitment.vchCommitment[0] = 2;
+        cert.rewardBudgetCommitment.vchCommitment[0] = 3;
+        cert.vVoteNullifiers.push_back(uint256(0xD605));
+        cert.vTallyShareHashes.push_back(uint256(0xD606));
+        cert.vchAggregateThresholdProof.push_back(1);
+        cert.vchRewardBudgetProof.push_back(1);
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(cert.IsValidBasic(&error), error);
+        BOOST_REQUIRE(cert.HasPrivateWeight());
+        BOOST_REQUIRE(!cert.HasNoteWeight());
+
+        // This epoch's term cannot seat anything, which is what confines the
+        // private leg to the unseated arm.
+        BOOST_REQUIRE_EQUAL(GetFinalityCommitteeTermEpoch(nEpoch), 0);
+
+        std::string strEnforced, strSkipped;
+        FinalityResult resultEnforced = FINALITY_RESULT_OK;
+        FinalityResult resultSkipped = FINALITY_RESULT_OK;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(cert, txdb, &strEnforced, NULL, false,
+                                                   nContextHeight, false, &resultEnforced));
+        BOOST_CHECK_EQUAL(resultEnforced, FINALITY_RESULT_INVALID);
+        BOOST_CHECK_EQUAL(strEnforced, strUnseated);
+
+        // Control: with the committee check skipped the identical bytes fail
+        // somewhere else, which is what says the branch above is what rejected them.
+        BOOST_CHECK(!tracker.CheckTallyCertificate(cert, txdb, &strSkipped, NULL, false,
+                                                   nContextHeight, true, &resultSkipped));
+        BOOST_CHECK(strSkipped != strUnseated);
+    }
+
+    // -- the note leg, where a committee can actually be seated -----------------
+    {
+        const int nEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 2;
+        const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+        const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+        const int nTermEpoch = GetFinalityCommitteeTermEpoch(nEpoch);
+        BOOST_REQUIRE_MESSAGE(nTermEpoch > 0,
+                              "epoch " << nEpoch << " has no seatable committee term");
+        BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nContextHeight));
+
+        const uint256 hashTarget(0xD611);
+        ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+        ScopedEpochStateOverride carrierState(txdb, nTermEpoch - 1);
+
+        CFinalityTallyCertificate cert;
+        cert.nVersion = FINALITY_NOTE_CERT_VERSION;
+        cert.nEpoch = nEpoch;
+        cert.nHeight = nTargetHeight;
+        cert.hashBlock = hashTarget;
+        cert.nTier = FINALITY_HARD;
+        cert.nConsecutiveHardCount = 0;
+        cert.committeeSetHash = uint256(0xD612);
+        cert.vVoteNullifiers.push_back(uint256(0xD613));
+        cert.vNoteVoteTags.push_back(uint256(0xD614));
+        cert.vNoteVoteTags.push_back(uint256(0xD615));
+        cert.noteTierProofs.vchTierSlack.assign(64, 0x71);
+        cert.noteTierProofs.vchWinningCap.assign(64, 0x72);
+        cert.noteTierProofs.vchActiveCap.assign(64, 0x73);
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(cert.IsValidBasic(&error), error);
+        BOOST_REQUIRE(cert.HasNoteWeight());
+        BOOST_REQUIRE(cert.vSignerSigs.empty());
+
+        const auto check = [&](bool fSkipCommitteeSigs) {
+            std::string strError;
+            FinalityResult result = FINALITY_RESULT_OK;
+            const bool fOk = tracker.CheckTallyCertificate(
+                cert, txdb, &strError, NULL, false, nContextHeight, fSkipCommitteeSigs,
+                &result);
+            BOOST_CHECK(!fOk);
+            return std::make_pair(result, strError);
+        };
+
+        // Nothing seated for the term.
+        {
+            std::vector<CPubKey> vNone;
+            int nM = 0;
+            uint256 setHash = 0;
+            BOOST_REQUIRE_MESSAGE(
+                !GetCanonicalFinalityCommittee(txdb, nEpoch, vNone, nM, setHash),
+                "a committee is already seated; the arm is not adversarial");
+            const std::pair<FinalityResult, std::string> unseated = check(false);
+            BOOST_CHECK_EQUAL(unseated.first, FINALITY_RESULT_INVALID);
+            BOOST_CHECK_EQUAL(unseated.second, strUnseated);
+        }
+
+        // Control: skipping the committee check moves the failure elsewhere.
+        BOOST_CHECK(check(true).second != strUnseated);
+
+        // A record this node cannot decode. Same certificate, same absence of a
+        // signer set -- only the reason this node has none has changed, and the
+        // verdict must change with it.
+        {
+            CEpochState carrier;
+            carrier.nEpoch = nTermEpoch - 1;
+            // The seats ride the V6 record layout; the default version predates
+            // them, and a record written under it round-trips with no committee at
+            // all, which is the seated-nothing case rather than this one.
+            carrier.nSerVersion = EPOCHSTATE_SER_VERSION_V6;
+            // A leading byte no compressed point uses, so the seat cannot decode
+            // whatever the rest of the bytes happen to be.
+            std::vector<unsigned char> vchUndecodable(33, 0xAA);
+            vchUndecodable[0] = 0x01;
+            carrier.vFinalityCommittee.push_back(vchUndecodable);
+            carrier.nFinalityCommitteeM = 1;
+            BOOST_REQUIRE(txdb.WriteEpochState(nTermEpoch - 1, carrier));
+            bool fLocalFailure = false;
+            std::vector<CPubKey> vNone;
+            int nM = 0;
+            uint256 setHash = 0;
+            BOOST_REQUIRE(!GetCanonicalFinalityCommittee(txdb, nEpoch, vNone, nM, setHash,
+                                                         &fLocalFailure));
+            BOOST_REQUIRE_MESSAGE(fLocalFailure,
+                                  "the planted record decodes, so this arm is not the "
+                                  "unreadable-record case");
+            const std::pair<FinalityResult, std::string> unreadable = check(false);
+            BOOST_CHECK_EQUAL(unreadable.first, FINALITY_RESULT_LOCAL_STATE);
+            BOOST_CHECK_EQUAL(unreadable.second, strUnreadable);
+        }
+
+        // Seated and readable: the certificate must now carry the signatures, and
+        // this one carries none.
+        {
+            CEpochState carrier;
+            carrier.nEpoch = nTermEpoch - 1;
+            carrier.nSerVersion = EPOCHSTATE_SER_VERSION_V6;
+            std::vector<CKey> vKeys(3);
+            for (size_t i = 0; i < vKeys.size(); i++)
+            {
+                vKeys[i].MakeNewKey(true);
+                CPubKey pubkey = vKeys[i].GetPubKey();
+                carrier.vFinalityCommittee.push_back(
+                    std::vector<unsigned char>(pubkey.begin(), pubkey.end()));
+            }
+            carrier.nFinalityCommitteeM = 2;
+            BOOST_REQUIRE(txdb.WriteEpochState(nTermEpoch - 1, carrier));
+
+            std::vector<CPubKey> vCommittee;
+            int nM = 0;
+            uint256 setHash = 0;
+            bool fLocalFailure = false;
+            BOOST_REQUIRE_MESSAGE(GetCanonicalFinalityCommittee(txdb, nEpoch, vCommittee,
+                                                                nM, setHash, &fLocalFailure),
+                                  "the seated committee is not readable");
+            BOOST_REQUIRE_EQUAL(nM, 2);
+
+            const std::pair<FinalityResult, std::string> unsignedCert = check(false);
+            BOOST_CHECK_EQUAL(unsignedCert.first, FINALITY_RESULT_INVALID);
+            BOOST_CHECK_MESSAGE(unsignedCert.second != strUnseated,
+                                "a seated committee must move the rejection onto the "
+                                "signatures");
+            std::string strSig;
+            BOOST_CHECK(!CheckTallyCertificateCommitteeSignatures(cert, vCommittee, nM,
+                                                                  setHash, &strSig));
+            BOOST_CHECK_EQUAL(unsignedCert.second, strSig);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -4,6 +4,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "../main.h"
+#include "../bignum.h"
 #include "../finality.h"
 #include "../subsidy.h"
 #include "../key.h"
@@ -582,6 +583,149 @@ BOOST_AUTO_TEST_CASE(collateralnode_payment_base_excludes_settlement)
     BOOST_CHECK_EQUAL(FinalityCollateralnodePaymentBase(nBlockValue, 0), nBlockValue);
     // Underflow-safe.
     BOOST_CHECK_EQUAL(FinalityCollateralnodePaymentBase(1 * COIN, 5 * COIN), 0);
+}
+
+
+// R-SETTLE-002: the settlement vote set is walked off the settlement block's own
+// ancestors; blocks are written to disk and reread so every window block is decoded.
+
+namespace {
+
+// A linked run of on-disk blocks and their indexes, removed again when the case
+// ends so the shared mapBlockIndex is unchanged.
+struct SettlementWindowChain
+{
+    std::vector<uint256> vHashes;
+    std::vector<CBlockIndex*> vIndex;
+    CBigNum bnSavedLimit;
+
+    SettlementWindowChain(unsigned int nSeed, int nFirstHeight, int nCount)
+        : bnSavedLimit(bnProofOfWorkLimit)
+    {
+        bnProofOfWorkLimit = CBigNum(~uint256(0) >> 1);
+        CBlockIndex* pprev = NULL;
+        for (int i = 0; i < nCount; i++)
+            pprev = Add(nSeed + (unsigned int)i, nFirstHeight + i, pprev);
+    }
+
+    ~SettlementWindowChain()
+    {
+        for (size_t i = vHashes.size(); i-- > 0; )
+        {
+            mapBlockIndex.erase(vHashes[i]);
+            delete vIndex[i];
+        }
+        bnProofOfWorkLimit = bnSavedLimit;
+    }
+
+    CBlockIndex* Tip() const { return vIndex.back(); }
+    CBlockIndex* At(int i) const { return vIndex[i]; }
+
+private:
+    CBlockIndex* Add(unsigned int nSeed, int nHeight, CBlockIndex* pprev)
+    {
+        CBlock block;
+        block.nVersion = 1;
+        block.hashPrevBlock = pprev ? pprev->GetBlockHash() : uint256(0);
+        block.nTime = (unsigned int)(1700000000 + nHeight);
+        block.nBits = bnProofOfWorkLimit.GetCompact();
+        block.nNonce = nSeed;
+
+        // A coinbase carrying no vote commitment: the walk has to decode it, and
+        // an empty vote set is the honest answer for a window nobody voted in.
+        CTransaction coinbase;
+        coinbase.nTime = block.nTime;
+        coinbase.vin.resize(1);
+        coinbase.vin[0].prevout.SetNull();
+        coinbase.vin[0].scriptSig = CScript() << nHeight;
+        coinbase.vout.push_back(CTxOut(0, CScript() << OP_TRUE));
+        block.vtx.push_back(coinbase);
+        block.hashMerkleRoot = block.BuildMerkleTree();
+        while (!CheckProofOfWork(block.GetHash(), block.nBits))
+            ++block.nNonce;
+
+        unsigned int nFile = 0;
+        unsigned int nBlockPos = 0;
+        BOOST_REQUIRE(block.WriteToDisk(nFile, nBlockPos));
+
+        const uint256 hash = block.GetHash();
+        CBlockIndex* pindex = new CBlockIndex(nFile, nBlockPos, block);
+        pindex->nHeight = nHeight;
+        pindex->pprev = pprev;
+        std::pair<std::map<uint256, CBlockIndex*>::iterator, bool> ins =
+            mapBlockIndex.insert(std::make_pair(hash, pindex));
+        BOOST_REQUIRE(ins.second);
+        pindex->phashBlock = &ins.first->first;
+
+        vHashes.push_back(hash);
+        vIndex.push_back(pindex);
+        return pindex;
+    }
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(the_settlement_vote_set_is_walked_off_the_whole_window)
+{
+    const bool fSavedRegTest = fRegTest;
+    const bool fSavedTestNet = fTestNet;
+    fRegTest = true;
+    fTestNet = false;
+
+    const int nEpoch = PostDAGEpoch(1);
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, GetForkHeightDAG());
+    const int nWindowTop = nBoundary + FINALITY_VOTE_INCLUSION_WINDOW - 1;
+    BOOST_REQUIRE_EQUAL(nBoundary + FINALITY_VOTE_INCLUSION_WINDOW,
+                        GetFinalitySettlementHeight(nEpoch, nBoundary));
+
+    std::vector<CFinalityVote> vVotes;
+    std::string strError;
+
+    {
+        // The whole window, on disk. The walk reaches the boundary and every block
+        // decodes, so the set is derived rather than refused.
+        SettlementWindowChain full(0xFA5E0001, nBoundary,
+                                   FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_REQUIRE_EQUAL(full.Tip()->nHeight, nWindowTop);
+        strError.clear();
+        BOOST_CHECK_MESSAGE(GatherFinalitySettlementVotes(full.Tip(), nEpoch, vVotes,
+                                                          &strError),
+                            "the complete window was refused: " << strError);
+        BOOST_CHECK(vVotes.empty());
+
+        // The parent has to be the top of the window exactly. One block either side
+        // is a different settlement height's parent, and paying from it would settle
+        // an epoch twice or from a set still open.
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(
+            full.At(FINALITY_VOTE_INCLUSION_WINDOW - 2), nEpoch, vVotes, &strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "settlement parent is not the top of the epoch "
+                          "vote-inclusion window");
+        BOOST_CHECK(vVotes.empty());
+
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(NULL, nEpoch, vVotes, &strError));
+        BOOST_CHECK_EQUAL(strError, "settlement has no parent block");
+    }
+
+    {
+        // The same top block, one ancestor short of the boundary. Nothing about the
+        // settlement height has changed; only the ancestry is incomplete, and a
+        // partial window is a smaller vote set than the epoch actually connected.
+        SettlementWindowChain gapped(0xFA5E1001, nBoundary + 1,
+                                     FINALITY_VOTE_INCLUSION_WINDOW - 1);
+        BOOST_REQUIRE_EQUAL(gapped.Tip()->nHeight, nWindowTop);
+        BOOST_REQUIRE(gapped.At(0)->pprev == NULL);
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(gapped.Tip(), nEpoch, vVotes,
+                                                   &strError));
+        BOOST_CHECK_EQUAL(strError, "settlement vote-inclusion window is incomplete");
+        BOOST_CHECK(vVotes.empty());
+    }
+
+    fRegTest = fSavedRegTest;
+    fTestNet = fSavedTestNet;
 }
 
 BOOST_AUTO_TEST_SUITE_END()
