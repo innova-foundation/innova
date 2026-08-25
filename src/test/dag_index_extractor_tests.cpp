@@ -80,24 +80,61 @@ CBlockIndex* BestIndex()
     return pindexBest;
 }
 
-void MineTo(int nTarget)
+// Mines one block on the current tip and returns it.
+CBlockIndex* MineOne()
 {
     unsigned int nExtraNonce = 0;
+    CBlockIndex* pindexPrev = BestIndex();
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
+    BOOST_REQUIRE(SolveBlock(pblock.get()));
+    const uint256 hash = pblock->GetHash();
+    BOOST_REQUIRE(ProcessBlock(NULL, pblock.get()));
+    LOCK(cs_main);
+    BOOST_REQUIRE(mapBlockIndex.count(hash) != 0);
+    return mapBlockIndex[hash];
+}
+
+void MineTo(int nTarget)
+{
     while (BestIndex()->nHeight < nTarget)
-    {
-        CBlockIndex* pindexPrev = BestIndex();
-        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
-        BOOST_REQUIRE(pblock.get() != NULL);
-        IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
-        BOOST_REQUIRE(SolveBlock(pblock.get()));
-        const uint256 hash = pblock->GetHash();
-        BOOST_REQUIRE(ProcessBlock(NULL, pblock.get()));
-        LOCK(cs_main);
-        BOOST_REQUIRE(mapBlockIndex.count(hash) != 0);
-    }
+        MineOne();
 }
 
 } // namespace
+
+// R-DK-001. Identifies which arm coloured the block: DAGKnight writes k clamped to
+// [DAGKNIGHT_K_FLOOR, DAGKNIGHT_K_CEILING]; GHOSTDAG leaves -1. The read must be passive
+// (GetDAGData), since InferLocalK would compute k on either arm.
+BOOST_AUTO_TEST_CASE(the_dagknight_arm_is_the_one_that_colours_a_post_fork_block)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(FORK_HEIGHT_DAGKNIGHT > FORK_HEIGHT_DAG);
+
+    MineTo(FORK_HEIGHT_DAGKNIGHT);
+    CBlockIndex* pindexNew = MineOne();
+    BOOST_REQUIRE(pindexNew->nHeight > FORK_HEIGHT_DAGKNIGHT);
+
+    CBlockDAGData data;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(pindexNew->GetBlockHash(), data));
+    BOOST_CHECK_MESSAGE(data.nInferredK >= DAGKNIGHT_K_FLOOR,
+                        "a block above the DAGKnight height carries the GHOSTDAG "
+                        "sentinel, so the index writer coloured it with the wrong arm");
+    BOOST_CHECK_LE(data.nInferredK, DAGKNIGHT_K_CEILING);
+
+    // Control: a GHOSTDAG-window block keeps the -1 sentinel.
+    const CBlockIndex* pindexPre = pindexNew;
+    while (pindexPre && pindexPre->nHeight >= FORK_HEIGHT_DAGKNIGHT)
+        pindexPre = pindexPre->pprev;
+    BOOST_REQUIRE(pindexPre != NULL);
+    BOOST_REQUIRE_GE(pindexPre->nHeight, FORK_HEIGHT_DAG);
+    CBlockDAGData ghostdag;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(pindexPre->GetBlockHash(), ghostdag));
+    BOOST_CHECK_MESSAGE(ghostdag.nInferredK == -1,
+                        "a pre-DAGKnight block reports an inferred k, so the read "
+                        "is not passive");
+}
 
 // The canonical decoder returns NOT_FOUND (skip, not reject) for an OP_PUSHDATA4 payload.
 BOOST_AUTO_TEST_CASE(a_pushdata4_payload_is_read_by_one_decoder_only)
