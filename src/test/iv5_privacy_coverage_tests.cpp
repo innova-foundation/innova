@@ -1520,6 +1520,39 @@ BOOST_AUTO_TEST_CASE(a_coinbase_iv5_note_is_worth_exactly_the_block_iv5_fee_sum)
                           "a coinbase note in a block that collected no IV5 fees");
     }
 
+    // A fee note may declare only one mask; any other is a per-producer
+    // fingerprint. Each arm builds the note at another mask.
+    {
+        // The control for the arms below: the same helper, at the pinned mask,
+        // produces a note this block connects with. Without it a refusal could be
+        // anything about a rebuilt note rather than the mask it declares.
+        Candidate rebuilt;
+        BOOST_REQUIRE(BuildCandidate(rebuilt));
+        rebuilt.block.vtx[0].privacyVNext.vchPayload =
+            BuildShieldPayload(rebuilt.block.vtx[0], (uint64_t)nFeeSum, 0,
+                               iv5::COINBASE_FEE_NOTE_DISCLOSURE_MASK);
+        BOOST_REQUIRE(SealCandidate(rebuilt));
+        ConnectOutcome rebuiltOk = ConnectAndRollBack(rebuilt);
+        BOOST_CHECK_MESSAGE(rebuiltOk.Ok(),
+            "a fee note rebuilt at the pinned mask was refused; captured: " +
+            Excerpt(rebuiltOk.strLog));
+    }
+
+    for (unsigned nMask = 0; nMask <= iv5::DISCLOSURE_MASK; ++nMask)
+    {
+        if (nMask == iv5::COINBASE_FEE_NOTE_DISCLOSURE_MASK)
+            continue;
+        Candidate other;
+        BOOST_REQUIRE(BuildCandidate(other));
+        other.block.vtx[0].privacyVNext.vchPayload =
+            BuildShieldPayload(other.block.vtx[0], (uint64_t)nFeeSum, 0,
+                               (uint8_t)nMask);
+        BOOST_REQUIRE(SealCandidate(other));
+        ExpectBlockReason(ConnectAndRollBack(other),
+                          "coinbase IV5 note does not declare the fee note's",
+                          strprintf("a coinbase note built at mask %u", nMask));
+    }
+
     // And below the fork the coinbase may carry no payload at all, whatever it
     // declares: the transparent allowance still carries the fees there, so a
     // note would be the second payment of the same money.

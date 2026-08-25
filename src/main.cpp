@@ -8719,6 +8719,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             return DoS(100, error("ConnectBlock() : coinbase IV5 payload before height %d",
                                   FORK_HEIGHT_IV5_FEE_NOTE));
 
+        // The fee note's mask is pinned: its amount is public via the block equality, and a
+        // free choice would fingerprint the producer.
+        uint8_t nCoinbaseMask = 0;
+        if (vtx[0].privacyVNext.vchPayload.empty() ||
+            !iv5::CoinbaseFeeNoteEnvelopeAllows(&vtx[0].privacyVNext.vchPayload[0],
+                                                vtx[0].privacyVNext.vchPayload.size(),
+                                                nCoinbaseMask))
+            return DoS(100, error("ConnectBlock() : coinbase IV5 note does not declare the "
+                                  "fee note's disclosure mask %d",
+                                  (int)iv5::COINBASE_FEE_NOTE_DISCLOSURE_MASK));
+
         PrivacyVNextStateEffects coinbaseEffects;
         const PrivacyVNextPayloadValidation coinbaseValidation =
             ExtractPrivacyVNextPayloadEffects(
