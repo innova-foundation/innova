@@ -83,11 +83,12 @@ struct FundedNote
     uint64_t nAmount;
 };
 
-void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
+void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill,
+                 uint64_t nAmount = 5000)
 {
     std::string error;
     funded.genesis = LocalGenesis();
-    funded.nAmount = 5000;
+    funded.nAmount = nAmount;
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextKeys(DisclosureDigest(seedFill), funded.genesis, 0,
                                LocalNetwork(), 0, funded.keys, error),
@@ -451,6 +452,215 @@ size_t DisclosureSectionStart(const std::vector<unsigned char>& payload,
     const size_t nStart = payload.size() - nBytes - header.size();
     BOOST_REQUIRE(std::memcmp(&payload[nStart], &header[0], header.size()) == 0);
     return nStart + header.size();
+}
+
+// The eight-byte little-endian encoding a disclosed amount is published in.
+std::vector<unsigned char> AmountBytes(uint64_t nAmount)
+{
+    std::vector<unsigned char> v(8, 0);
+    for (size_t i = 0; i < 8; ++i)
+        v[i] = (unsigned char)((nAmount >> (8 * i)) & 0xff);
+    return v;
+}
+
+std::vector<unsigned char> Slice(const std::vector<unsigned char>& v, size_t nAt,
+                                 size_t nBytes)
+{
+    BOOST_REQUIRE_GE(v.size(), nAt + nBytes);
+    return std::vector<unsigned char>(v.begin() + nAt, v.begin() + nAt + nBytes);
+}
+
+PrivacyVNextDigest DigestAt(const std::vector<unsigned char>& v, size_t nAt)
+{
+    BOOST_REQUIRE_GE(v.size(), nAt + 32);
+    PrivacyVNextDigest d;
+    std::memcpy(d.data(), &v[nAt], 32);
+    return d;
+}
+
+// Where each field of a canonical payload prefix sits, for `nIn` inputs and `nOut` outputs
+// at one mask. Everything ahead of the proofs has a pinned width, so the counts (< 253, one
+// byte each) fix every offset; nothing is read from the payload's own framing.
+struct PrefixLayout
+{
+    size_t nIn;
+    size_t nOut;
+    uint8_t nMask;
+    size_t nFeeAt;
+    size_t nInputCountAt;
+    size_t nInputsAt;
+    size_t nOutputCountAt;
+    size_t nOutputsAt;
+    size_t nOutputStride;
+    size_t nDisclosedAt;
+
+    PrefixLayout(size_t nInputs, size_t nOutputs, uint8_t nDisclosureMask)
+        : nIn(nInputs), nOut(nOutputs), nMask(nDisclosureMask)
+    {
+        // header 9, genesis 32, parameter digest 32, finalized root 32, tree size 8,
+        // transparent value balance 8, then the fee.
+        nFeeAt = 9 + 32 + 32 + 32 + 8 + 8;
+        nInputCountAt = nFeeAt + 8 + 32;
+        nInputsAt = nInputCountAt + 1;
+        nOutputCountAt = nInputsAt + nIn * 64;
+        nOutputsAt = nOutputCountAt + 1;
+        nOutputStride =
+            4 * 32 + FramedSize(INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE) +
+            FramedSize(INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+        nDisclosedAt = nOutputsAt + nOut * nOutputStride;
+    }
+
+    bool DisclosesSender() const
+    {
+        return (nMask & iv5::DISCLOSURE_HIDE_SENDER) == 0;
+    }
+    bool DisclosesReceiver() const
+    {
+        return (nMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0;
+    }
+    bool DisclosesAmount() const
+    {
+        return (nMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0;
+    }
+
+    size_t KeyImageAt(size_t i) const { return nInputsAt + i * 64 + 32; }
+    size_t OwnerAt(size_t i) const { return nOutputsAt + i * nOutputStride; }
+    size_t NoteEphemeralAt(size_t i) const { return OwnerAt(i) + 64; }
+    size_t TweakEphemeralAt(size_t i) const { return OwnerAt(i) + 96; }
+
+    size_t SenderRecordBytes() const { return DisclosesSender() ? nIn * 32 : 0; }
+    size_t ReceiverRecordBytes() const { return DisclosesReceiver() ? nOut * 64 : 0; }
+
+    size_t SenderRecordAt(size_t i) const { return nDisclosedAt + i * 32; }
+    size_t ReceiverRecordAt(size_t i) const
+    {
+        return nDisclosedAt + SenderRecordBytes() + i * 64;
+    }
+    size_t AmountRecordAt(size_t i) const
+    {
+        return nDisclosedAt + SenderRecordBytes() + ReceiverRecordBytes() + i * 40;
+    }
+
+    // The disclosure proof section carries the same records in the same order.
+    size_t SenderProofBytes() const
+    {
+        return DisclosesSender()
+                   ? nIn * INNOVA_PRIVACY_VNEXT_SENDER_DISCLOSURE_PROOF_SIZE
+                   : 0;
+    }
+    size_t ReceiverProofBytes() const
+    {
+        return DisclosesReceiver()
+                   ? nOut * INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE
+                   : 0;
+    }
+    size_t DisclosureProofBytes() const
+    {
+        return SenderProofBytes() + ReceiverProofBytes();
+    }
+};
+
+// The receiver disclosure's DH point for one output, recomputed from the recipient's view
+// secret and the cleartext tweak ephemeral, independent of the payload's own framing.
+bool SharedPointOf(const PrivacyVNextDigest& viewSecret,
+                   const PrivacyVNextDigest& tweakEphemeral,
+                   PrivacyVNextDigest& pointOut, std::string& error)
+{
+    std::vector<PrivacyVNextCombineTerm> vTerms(1);
+    vTerms[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+    vTerms[0].scalar = viewSecret;
+    vTerms[0].point = tweakEphemeral;
+    return CombinePrivacyVNextPoints(vTerms, pointOut, error);
+}
+
+// One needle and where it is expected to be. `strName` names it in the failure message,
+// `vchNeedle` is the byte string, and `nAt` is the offset the publishing mask puts it at.
+struct DisclosedField
+{
+    std::string strName;
+    std::vector<unsigned char> vchNeedle;
+    size_t nAt;
+
+    DisclosedField(const std::string& name,
+                   const std::vector<unsigned char>& needle, size_t at)
+        : strName(name), vchNeedle(needle), nAt(at)
+    {
+    }
+};
+
+// `fDisclosed` selects the half: required at its record's offset, or absent from the whole
+// payload. Both halves run over one needle so absence is a result, not an unsearchable needle.
+void CheckDisclosedField(const std::vector<unsigned char>& payload, uint8_t nMask,
+                         bool fDisclosed, const DisclosedField& field)
+{
+    if (fDisclosed)
+    {
+        BOOST_CHECK_MESSAGE(
+            Slice(payload, field.nAt, field.vchNeedle.size()) == field.vchNeedle,
+            strprintf("mask %u does not publish %s where its record sits",
+                      (unsigned)nMask, field.strName.c_str()));
+        return;
+    }
+    const std::vector<size_t> vAt = FindAll(payload, field.vchNeedle);
+    BOOST_CHECK_MESSAGE(
+        vAt.empty(),
+        strprintf("mask %u hides %s and the payload carries it at offset %u",
+                  (unsigned)nMask, field.strName.c_str(),
+                  (unsigned)(vAt.empty() ? 0 : vAt[0])));
+}
+
+// Length is separable when the bytes one mask bit moves do not depend on the other bits;
+// then length is a function of the mask and the cleartext counts.
+void CheckMaskSizeIsSeparable(const size_t* pSize, size_t nIn, size_t nOut)
+{
+    static const uint8_t vBits[3] = {iv5::DISCLOSURE_HIDE_SENDER,
+                                     iv5::DISCLOSURE_HIDE_RECEIVER,
+                                     iv5::DISCLOSURE_HIDE_AMOUNT};
+    for (size_t b = 0; b < 3; ++b)
+    {
+        const uint8_t nBit = vBits[b];
+        // Clearing bit 4 also drops the aggregate range proof, whose length this test
+        // does not model, so only bits 1 and 2 are held to a closed form. Bit 4 is held
+        // to agreeing with itself across its four pairs, which is the separability claim.
+        const bool fClosedForm = nBit != iv5::DISCLOSURE_HIDE_AMOUNT;
+        const int64_t nRecords = (nBit == iv5::DISCLOSURE_HIDE_SENDER)
+                                     ? (int64_t)(nIn * 32)
+                                     : (int64_t)(nOut * 64);
+        bool fHave = false;
+        int64_t nDelta = 0;
+        for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+        {
+            if ((nMask & nBit) != 0)
+                continue;
+            const uint8_t nHidden = (uint8_t)(nMask | nBit);
+            const int64_t nThis = (int64_t)pSize[nMask] - (int64_t)pSize[nHidden];
+            if (fClosedForm)
+            {
+                const int64_t nFraming =
+                    (int64_t)FramedSize(
+                        PrefixLayout(nIn, nOut, nMask).DisclosureProofBytes()) -
+                    (int64_t)FramedSize(
+                        PrefixLayout(nIn, nOut, nHidden).DisclosureProofBytes());
+                BOOST_CHECK_MESSAGE(
+                    nThis == nRecords + nFraming,
+                    strprintf("mask %u to %u moved %ld bytes, not the %ld its records "
+                              "and framing account for",
+                              (unsigned)nMask, (unsigned)nHidden, (long)nThis,
+                              (long)(nRecords + nFraming)));
+            }
+            if (!fHave)
+            {
+                nDelta = nThis;
+                fHave = true;
+                continue;
+            }
+            BOOST_CHECK_MESSAGE(
+                nThis == nDelta,
+                strprintf("bit %u moves %ld bytes at mask %u and %ld bytes elsewhere",
+                          (unsigned)nBit, (long)nThis, (unsigned)nMask, (long)nDelta));
+        }
+        BOOST_REQUIRE(fHave);
+    }
 }
 
 } // namespace
@@ -1111,10 +1321,7 @@ BOOST_AUTO_TEST_CASE(the_signing_hash_covers_the_mask_and_every_disclosed_record
     vAt = FindAll(payload, AddressBytes(payee));
     BOOST_REQUIRE_EQUAL(vAt.size(), 1U);
     vRecords.push_back(std::make_pair(vAt[0], (size_t)64));
-    std::vector<unsigned char> vchAmount(8, 0);
-    for (size_t i = 0; i < 8; ++i)
-        vchAmount[i] = (unsigned char)((nPaid >> (8 * i)) & 0xff);
-    vAt = FindAll(payload, vchAmount);
+    vAt = FindAll(payload, AmountBytes(nPaid));
     BOOST_REQUIRE_EQUAL(vAt.size(), 1U);
     vRecords.push_back(std::make_pair(vAt[0], (size_t)8));
 
@@ -1202,10 +1409,8 @@ BOOST_AUTO_TEST_CASE(what_a_payload_settles_carries_no_disclosed_field)
     BOOST_REQUIRE_MESSAGE(SenderAuthorityOf(funded, 0x35, authority, error), error);
     vSecrets.push_back(std::make_pair(std::string("the spending authority"),
                                       DigestBytes(authority)));
-    std::vector<unsigned char> vchAmount(8, 0);
-    for (size_t i = 0; i < 8; ++i)
-        vchAmount[i] = (unsigned char)((nPaid >> (8 * i)) & 0xff);
-    vSecrets.push_back(std::make_pair(std::string("the paid amount"), vchAmount));
+    vSecrets.push_back(std::make_pair(std::string("the paid amount"),
+                                      AmountBytes(nPaid)));
 
     for (size_t i = 0; i < vSecrets.size(); ++i)
     {
@@ -1218,4 +1423,289 @@ BOOST_AUTO_TEST_CASE(what_a_payload_settles_carries_no_disclosed_field)
     }
 }
 
+// For each mask, every field a clear bit publishes is required at its record offset, byte
+// for byte against wallet-derived material, and every hidden field is required absent.
+// A needle is shown findable where published before it is required missing elsewhere.
+BOOST_AUTO_TEST_CASE(each_mask_publishes_exactly_the_fields_its_clear_bits_name)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    // Amounts with four nonzero bytes each. An eight-byte needle that is mostly zero
+    // would match the zero runs the fixed-width header already contains, and the absence
+    // half is only as good as its needle.
+    FundOneNote(txdb, funded, 0x6c, 0xA3B5C7D9ULL);
+
+    const uint64_t nPaid = 0x51C3E7A9ULL;
+    const uint64_t nFee = 100;
+    const uint64_t nChange = funded.nAmount - nPaid - nFee;
+    const size_t nIn = funded.spends.size();
+    const size_t nOut = 2;
+    BOOST_REQUIRE_EQUAL(nIn, 1U);
+
+    // Derived exactly as BuildMaskedTransfer derives them, so every needle below is the
+    // wallet's own material rather than something read back out of a payload.
+    PrivacyVNextDerivedKeys change;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextChangeKeys(DisclosureDigest(0x63), funded.genesis,
+                                     LocalNetwork(), change, error),
+        error);
+    PrivacyVNextDigest authority;
+    BOOST_REQUIRE_MESSAGE(SenderAuthorityOf(funded, 0x36, authority, error), error);
+
+    PrivacyVNextDerivedKeys payee;
+    std::vector<unsigned char> vPayload[8];
+    PrivacyVNextDigest vKeyImage[8];
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        std::vector<unsigned char>& payload = vPayload[nMask];
+        BOOST_REQUIRE_MESSAGE(
+            BuildMaskedTransfer(funded, nMask, nPaid, nFee, payee, payload, error),
+            strprintf("mask %u: %s", (unsigned)nMask, error.c_str()));
+
+        // Validation and the decoder's own view of the payload in one call: what the
+        // offsets below are checked against comes from the decoder, not from this test's
+        // arithmetic agreeing with itself.
+        PrivacyVNextStateEffects effects;
+        BOOST_REQUIRE_MESSAGE(
+            ExtractPrivacyVNextPayloadEffects(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects).IsValid(),
+            strprintf("mask %u did not validate", (unsigned)nMask));
+
+        const PrefixLayout layout(nIn, nOut, nMask);
+
+        // The mask off the wire, never off the request that asked for it.
+        BOOST_CHECK_EQUAL((int)payload[5], (int)nMask);
+
+        // The offsets, before anything is asserted at them. A layout change has to fail
+        // here rather than move every needle below onto the wrong bytes.
+        BOOST_REQUIRE_EQUAL(ReadU64(payload, layout.nFeeAt), nFee);
+        BOOST_REQUIRE_EQUAL((size_t)payload[layout.nInputCountAt], nIn);
+        BOOST_REQUIRE_EQUAL((size_t)payload[layout.nOutputCountAt], nOut);
+        BOOST_REQUIRE_EQUAL(effects.keyImages.size(), nIn);
+        BOOST_REQUIRE_EQUAL(effects.outputLeaves.size(), nOut);
+        for (size_t i = 0; i < nIn; ++i)
+            BOOST_REQUIRE(DigestAt(payload, layout.KeyImageAt(i)) ==
+                          effects.keyImages[i]);
+        for (size_t i = 0; i < nOut; ++i)
+        {
+            BOOST_REQUIRE(DigestAt(payload, layout.OwnerAt(i)) ==
+                          effects.outputLeaves[i].owner);
+            BOOST_REQUIRE(DigestAt(payload, layout.OwnerAt(i) + 32) ==
+                          effects.outputLeaves[i].commitment);
+        }
+        vKeyImage[nMask] = effects.keyImages[0];
+
+        // Bit 1: one authority per input, and the authority is a property of the note, so
+        // publishing it names one leaf to anyone who knows that leaf.
+        for (size_t i = 0; i < nIn; ++i)
+            CheckDisclosedField(payload, nMask, layout.DisclosesSender(),
+                                DisclosedField("the spending authority",
+                                               DigestBytes(authority),
+                                               layout.SenderRecordAt(i)));
+
+        // Bit 2: the address of every output, the sender's own change included.
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the payee address", AddressBytes(payee),
+                                           layout.ReceiverRecordAt(0)));
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the change address", AddressBytes(change),
+                                           layout.ReceiverRecordAt(1)));
+        // Half an address still names a wallet, so each key is a needle of its own.
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the payee spend key",
+                                           DigestBytes(payee.spendPublic),
+                                           layout.ReceiverRecordAt(0)));
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the payee view key",
+                                           DigestBytes(payee.viewPublic),
+                                           layout.ReceiverRecordAt(0) + 32));
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the change spend key",
+                                           DigestBytes(change.spendPublic),
+                                           layout.ReceiverRecordAt(1)));
+        CheckDisclosedField(payload, nMask, layout.DisclosesReceiver(),
+                            DisclosedField("the change view key",
+                                           DigestBytes(change.viewPublic),
+                                           layout.ReceiverRecordAt(1) + 32));
+
+        // Bit 2 at the DH layer: the shared point, recomputed from the recipient's view secret
+        // and this payload's cleartext ephemeral, must appear only when disclosed.
+        const size_t nProofsAt =
+            DisclosureSectionStart(payload, layout.DisclosureProofBytes());
+        const PrivacyVNextDigest* vViewSecret[2] = {&payee.viewSecret,
+                                                    &change.viewSecret};
+        static const char* vWhose[2] = {"the payee", "the change"};
+        for (size_t i = 0; i < nOut; ++i)
+        {
+            PrivacyVNextDigest shared;
+            BOOST_REQUIRE_MESSAGE(
+                SharedPointOf(*vViewSecret[i],
+                              DigestAt(payload, layout.TweakEphemeralAt(i)), shared,
+                              error),
+                error);
+            CheckDisclosedField(
+                payload, nMask, layout.DisclosesReceiver(),
+                DisclosedField(std::string(vWhose[i]) + " shared point",
+                               DigestBytes(shared),
+                               nProofsAt + layout.SenderProofBytes() +
+                                   i * INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE));
+        }
+
+        // Bit 4: one amount per output.
+        if (layout.DisclosesAmount())
+        {
+            BOOST_CHECK_EQUAL(ReadU64(payload, layout.AmountRecordAt(0)), nPaid);
+            BOOST_CHECK_EQUAL(ReadU64(payload, layout.AmountRecordAt(1)), nChange);
+        }
+        CheckDisclosedField(payload, nMask, layout.DisclosesAmount(),
+                            DisclosedField("the paid amount", AmountBytes(nPaid),
+                                           layout.AmountRecordAt(0)));
+        CheckDisclosedField(payload, nMask, layout.DisclosesAmount(),
+                            DisclosedField("the change amount", AmountBytes(nChange),
+                                           layout.AmountRecordAt(1)));
+
+        // The spent leaf is on the wire nowhere, at any mask; the created leaves are the controls.
+        // The sender disclosure names the spent note by one-time key, never by leaf.
+        BOOST_CHECK_MESSAGE(
+            FindAll(payload, DigestBytes(funded.spends[0].leaf.owner)).empty(),
+            strprintf("mask %u carries the owner key of the leaf it spends",
+                      (unsigned)nMask));
+        BOOST_CHECK_MESSAGE(
+            FindAll(payload, DigestBytes(funded.spends[0].leaf.commitment)).empty(),
+            strprintf("mask %u carries the commitment of the leaf it spends",
+                      (unsigned)nMask));
+        // The spend secret and the view secrets are the material the published authority
+        // and the published shared point are computed from. Those two are on the wire at
+        // the masks that publish them; the secrets behind them are on the wire at none.
+        BOOST_CHECK_MESSAGE(
+            FindAll(payload, DigestBytes(funded.spends[0].spendSecret)).empty(),
+            strprintf("mask %u carries the spend secret of the note it spends",
+                      (unsigned)nMask));
+        BOOST_CHECK_MESSAGE(
+            FindAll(payload, DigestBytes(payee.viewSecret)).empty(),
+            strprintf("mask %u carries the payee's view secret", (unsigned)nMask));
+        BOOST_CHECK_MESSAGE(
+            FindAll(payload, DigestBytes(change.viewSecret)).empty(),
+            strprintf("mask %u carries the change view secret", (unsigned)nMask));
+
+        // Both ephemerals in every output at every mask, and never equal. Their presence
+        // is uniform, so carrying a second ephemeral is not itself a mark of a payload
+        // that discloses its receiver.
+        for (size_t i = 0; i < nOut; ++i)
+        {
+            const std::vector<unsigned char> note =
+                Slice(payload, layout.NoteEphemeralAt(i), 32);
+            const std::vector<unsigned char> tweak =
+                Slice(payload, layout.TweakEphemeralAt(i), 32);
+            BOOST_CHECK(note != tweak);
+            BOOST_CHECK(note != std::vector<unsigned char>(32, 0));
+            BOOST_CHECK(tweak != std::vector<unsigned char>(32, 0));
+        }
+    }
+
+    // The identifier that does recur across transactions, stated rather than left
+    // implied: the key image is the same 32 bytes at every mask, mask 7 included. Hiding
+    // the sender hides which note was spent, not that this note was spent.
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+        BOOST_CHECK_MESSAGE(vKeyImage[nMask] == vKeyImage[7],
+                            strprintf("mask %u spends a different key image",
+                                      (unsigned)nMask));
+
+    // Rewriting the mask byte to any other value is refused from every mask, in both directions.
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+        for (uint8_t nOther = 0; nOther <= 7; ++nOther)
+        {
+            if (nOther == nMask)
+                continue;
+            std::vector<unsigned char> relabelled = vPayload[nMask];
+            relabelled[5] = nOther;
+            BOOST_CHECK_MESSAGE(
+                !Validates(relabelled),
+                strprintf("a mask-%u payload validated relabelled as mask %u",
+                          (unsigned)nMask, (unsigned)nOther));
+        }
+}
+
+// Payload length reveals nothing beyond the cleartext mask and counts: each mask bit moves
+// a fixed number of bytes, and at a fixed mask and shape amount, recipient and fee do not.
+BOOST_AUTO_TEST_CASE(payload_size_follows_the_mask_and_never_the_secret_it_hides)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    FundOneNote(txdb, funded, 0x6d, 0xA3B5C7D9ULL);
+    const size_t nIn = funded.spends.size();
+    BOOST_REQUIRE_EQUAL(nIn, 1U);
+
+    PrivacyVNextDerivedKeys payee;
+    size_t vTransfer[8];
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildMaskedTransfer(funded, nMask, 0x51C3E7A9ULL, 100, payee, payload,
+                                error),
+            strprintf("mask %u: %s", (unsigned)nMask, error.c_str()));
+        BOOST_REQUIRE_MESSAGE(Validates(payload),
+                              strprintf("mask %u did not validate", (unsigned)nMask));
+        vTransfer[nMask] = payload.size();
+    }
+    CheckMaskSizeIsSeparable(vTransfer, nIn, 2);
+
+    // The same algebra where there is nothing to disclose a sender about. A shield
+    // declares no input, so bit 1 has no record to add and has to move no bytes at all --
+    // which is what says the sender term is one record per input and not a constant.
+    ShieldAnchor anchor;
+    BOOST_REQUIRE_MESSAGE(LoadShieldAnchor(anchor, error), error);
+    const std::vector<uint64_t> vOne(1, 4200);
+    size_t vShield[8];
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShield(nMask, anchor, vOne, 55, 0x94, payload, error),
+            strprintf("shield mask %u: %s", (unsigned)nMask, error.c_str()));
+        BOOST_REQUIRE_MESSAGE(
+            Validates(payload),
+            strprintf("shield mask %u did not validate", (unsigned)nMask));
+        vShield[nMask] = payload.size();
+    }
+    CheckMaskSizeIsSeparable(vShield, 0, 1);
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        if ((nMask & iv5::DISCLOSURE_HIDE_SENDER) != 0)
+            continue;
+        BOOST_CHECK_EQUAL(vShield[nMask],
+                          vShield[nMask | iv5::DISCLOSURE_HIDE_SENDER]);
+    }
+
+    // Same declared shape, different secrets. One unit and a payment nine decimal digits
+    // larger, to different addresses, under different fees, come out the same length --
+    // at the mask that publishes all three and at the mask that publishes none.
+    std::vector<uint64_t> vSmall;
+    vSmall.push_back(1);
+    vSmall.push_back(2);
+    std::vector<uint64_t> vLarge;
+    vLarge.push_back(0xA3B5C7D9ULL);
+    vLarge.push_back(0x51C3E7A9ULL);
+    static const uint8_t vShapeMasks[2] = {0, 7};
+    for (size_t i = 0; i < 2; ++i)
+    {
+        std::vector<unsigned char> small;
+        std::vector<unsigned char> large;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShield(vShapeMasks[i], anchor, vSmall, 7, 0xA1, small, error), error);
+        BOOST_REQUIRE_MESSAGE(
+            BuildShield(vShapeMasks[i], anchor, vLarge, 0x1D4C, 0xA2, large, error),
+            error);
+        BOOST_REQUIRE(Validates(small));
+        BOOST_REQUIRE(Validates(large));
+        BOOST_CHECK_MESSAGE(
+            small.size() == large.size(),
+            strprintf("mask %u: %u bytes for one payment and %u for another",
+                      (unsigned)vShapeMasks[i], (unsigned)small.size(),
+                      (unsigned)large.size()));
+    }
+}
 BOOST_AUTO_TEST_SUITE_END()
