@@ -1236,6 +1236,87 @@ BOOST_AUTO_TEST_CASE(v3_startup_requires_exact_highest_completed_epoch)
     BOOST_CHECK(strError.find("does not match hashBestChain") != std::string::npos);
 }
 
+// A tip inside an epoch has not completed it, so the newest persisted pair must be
+// the epoch before. The case above places the tip exactly on an epoch end, where
+// both arms of that derivation name the same epoch and the off-by-one is invisible.
+BOOST_AUTO_TEST_CASE(v3_startup_requires_the_epoch_below_an_unfinished_one)
+{
+    DAGHarness h;
+    const int nActivationEpoch = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3);
+    const int nMigrationEpoch = nActivationEpoch - 1;
+    const int nActivationEnd =
+        GetEpochBoundaryHeight(nActivationEpoch + 1,
+                               FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+
+    std::vector<uint256> none;
+    CBlockIndex* pTip = h.add(0xD7000000, FORK_HEIGHT_EPOCH_STATE_V3 - 1,
+                              none, NULL, false);
+    CBlockIndex* pMigrationBoundary = pTip;
+    CBlockIndex* pActivationBoundary = NULL;
+    for (int nHeight = FORK_HEIGHT_EPOCH_STATE_V3;
+         nHeight <= nActivationEnd + 1; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pTip->GetBlockHash());
+        pTip = h.add(0xD7000000U +
+                         (unsigned int)(nHeight - FORK_HEIGHT_EPOCH_STATE_V3 + 1),
+                     nHeight, parents, pTip, false);
+        if (nHeight == nActivationEnd)
+            pActivationBoundary = pTip;
+    }
+    BOOST_REQUIRE(pActivationBoundary != NULL);
+    BOOST_REQUIRE_EQUAL(pTip->nHeight, nActivationEnd + 1);
+
+    // The shape under test: the tip's own epoch is open, so the required highest
+    // completed epoch is the one below it.
+    const int nTipEpoch = GetEpochForHeight(pTip->nHeight);
+    BOOST_REQUIRE_EQUAL(nTipEpoch, nActivationEpoch + 1);
+    BOOST_REQUIRE_LT(pTip->nHeight,
+                     GetEpochBoundaryHeight(nTipEpoch + 1, pTip->nHeight) - 1);
+
+    CEpochState migration;
+    migration.nEpoch = nMigrationEpoch;
+    migration.nHeightStart =
+        GetEpochBoundaryHeight(nMigrationEpoch, FORK_HEIGHT_EPOCH_STATE_V3);
+    migration.nHeightEnd = FORK_HEIGHT_EPOCH_STATE_V3 - 1;
+    migration.hashBoundaryBlock = pMigrationBoundary->GetBlockHash();
+    CEpochState activation;
+    activation.nEpoch = nActivationEpoch;
+    activation.nHeightStart = FORK_HEIGHT_EPOCH_STATE_V3;
+    activation.nHeightEnd = nActivationEnd;
+    activation.hashBoundaryBlock = pActivationBoundary->GetBlockHash();
+    CCurveTree emptyTree;
+
+    std::map<int, CEpochState> states;
+    std::map<int, CCurveTree> trees;
+    states[nMigrationEpoch] = migration;
+    states[nActivationEpoch] = activation;
+    trees[nMigrationEpoch] = emptyTree;
+    trees[nActivationEpoch] = emptyTree;
+
+    std::string strError;
+    CDAGManager complete;
+    BOOST_REQUIRE(complete.InstallEpochStateBatch(nMigrationEpoch, states, trees));
+    BOOST_CHECK_MESSAGE(complete.ValidateEpochStateTip(pTip, strError), strError);
+
+    // The other side of the same derivation: a record for the epoch the tip is
+    // still inside is one epoch too far, not the newest completed one.
+    CEpochState open;
+    open.nEpoch = nTipEpoch;
+    open.nHeightStart = GetEpochBoundaryHeight(nTipEpoch, pTip->nHeight);
+    open.nHeightEnd = GetEpochBoundaryHeight(nTipEpoch + 1, pTip->nHeight) - 1;
+    open.hashBoundaryBlock = pTip->GetBlockHash();
+    states[nTipEpoch] = open;
+    trees[nTipEpoch] = emptyTree;
+
+    CDAGManager ahead;
+    BOOST_REQUIRE(ahead.InstallEpochStateBatch(nMigrationEpoch, states, trees));
+    BOOST_CHECK(!ahead.ValidateEpochStateTip(pTip, strError));
+    BOOST_CHECK_MESSAGE(strError.find("requires highest completed epoch") !=
+                            std::string::npos,
+                        "the tip's own open epoch was refused for another reason: "
+                            << strError);
+}
+
 BOOST_AUTO_TEST_CASE(v3_restart_accepts_v2_prefix_but_checks_strict_migration_suffix)
 {
     DAGHarness h;

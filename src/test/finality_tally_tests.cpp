@@ -2682,4 +2682,130 @@ BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical
     }
 }
 
+// ---------------------------------------------------------------------------
+// R-BA-004: the note certificate's transparent skeleton.
+//
+// A note certificate cannot be rebuilt byte-for-byte -- its range proofs are
+// entropy-bearing -- so the rebuild comparison covers the transparent skeleton
+// field by field instead of by hash. canonical_certificate_validation_requires_
+// exact_rebuild reaches only the hash/digest comparison one branch above, which
+// no note certificate takes.
+//
+// The note leg below the comparison needs a seated committee, and none is seated
+// here, so the untampered certificate is refused there rather than accepted. That
+// is what says the comparison is reached at all: a tampered field has to change
+// the rejection, not merely keep it.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_rebuild)
+{
+    ScopedFinalityRegtest network;
+
+    struct ScopedNoteVoteFork
+    {
+        int nSaved;
+        explicit ScopedNoteVoteFork(int nNew) : nSaved(nRegtestIV5NoteVoteHeight)
+        {
+            nRegtestIV5NoteVoteHeight = nNew;
+        }
+        ~ScopedNoteVoteFork() { nRegtestIV5NoteVoteHeight = nSaved; }
+    } scopedNoteVoteFork(1);
+
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight), nTargetHeight);
+    const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nContextHeight));
+
+    const uint256 hashTarget(0xD701);
+    ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+    CFinalityTracker tracker;
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < FINALITY_MIN_VOTERS; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, hashTarget);
+        vote.MarkCanonicalEnvelope();
+        BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        votes.push_back(vote);
+    }
+
+    // The certificate under test carries both legs: the deterministic transparent
+    // skeleton, plus a note leg whose tags count toward the rebuild's voter floor.
+    const size_t nNoteTags = 2;
+    CFinalityTallyCertificate skeleton;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(BuildCanonicalTransparentFinalityCertificate(
+                              votes, skeleton, &error, nNoteTags), error);
+
+    CFinalityTallyCertificate noteCert = skeleton;
+    noteCert.nVersion = FINALITY_NOTE_CERT_VERSION;
+    noteCert.committeeSetHash = uint256(0xD702);
+    noteCert.vNoteVoteTags.push_back(uint256(0xD703));
+    noteCert.vNoteVoteTags.push_back(uint256(0xD704));
+    BOOST_REQUIRE_EQUAL(noteCert.vNoteVoteTags.size(), nNoteTags);
+    noteCert.noteTierProofs.vchTierSlack.assign(64, 0x71);
+    noteCert.noteTierProofs.vchWinningCap.assign(64, 0x72);
+    noteCert.noteTierProofs.vchActiveCap.assign(64, 0x73);
+    BOOST_REQUIRE_MESSAGE(noteCert.IsValidBasic(&error), error);
+    BOOST_REQUIRE(noteCert.IsCanonicalEnvelope());
+    BOOST_REQUIRE(noteCert.HasNoteWeight());
+    BOOST_REQUIRE(!noteCert.HasPrivateWeight());
+
+    CTxDB txdb("r+");
+    // Nothing seated for this epoch's term, by construction rather than by
+    // whatever an earlier case left behind.
+    ScopedEpochStateOverride termCarrier(txdb,
+                                         GetFinalityCommitteeTermEpoch(nEpoch) - 1);
+    std::vector<CPubKey> vNone;
+    int nM = 0;
+    uint256 setHash = 0;
+    bool fLocalFailure = false;
+    BOOST_REQUIRE_MESSAGE(
+        !tracker.GetCommitteeForEpoch(txdb, nEpoch, vNone, nM, setHash, &fLocalFailure),
+        "a committee is seated, so the note leg no longer marks the comparison");
+    BOOST_REQUIRE(!fLocalFailure);
+
+    const std::string strNoteLeg =
+        "no finality committee is seated for this certificate's term";
+    const std::string strSkeleton =
+        "canonical note tally certificate transparent skeleton is not the "
+        "deterministic result";
+
+    // The committee signatures are skipped so the certificate reaches the rebuild
+    // without a signer set; the note leg's own committee lookup is not skippable
+    // and is what refuses the untampered bytes.
+    const auto refusalFor = [&](const CFinalityTallyCertificate& candidate) {
+        std::string strError;
+        FinalityResult result = FINALITY_RESULT_OK;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(candidate, txdb, &strError, NULL,
+                                                   false, nContextHeight, true,
+                                                   &result));
+        BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+        return strError;
+    };
+
+    // The control: the exact rebuild clears the comparison and is refused below it.
+    BOOST_CHECK_EQUAL(refusalFor(noteCert), strNoteLeg);
+
+    // The streak is metadata the rebuild pins to zero. A certificate that claims one
+    // must be refused by the comparison, not carried past it into the note leg.
+    CFinalityTallyCertificate arbitraryStreak = noteCert;
+    arbitraryStreak.nConsecutiveHardCount = 1;
+    BOOST_CHECK_EQUAL(refusalFor(arbitraryStreak), strSkeleton);
+
+    // The same for the roots the rebuild leaves empty, and for the covered set's
+    // order, so the comparison is pinned as a whole and not at one field.
+    CFinalityTallyCertificate arbitraryRoot = noteCert;
+    arbitraryRoot.hashCurveRoot = uint256(0xD705);
+    BOOST_CHECK_EQUAL(refusalFor(arbitraryRoot), strSkeleton);
+
+    CFinalityTallyCertificate permuted = noteCert;
+    std::reverse(permuted.vVoteNullifiers.begin(), permuted.vVoteNullifiers.end());
+    BOOST_REQUIRE(permuted.vVoteNullifiers != noteCert.vVoteNullifiers);
+    BOOST_CHECK_EQUAL(refusalFor(permuted), strSkeleton);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
