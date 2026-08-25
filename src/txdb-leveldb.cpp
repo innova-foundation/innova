@@ -449,10 +449,8 @@ bool CTxDB::WriteEpochState(int nEpoch, const CEpochState& state)
     return Write(make_pair(string("epochstate"), nEpoch), state);
 }
 
-// NOTE: this whole-struct Read requires the trailing nSerVersion byte (CEpochState serialization),
-// so it MUST NOT be called on pre-versioning (legacy) records -- it would throw. It currently has
-// zero callers; the sole runtime read path is IterateEpochStates, which reads tolerantly. If you wire
-// this up, guarantee the DB has been migrated to V2 records first (see the epochstateschema marker).
+// Requires the trailing nSerVersion byte and throws on legacy records. No callers; the
+// runtime path is IterateEpochStates. Migrate to V2 records before using this.
 bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
 {
     return Read(make_pair(string("epochstate"), nEpoch), state);
