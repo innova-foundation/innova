@@ -10966,9 +10966,9 @@ bool CWallet::BuildPrivacyVNextFeeNote(
 
     // The amount is published with its opening so anyone can check the note against the
     // block's IV5 fee sum; the recipient stays hidden and no range proof is needed.
-    const uint8_t nMask = (uint8_t)(iv5::DISCLOSURE_HIDE_SENDER |
-                                    iv5::DISCLOSURE_HIDE_RECEIVER);
-    return BuildPrivacyVNextShieldPayload(nNetwork, nMask, genesis,
+    return BuildPrivacyVNextShieldPayload(nNetwork,
+                                          iv5::COINBASE_FEE_NOTE_DISCLOSURE_MASK,
+                                          genesis,
                                           keys.outgoingViewSecret, finalizedRoot,
                                           nTreeSize, transparentBinding,
                                           (uint64_t)nAmount, 0, vOutputs,

@@ -119,6 +119,12 @@ static const uint8_t DISCLOSURE_HIDE_AMOUNT = 4;
 static const uint8_t DISCLOSURE_MASK = 7;
 static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 
+// The only mask a coinbase fee note may carry: amount disclosed (it equals the block's
+// published IV5 fee sum), producer address hidden. Fixed by consensus so the shape is
+// not a per-producer fingerprint.
+static const uint8_t COINBASE_FEE_NOTE_DISCLOSURE_MASK =
+    (uint8_t)(DISCLOSURE_HIDE_SENDER | DISCLOSURE_HIDE_RECEIVER);
+
 inline bool IsKnownNoteOperation(uint8_t operation)
 {
     return operation <= NOTE_FINALITY_MEMBER_REGISTER ||
@@ -141,6 +147,17 @@ inline bool ReadDeclaredEnvelope(const unsigned char* payload, size_t nSize,
     operationOut = payload[2];
     disclosureMaskOut = payload[5];
     return true;
+}
+
+// Whether a coinbase IV5 payload declares the fee-note envelope. Checked before proofs
+// so the error names the header field.
+inline bool CoinbaseFeeNoteEnvelopeAllows(const unsigned char* payload, size_t nSize,
+                                          uint8_t& disclosureMaskOut)
+{
+    uint8_t operation = 0;
+    disclosureMaskOut = 0;
+    return ReadDeclaredEnvelope(payload, nSize, operation, disclosureMaskOut) &&
+           disclosureMaskOut == COINBASE_FEE_NOTE_DISCLOSURE_MASK;
 }
 
 inline bool IsKnownTypedContract(uint8_t operation, uint8_t profile,
