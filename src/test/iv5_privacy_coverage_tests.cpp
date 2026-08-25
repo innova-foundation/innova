@@ -1286,6 +1286,88 @@ BOOST_AUTO_TEST_CASE(the_mutable_curve_tree_window_is_where_the_ladder_puts_it)
 
 
 // ---------------------------------------------------------------------------
+// R-SH-004, the half of it that can execute.
+//
+// The rule says a shielded transaction may be the coinstake only when its
+// version is the NullStake generation permitted at that height. Two clauses
+// enforce that and only one of them can run.
+//
+//   version set   CTransaction::CheckTransaction refuses a coinstake under any
+//                 shielded version outside {2003, 2004, 2005}. Covered here.
+//   height window CBlock::ConnectBlock refuses a permitted version outside its
+//                 own generation's height range. NOT covered, and not coverable:
+//                 the only version whose branch and window disagree is 2003 at
+//                 or above the V2 fork, that branch requires a shielded spend,
+//                 and a spend's anchor must be MIN_SHIELDED_SPEND_DEPTH blocks
+//                 deep while proof-of-stake blocks stop connecting at the DAG
+//                 gate -- one block sooner than the earliest anchor can age.
+//                 The arithmetic is asserted below so the day a gate moves this
+//                 case says so.
+//
+// No covering edge rests on this case: half a rule tested is not the rule.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(a_shielded_coinstake_is_refused_outside_the_nullstake_versions)
+{
+    LadderGuard guard;
+    TipHeightGuard tipGuard;
+    guard.SelectRegtest();
+    BOOST_REQUIRE(!IsLegacyPrivacyPolicyDisabled());
+    nBestHeight = FORK_HEIGHT_NULLSTAKE_V3 + 1;
+
+    // A coinstake-shaped shielded transaction: a spend, an empty first output,
+    // and the reward paid into the pool.
+    CTransaction shape;
+    shape.nTime = (unsigned int)GetAdjustedTime();
+    shape.vin.push_back(CTxIn(uint256(0x5104), 0));
+    shape.vout.resize(2);
+    shape.vout[0].SetEmpty();
+    shape.vout[1].nValue = 1 * COIN;
+    shape.vShieldedSpend.resize(1);
+    shape.vShieldedSpend[0].nullifier = uint256(0x5105);
+    shape.nValueBalance = -1;
+
+    // The three NullStake generations are admitted by this clause.
+    const int nAllowed[] = {SHIELDED_TX_VERSION_NULLSTAKE,
+                            SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                            SHIELDED_TX_VERSION_NULLSTAKE_COLD};
+    for (size_t i = 0; i < sizeof(nAllowed) / sizeof(nAllowed[0]); ++i)
+    {
+        CTransaction tx = shape;
+        tx.nVersion = nAllowed[i];
+        BOOST_REQUIRE(tx.IsCoinStake() && tx.IsShielded());
+        Outcome out = RunCheckTransaction(tx);
+        BOOST_CHECK_MESSAGE(out.fAccepted,
+            "NullStake generation " << nAllowed[i] << " was refused as a "
+            "coinstake: " << Excerpt(out.strLog));
+    }
+
+    // Every other shielded version is not.
+    for (int nVersion = SHIELDED_TX_VERSION;
+         nVersion <= SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM; ++nVersion)
+    {
+        if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE ||
+            nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 ||
+            nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            continue;
+        CTransaction tx = shape;
+        tx.nVersion = nVersion;
+        BOOST_REQUIRE(tx.IsCoinStake() && tx.IsShielded());
+        ExpectReason(RunCheckTransaction(tx),
+                     "shielded transaction cannot be coinstake",
+                     strprintf("a coinstake under shielded version %d", nVersion));
+    }
+
+    // Why the height window below this clause cannot be reached, as arithmetic.
+    BOOST_CHECK_MESSAGE(
+        FORK_HEIGHT_SHIELDED + MIN_SHIELDED_SPEND_DEPTH >= FORK_HEIGHT_DAG,
+        "a shielded spend's anchor can now age past MIN_SHIELDED_SPEND_DEPTH "
+        "while proof-of-stake blocks still connect, so the NullStake "
+        "generation-window branch in ConnectBlock has become reachable and this "
+        "suite should cover it");
+}
+
+// ---------------------------------------------------------------------------
 // R-MASK-014: a coinbase IV5 payload spends nothing, charges no fee, balance = fee sum.
 // ---------------------------------------------------------------------------
 
