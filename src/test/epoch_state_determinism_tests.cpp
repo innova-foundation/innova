@@ -2025,4 +2025,63 @@ BOOST_AUTO_TEST_CASE(a_v2_epoch_build_without_a_canonical_anchor_fails_closed)
                         "the build refused for another reason: " << strShortError);
 }
 
+
+// R-ERF-001. From the epoch-root height an epoch accumulates its own outputs even
+// with no prior curve tree, so pruned and unpruned nodes commit the same root.
+BOOST_AUTO_TEST_CASE(an_epoch_accumulates_its_outputs_with_no_prior_curve_tree)
+{
+    const int E = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V2);
+    const int hStart = GetEpochBoundaryHeight(E, FORK_HEIGHT_EPOCH_STATE_V2);
+    const int hEnd = GetEpochBoundaryHeight(E + 1, FORK_HEIGHT_EPOCH_STATE_V2) - 1;
+    BOOST_REQUIRE_MESSAGE(hEnd >= FORK_HEIGHT_EPOCH_ROOT_FCMP,
+                          "the epoch under test ends below the epoch-root height, "
+                          "so the unconditional branch is not entered at all");
+
+    CTransaction shielded;
+    shielded.nVersion = SHIELDED_TX_VERSION_FCMP;
+    shielded.nTime = (unsigned int)(1700000000 + hStart);
+    CShieldedOutputDescription output;
+    output.cv.vchCommitment.assign(33, 0x07);
+    output.cmu = uint256(0xEF000001);
+    shielded.vShieldedOutput.push_back(output);
+    const std::vector<CTransaction> vShieldedTx(1, shielded);
+
+    // The same epoch twice, differing only in one shielded output, with no predecessor state;
+    // the leaf-count difference is the epoch's own output.
+    uint64_t nLeaves[2] = {0, 0};
+    for (int nRun = 0; nRun < 2; nRun++)
+    {
+        DAGHarness h;
+        std::vector<uint256> none;
+        CBlockIndex* pBefore = h.add(0xEF000F00, hStart - 1, none, NULL);
+
+        CBlockIndex* pTip = pBefore;
+        for (int nHeight = hStart; nHeight <= hEnd; ++nHeight)
+        {
+            const bool fCarry = (nRun == 1 && nHeight == hStart);
+            std::vector<uint256> parents(1, pTip->GetBlockHash());
+            pTip = h.add(0xEF000000U + (unsigned int)(nHeight - hStart + 1), nHeight,
+                         parents, pTip, true, NULL, NULL,
+                         fCarry ? &vShieldedTx : NULL);
+        }
+        std::vector<uint256> crossingParents(1, pTip->GetBlockHash());
+        CBlockIndex* pCrossing = h.add(0xEF000FFF, hEnd + 1, crossingParents, pTip);
+
+        CEpochState state;
+        CCurveTree tree;
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochStateV2Compat(
+                                  E, hEnd - hStart + 1, pCrossing, state, tree,
+                                  strError),
+                              strError);
+        nLeaves[nRun] = tree.nLeafCount;
+    }
+
+    BOOST_CHECK_MESSAGE(nLeaves[1] == nLeaves[0] + 1,
+                        "the epoch's own shielded output did not reach its curve "
+                        "tree without a prior snapshot: " << nLeaves[0]
+                            << " leaves without the output, " << nLeaves[1]
+                            << " with it");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
