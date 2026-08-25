@@ -449,10 +449,8 @@ bool CTxDB::WriteEpochState(int nEpoch, const CEpochState& state)
     return Write(make_pair(string("epochstate"), nEpoch), state);
 }
 
-// NOTE: this whole-struct Read requires the trailing nSerVersion byte (CEpochState serialization),
-// so it MUST NOT be called on pre-versioning (legacy) records -- it would throw. It currently has
-// zero callers; the sole runtime read path is IterateEpochStates, which reads tolerantly. If you wire
-// this up, guarantee the DB has been migrated to V2 records first (see the epochstateschema marker).
+// Requires the trailing nSerVersion byte and throws on legacy records. No callers; the
+// runtime path is IterateEpochStates. Migrate to V2 records before using this.
 bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
 {
     return Read(make_pair(string("epochstate"), nEpoch), state);
@@ -1365,6 +1363,7 @@ bool CTxDB::LoadBlockIndex()
     for (const PAIRTYPE(int, CBlockIndex*)& item : vSortedByHeight)
     {
         CBlockIndex* pindex = item.second;
+        pindex->BuildSkip();
         pindex->nChainTrust = (pindex->pprev ? pindex->pprev->nChainTrust : 0) + pindex->GetBlockTrust();
         // NovaCoin: calculate stake modifier checksum
         pindex->nStakeModifierChecksum = GetStakeModifierChecksum(pindex);
@@ -1409,6 +1408,9 @@ bool CTxDB::LoadBlockIndex()
     pindexBest = mapBlockIndex[hashBestChain];
     nBestHeight = pindexBest->nHeight;
     nBestChainTrust = pindexBest->nChainTrust;
+
+    if (!RebuildMainChainForwardLinks())
+        return false;
 
     printf("LoadBlockIndex(): hashBestChain=%s  height=%d  trust=%s  date=%s\n",
       hashBestChain.ToString().substr(0,20).c_str(), nBestHeight, CBigNum(nBestChainTrust).ToString().c_str(),

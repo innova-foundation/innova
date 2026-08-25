@@ -1,34 +1,59 @@
-//
-// Unit tests for block-chain checkpoints
-//
-#include <boost/assign/list_of.hpp> // for 'map_list_of()'
 #include <boost/test/unit_test.hpp>
-#include <boost/foreach.hpp>
-
 #include "../checkpoints.h"
-#include "../util.h"
-
-using namespace std;
+#include "../main.h"
+#include <vector>
 
 BOOST_AUTO_TEST_SUITE(Checkpoints_tests)
 
-BOOST_AUTO_TEST_CASE(sanity)
+namespace {
+struct Chain {
+    std::vector<uint256> hashes;
+    std::vector<CBlockIndex*> nodes;
+    ~Chain() { for (size_t i = 0; i < nodes.size(); ++i) delete nodes[i]; }
+};
+
+Chain BuildLinear(int n)
 {
-    uint256 p11111 = uint256("0x0000000069e244f73d78e8fd29ba2fd2ed618bd6fa2ee92559f542fdb26e7c1d");
-    uint256 p134444 = uint256("0x00000000000005b12ffd4cd315cd34ffd4a594f430ac814c91184a0d42d2b0fe");
-    BOOST_CHECK(Checkpoints::CheckBlock(11111, p11111));
-    BOOST_CHECK(Checkpoints::CheckBlock(134444, p134444));
+    Chain c;
+    c.hashes.reserve(n);
+    c.nodes.reserve(n);
+    CBlockIndex* prev = NULL;
+    for (int i = 0; i < n; ++i)
+    {
+        c.hashes.push_back(uint256((uint64_t)(0x900000 + i)));
+        CBlockIndex* p = new CBlockIndex();
+        p->phashBlock = &c.hashes.back();
+        p->pprev = prev;
+        p->nHeight = i;
+        if (prev)
+            prev->pnext = p;
+        c.nodes.push_back(p);
+        prev = p;
+    }
+    return c;
+}
+}
 
-    
-    // Wrong hashes at checkpoints should fail:
-    BOOST_CHECK(!Checkpoints::CheckBlock(11111, p134444));
-    BOOST_CHECK(!Checkpoints::CheckBlock(134444, p11111));
+BOOST_AUTO_TEST_CASE(hardened_checkpoint_sanity)
+{
+    uint256 p2000("0x000000007e4fbd38a6072a2725273901d2eafdadbe9ce2e28f22882db6e76817");
+    uint256 p5000("0x0000000090efedc86969fcd821ee8fdde179796547a4bd07c643800d75c1ddbd");
+    BOOST_CHECK(Checkpoints::CheckHardened(2000, p2000));
+    BOOST_CHECK(Checkpoints::CheckHardened(5000, p5000));
+    BOOST_CHECK(!Checkpoints::CheckHardened(2000, p5000));
+    BOOST_CHECK(!Checkpoints::CheckHardened(5000, p2000));
+    BOOST_CHECK(Checkpoints::CheckHardened(2001, p5000));
+    BOOST_CHECK(Checkpoints::GetTotalBlocksEstimate() >= 5000);
+}
 
-    // ... but any hash not at a checkpoint should succeed:
-    BOOST_CHECK(Checkpoints::CheckBlock(11111+1, p134444));
-    BOOST_CHECK(Checkpoints::CheckBlock(134444+1, p11111));
+BOOST_AUTO_TEST_CASE(ibd_check_sync_accepts_competing_branch)
+{
+    Chain c = BuildLinear(6);
+    pindexBest = c.nodes[5];
+    pindexGenesisBlock = c.nodes[0];
 
-    BOOST_CHECK(Checkpoints::GetTotalBlocksEstimate() >= 134444);
-}    
+    const uint256 candidateHash((uint64_t)0xabcdef01ULL);
+    BOOST_CHECK(Checkpoints::CheckSync(candidateHash, c.nodes[2]));
+}
 
 BOOST_AUTO_TEST_SUITE_END()

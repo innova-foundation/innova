@@ -498,7 +498,9 @@ endif
 
 TEST_OBJS= \
     obj/test/test_innova.o \
+    obj/test/Checkpoints_tests.o \
     obj/test/bulletproof_ac_tests.o \
+    obj/test/cblocklocator_tests.o \
     obj/test/finality_tally_tests.o \
     obj/test/fcmp_root_tests.o \
     obj/test/idag_validation_tests.o \

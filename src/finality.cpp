@@ -3665,11 +3665,9 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         }
     }
 
-    // R2: connect-time cert-position floor + staleness (fork-gated). A cert for
-    // epoch E is block-valid only at containing height >= H_E + K (after the
-    // vote-inclusion window closes, so the covered vote set is frozen) and may
-    // finalize only the current or immediately-preceding epoch (keeps pruned
-    // epochs consensus-irrelevant). nContextHeight < 0 (relay/RPC) skips this.
+    // R2 (fork-gated): a cert for epoch E is block-valid only at height >= H_E + K
+    // (vote window closed) and only for the current or preceding epoch.
+    // nContextHeight < 0 (relay/RPC) skips this.
     if (nContextHeight >= 0 && nContextHeight >= FORK_HEIGHT_VOTESET_ROOT)
     {
         int nCertBoundary = GetEpochBoundaryHeight(cert.nEpoch, nContextHeight);
@@ -3678,11 +3676,8 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         int nContextEpoch = GetEpochForHeight(nContextHeight);
         if (cert.nEpoch > nContextEpoch)
             return reject("tally certificate finalizes a future epoch");
-        // Staleness bound matches the HARD-confirmation streak depth so a cert
-        // delayed within the streak window can still finalize its epoch (a tighter
-        // bound would permanently strand a late cert and reset the streak). The
-        // bound stays well inside the prune horizon (current-10), so mapEpochVotes
-        // for the covered epoch is never pruned out from under R3.
+        // Staleness bound matches the HARD-confirmation streak depth and stays inside
+        // the prune horizon (current-10), so R3's mapEpochVotes is still present.
         if (cert.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nContextEpoch)
             return reject("tally certificate finalizes a stale epoch");
     }
@@ -3857,17 +3852,9 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         nMatchedVotes++;
     }
 
-    // R3: connect-time coverage equality (fork-gated). The certificate must
-    // reference EXACTLY the epoch-E votes connected on this chain (mapEpochVotes,
-    // a deterministic, reorg-stable function of the selected chain). Omitting any
-    // connected vote is rejected, which forecloses denominator-deflation
-    // censorship and minority-block finalization: the winning partition is
-    // re-derived above from each vote's public hashBlock, so against the full
-    // connected denominator a minority block cannot clear the 2/3 tier. R1/R2
-    // guarantee the window has closed and no further epoch-E vote can connect, so
-    // the set is frozen. Every cert nullifier was resolved above to a connected
-    // epoch-E vote and cert.vVoteNullifiers is dedup-checked in IsValidBasic, so
-    // equal size plus full containment of the connected set is exact set-equality.
+    // R3 (fork-gated): the certificate must reference exactly the epoch-E votes
+    // connected on this chain (mapEpochVotes). Nullifiers are deduped and resolved
+    // above, so equal size plus containment is set equality.
     if (fEnforceVoteSet)
     {
         std::map<int, std::vector<CFinalityVote> >::const_iterator itEpoch = mapEpochVotes.find(cert.nEpoch);
@@ -4828,11 +4815,8 @@ std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock
             continue;
         if (share.nEpoch + 2 < nBlockEpoch)
             continue;
-        // Only offer shares the block will be able to validate on every
-        // node: the vote must be connected or embedded in this same block.
-        // Shares referencing votes that exist only in local pending relay
-        // state would make the produced block invalid under block-context
-        // CheckTallyShare.
+        // Only offer shares whose vote is connected or embedded in this block;
+        // relay-only votes would fail block-context CheckTallyShare.
         std::string strError;
         if (!CheckTallyShare(share, &strError, pvBlockVotes, false, nBlockHeight))
         {
@@ -4897,13 +4881,8 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
     LOCK(cs_finality);
     for (const CFinalityVote& vote : vVotes)
     {
-        // A vote nullifier may be carried by more than one connected block (the same
-        // vote re-embedded across DAG branches/siblings). AddVote records it once and
-        // no-ops on the duplicate, so the connected-vote accounting reflects a single
-        // recording. Tear it down only when the LAST block carrying this nullifier is
-        // disconnected; otherwise a partial reorg dropping one carrier would lose a
-        // vote a surviving block still legitimately carries, diverging this node's
-        // connected-vote set from a fresh-sync node. Mirrors DisconnectBlockTallyShares.
+        // A vote may be carried by several connected blocks but is recorded once; tear
+        // it down only when the last carrier disconnects. Mirrors DisconnectBlockTallyShares.
         bool fStillConnected = false;
         for (const auto& pair : mapBlockConnectedVoteNullifiers)
         {
@@ -5358,11 +5337,8 @@ void CFinalityTracker::PurgeUnresolvableTallyShares(CTxDB& txdb)
     int nPurged = 0;
     for (auto it = mapTallyShares.begin(); it != mapTallyShares.end(); )
     {
-        // Never purge a block-connected share: it is backed by a connected block
-        // (and the persisted finalityconnsb index), so dropping it from
-        // mapTallyShares/finalityshare while setConnectedTallyShares + the block
-        // index still reference it would, after a restart, leave a hash in
-        // setConnectedTallyShares with no backing share and diverge cert validity.
+        // Never purge a block-connected share: setConnectedTallyShares and the
+        // finalityconnsb index still reference it across restart.
         if (setConnectedTallyShares.count(it->first))
         {
             ++it;
@@ -5442,12 +5418,9 @@ void CFinalityTracker::ReloadConnectedFinalityFromDB()
 
     CTxDB txdb("r");
 
-    // The LevelDB finality stores only ever hold CONNECTED (on-chain) votes and
-    // certificates (written on connect, erased on disconnect), so re-merge them
-    // as connected finality (fRecordFinality=true) — the same path LoadVotes /
-    // LoadTallyCertificates use. fCheck=false: these were validated when first
-    // connected and re-validating mid-rebuild can spuriously fail on the
-    // not-yet-rebuilt finalized-epoch anchor.
+    // The LevelDB stores hold only connected objects, so re-merge with
+    // fRecordFinality=true as LoadVotes does. fCheck=false: the finalized-epoch
+    // anchor is not yet rebuilt.
     std::map<uint256, CFinalityVote> mapVotes;
     if (txdb.IterateFinalityVotes(mapVotes))
     {
@@ -5470,14 +5443,9 @@ void CFinalityTracker::ReloadConnectedFinalityFromDB()
         }
     }
 
-    // Restore the per-block connected-carrier indexes (append-on-connect /
-    // erase-on-disconnect, never pruned, like the vote/cert stores) so the
-    // still-connected-elsewhere teardown checks and the connect-time coverage /
-    // share-resolution rules remain a pure function of the connected chain across
-    // restart. setConnectedTallyShares is rebuilt from the share index here: it is
-    // otherwise only re-seeded from connected certs' share hashes, which omits
-    // shares connected in a block not yet referenced by any connected cert, so a
-    // restart in that window would reject a cert a non-restarted node accepts.
+    // Restore the per-block connected-carrier indexes so teardown and coverage rules
+    // survive restart. setConnectedTallyShares comes from the share index, which also
+    // covers shares not yet referenced by a connected cert.
     std::map<uint256, std::vector<uint256> > mapVoteBlocks;
     if (txdb.IterateFinalityConnectedVoteBlocks(mapVoteBlocks))
     {
