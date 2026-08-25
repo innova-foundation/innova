@@ -20,6 +20,8 @@ use zeroize::Zeroize;
 mod disclosure;
 mod fcmp;
 mod hash_to_point;
+#[cfg(test)]
+mod linkage_tests;
 mod note;
 mod nullifier;
 mod payload;
