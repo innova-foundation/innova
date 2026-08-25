@@ -1499,11 +1499,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
                     for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
                     {
-                        // B2-e Phase 3c.4: an owner reclaim (2007) spends a 3-generator cv3 leaf; its value proofs
-                        // (range, nullifier-binding) verify over cv_plain = cv3 - D*J, exactly as ConnectInputs does
-                        // (main.cpp:3924/4006). For every other tx/spend this returns the raw spend commitment, so
-                        // behaviour is unchanged. Relay-layer only -- the reclaim gates (D recompute, owner spend-auth,
-                        // timelock) are still enforced by ConnectInputs, which accept() runs below.
+                        // An owner reclaim (2007) spends a 3-generator cv3 leaf; its value proofs verify over
+                        // cv_plain = cv3 - D*J, as in ConnectInputs. Other spends use the raw commitment. The
+                        // reclaim gates are still enforced by ConnectInputs.
                         CPedersenCommitment cvSpendValue;
                         if (!MofNSpendValueCommitment(tx, i, false, cvSpendValue))
                             return error("CTxMemPool::accept() : shielded spend %d value commitment derivation failed", (int)i);
@@ -2868,7 +2866,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 
        return nSubsidy + nFees;
    } else {
-  // use nHeight parameter throughout (was pindexBest->nHeight)
+  // use nHeight parameter throughout
   if (nHeight == 1)
   		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
   	else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
@@ -5127,7 +5125,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         {
             if (vtx[1].IsShielded())
             {
-                // PRIV-AUDIT-3: After V2 fork, reject V1 proofs (they leak UTXO identity)
+                // After the V2 fork, reject V1 proofs (they leak UTXO identity)
                 bool fNullStakeAllowed = (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE && pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V2)
                     || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V2)
                     || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V3);

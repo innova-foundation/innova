@@ -166,6 +166,8 @@ Value getinfo(const Array& params, bool fHelp)
 
     Object obj, diff;
     obj.push_back(Pair("version",       FormatFullVersion()));
+    obj.push_back(Pair("buildcommit",    CLIENT_BUILD_COMMIT));
+    obj.push_back(Pair("builddirty",     CLIENT_BUILD_DIRTY));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
     obj.push_back(Pair("walletversion", pwalletMain->GetVersion()));
     obj.push_back(Pair("balance",       ValueFromAmount(pwalletMain->GetBalance())));

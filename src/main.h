@@ -309,13 +309,9 @@ inline int GetForkHeightEpochRootFCMP()
 }
 #define FORK_HEIGHT_EPOCH_ROOT_FCMP (GetForkHeightEpochRootFCMP())
 
-// Per-epoch finality vote-set accumulator. ComputeEpochState commits a digest of
-// the votes embedded in the epoch's own blocks (CEpochState.hashVoteSetRoot), and
-// CheckTallyCertificate requires a private cert to cover exactly that set, so a
-// producer that omits connected votes (or picks a minority winning block) is
-// rejected. NOTE: this is enforced from a fresh chain only -- it adds a CEpochState
-// field and a cert-validity rule, so the existing testnet must be remined to
-// activate it (no serialization migration of old epoch records is provided).
+// Per-epoch finality vote-set accumulator. CEpochState.hashVoteSetRoot commits the
+// votes embedded in the epoch's blocks and CheckTallyCertificate requires a private
+// cert to cover exactly that set. Fresh-chain only (no migration of epoch records).
 inline int GetForkHeightVoteSetRoot()
 {
     extern bool fRegTest;
@@ -325,22 +321,8 @@ inline int GetForkHeightVoteSetRoot()
 }
 #define FORK_HEIGHT_VOTESET_ROOT (GetForkHeightVoteSetRoot())
 
-// Deterministic epoch-state anchor (v2). ComputeEpochState originally derived the epoch's
-// block set + DAG order from SelectBestDAGTip() -- the node-local LIVE tip -- computed once at
-// boundary crossing and never recomputed on reorg, so two nodes could freeze different
-// curve/nullifier/vote-set roots for the same epoch -> a private vote/cert anchored to the
-// canonical root passed on one node and was rejected on another -> permanent ConnectBlock split.
-// Above this height ComputeEpochState is a PURE function of a CANONICAL anchor block
-// (GetDAGLinearOrder is anchor-pure: selected-parent chain + committed vDAGParents + coloring):
-// it is computed only for a best-chain extension (side branches skip) and recomputed from the
-// new best tip on reorg. The consumed state is always the FINALIZED epoch, which reorgs cannot
-// change (Reorganize rejects sub-finalized reorgs), so the anchor is stable + agreed by all nodes.
-// This changes the epoch-root derivation, so it is a fresh-chain-only rule (no migration of old
-// epoch records). REORG-VALIDATED 2026-07 (unit determinism harness + 4-node regtest reorg e2e:
-// after a reorg the epoch's boundary/nullifier roots re-anchor to the new canonical chain). Now
-// ACTIVE with the DAG fork on every network, alongside its sibling epoch-state forks
-// (FORK_HEIGHT_EPOCH_ROOT_FCMP, FORK_HEIGHT_VOTESET_ROOT) which together define the epoch-state
-// consensus. Testnet must remine to adopt it; mainnet activates at the DAG fork (pre-launch there).
+// Deterministic epoch-state anchor (v2): a pure function of a canonical anchor block,
+// recomputed on reorg. Fresh-chain only; activates with the DAG fork.
 inline int GetForkHeightEpochStateV2()
 {
     return GetForkHeightDAG();
@@ -428,9 +410,7 @@ inline int GetForkHeightTallyGovernance()
     extern bool fTestNet;
     if (fRegTest) return 8;
     if (fTestNet) return 660;        // live-chain activation at the epoch-2 boundary (tip ~430), reachable to exercise
-    // Mainnet: co-activate the committee-signature requirement with the DAG fork (the first height a
-    // private cert can exist). Any later governance height would leave a window where private certs are
-    // accepted with content-checks only (no M-of-N committee authorization) even with a pinned committee.
+    // Mainnet: co-activates with the DAG fork, the first height a private cert can exist.
     return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_TALLY_GOVERNANCE (GetForkHeightTallyGovernance())
