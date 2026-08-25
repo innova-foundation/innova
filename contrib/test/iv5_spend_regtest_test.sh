@@ -146,6 +146,69 @@ except Exception: pass
 '
 }
 
+# The disclosure mask read from the serialized payload bytes: the 9-byte header is
+# followed by the genesis hash, and the mask sits four bytes before it. Prints nothing
+# if no header is found.
+payload_mask_byte() {
+    RAWHEX="$1" GENHEX="$2" python3 -c '
+import os, sys
+raw = os.environ["RAWHEX"].strip().strip(chr(34)).lower()
+gen = os.environ["GENHEX"].strip().strip(chr(34)).lower()
+try:
+    blob = bytes.fromhex(raw)
+    anchor = bytes.fromhex(gen)[::-1]
+except Exception:
+    sys.exit(0)
+if len(anchor) != 32:
+    sys.exit(0)
+at = blob.find(anchor)
+if at < 9:
+    sys.exit(0)
+head = at - 9
+if blob[head] != 1 or blob[head + 1] != 0:
+    sys.exit(0)
+print(blob[head + 5])
+'
+}
+
+# The same transaction with one byte changed: the mask it declares. Everything
+# else, every proof included, is left exactly as the wallet built it.
+restate_mask_byte() {
+    RAWHEX="$1" GENHEX="$2" NEWMASK="$3" python3 -c '
+import os, sys
+raw = os.environ["RAWHEX"].strip().strip(chr(34)).lower()
+gen = os.environ["GENHEX"].strip().strip(chr(34)).lower()
+try:
+    blob = bytearray(bytes.fromhex(raw))
+    anchor = bytes.fromhex(gen)[::-1]
+except Exception:
+    sys.exit(0)
+if len(anchor) != 32:
+    sys.exit(0)
+at = blob.find(anchor)
+if at < 9:
+    sys.exit(0)
+blob[at - 9 + 5] = int(os.environ["NEWMASK"])
+print(blob.hex())
+'
+}
+
+# Serialized bytes of a transaction, or of a block's coinbase.
+raw_tx_hex() { rpc "$1" getrawtransaction "$2" 0 2>/dev/null | tr -d '"[:space:]'; }
+
+coinbase_raw_hex() {
+    local bh cb
+    bh="$(block_hash "$1" "$2")"
+    [ ${#bh} -eq 64 ] || return 1
+    cb="$(rpc "$1" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["tx"][0])
+except Exception: pass
+')"
+    [ ${#cb} -eq 64 ] || return 1
+    raw_tx_hex "$1" "$cb"
+}
+
 feq() { [ "$(python3 -c "print(1 if abs($1 - $2) < 1e-8 else 0)" 2>/dev/null)" = "1" ]; }
 
 # A spend block's coinbase may exceed a plain one by the spend's fee and by
@@ -375,6 +438,9 @@ for ((n=0; n<NUM_NODES; n++)); do
 done
 wait_peers || { fail "fleet did not mesh"; exit 1; }
 success "$NUM_NODES-node fleet up and meshed (Boundary B at $BOUNDARY_B, IV5 rehearsal on)"
+
+GENESIS_HASH="$(block_hash 0 0)"
+[ ${#GENESIS_HASH} -eq 64 ] || { fail "could not read the regtest genesis hash"; exit 1; }
 
 # ============================================================
 header "1. node0 holds an IV5 seed in an encrypted wallet"
@@ -644,6 +710,31 @@ else
     fail "the reserved-key-image double spend was refused for the wrong reason: $(echo "$RESERVED" | head -2)"
 fi
 
+# Relay must refuse the in-mempool transaction with only its mask byte changed.
+# Payload-level refusal for the mask is pinned in privacy_vnext_mask_pinning_tests.
+XFER_MASK_ON_WIRE="$(payload_mask_byte "$XFER_RAW" "$GENESIS_HASH")"
+if [ "$XFER_MASK_ON_WIRE" = "7" ]; then
+    success "the unconfirmed transfer in the mempool carries mask 7 on the wire"
+    RESTATE_OK=1
+    for DOWN in 0 1 2 3 4 5 6 8 255; do
+        RESTATED="$(restate_mask_byte "$XFER_RAW" "$GENESIS_HASH" "$DOWN")"
+        if [ ${#RESTATED} -ne ${#XFER_RAW} ]; then
+            fail "could not restate the mask byte to $DOWN"
+            RESTATE_OK=0
+            continue
+        fi
+        RESTATED_TXID="$(rpc 0 sendrawtransaction "$RESTATED" 2>&1 | tr -d '"[:space:]')"
+        if [ ${#RESTATED_TXID} -eq 64 ]; then
+            fail "relay accepted the transfer restated to mask $DOWN: ${RESTATED_TXID:0:16}"
+            RESTATE_OK=0
+        fi
+    done
+    [ "$RESTATE_OK" -eq 1 ] && \
+        success "relay refuses the same transfer restated to every other mask"
+else
+    fail "the mempool transfer reads mask '$XFER_MASK_ON_WIRE' on the wire, expected 7"
+fi
+
 XFER_TARGET=$(( $(height 0) + 3 ))
 mine_to 0 "$XFER_TARGET" || { fail "could not mine the transfer"; exit 1; }
 wait_sync "$XFER_TARGET" || { fail "peers did not accept the transfer block"; exit 1; }
@@ -684,6 +775,15 @@ if [ "$XFER_MASK" = "7" ]; then
     success "a transfer with no disclosure argument declares mask 7"
 else
     fail "the default transfer declared mask '$XFER_MASK', expected 7"
+fi
+
+# The same claim read from the payload's own mask byte rather than the RPC report.
+XFER_RAW_HEX="$(raw_tx_hex 0 "$XFER_TXID")"
+XFER_MASK_BYTE="$(payload_mask_byte "$XFER_RAW_HEX" "$GENESIS_HASH")"
+if [ "$XFER_MASK_BYTE" = "7" ]; then
+    success "the default transfer's serialized payload header carries mask 7"
+else
+    fail "the default transfer's payload header reads mask '$XFER_MASK_BYTE', expected 7"
 fi
 
 # ============================================================
@@ -759,6 +859,15 @@ disclosed_transfer() {
         success "mask $mask: the confirmed transaction declares it on chain"
     else
         fail "mask $mask: the confirmed transaction does not declare mask $mask"
+    fi
+
+    local rawhex maskbyte
+    rawhex="$(raw_tx_hex 0 "$txid")"
+    maskbyte="$(payload_mask_byte "$rawhex" "$GENESIS_HASH")"
+    if [ "$maskbyte" = "$mask" ]; then
+        success "mask $mask: the serialized payload header carries it"
+    else
+        fail "mask $mask: the serialized payload header reads '$maskbyte'"
     fi
 
     if [ "$(jlen "$raw" vin)" = "0" ] && [ "$(jlen "$raw" vout)" = "0" ]; then
@@ -1209,6 +1318,25 @@ if mine_to 0 "$FEE_NOTE_HEIGHT" && wait_sync "$FEE_NOTE_HEIGHT"; then
     fi
 else
     fail "the fleet could not reach the retirement fork at $FEE_NOTE_HEIGHT"
+fi
+
+# ============================================================
+header "10b. The declared mask is pinned in the bytes"
+# ============================================================
+
+# The coinbase fee note is the one payload no user picks a mask for: the producer
+# builds it and consensus pins what it may declare. Read from the coinbase's own
+# serialized bytes at a height that collected pool fees.
+if [ -n "${POST_XH:-}" ]; then
+    FEE_CB_HEX="$(coinbase_raw_hex 0 "$POST_XH")"
+    FEE_CB_MASK="$(payload_mask_byte "$FEE_CB_HEX" "$GENESIS_HASH")"
+    if [ "$FEE_CB_MASK" = "3" ]; then
+        success "the coinbase fee note's serialized header carries mask 3"
+    else
+        fail "the coinbase fee note's header reads mask '$FEE_CB_MASK', expected 3"
+    fi
+else
+    warn "no post-fork fee-note block to read a coinbase mask from"
 fi
 
 # ============================================================
