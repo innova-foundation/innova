@@ -1956,11 +1956,6 @@ BOOST_AUTO_TEST_CASE(an_epoch_accumulates_its_outputs_with_no_prior_curve_tree)
                           "the epoch under test ends below the epoch-root height, "
                           "so the unconditional branch is not entered at all");
 
-    CEpochState prev;
-    prev.nEpoch = E - 1;
-    prev.nHeightStart = GetEpochBoundaryHeight(E - 1, hStart);
-    prev.nHeightEnd = hStart - 1;
-
     CTransaction shielded;
     shielded.nVersion = SHIELDED_TX_VERSION_FCMP;
     shielded.nTime = (unsigned int)(1700000000 + hStart);
@@ -1970,17 +1965,14 @@ BOOST_AUTO_TEST_CASE(an_epoch_accumulates_its_outputs_with_no_prior_curve_tree)
     shielded.vShieldedOutput.push_back(output);
     const std::vector<CTransaction> vShieldedTx(1, shielded);
 
-    // The same epoch twice, differing only in whether one of its blocks carries a
-    // shielded output, and both built with pPrevCurveTree NULL. Whatever tree the
-    // store already holds is common to the pair, so the difference between the
-    // two leaf counts is the epoch's own output and nothing else.
+    // The same epoch twice, differing only in one shielded output, with no predecessor state;
+    // the leaf-count difference is the epoch's own output.
     uint64_t nLeaves[2] = {0, 0};
     for (int nRun = 0; nRun < 2; nRun++)
     {
         DAGHarness h;
         std::vector<uint256> none;
         CBlockIndex* pBefore = h.add(0xEF000F00, hStart - 1, none, NULL);
-        prev.hashBoundaryBlock = pBefore->GetBlockHash();
 
         CBlockIndex* pTip = pBefore;
         for (int nHeight = hStart; nHeight <= hEnd; ++nHeight)
@@ -1999,7 +1991,7 @@ BOOST_AUTO_TEST_CASE(an_epoch_accumulates_its_outputs_with_no_prior_curve_tree)
         std::string strError;
         BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochStateV2Compat(
                                   E, hEnd - hStart + 1, pCrossing, state, tree,
-                                  strError, &prev, NULL),
+                                  strError),
                               strError);
         nLeaves[nRun] = tree.nLeafCount;
     }
