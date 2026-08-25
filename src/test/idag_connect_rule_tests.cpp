@@ -1093,42 +1093,67 @@ BOOST_AUTO_TEST_CASE(a_retained_v3_vertex_must_commit_its_own_predecessor_first)
     // Control: with every retained vertex well formed the load succeeds. Without
     // this, an arm returning false would prove only that the store was unusable
     // for some other reason.
-    std::string strControlLog;
-    BOOST_REQUIRE_MESSAGE(LoadsCleanly(&strControlLog),
+    std::string strLog;
+    BOOST_REQUIRE_MESSAGE(LoadsCleanly(&strLog),
                           "the loader refused a well-formed store, so every arm "
-                          "below would pass for the wrong reason; log: "
-                          << strControlLog);
+                          "below would pass for the wrong reason; log: " << strLog);
+
+    // The loader's fatals all return false, so each arm matches its own: BINDING is
+    // the primary-parent rule, PARENT the per-parent resolution behind it.
+    const char* BA007_BINDING = "has an invalid primary-parent binding";
+    const char* BA007_PARENT  = "references invalid/missing parent";
+    const char* BA007_NOVERTEX = "has no DAG vertex";
 
     // Arm 1: an empty parent list.
     fixture.WriteVertex(2, std::vector<uint256>());
-    BOOST_CHECK_MESSAGE(!LoadsCleanly(),
+    BOOST_CHECK_MESSAGE(!LoadsCleanly(&strLog),
                         "a retained V3 vertex committing no parent was loaded");
+    BOOST_CHECK_MESSAGE(Says(strLog, BA007_BINDING),
+                        "an empty parent list was not refused by the primary-parent "
+                        "binding; log: " << strLog);
     fixture.WriteVertex(2, fixture.Parents(2));
     BOOST_REQUIRE(LoadsCleanly());
 
-    // Arm 2: a first parent that is not the block's own predecessor.
+    // Arm 2: a first parent that is not the block's own predecessor. The hash
+    // named is a block the store does know, so the per-parent resolution below
+    // would accept it and the binding is the only thing that can refuse it.
     {
         std::vector<uint256> vWrong;
         vWrong.push_back(fixture.vHashes[0]);
         fixture.WriteVertex(2, vWrong);
-        BOOST_CHECK_MESSAGE(!LoadsCleanly(),
+        BOOST_CHECK_MESSAGE(!LoadsCleanly(&strLog),
                             "a retained V3 vertex whose first parent is not its "
                             "predecessor was loaded");
+        BOOST_CHECK_MESSAGE(Says(strLog, BA007_BINDING),
+                            "a wrong first parent was not refused by the "
+                            "primary-parent binding; log: " << strLog);
+        BOOST_CHECK_MESSAGE(!Says(strLog, BA007_PARENT),
+                            "the parent named is a known block, so a missing-parent "
+                            "refusal means the arm is not testing the binding; log: "
+                            << strLog);
     }
     fixture.WriteVertex(2, fixture.Parents(2));
     BOOST_REQUIRE(LoadsCleanly());
 
-    // Arm 3: more parents than the bound permits. The list still starts with the
-    // predecessor, so the count is the only thing wrong with it.
+    // Arm 3: too many parents. CTxDB::IterateDAGLinks rejects the count against
+    // MAX_DAG_PARENTS while deserializing, before LoadDAGLinks; the arm asserts that
+    // reason and that it is not the binding.
     {
         std::vector<uint256> vTooMany = fixture.Parents(2);
         for (int i = 0; i <= MAX_DAG_PARENTS; i++)
             vTooMany.push_back(uint256(0x0ba00800u + i));
         BOOST_REQUIRE(vTooMany.size() > (size_t)MAX_DAG_PARENTS);
         fixture.WriteVertex(2, vTooMany);
-        BOOST_CHECK_MESSAGE(!LoadsCleanly(),
+        BOOST_CHECK_MESSAGE(!LoadsCleanly(&strLog),
                             "a retained V3 vertex committing more than "
                             "MAX_DAG_PARENTS parents was loaded");
+        BOOST_CHECK_MESSAGE(Says(strLog, "oversized DAG parent set"),
+                            "an over-long parent list was not refused by the "
+                            "deserializer's own bound; log: " << strLog);
+        BOOST_CHECK_MESSAGE(!Says(strLog, BA007_BINDING),
+                            "the loader's count clause refused a record the reader "
+                            "refuses first, so the two have swapped order; log: "
+                            << strLog);
     }
     fixture.WriteVertex(2, fixture.Parents(2));
     BOOST_REQUIRE(LoadsCleanly());
@@ -1137,8 +1162,11 @@ BOOST_AUTO_TEST_CASE(a_retained_v3_vertex_must_commit_its_own_predecessor_first)
     // every retained vertex, so the absent one has to be fatal too -- otherwise a
     // partial store passes by holding fewer records rather than better ones.
     fixture.EraseVertex(2);
-    BOOST_CHECK_MESSAGE(!LoadsCleanly(),
+    BOOST_CHECK_MESSAGE(!LoadsCleanly(&strLog),
                         "a retained V3 block index with no DAG vertex was loaded");
+    BOOST_CHECK_MESSAGE(Says(strLog, BA007_NOVERTEX),
+                        "the missing vertex was not what refused the load; log: "
+                        << strLog);
     fixture.WriteVertex(2, fixture.Parents(2));
     BOOST_REQUIRE_MESSAGE(LoadsCleanly(),
                           "the store did not return to a loadable state, so the "
