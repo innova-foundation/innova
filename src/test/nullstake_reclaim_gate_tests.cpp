@@ -1,35 +1,15 @@
 // Copyright (c) 2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-//
-// Behavioural cover for the owner-reclaim gates in CTransaction::ConnectInputs
-// (R-RECL-001).
-//
-// A reclaim spends an idle M-of-N cold-stake note by owner authority instead of
-// the quorum's, and it is what opens the cv_plain carve-out on the spend path.
-// Everything guarding that carve-out is a fail-closed check in one block: the
-// fork height, a shielded spend, a 33-byte owner key, the recomputed delegation
-// hash, the spend key being the owner key, and the leaf's inactivity timelock.
-// Reached only on regtest, where the legacy privacy policy is not disabled.
-//
-// The rejection REASON is read out of the log rather than inferred from the
-// return value. Six checks in one block all return false, so "returned false"
-// cannot tell one from the next, and a mutation that deletes one would leave
-// every arm still passing.
-//
-// Only the first two of the six are reachable from a unit test, and the ladder
-// is why: the reclaim fork sits above the epoch-root FCMP transition, so a
-// reclaim carrying a shielded spend loads a finalized epoch state before its own
-// gates are read, and no epoch has been finalized on this chain. The window
-// below that transition is the one place a reclaim with a real spend reaches the
-// height check; the spendless shape reaches the second check at any height
-// because it skips the root load. The last case pins that arithmetic so the gap
-// is reported rather than assumed, and stops being a gap the day the ladder
-// moves.
+// Owner-reclaim gates in ConnectInputs (R-RECL-001/002), regtest only; rejections are read
+// from the log since every gate returns false.
 
 #include <boost/test/unit_test.hpp>
 
 #include "../bulletproof_ac.h"
+#include "../curvetree.h"
+#include "../dag.h"
+#include "../finality.h"
 #include "../main.h"
 #include "../nullstake.h"
 #include "../shielded.h"
@@ -334,6 +314,104 @@ CTransaction BuildReclaimTx(const ReclaimNote& note, bool fWithSpend)
     return tx;
 }
 
+// --- the window above the epoch-root transition -------------------------------
+//
+// Chain state is staged (the records LoadFCMPValidationRoot reads) in a discarded batch.
+
+// Comfortably above RECLAIM_TIMELOCK so a leaf can be aged on either side of it,
+// and under Boundary A, which quarantines every legacy shielded version.
+int StagedReclaimHeight() { return RECLAIM_TIMELOCK * 2; }
+
+// The finalized epoch a spend above the transition validates against, plus the
+// curve-tree snapshot its root must match. Returns that root.
+uint256 StageFinalizedEpoch(CTxDB& txdb, int nBlockHeight)
+{
+    const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
+    BOOST_REQUIRE_MESSAGE(nAsOfEpoch >= 0,
+        "height " << nBlockHeight << " has no preceding epoch to finalize");
+    // nFinalizedHeightAsOf 0 lands back in epoch 0, so one record answers both
+    // the as-of lookup and the finalized-epoch read whenever nAsOfEpoch is 0.
+    BOOST_REQUIRE_EQUAL(nAsOfEpoch, 0);
+
+    std::vector<unsigned char> vchBlind;
+    BOOST_REQUIRE(GenerateBlindingFactor(vchBlind));
+    CPedersenCommitment leaf;
+    BOOST_REQUIRE(CreatePedersenCommitment(RECLAIM_NOTE_VALUE, vchBlind, leaf));
+    CCurveTree tree;
+    BOOST_REQUIRE(tree.InsertLeaf(leaf));
+    // Rebuilt the way the loader rebuilds it, so the root written here is the
+    // root it will compute.
+    BOOST_REQUIRE(tree.RebuildParentNodes());
+    const uint256 hashRoot = tree.GetRoot();
+    BOOST_REQUIRE(hashRoot != 0);
+
+    CEpochState state;
+    state.nEpoch = nAsOfEpoch;
+    state.nFinalizedHeightAsOf = 0;
+    state.hashCurveRoot = hashRoot;
+    BOOST_REQUIRE(txdb.WriteEpochState(nAsOfEpoch, state));
+    BOOST_REQUIRE(txdb.WriteCurveTreeAtEpoch(nAsOfEpoch, tree));
+    return hashRoot;
+}
+
+// The four records the timelock reads about the note's leaf: its reverse index,
+// the count that bounds it, the commitment stored under it, and the height it
+// was inserted at.
+void StageLeaf(CTxDB& txdb, const ReclaimNote& note, uint64_t nLeafIdx,
+               int nLeafHeight)
+{
+    BOOST_REQUIRE(txdb.WriteShieldedCommitmentIndex(note.cv.vchCommitment,
+                                                    nLeafIdx));
+    BOOST_REQUIRE(txdb.WriteShieldedCommitmentCount(nLeafIdx + 1));
+    BOOST_REQUIRE(txdb.WriteShieldedCommitment(nLeafIdx, note.cv));
+    BOOST_REQUIRE(txdb.WriteShieldedCommitmentHeight(nLeafIdx, nLeafHeight));
+}
+
+// Validate against staged state on the same CTxDB, then discard every write.
+Outcome RunConnectInputsStaged(CTransaction& tx, const CBlockIndex* pindex,
+                               const ReclaimNote& note, int nLeafHeight,
+                               bool fStageLeaf)
+{
+    Outcome out;
+    CTxDB txdb("r+");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    const uint256 hashRoot = StageFinalizedEpoch(txdb, pindex->nHeight);
+    for (size_t i = 0; i < tx.vShieldedSpend.size(); ++i)
+        tx.vShieldedSpend[i].curveTreeRoot = hashRoot;
+    if (fStageLeaf)
+        StageLeaf(txdb, note, 0, nLeafHeight);
+
+    MapPrevTx mapInputs;
+    std::map<uint256, CTxIndex> mapTestPool;
+    {
+        CLogCapture capture;
+        out.fAccepted = tx.ConnectInputs(txdb, mapInputs, mapTestPool,
+                                         CDiskTxPos(1, 1, 1), pindex, false,
+                                         false, STANDARD_SCRIPT_VERIFY_FLAGS,
+                                         true, true);
+        out.strLog = capture.Release();
+    }
+    BOOST_REQUIRE(txdb.TxnAbort());
+    return out;
+}
+
+void CheckStagedRejectedBy(CTransaction& tx, const CBlockIndex* pindex,
+                           const ReclaimNote& note, int nLeafHeight,
+                           bool fStageLeaf, const char* pszReason,
+                           const std::string& strCase)
+{
+    Outcome out = RunConnectInputsStaged(tx, pindex, note, nLeafHeight, fStageLeaf);
+    BOOST_CHECK_MESSAGE(!out.fAccepted, strCase + ": ConnectInputs ACCEPTED it");
+    BOOST_CHECK_MESSAGE(LogHas(out.strLog, pszReason),
+        strCase + ": did not reject with \"" + pszReason + "\"; captured: " +
+        Excerpt(out.strLog));
+    for (size_t i = 0; i < 7; ++i)
+        if (std::string(RC_ALL[i]) != std::string(pszReason))
+            BOOST_CHECK_MESSAGE(!LogHas(out.strLog, RC_ALL[i]),
+                strCase + ": a second reclaim gate also fired (" +
+                std::string(RC_ALL[i]) + ")");
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(nullstake_reclaim_gate_tests)
@@ -388,17 +466,86 @@ BOOST_AUTO_TEST_CASE(a_reclaim_without_a_shielded_spend_is_refused)
     }
 }
 
-// Where the other four gates went. A reclaim that carries a spend loads the
-// finalized epoch curve-tree snapshot before its own block is reached, and above
-// the epoch-root transition that snapshot is the chain's, not this fixture's --
-// so the owner-key check, the delegation-hash recomputation, the owner-key match
-// and the inactivity timelock have no unit-testable window on this ladder. The
-// regtest script drives them against a chain that has finalized an epoch.
-//
-// Written as an arithmetic assertion rather than a comment so that moving the
-// reclaim fork below the transition, or moving the transition above it, turns
-// this case red instead of leaving a stale note in a header.
-BOOST_AUTO_TEST_CASE(the_gates_past_the_spend_check_need_a_finalized_epoch)
+// Delegation-hash gate, above the transition with staged state; nothing ahead of it
+// fires. The control with a recomputing hash passes the gate.
+BOOST_AUTO_TEST_CASE(a_reclaim_above_the_transition_reaches_its_own_gates)
+{
+    RequireReclaimWindow();
+    BOOST_REQUIRE(CZKContext::Initialize());
+    LOCK(cs_main);
+
+    ReclaimTipGuard guard(StagedReclaimHeight());
+    BOOST_REQUIRE_GE(guard.tip.nHeight, ReclaimHeight());
+    BOOST_REQUIRE_GE(guard.tip.nHeight, FORK_HEIGHT_EPOCH_ROOT_FCMP);
+    BOOST_REQUIRE_LT(guard.tip.nHeight + 1, FORK_HEIGHT_BOUNDARY_A);
+
+    const ReclaimNote note = MakeNote();
+
+    CTransaction tampered = BuildReclaimTx(note, true);
+    tampered.reclaimAuth.delegationHash =
+        tampered.reclaimAuth.delegationHash ^ uint256(1);
+    CheckStagedRejectedBy(tampered, &guard.tip, note, 0, true, RC_BAD_HASH,
+                          "delegation hash that does not recompute");
+
+    CTransaction genuine = BuildReclaimTx(note, true);
+    Outcome control = RunConnectInputsStaged(genuine, &guard.tip, note,
+                                             guard.tip.nHeight - RECLAIM_TIMELOCK,
+                                             true);
+    BOOST_CHECK_MESSAGE(!control.fAccepted,
+        "the control was accepted; it is meant to be refused further down");
+    for (size_t i = 0; i < 7; ++i)
+        BOOST_CHECK_MESSAGE(!LogHas(control.strLog, RC_ALL[i]),
+            std::string("a fully formed reclaim tripped a reclaim gate: ") +
+            RC_ALL[i] + "; captured: " + Excerpt(control.strLog));
+}
+
+// A reclaim naming a note absent from the commitment index is refused.
+BOOST_AUTO_TEST_CASE(an_owner_reclaim_of_an_unindexed_leaf_is_refused)
+{
+    RequireReclaimWindow();
+    BOOST_REQUIRE(CZKContext::Initialize());
+    LOCK(cs_main);
+
+    ReclaimTipGuard guard(StagedReclaimHeight());
+    const ReclaimNote note = MakeNote();
+    CTransaction tx = BuildReclaimTx(note, true);
+    CheckStagedRejectedBy(tx, &guard.tip, note, 0, false, RC_NO_LEAF,
+                          "reclaim of a leaf the index does not carry");
+}
+
+// R-RECL-002: the inactivity timelock. The two arms differ only by one block of
+// leaf-insertion height; the accepted arm prints no reclaim message.
+BOOST_AUTO_TEST_CASE(an_owner_reclaim_before_the_inactivity_timelock_is_refused)
+{
+    RequireReclaimWindow();
+    BOOST_REQUIRE(CZKContext::Initialize());
+    LOCK(cs_main);
+
+    ReclaimTipGuard guard(StagedReclaimHeight());
+    const int nHeight = guard.tip.nHeight;
+    BOOST_REQUIRE_MESSAGE(nHeight - RECLAIM_TIMELOCK >= 0,
+        "the staged height is too low for a leaf to reach the timelock");
+
+    const ReclaimNote note = MakeNote();
+
+    // One block short: the leaf has aged RECLAIM_TIMELOCK - 1 blocks.
+    CTransaction tooYoung = BuildReclaimTx(note, true);
+    CheckStagedRejectedBy(tooYoung, &guard.tip, note,
+                          nHeight - RECLAIM_TIMELOCK + 1, true, RC_TIMELOCK,
+                          "leaf one block short of the timelock");
+
+    // Exactly aged: the timelock is satisfied and no reclaim gate answers.
+    CTransaction aged = BuildReclaimTx(note, true);
+    Outcome out = RunConnectInputsStaged(aged, &guard.tip, note,
+                                         nHeight - RECLAIM_TIMELOCK, true);
+    for (size_t i = 0; i < 7; ++i)
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, RC_ALL[i]),
+            std::string("a leaf aged exactly RECLAIM_TIMELOCK tripped ") +
+            RC_ALL[i] + "; captured: " + Excerpt(out.strLog));
+}
+
+// The ladder arithmetic the two windows rest on.
+BOOST_AUTO_TEST_CASE(the_reclaim_windows_are_where_the_ladder_puts_them)
 {
     RequireReclaimWindow();
     BOOST_REQUIRE(fRegTest && !fTestNet);
@@ -406,8 +553,8 @@ BOOST_AUTO_TEST_CASE(the_gates_past_the_spend_check_need_a_finalized_epoch)
     BOOST_CHECK_MESSAGE(
         ReclaimHeight() > FORK_HEIGHT_EPOCH_ROOT_FCMP,
         "the reclaim fork has moved below the epoch-root FCMP transition; the "
-        "gates past the shielded-spend check are now reachable from a unit test "
-        "and this suite should cover them");
+        "staged-epoch fixture is no longer what the gates past the shielded-spend "
+        "check need");
     BOOST_CHECK_MESSAGE(
         SpendableReclaimWindowHeight() < ReclaimHeight(),
         "the window below the epoch-root transition no longer sits under the "
@@ -416,6 +563,15 @@ BOOST_AUTO_TEST_CASE(the_gates_past_the_spend_check_need_a_finalized_epoch)
         SpendableReclaimWindowHeight() >= FORK_HEIGHT_FCMP_VALIDATION &&
             SpendableReclaimWindowHeight() >= FORK_HEIGHT_SHIELDED,
         "the window has dropped below the gates a shielded spend needs");
+    BOOST_CHECK_MESSAGE(
+        StagedReclaimHeight() >= ReclaimHeight() &&
+            StagedReclaimHeight() >= FORK_HEIGHT_EPOCH_ROOT_FCMP &&
+            StagedReclaimHeight() + 1 < FORK_HEIGHT_BOUNDARY_A,
+        "the staged window has left the range where a reclaim is admissible");
+    BOOST_CHECK_MESSAGE(
+        GetEpochForHeight(StagedReclaimHeight()) == 1,
+        "the staged height no longer sits in the first post-DAG epoch, so one "
+        "epoch-state record no longer answers both reads the loader makes");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
