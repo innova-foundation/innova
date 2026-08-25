@@ -159,6 +159,7 @@ mod tests {
             include_str!("fcmp.rs"),
             include_str!("hash_to_point.rs"),
             LIB,
+            include_str!("linkage_tests.rs"),
             include_str!("note.rs"),
             include_str!("nullifier.rs"),
             include_str!("payload.rs"),
