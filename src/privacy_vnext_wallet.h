@@ -22,18 +22,26 @@ static const size_t PRIVACY_VNEXT_MAX_SPEND_INPUTS = 16;
 // Matches the key-list bound the IV5 scan request declares.
 static const uint32_t PRIVACY_VNEXT_MAX_SCAN_KEYS = 1024;
 
-// Derivation index every self-pay output uses: change, and the receiver a shield pays
-// into. Issued to nobody -- allocation refuses at PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES --
-// so a receiver disclosure can never publish an address the user handed out.
-static const uint32_t PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX = 0x80000000U;
+// Base of the self-pay derivation range (change and shield receivers). Allocation refuses
+// at PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES, so this range is never handed out.
+static const uint32_t PRIVACY_VNEXT_INTERNAL_CHANGE_BASE = 0x80000000U;
 
-// Issuable indices: the scan budget less the slot the change branch occupies. A scan
-// carries one key per issued index plus change, and the scan ABI refuses a longer list.
+// The one index self-pay used before rotation. Every scan still derives it, so a note
+// this wallet paid itself under the old scheme stays findable and spendable.
+static const uint32_t PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX =
+    PRIVACY_VNEXT_INTERNAL_CHANGE_BASE;
+
+// Issuable indices: the scan budget less the two self-pay slots a scan carries -- the
+// legacy index above, and the rotated index the payload under scan names. The scan ABI
+// refuses a longer list.
 static const uint32_t PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES =
-    PRIVACY_VNEXT_MAX_SCAN_KEYS - 1;
+    PRIVACY_VNEXT_MAX_SCAN_KEYS - 2;
 
-static_assert(PRIVACY_VNEXT_MAX_SCAN_KEYS <= PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX,
-              "IV5 change must derive outside every issuable address index");
+static_assert(PRIVACY_VNEXT_MAX_SCAN_KEYS <= PRIVACY_VNEXT_INTERNAL_CHANGE_BASE,
+              "IV5 self-pay must derive outside every issuable address index");
+static_assert((size_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 2 <=
+                  (size_t)PRIVACY_VNEXT_MAX_SCAN_KEYS,
+              "an IV5 scan must carry every issued index and both self-pay keys");
 
 // One IV5 output this wallet owns. Every secret here derives from the wallet
 // seed, so the note carries them rather than re-deriving on every spend.

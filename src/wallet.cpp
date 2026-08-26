@@ -10943,10 +10943,19 @@ bool CWallet::BuildPrivacyVNextFeeNote(
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
     const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
 
-    // Self-pay: the internal change branch, never an index the user was given.
+    // The transparent side is settled before the self-pay index is drawn, because the
+    // index is drawn from it: a fee note spends no note, so the binding is the only
+    // thing separating this payload's self-pay address from the last one's.
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txCoinbase, transparentBinding);
+
+    // Self-pay: the internal range, never an index the user was given.
     PrivacyVNextDerivedKeys keys;
-    if (!DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, keys,
-                                      strErrorOut))
+    const uint32_t nChangeIndex = PrivacyVNextChangeIndexFor(
+        genesis, nNetwork, transparentBinding,
+        std::vector<PrivacyVNextDigest>());
+    if (!DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, nChangeIndex,
+                                      keys, strErrorOut))
         return false;
 
     // One note: consensus keys on the declared balance, not on the output count, but
@@ -10960,9 +10969,6 @@ bool CWallet::BuildPrivacyVNextFeeNote(
 
     PrivacyVNextDigest finalizedRoot;
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
-
-    PrivacyVNextDigest transparentBinding;
-    PrivacyVNextBindingOf(txCoinbase, transparentBinding);
 
     // The amount is published with its opening so anyone can check the note against the
     // block's IV5 fee sum; the recipient stays hidden and no range proof is needed.
@@ -11096,10 +11102,25 @@ bool CWallet::CreatePrivacyVNextShield(
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
     const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
 
-    // Self-pay: the internal change branch, never an index the user was given.
+    // Settle the transparent side before proving: the payload commits to it, the proofs
+    // bind to the payload, and the self-pay index is drawn from that binding.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    for (size_t i = 0; i < vSelected.size(); ++i)
+        txNew.vin.push_back(
+            CTxIn(vSelected[i]->tx->GetHash(), vSelected[i]->i));
+    // No transparent output at all: the entire selected value crosses into the pool, so
+    // there is no change address to tie back to the inputs.
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    // Self-pay: the internal range, never an index the user was given.
     PrivacyVNextDerivedKeys keys;
-    if (!DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, keys,
-                                      strErrorOut))
+    const uint32_t nChangeIndex = PrivacyVNextChangeIndexFor(
+        genesis, nNetwork, transparentBinding,
+        std::vector<PrivacyVNextDigest>());
+    if (!DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, nChangeIndex,
+                                      keys, strErrorOut))
         return false;
 
     std::vector<PrivacyVNextNewOutput> vOutputs(2);
@@ -11114,18 +11135,6 @@ bool CWallet::CreatePrivacyVNextShield(
 
     PrivacyVNextDigest finalizedRoot;
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
-
-    // The transparent side is settled before proving, because the payload commits to it
-    // and the proofs bind to the payload.
-    CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
-    for (size_t i = 0; i < vSelected.size(); ++i)
-        txNew.vin.push_back(
-            CTxIn(vSelected[i]->tx->GetHash(), vSelected[i]->i));
-    // No transparent output at all: the entire selected value crosses into the pool, so
-    // there is no change address to tie back to the inputs.
-    PrivacyVNextDigest transparentBinding;
-    PrivacyVNextBindingOf(txNew, transparentBinding);
 
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextShieldPayload(nNetwork,
@@ -11747,10 +11756,12 @@ static bool BuildPrivacyVNextSpend(
 }
 
 // Common front half: validate the amount, pick notes and derive the wallet's own
-// change recipient. The caller supplies where the value goes.
+// change recipient. The caller supplies where the value goes, and the transparent
+// binding of the transaction it will build, because the change index is drawn from it.
 static bool PreparePrivacyVNextSpend(
     CWallet* pwallet,
     int64_t nAmount,
+    const PrivacyVNextDigest& transparentBinding,
     int64_t& nFeeOut,
     std::vector<CPrivacyVNextWalletNote>& vNotesOut,
     int64_t& nSelectedOut,
@@ -11842,11 +11853,25 @@ static bool PreparePrivacyVNextSpend(
     std::memcpy(genesisOut.data(), hashGenesis.begin(), 32);
     nNetworkOut = PrivacyVNextNetworkIdForWallet();
 
-    // Change goes to the internal change branch. A receiver disclosure publishes the
-    // recipient's address keys, so change drawn from an issued index would publish an
-    // address the sender has handed out and name them under a sender-hiding mask.
+    // Change goes to the internal self-pay range so a receiver disclosure never
+    // publishes an issued address. The index is drawn from this spend's key images,
+    // which are unique chain-wide.
+    std::vector<PrivacyVNextDigest> vKeyImages(vNotesOut.size());
+    for (size_t i = 0; i < vNotesOut.size(); ++i)
+    {
+        if (vNotesOut[i].vchKeyImage.size() != 32)
+        {
+            // The index would otherwise be drawn from something a later scan cannot
+            // reproduce, and change nothing can open is value with no recovery path.
+            strErrorOut = "a selected IV5 note carries no key image";
+            return false;
+        }
+        std::memcpy(vKeyImages[i].data(), &vNotesOut[i].vchKeyImage[0], 32);
+    }
+    const uint32_t nChangeIndex = PrivacyVNextChangeIndexFor(
+        genesisOut, nNetworkOut, transparentBinding, vKeyImages);
     if (!DerivePrivacyVNextChangeKeys(seedDigest, genesisOut, nNetworkOut,
-                                      changeKeysOut, strErrorOut))
+                                      nChangeIndex, changeKeysOut, strErrorOut))
         return false;
 
     nFeeOut = nFee;
@@ -11874,14 +11899,23 @@ bool CWallet::CreatePrivacyVNextTransfer(
         return false;
     }
 
+    // A transfer consumes notes, not outputs: it names no transparent input or output,
+    // and the payload commits to exactly that. Settled first, because the change index
+    // is drawn from this binding as well as from the key images.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
     std::vector<CPrivacyVNextWalletNote> vNotes;
     int64_t nSelected = 0;
     int64_t nFee = 0;
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
-    if (!PreparePrivacyVNextSpend(this, nAmount, nFee, vNotes, nSelected, genesis,
-                                  changeKeys, nNetwork, strErrorOut))
+    if (!PreparePrivacyVNextSpend(this, nAmount, transparentBinding, nFee, vNotes,
+                                  nSelected, genesis, changeKeys, nNetwork,
+                                  strErrorOut))
         return false;
 
     PrivacyVNextAddressComponents recipient;
@@ -11904,13 +11938,6 @@ bool CWallet::CreatePrivacyVNextTransfer(
     // payee is the one party who can already open the other one.
     if (GetRandInt(2) == 1)
         std::swap(vOutputs[0], vOutputs[1]);
-
-    // A transfer consumes notes, not outputs, and pays a note: it names no
-    // transparent input or output, and the payload commits to exactly that.
-    CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
-    PrivacyVNextDigest transparentBinding;
-    PrivacyVNextBindingOf(txNew, transparentBinding);
 
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
@@ -12225,14 +12252,26 @@ bool CWallet::CreatePrivacyVNextUnshield(
         return false;
     }
 
+    // The recipient output exists before the payload does: it is what the payload
+    // commits to, the proofs bind to that commitment, and the change index is drawn
+    // from the same binding.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    CScript scriptTo;
+    scriptTo.SetDestination(toAddress.Get());
+    txNew.vout.push_back(CTxOut(nAmount, scriptTo));
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
     std::vector<CPrivacyVNextWalletNote> vNotes;
     int64_t nSelected = 0;
     int64_t nFee = 0;
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
-    if (!PreparePrivacyVNextSpend(this, nAmount, nFee, vNotes, nSelected, genesis,
-                                  changeKeys, nNetwork, strErrorOut))
+    if (!PreparePrivacyVNextSpend(this, nAmount, transparentBinding, nFee, vNotes,
+                                  nSelected, genesis, changeKeys, nNetwork,
+                                  strErrorOut))
         return false;
 
     // Only the change stays in the pool. The arity is still two so the payload
@@ -12247,16 +12286,6 @@ bool CWallet::CreatePrivacyVNextUnshield(
         vOutputs[i].recipient.viewPublic = changeKeys.viewPublic;
     }
     SplitPrivacyVNextValue(nChange, vOutputs[0].nAmount, vOutputs[1].nAmount);
-
-    // The recipient output exists before the payload does: it is what the payload
-    // commits to, and the proofs bind to that commitment.
-    CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
-    CScript scriptTo;
-    scriptTo.SetDestination(toAddress.Get());
-    txNew.vout.push_back(CTxOut(nAmount, scriptTo));
-    PrivacyVNextDigest transparentBinding;
-    PrivacyVNextBindingOf(txNew, transparentBinding);
 
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
@@ -12296,14 +12325,9 @@ bool CWallet::CreatePrivacyVNextUnshield(
     return true;
 }
 
-// How many derivation indices a scan must cover.
-//
-// Address issuance advances the seed record's own counter, so that counter -- not
-// the separately persisted scan count -- is what says which indices can hold
-// value. Deriving the bound from it keeps one source of truth: two counters that
-// have to agree is how every address after the first came to be issued into a
-// range no scan reached. Self-pay no longer derives inside this range;
-// BuildPrivacyVNextScanKeys appends the change index on top of it.
+// Number of derivation indices a scan must cover, taken from the seed record's
+// issuance counter. Self-pay indices are appended separately by
+// BuildPrivacyVNextScanKeys and ExtendPrivacyVNextScanKeysForPayload.
 uint32_t CWallet::GetPrivacyVNextScanIndexCount() const
 {
     LOCK(cs_shielded);
@@ -12317,20 +12341,125 @@ uint32_t CWallet::GetPrivacyVNextScanIndexCount() const
     return nCount;
 }
 
+uint32_t PrivacyVNextChangeIndexFor(
+    const PrivacyVNextDigest& genesis,
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& transparentBinding,
+    const std::vector<PrivacyVNextDigest>& vKeyImages)
+{
+    static const char* pszDomain = "Innova/IV5/ChangeIndex/v1";
+    std::vector<PrivacyVNextDigest> vSorted(vKeyImages);
+    std::sort(vSorted.begin(), vSorted.end());
+
+    CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss.write(pszDomain, strlen(pszDomain));
+    ss.write((const char*)genesis.data(), genesis.size());
+    ss << (unsigned char)nNetwork;
+    ss.write((const char*)transparentBinding.data(), transparentBinding.size());
+    ss << (unsigned int)vSorted.size();
+    for (size_t i = 0; i < vSorted.size(); ++i)
+        ss.write((const char*)vSorted[i].data(), vSorted[i].size());
+
+    const uint256 hash = ss.GetHash();
+    const unsigned char* p = hash.begin();
+    const uint32_t nDraw = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    // The top bit is set rather than drawn, so every index this returns sits in the
+    // self-pay range whatever the draw was.
+    return PRIVACY_VNEXT_INTERNAL_CHANGE_BASE | (nDraw & 0x7fffffffU);
+}
+
 bool DerivePrivacyVNextChangeKeys(const PrivacyVNextDigest& seed,
                                   const PrivacyVNextDigest& genesis,
                                   uint8_t nNetwork,
+                                  uint32_t nChangeIndex,
                                   PrivacyVNextDerivedKeys& keysOut,
                                   std::string& strErrorOut)
 {
-    return DerivePrivacyVNextKeys(seed, genesis,
-                                  PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, nNetwork,
+    // The whole protection is that self-pay never lands on an index the allocator can
+    // issue. Enforced where the key is made, so no caller can compute the index some
+    // other way and pay change to a handed-out address.
+    if (nChangeIndex < PRIVACY_VNEXT_INTERNAL_CHANGE_BASE)
+    {
+        strErrorOut = "an IV5 self-pay index must sit outside the issuable range";
+        return false;
+    }
+    return DerivePrivacyVNextKeys(seed, genesis, nChangeIndex, nNetwork,
                                   0, keysOut, strErrorOut);
 }
 
-// Every index a note of ours can have been sent to: the issued range, then change.
-// Change derives outside the issued range, so it sits outside the bound above and a
-// scan that covered only that bound would miss every note this wallet paid itself.
+// Key images one payload spends, read without opening any output. Uses the full
+// scan's decoder, so both refuse the same payloads.
+static bool ReadPrivacyVNextPayloadKeyImages(
+    const CTransaction& tx,
+    uint8_t nNetwork,
+    std::vector<PrivacyVNextDigest>& vKeyImagesOut,
+    std::string& strErrorOut)
+{
+    vKeyImagesOut.clear();
+    std::vector<PrivacyVNextScanMatch> vIgnored;
+    uint8_t nOutputCount = 0;
+    // One unowned key: the ABI requires a non-empty list and nothing here opens.
+    const std::vector<PrivacyVNextScanKey> vNoKeys(1);
+    return ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, nNetwork, 0,
+                                   (uint32_t)tx.nVersion,
+                                   tx.privacyVNext.vchPayload, vNoKeys, vIgnored,
+                                   vKeyImagesOut, nOutputCount, strErrorOut);
+}
+
+bool CWallet::ExtendPrivacyVNextScanKeysForPayload(
+    const PrivacyVNextDigest& seed,
+    const PrivacyVNextDigest& genesis,
+    uint8_t nNetwork,
+    const CTransaction& tx,
+    size_t nBaseKeys,
+    std::vector<PrivacyVNextScanKey>& vKeys,
+    std::string& strErrorOut) const
+{
+    strErrorOut.clear();
+    if (vKeys.size() < nBaseKeys)
+    {
+        strErrorOut = "the IV5 scan key list is shorter than its own base";
+        return false;
+    }
+    vKeys.resize(nBaseKeys);
+    // Before anything is read: a list already at the ABI bound cannot take the key,
+    // and dropping it quietly would hide this wallet's own change.
+    if (vKeys.size() + 1 > (size_t)PRIVACY_VNEXT_MAX_SCAN_KEYS)
+    {
+        strErrorOut = strprintf(
+            "an IV5 scan of %u keys cannot also carry the rotated self-pay key; "
+            "move value to a wallet issued under the current bound of %u",
+            (unsigned)vKeys.size(), PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
+        return false;
+    }
+
+    std::vector<PrivacyVNextDigest> vKeyImages;
+    if (!ReadPrivacyVNextPayloadKeyImages(tx, nNetwork, vKeyImages, strErrorOut))
+        return false;
+
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(tx, transparentBinding);
+    const uint32_t nChangeIndex = PrivacyVNextChangeIndexFor(
+        genesis, nNetwork, transparentBinding, vKeyImages);
+
+    PrivacyVNextDerivedKeys changeKeys;
+    if (!DerivePrivacyVNextChangeKeys(seed, genesis, nNetwork, nChangeIndex,
+                                      changeKeys, strErrorOut))
+        return false;
+
+    PrivacyVNextScanKey key;
+    key.scanSecret = changeKeys.viewSecret;
+    key.spendMaterial = changeKeys.spendSecret;
+    vKeys.push_back(key);
+    return true;
+}
+
+// The indices a note of ours can have been sent to that are known without reading a
+// payload: the issued range, then the legacy self-pay index. Both sit outside the bound
+// above, so a scan that covered only that bound would miss every note this wallet paid
+// itself. The rotated self-pay index is per payload and is appended by
+// ExtendPrivacyVNextScanKeysForPayload.
 bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
                                         const PrivacyVNextDigest& genesis,
                                         uint8_t nNetwork,
@@ -12341,15 +12470,15 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
     strErrorOut.clear();
 
     const uint32_t nIssued = GetPrivacyVNextScanIndexCount();
-    // Reachable only for a wallet that issued into the whole scan budget under the
+    // Reachable only for a wallet that issued into the whole scan budget under an
     // older bound. Refusing loudly leaves a gap the operator can act on; dropping an
     // index quietly would hide received value.
-    if ((size_t)nIssued + 1 > PRIVACY_VNEXT_MAX_SCAN_KEYS)
+    if ((size_t)nIssued + 2 > PRIVACY_VNEXT_MAX_SCAN_KEYS)
     {
         strErrorOut = strprintf(
-            "IV5 wallet holds %u issued indices, one more than a scan can carry "
-            "alongside change; move value to a wallet issued under the current bound "
-            "of %u", nIssued, PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
+            "IV5 wallet holds %u issued indices, more than a scan can carry alongside "
+            "both self-pay keys; move value to a wallet issued under the current "
+            "bound of %u", nIssued, PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
         return false;
     }
 
@@ -12369,12 +12498,14 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
         vKeysOut[i].spendMaterial = keys.spendSecret;
     }
 
-    // Through the same function the spend path pays change to, so a scan cannot cover
-    // one index while change is paid to another.
+    // The pre-rotation index. Nothing pays change here any more, but a wallet that did
+    // must keep opening those notes: they are spendable value and unshield is retired,
+    // so a scan that stopped deriving this key would strand it.
     PrivacyVNextDerivedKeys changeKeys;
     std::string strChangeError;
-    if (!DerivePrivacyVNextChangeKeys(seed, genesis, nNetwork, changeKeys,
-                                      strChangeError))
+    if (!DerivePrivacyVNextChangeKeys(seed, genesis, nNetwork,
+                                      PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX,
+                                      changeKeys, strChangeError))
     {
         vKeysOut.clear();
         strErrorOut = "IV5 change key derivation failed: " + strChangeError;
@@ -12550,6 +12681,7 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
     std::vector<PrivacyVNextScanKey> vKeys;
     if (!BuildPrivacyVNextScanKeys(seed, genesis, nNetwork, vKeys, strErrorOut))
         return false;
+    const size_t nBaseKeys = vKeys.size();
 
     std::vector<std::pair<size_t, uint64_t> > vAssigned;
     uint64_t nRunning = nBase;
@@ -12566,6 +12698,16 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
         }
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
             continue;
+
+        // Self-pay rotates per payload, so the key list does too. The walk below has
+        // to count every output of ours, and one missed here is a note left without a
+        // tree position, which is a note that can never be spent.
+        if (!ExtendPrivacyVNextScanKeysForPayload(seed, genesis, nNetwork, tx,
+                                                  nBaseKeys, vKeys, strErrorOut))
+        {
+            strErrorOut = "IV5 epoch scan keys: " + strErrorOut;
+            return false;
+        }
 
         std::vector<PrivacyVNextScanMatch> vMatches;
         std::vector<PrivacyVNextDigest> vKeyImages;
@@ -12687,11 +12829,13 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
     const uint8_t nNetwork = PrivacyVNextNetworkId();
 
-    // Every index this wallet has issued, plus change: a note only opens under the
-    // index it was sent to, so a missing index hides received value rather than fails.
+    // Every index this wallet has issued, plus the legacy self-pay index: a note only
+    // opens under the index it was sent to, so a missing index hides received value
+    // rather than fails. The rotated self-pay index is appended per payload below.
     std::vector<PrivacyVNextScanKey> vKeys;
     if (!BuildPrivacyVNextScanKeys(seed, genesis, nNetwork, vKeys, strErrorOut))
         return false;
+    const size_t nBaseKeys = vKeys.size();
 
     std::vector<CPrivacyVNextWalletNote> vNewNotes;
     std::vector<size_t> vSpentIndices;
@@ -12702,6 +12846,17 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
             continue;
         if (setDAGSkippedTxs.count(tx.GetHash()))
             continue;
+
+        // The index this payload's own self-pay outputs derive at. A payload whose
+        // rotated key is missing from the list opens none of them, and change nothing
+        // detects is value with no recovery path: unshield is retired.
+        if (!ExtendPrivacyVNextScanKeysForPayload(seed, genesis, nNetwork, tx,
+                                                  nBaseKeys, vKeys, strErrorOut))
+        {
+            MarkPrivacyVNextScanGap(pindex->nHeight);
+            strErrorOut = "IV5 wallet scan keys: " + strErrorOut;
+            return false;
+        }
 
         std::vector<PrivacyVNextScanMatch> vMatches;
         std::vector<PrivacyVNextDigest> vKeyImages;
