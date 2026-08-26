@@ -142,7 +142,7 @@ Outcome RunConnectInputs(CTransaction& tx, const CBlockIndex* pindex)
     CLogCapture capture;
     out.fAccepted = tx.ConnectInputs(txdb, mapInputs, mapTestPool,
                                      CDiskTxPos(1, 1, 1), pindex, false, false,
-                                     STANDARD_SCRIPT_VERIFY_FLAGS, true, true);
+                                     STANDARD_SCRIPT_VERIFY_FLAGS, true);
     out.strLog = capture.Release();
     return out;
 }
@@ -388,7 +388,7 @@ Outcome RunConnectInputsStaged(CTransaction& tx, const CBlockIndex* pindex,
         out.fAccepted = tx.ConnectInputs(txdb, mapInputs, mapTestPool,
                                          CDiskTxPos(1, 1, 1), pindex, false,
                                          false, STANDARD_SCRIPT_VERIFY_FLAGS,
-                                         true, true);
+                                         true);
         out.strLog = capture.Release();
     }
     BOOST_REQUIRE(txdb.TxnAbort());

@@ -47,11 +47,6 @@ using boost::placeholders::_2;
 using namespace std;
 namespace fs = boost::filesystem;
 
-static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
-                                   CCurveTreeNode& rootOut,
-                                   uint256& hashExpectedRootOut,
-                                   std::string& strErrorOut);
-
 // Validate only the commitments named by this spend.  The reverse lookup is
 // bounded by LELANTUS_MAX_SET_SIZE, and the forward read prevents a stale or
 // corrupt reverse-index entry from authenticating a different commitment.
@@ -2842,29 +2837,6 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                                      tx.nVersion, SHIELDED_TX_VERSION_FCMP);
                     }
 
-                    if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION
-                        && !tx.vShieldedSpend.empty())
-                    {
-                        for (size_t j = 0; j < tx.vShieldedSpend.size(); j++)
-                        {
-                            if (tx.vShieldedSpend[j].fcmpProof.IsNull())
-                                return error("CTxMemPool::accept() : FCMP version tx spend %u missing mandatory FCMP proof", (unsigned)j);
-                        }
-                    }
-
-                    CCurveTreeNode fcmpRootNode;
-                    uint256 hashExpectedFCMPRoot = 0;
-                    if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION
-                        && !tx.vShieldedSpend.empty())
-                    {
-                        CTxDB txdb("r");
-                        std::string strFCMPError;
-                        if (!LoadFCMPValidationRoot(txdb, nBestHeight, fcmpRootNode, hashExpectedFCMPRoot, strFCMPError))
-                            return error("CTxMemPool::accept() : %s", strFCMPError.c_str());
-                        if (!CheckFCMPSpendRoots(tx, nBestHeight, hashExpectedFCMPRoot, strFCMPError))
-                            return error("CTxMemPool::accept() : %s", strFCMPError.c_str());
-                    }
-
                     for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
                     {
                         // An owner reclaim (2007) spends a 3-generator cv3 leaf; its value proofs verify over
@@ -2925,16 +2897,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                             }
                         }
 
-                        // FCMP++ proof: required after FORK_HEIGHT_FCMP_VALIDATION for FCMP tx versions
+                        // FCMP path proofs are unverifiable; such a spend is never relayable.
                         if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION)
-                        {
-                            if (tx.vShieldedSpend[i].fcmpProof.IsNull())
-                                return error("CTxMemPool::accept() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i);
-
-                            if (!VerifyFCMPProof(fcmpRootNode, tx.vShieldedSpend[i].fcmpProof, tx.vShieldedSpend[i].cv,
-                                                 nBestHeight + 1))
-                                return error("CTxMemPool::accept() : shielded spend %d FCMP++ proof failed", (int)i);
-                        }
+                            return error("CTxMemPool::accept() : shielded spend %d FCMP-era membership is unverifiable; the encoding is permanently invalid", (int)i);
 
                         // Nullifier binding, mirrored from ConnectInputs so an
                         // unbound spend is dropped before relay. Gate on the
@@ -3082,7 +3047,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             if (!tx.ConnectInputs(
                     txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1),
                     pindexBest, false, false, STANDARD_SCRIPT_VERIFY_FLAGS,
-                    true, false, false, fAnonPrevalidated,
+                    true, false, fAnonPrevalidated,
                     nEffectiveMempoolHeight, nValidatedAnonValueIn))
             {
                 return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().substr(0,10).c_str());
@@ -3299,7 +3264,7 @@ bool AcceptableInputs(CTxMemPool& pool, const CTransaction &txo, bool fLimitFree
         if (!tx.ConnectInputs(
                 txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1),
                 pindexBest, true, false, STANDARD_SCRIPT_VERIFY_FLAGS,
-                false, false, false, false, nCandidateHeight, 0))
+                false, false, false, nCandidateHeight, 0))
         {
             return error("AcceptableInputs : ConnectInputs failed %s", hash.ToString().c_str());
         }
@@ -4245,89 +4210,6 @@ bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vec
         {
             if (setSpentInBlock.count(proof))
                 return error("CheckFinalityStakeProofsNotSpentInBlock() : finality stake proof spent in same block");
-        }
-    }
-
-    return true;
-}
-
-static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
-                                   CCurveTreeNode& rootOut,
-                                   uint256& hashExpectedRootOut,
-                                   std::string& strErrorOut)
-{
-    CCurveTree curveTree;
-
-    if (nBlockHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
-    {
-        // Anchor shielded FCMP spends to the finalized epoch DETERMINISTICALLY from the
-        // including block's height, not the validator's node-local live finalization tip,
-        // so every node accepts/rejects the same spend (ConnectBlock stays deterministic).
-        CEpochState finalizedEpochState;
-        const bool fHaveFinalizedState =
-            nBlockHeight >= FORK_HEIGHT_EPOCH_STATE_V2
-                ? g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBlockHeight,
-                                                           finalizedEpochState)
-                : g_dagManager.GetFinalizedEpochStateAsOf(nBlockHeight,
-                                                           finalizedEpochState);
-        if (!fHaveFinalizedState)
-        {
-            strErrorOut = "missing finalized epoch FCMP root";
-            return false;
-        }
-        if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, curveTree))
-        {
-            strErrorOut = "missing finalized epoch curve-tree snapshot";
-            return false;
-        }
-        if (!curveTree.IsEmpty())
-            curveTree.RebuildParentNodes();
-        hashExpectedRootOut = curveTree.GetRoot();
-        if (hashExpectedRootOut == 0 || hashExpectedRootOut != finalizedEpochState.hashCurveRoot)
-        {
-            strErrorOut = "finalized epoch curve-tree root mismatch";
-            return false;
-        }
-    }
-    else
-    {
-        if (!txdb.ReadCurveTree(curveTree))
-        {
-            strErrorOut = "failed to read mutable curve tree";
-            return false;
-        }
-        if (!curveTree.IsEmpty())
-            curveTree.RebuildParentNodes();
-        hashExpectedRootOut = curveTree.GetRoot();
-    }
-
-    if (curveTree.IsEmpty() || hashExpectedRootOut == 0)
-    {
-        strErrorOut = "empty curve tree";
-        return false;
-    }
-
-    rootOut = curveTree.GetRootNode();
-    return true;
-}
-
-bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
-                         const uint256& hashExpectedRoot,
-                         std::string& strErrorOut)
-{
-    if (nBlockHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP)
-        return true;
-
-    for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
-    {
-        const CShieldedSpendDescription& spend = tx.vShieldedSpend[i];
-        if (spend.curveTreeRoot != hashExpectedRoot)
-        {
-            strErrorOut = strprintf("shielded spend %u FCMP root %s does not match finalized epoch root %s",
-                                    (unsigned)i,
-                                    spend.curveTreeRoot.ToString().substr(0,10).c_str(),
-                                    hashExpectedRoot.ToString().substr(0,10).c_str());
-            return false;
         }
     }
 
@@ -6798,7 +6680,7 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 }
 
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig, bool fSkipFCMP,
+    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig,
     bool fValidatedCoinstake, bool fAnonPrevalidated,
     int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn)
 {
@@ -7089,18 +6971,6 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                           nVersion, SHIELDED_TX_VERSION_FCMP));
                 }
 
-                CCurveTreeNode ciRootNode;
-                uint256 hashExpectedFCMPRoot = 0;
-                if (nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION
-                    && !vShieldedSpend.empty())
-                {
-                    std::string strFCMPError;
-                    if (!LoadFCMPValidationRoot(txdb, nBlockHeight, ciRootNode, hashExpectedFCMPRoot, strFCMPError))
-                        return DoS(100, error("ConnectInputs() : %s", strFCMPError.c_str()));
-                    if (!CheckFCMPSpendRoots(*this, nBlockHeight, hashExpectedFCMPRoot, strFCMPError))
-                        return DoS(100, error("ConnectInputs() : %s", strFCMPError.c_str()));
-                }
-
                 // B2-e Phase 3c.4: owner-reclaim gates. A reclaim (version 2007) spends an idle cv3 note by
                 // OWNER authority instead of the M-of-N quorum. These fail-closed checks gate the cv_plain
                 // carve-out (MofNSpendValueCommitment) so it is reachable ONLY for a real, timelocked,
@@ -7207,17 +7077,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         }
                     }
 
-                    // FCMP++ proof: required after FORK_HEIGHT_FCMP_VALIDATION for FCMP tx versions
-                    if (!fSkipFCMP && nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION)
-                    {
-                        if (vShieldedSpend[i].fcmpProof.IsNull())
-                            return DoS(100, error("ConnectInputs() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i));
-
-                        // Same height convention as nMofNGateHeight below.
-                        if (!VerifyFCMPProof(ciRootNode, vShieldedSpend[i].fcmpProof, vShieldedSpend[i].cv,
-                                             fBlock ? nBlockHeight : nBlockHeight + 1))
-                            return DoS(100, error("ConnectInputs() : shielded spend %d FCMP++ proof failed", (int)i));
-                    }
+                    // FCMP path proofs are unverifiable; such a spend never connects.
+                    if (nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION)
+                        return DoS(100, error("ConnectInputs() : shielded spend %d FCMP-era membership is unverifiable; the encoding is permanently invalid", (int)i));
 
                     // Nullifier must be bound to the spent note (no re-spend under
                     // a different nullifier). No coinstake exemption: a NullStake
@@ -8267,56 +8129,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
 
-    bool fFCMPBatchVerified = false;
+    // FCMP-era shielded spends (curve-tree path proofs) are rejected here. Versions at or
+    // above FCMP with no shielded spend, including 2008, are untouched.
     if (pindex->nHeight >= FORK_HEIGHT_FCMP_VALIDATION)
     {
-        std::vector<CFCMPProof> vBlockProofs;
-        std::vector<CPedersenCommitment> vBlockCommitments;
-        CCurveTreeNode fcmpRootNode;
-        uint256 hashExpectedFCMPRoot = 0;
-        bool fHaveFCMPRoot = false;
-
         for (unsigned int i = 1; i < activeBlock.vtx.size(); i++)
         {
             const CTransaction& tx = activeBlock.vtx[i];
-            if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP)
-            {
-                if (tx.vShieldedSpend.size() > 1000)
-                    return DoS(100, error("ConnectBlock() : tx %d has too many shielded spends (%u)", i, (unsigned int)tx.vShieldedSpend.size()));
-
-                for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
-                {
-                    if (spend.fcmpProof.IsNull())
-                        return DoS(100, error("ConnectBlock() : tx %d spend missing FCMP++ proof", i));
-                    if (!fHaveFCMPRoot)
-                    {
-                        std::string strFCMPError;
-                        if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, fcmpRootNode, hashExpectedFCMPRoot, strFCMPError))
-                            return TransientFailure(error("ConnectBlock() : local FCMP root state unavailable: %s",
-                                                          strFCMPError.c_str()));
-                        fHaveFCMPRoot = true;
-                    }
-                    if (pindex->nHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP && spend.curveTreeRoot != hashExpectedFCMPRoot)
-                        return DoS(100, error("ConnectBlock() : tx %d spend FCMP root does not match finalized epoch root", i));
-                    vBlockProofs.push_back(spend.fcmpProof);
-                    vBlockCommitments.push_back(spend.cv);
-                }
-            }
-        }
-
-        if (!vBlockProofs.empty())
-        {
-            {
-                BLOCK_PHASE(BP_FCMP_VERIFY);
-                if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments,
-                                           pindex->nHeight))
-                    return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
-            }
-
-            fFCMPBatchVerified = true;
-
-            if (fDebug)
-                printf("ConnectBlock() : batch verified %d FCMP++ proofs\n", (int)vBlockProofs.size());
+            if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && !tx.vShieldedSpend.empty())
+                return DoS(100, error("ConnectBlock() : tx %d carries an FCMP-era shielded spend whose membership is unverifiable; the encoding is permanently invalid", i));
         }
     }
 
@@ -8559,7 +8380,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 BLOCK_PHASE(BP_CONNECTINPUTS);
                 fConnectOk = tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges,
                                               posThisTx, pindex, true, false, flags, true,
-                                              fFCMPBatchVerified, fValidatedCoinstake,
+                                              fValidatedCoinstake,
                                               fHaveAnonEffectPlan, pindex->nHeight,
                                               anonEffectPlan.nValueIn);
             }
@@ -8863,22 +8684,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                               nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V2 kernel proof invalid"));
 
-            // Deterministic anchor: the node-local mutable curve tree differs between
-            // nodes, so reading it here made the same block valid on one node and
-            // invalid on another. Use the same finalized-epoch snapshot the shielded
-            // spend path uses.
-            CCurveTreeNode nullstakeRoot;
-            uint256 hashNullStakeRootV2;
-            std::string strNullStakeRootV2;
-            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeRoot,
-                                        hashNullStakeRootV2, strNullStakeRootV2))
-                return TransientFailure(error("ConnectBlock() : NullStake V2 membership anchor unavailable: %s",
-                                              strNullStakeRootV2.c_str()));
-            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
-                return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof missing"));
-            if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
-                return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
+            // Legacy NullStake membership rested on the FCMP path-proof layer,
+            // which is gone. The coinstake still parses; nothing can show it
+            // spends a note in the tree, so the encoding is never valid.
+            return DoS(100, error("ConnectBlock() : NullStake V2 stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
             int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();
@@ -8986,22 +8795,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                               nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof invalid"));
 
-            // Deterministic anchor: the node-local mutable curve tree differs between
-            // nodes, so reading it here made the same block valid on one node and
-            // invalid on another. Use the same finalized-epoch snapshot the shielded
-            // spend path uses.
-            CCurveTreeNode nullstakeV3Root;
-            uint256 hashNullStakeRootV3;
-            std::string strNullStakeRootV3;
-            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeV3Root,
-                                        hashNullStakeRootV3, strNullStakeRootV3))
-                return TransientFailure(error("ConnectBlock() : NullStake V3 membership anchor unavailable: %s",
-                                              strNullStakeRootV3.c_str()));
-            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
-                return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof missing"));
-            if (!VerifyFCMPProof(nullstakeV3Root, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
-                return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof invalid"));
+            // Legacy NullStake membership rested on the FCMP path-proof layer,
+            // which is gone. The coinstake still parses; nothing can show it
+            // spends a note in the tree, so the encoding is never valid.
+            return DoS(100, error("ConnectBlock() : NullStake V3 stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             // V3 reward: same conservative approach as V2
             uint64_t nCoinAge = 1;
@@ -9075,22 +8872,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                             nBits, nWeight))
                 return DoS(100, error("ConnectBlock() : NullStake kernel proof invalid"));
 
-            // Deterministic anchor: the node-local mutable curve tree differs between
-            // nodes, so reading it here made the same block valid on one node and
-            // invalid on another. Use the same finalized-epoch snapshot the shielded
-            // spend path uses.
-            CCurveTreeNode nullstakeRoot;
-            uint256 hashNullStakeRootV1;
-            std::string strNullStakeRootV1;
-            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeRoot,
-                                        hashNullStakeRootV1, strNullStakeRootV1))
-                return TransientFailure(error("ConnectBlock() : NullStake membership anchor unavailable: %s",
-                                              strNullStakeRootV1.c_str()));
-            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
-                return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof missing"));
-            if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
-                return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
+            // Legacy NullStake membership rested on the FCMP path-proof layer,
+            // which is gone. The coinstake still parses; nothing can show it
+            // spends a note in the tree, so the encoding is never valid.
+            return DoS(100, error("ConnectBlock() : NullStake stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
             int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();

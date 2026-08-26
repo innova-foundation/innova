@@ -1326,25 +1326,9 @@ BOOST_AUTO_TEST_CASE(legacy_fcmp_path_proof_parses_but_is_never_accepted)
     BOOST_CHECK(decoded.vchProof == proof.vchProof);
     BOOST_CHECK(!decoded.IsNull());
 
-    // ACCEPT: never, on either network, at any height.
-    const bool fStoredRegTest = fRegTest;
-    const int nForkHeight = FORK_HEIGHT_FCMP;
-    const int heights[] = { 0, 1, nForkHeight, nForkHeight + 1, 1 << 30 };
-    for (int n = 0; n < 2; n++)
-    {
-        fRegTest = (n == 0);
-        for (size_t h = 0; h < sizeof(heights) / sizeof(heights[0]); h++)
-        {
-            VerifyProofCacheClear();
-            BOOST_CHECK(!VerifyFCMPProof(root, decoded, leaf, heights[h]));
-        }
-    }
-    fRegTest = fStoredRegTest;
-    VerifyProofCacheClear();
-
-    std::vector<CFCMPProof> vProofs(1, decoded);
-    std::vector<CPedersenCommitment> vLeaves(1, leaf);
-    BOOST_CHECK(!BatchVerifyFCMPProofs(root, vProofs, vLeaves, nForkHeight));
+    // The envelope carries no membership statement any consensus site reads;
+    // whether one is accepted is decided in fcmp_root_tests and
+    // iv5_privacy_coverage_tests, against the rules that refuse it.
 }
 
 BOOST_AUTO_TEST_SUITE_END()

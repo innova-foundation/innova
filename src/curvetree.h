@@ -165,20 +165,6 @@ public:
 };
 
 
-// Always false: the path-proof layer is gone and no membership statement can
-// be recovered from this envelope. nEvalHeight is retained so every consensus
-// caller keeps passing the height it judges under.
-bool VerifyFCMPProof(const CCurveTreeNode& root,
-                      const CFCMPProof& proof,
-                      const CPedersenCommitment& cv,
-                      int nEvalHeight);
-
-bool BatchVerifyFCMPProofs(const CCurveTreeNode& root,
-                            const std::vector<CFCMPProof>& vProofs,
-                            const std::vector<CPedersenCommitment>& vCommitments,
-                            int nEvalHeight);
-
-
 CCurveTreeNode HashCurveTreeChildren(int nDepth,
                                       const std::vector<CCurveTreeNode>& vChildren);
 

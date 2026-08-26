@@ -5034,13 +5034,11 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         ? nContextHeight
         : (nBestHeight == std::numeric_limits<int>::max()
                ? nBestHeight : nBestHeight + 1);
-    // Public networks never activated the legacy private-finality proof. Keep
-    // its byte-compatible decoder and verifier for regtest coverage only; on
-    // regtest Boundary A permanently quarantines this unsafe wire version.
-    if (vote.IsPrivate() &&
-        (IsLegacyPrivacyPolicyDisabled() ||
-         IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
-        return reject("legacy private-finality proofs are disabled pending privacy vNext");
+    // The membership layer the legacy private-finality proof was checked
+    // against is gone, so no private vote encoding can be established on any
+    // network at any height. It still decodes, so historical objects parse.
+    if (vote.IsPrivate())
+        return reject("legacy private-finality proofs have no verifiable membership and are permanently invalid");
 
     // R1: connect-time vote-inclusion window (fork-gated). An epoch-E vote is
     // block-valid only in a containing block within [H_E, H_E + K). vote.nHeight
@@ -5082,145 +5080,6 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         if (GetFinalityAncestorOnChain(pAnchor, vote.nHeight,
                                        FINALITY_ANCESTOR_MAX_WALK) != pEpochBlock)
             return reject("epoch block is not an ancestor of the including block");
-    }
-
-    if (vote.IsPrivate())
-    {
-        if (vote.privateProof.hashEpochBlock != vote.hashBlock ||
-            vote.privateProof.nEpoch != vote.nEpoch ||
-            vote.privateProof.nullifier != vote.nullifier)
-            return reject("private finality proof binding mismatch");
-        if (!vote.privateProof.IsValidBasic(pstrError))
-            return false;
-
-        // Anchor to the finalized epoch DETERMINISTICALLY from the including block's
-        // chain context (nContextHeight), not the node-local live finalization tip.
-        // This is what keeps ConnectBlock deterministic across nodes. Relay-time checks
-        // (nContextHeight < 0) fall back to the live tip (lenient; not consensus).
-        CEpochState finalizedEpochState;
-        const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
-            txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState);
-        if (anchorResult == FINALITY_RESULT_INVALID)
-            return reject("private finality proof requires an already-finalized epoch");
-        if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
-            return localState("private finality proof requires unavailable finalized epoch state");
-        if (vote.privateProof.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
-            vote.privateProof.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
-            return reject("private finality proof not anchored to last finalized epoch root");
-
-        CCurveTree finalizedCurveTree;
-        if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, finalizedCurveTree))
-            return localState("private finality proof requires unavailable finalized epoch curve-tree snapshot");
-        if (!finalizedCurveTree.IsEmpty() && !finalizedCurveTree.RebuildParentNodes())
-            return localState("private finality proof finalized epoch curve-tree snapshot is corrupt");
-        if (finalizedCurveTree.GetRoot() != finalizedEpochState.hashCurveRoot)
-            return localState("private finality proof finalized epoch state/tree root mismatch");
-
-        // B2-e: a half-aggregated M-of-N (V3_COLD) vote carries the J-free value commitment cv_plain in
-        // stakeWeightCommitment (so the whole tally + nullifier-binding + share path is byte-identical to
-        // V2 and the J term never enters a persisted tally artifact). The real curve-tree leaf is
-        // cv3 = cv_plain + delegationHash*J; reconstruct it here so the FCMP membership and the V3 kernel
-        // proof verify against the actual leaf. delegationHash is consensus-bound to cv3 by the kernel
-        // proof below (SetHash recompute + value-link + range), so a wrong delegationHash fails membership
-        // or the kernel proof. V2 (and the 1-of-1 nThresholdM==0 case) keep cv_plain as the leaf directly.
-        CPedersenCommitment membershipLeaf = vote.privateProof.stakeWeightCommitment;
-        if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
-        {
-            if (!NullStakeMofNReconstructLeaf(vote.privateProof.stakeWeightCommitment,
-                                              vote.privateProof.nullStakeV3Proof.delegationHash,
-                                              membershipLeaf))
-                return reject("private finality V3 vote leaf reconstruction failed");
-        }
-        // Containing block's height, not the epoch being voted on.
-        if (!VerifyFCMPProof(finalizedCurveTree.GetRootNode(),
-                             vote.privateProof.fcmpProof,
-                             membershipLeaf, nEffectiveContextHeight))
-            return reject("private finality FCMP proof failed");
-        if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V2)
-        {
-            // The kernel circuit takes its public inputs from the proof itself,
-            // so every unpinned field is an offline grinding dimension. Pin the
-            // modifier and timestamp to the epoch block and the metadata to the
-            // synthetic constants: eligibility then reduces to one deterministic
-            // value-weighted lottery per note per epoch.
-            if (pEpochBlock->nHeight >= FORK_HEIGHT_KERNEL_PINNING)
-            {
-                const CNullStakeKernelProofV2& kp = vote.privateProof.nullStakeV2Proof;
-                uint64_t nExpectedModifier = pEpochBlock->pprev ?
-                                             pEpochBlock->pprev->nStakeModifier :
-                                             pEpochBlock->nStakeModifier;
-                if (kp.nStakeModifier != nExpectedModifier)
-                    return reject("private finality vote kernel stake modifier not pinned to epoch block");
-                if (kp.nTimeTx != pEpochBlock->nTime)
-                    return reject("private finality vote kernel nTimeTx not pinned to epoch block time");
-                if (!CheckNullStakeKernelPinning(kp.nBlockTimeFrom, kp.nTxPrevOffset,
-                                                 kp.nTxTimePrev, kp.nVoutN, kp.nTimeTx))
-                    return reject("private finality vote kernel metadata not pinned");
-            }
-            if (!VerifyNullStakeKernelProofV2(vote.privateProof.nullStakeV2Proof,
-                                              vote.privateProof.stakeWeightCommitment,
-                                              pEpochBlock->nBits, nEffectiveContextHeight))
-                return reject("private finality NullStake V2 proof failed");
-        }
-        else if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
-        {
-            // B2-e: half-aggregated M-of-N (nThresholdM > 0) private votes activate only at the
-            // DELEGSET fork; before it, only the legacy 1-of-1 (nThresholdM == 0) is valid.
-            if (vote.privateProof.nullStakeV3Proof.nThresholdM > 0 &&
-                pEpochBlock->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
-                return reject("private finality M-of-N NullStake vote before DELEGSET fork height");
-            // B2-c: the ZK-hidden-signer tier (nAuthMode == B2C_HIDDEN) activates only at the B2C fork
-            // (>= DELEGSET). Deterministic on the epoch block height so every node agrees.
-            if (vote.privateProof.nullStakeV3Proof.nThresholdM > 0 &&
-                vote.privateProof.nullStakeV3Proof.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN &&
-                pEpochBlock->nHeight < FORK_HEIGHT_NULLSTAKE_B2C)
-                return reject("private finality B2-c hidden NullStake vote before B2C fork height");
-
-            if (pEpochBlock->nHeight >= FORK_HEIGHT_KERNEL_PINNING)
-            {
-                const CNullStakeKernelProofV3& kp = vote.privateProof.nullStakeV3Proof;
-                uint64_t nExpectedModifier = pEpochBlock->pprev ?
-                                             pEpochBlock->pprev->nStakeModifier :
-                                             pEpochBlock->nStakeModifier;
-                if (kp.nStakeModifier != nExpectedModifier)
-                    return reject("private finality vote kernel stake modifier not pinned to epoch block");
-                if (kp.nTimeTx != pEpochBlock->nTime)
-                    return reject("private finality vote kernel nTimeTx not pinned to epoch block time");
-                if (!CheckNullStakeKernelPinning(kp.nBlockTimeFrom, kp.nTxPrevOffset,
-                                                 kp.nTxTimePrev, kp.nVoutN, kp.nTimeTx))
-                    return reject("private finality vote kernel metadata not pinned");
-            }
-            // cv3 (the reconstructed leaf), NOT the cv_plain field: VerifyNullStakeKernelProofV3 takes the
-            // 3-generator leaf and re-derives cv_plain = cv3 - delegationHash*J internally for its range/link.
-            if (!VerifyNullStakeKernelProofV3(vote.privateProof.nullStakeV3Proof,
-                                              membershipLeaf,
-                                              pEpochBlock->nBits, nEffectiveContextHeight))
-                return reject("private finality NullStake V3 proof failed");
-        }
-
-        // Vote nullifier must be bound to the staked note (no double-voting an
-        // epoch under different nullifiers to inflate hidden weight).
-        if (pEpochBlock->nHeight >= FORK_HEIGHT_NULLIFIER_BINDING)
-        {
-            const std::vector<unsigned char>& nf = vote.privateProof.vchNullifierPoint;
-            if (nf.size() != NULLIFIER_POINT_SIZE ||
-                vote.privateProof.vchNullifierBindingProof.size() != NULLIFIER_BINDING_PROOF_SIZE)
-                return reject("private finality vote missing nullifier binding proof");
-            if (vote.nullifier != FinalityNullifierTag(nf, vote.nEpoch))
-                return reject("private finality vote nullifier not bound to staked note");
-            uint256 nfCtx = FinalityNullifierBindContext(vote.nEpoch, vote.hashBlock);
-            if (!VerifyNullifierBindingProof(vote.privateProof.stakeWeightCommitment, nf, nfCtx,
-                                             vote.privateProof.vchNullifierBindingProof, nEffectiveContextHeight))
-                return reject("private finality vote nullifier binding proof failed");
-        }
-
-        // Private votes are root-anchored and hidden-weight. Their exact
-        // threshold/reward arithmetic is accepted only through an aggregate
-        // tally certificate, so individual private votes must not expose clear
-        // weight or clear reward.
-        if (vote.nVoteWeight != 0 || vote.nReward != 0)
-            return reject("private finality vote exposes clear weight or reward");
-        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
     }
 
     CPubKey votePubKey(vote.vchPubKey);

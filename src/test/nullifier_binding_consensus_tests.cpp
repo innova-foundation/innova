@@ -1,15 +1,5 @@
-// R-NB-001: every shielded spend must carry a nullifier point and a nullifier
-// binding proof of the exact expected sizes, enforced in CTransaction::ConnectInputs.
-// The rejection REASON is captured from the log, not inferred from the return
-// value: error() routes through LogPrintStr, which discards every message unless
-// fPrintToConsole or fDebug is set, so a test that only checks "returned false"
-// cannot tell this rule apart from any other failure.
-//
-// The rule's second site, CTxMemPool::accept, has no reachable height on this
-// ladder. Its binding check needs nBestHeight+1 >= FORK_HEIGHT_NULLIFIER_BINDING
-// while the post-FCMP version reject above it needs nBestHeight <
-// FORK_HEIGHT_FCMP_VALIDATION, and regtest orders those gates 8 and 2. The last
-// case pins that arithmetic so the gap is reported rather than assumed.
+// R-NB-001: the nullifier-binding checks are unreachable because the FCMP-era rule
+// refuses first. Pins that dominance; if it fails, restore the binding cases.
 
 #include <boost/test/unit_test.hpp>
 
@@ -169,8 +159,8 @@ uint256 MakeAnchor()
     return anchor;
 }
 
-// The FCMP root load runs for every FCMP-era spend regardless of fSkipFCMP and
-// fails on an absent or empty tree, so one leaf is seeded once.
+// The fixture note is a real leaf, so the spend it builds is well formed in
+// every respect the binding checks read. Seeded once.
 void EnsureCurveTree()
 {
     static bool fSeeded = false;
@@ -230,8 +220,6 @@ CTransaction BuildValidSpendTx(const SpendNote& note, const uint256* pNullifierO
     return tx;
 }
 
-// fSkipFCMP isolates the binding checks from the membership verifier, which is
-// fail-closed in this tree and would otherwise reject every spend before them.
 Outcome RunConnectInputs(CTransaction& tx, const CBlockIndex* pindex)
 {
     Outcome out;
@@ -241,7 +229,7 @@ Outcome RunConnectInputs(CTransaction& tx, const CBlockIndex* pindex)
     CLogCapture capture;
     out.fAccepted = tx.ConnectInputs(txdb, mapInputs, mapTestPool, CDiskTxPos(1, 1, 1),
                                      pindex, false, false, STANDARD_SCRIPT_VERIFY_FLAGS,
-                                     true, true);
+                                     true);
     out.strLog = capture.Release();
     return out;
 }
@@ -273,172 +261,105 @@ const char* CI_MISSING  = "ConnectInputs() : shielded spend 0 missing nullifier 
 const char* CI_MISMATCH = "ConnectInputs() : shielded spend 0 nullifier does not match bound note";
 const char* CI_FAILED   = "ConnectInputs() : shielded spend 0 nullifier binding proof failed";
 
-void CheckConnectInputsRejects(CTransaction& tx, const CBlockIndex* pindex,
-                               const char* pszReason, const std::string& strCase)
-{
-    Outcome out = RunConnectInputs(tx, pindex);
-    BOOST_CHECK_MESSAGE(!out.fAccepted,
-        strCase + ": ConnectInputs ACCEPTED an unbound shielded spend");
-    BOOST_CHECK_MESSAGE(LogHas(out.strLog, pszReason),
-        strCase + ": ConnectInputs did not reject with \"" + pszReason +
-        "\"; captured: " + Excerpt(out.strLog));
-}
-
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(nullifier_binding_consensus_tests)
 
-// Positive control: a spend carrying a correct 33-byte point and 130-byte proof
-// passes, and none of the binding rejections fire.
-BOOST_AUTO_TEST_CASE(valid_bound_spend_is_accepted)
+const char* CI_FCMP_ERA =
+    "FCMP-era membership is unverifiable; the encoding is permanently invalid";
+
+// One block below FORK_HEIGHT_FCMP_VALIDATION the same spend must not hit the rule,
+// so the next case's refusals are attributable to it.
+BOOST_AUTO_TEST_CASE(the_fcmp_era_rule_is_bounded_by_its_own_height)
 {
     NfBindTipGuard guard;
     RequireForkWindow();
     BOOST_REQUIRE(CZKContext::Initialize());
     LOCK(cs_main);
+
+    BOOST_REQUIRE_GE(FORK_HEIGHT_FCMP_VALIDATION, 1);
+    BOOST_REQUIRE_GE(FORK_HEIGHT_FCMP_VALIDATION - 1, FORK_HEIGHT_SHIELDED);
 
     SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
     CTransaction tx = BuildValidSpendTx(note);
 
-    Outcome ci = RunConnectInputs(tx, &guard.tip);
-    BOOST_CHECK_MESSAGE(ci.fAccepted,
-        std::string("ConnectInputs rejected a correctly bound spend; captured: ") + Excerpt(ci.strLog));
-    BOOST_CHECK(!LogHas(ci.strLog, CI_MISSING));
-    BOOST_CHECK(!LogHas(ci.strLog, CI_MISMATCH));
-    BOOST_CHECK(!LogHas(ci.strLog, CI_FAILED));
+    CBlockIndex below;
+    below.nHeight = FORK_HEIGHT_FCMP_VALIDATION - 1;
+    nBestHeight = below.nHeight;
+    Outcome out = RunConnectInputs(tx, &below);
+    BOOST_CHECK_MESSAGE(!LogHas(out.strLog, CI_FCMP_ERA),
+        std::string("the FCMP-era rule fired below its own height, so the case "
+                    "below proves nothing about it; captured: ") + Excerpt(out.strLog));
 }
 
-// No nullifier point at all.
-BOOST_AUTO_TEST_CASE(spend_without_nullifier_point_is_rejected)
+// Every shape the binding cases were written for -- the well-formed spend and
+// each defect -- is refused by the FCMP-era rule, and no binding reason is ever
+// reached. A binding reason appearing here means the site became reachable.
+BOOST_AUTO_TEST_CASE(the_fcmp_era_rule_dominates_the_binding_site)
 {
     NfBindTipGuard guard;
     RequireForkWindow();
     BOOST_REQUIRE(CZKContext::Initialize());
     LOCK(cs_main);
 
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    CTransaction tx = BuildValidSpendTx(note);
-    tx.vShieldedSpend[0].vchNullifierPoint.clear();
+    BOOST_REQUIRE_GE(guard.tip.nHeight, FORK_HEIGHT_FCMP_VALIDATION);
+    BOOST_REQUIRE_GE(guard.tip.nHeight, FORK_HEIGHT_NULLIFIER_BINDING);
 
-    CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "no nullifier point");
-}
-
-// No binding proof at all -- the double-spend case: without it the nullifier is
-// an attacker-chosen field and one note spends repeatedly.
-BOOST_AUTO_TEST_CASE(spend_without_binding_proof_is_rejected)
-{
-    NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    CTransaction tx = BuildValidSpendTx(note);
-    tx.vShieldedSpend[0].vchNullifierBindingProof.clear();
-
-    CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "no binding proof");
-}
-
-// One byte short of NULLIFIER_BINDING_PROOF_SIZE.
-BOOST_AUTO_TEST_CASE(spend_with_short_binding_proof_is_rejected)
-{
-    NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    CTransaction tx = BuildValidSpendTx(note);
-    tx.vShieldedSpend[0].vchNullifierBindingProof.resize(NULLIFIER_BINDING_PROOF_SIZE - 1);
-
-    CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "short binding proof");
-}
-
-// One byte over NULLIFIER_BINDING_PROOF_SIZE: the size test must be exact
-// equality, not a lower bound.
-BOOST_AUTO_TEST_CASE(spend_with_long_binding_proof_is_rejected)
-{
-    NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    CTransaction tx = BuildValidSpendTx(note);
-    tx.vShieldedSpend[0].vchNullifierBindingProof.push_back(0x00);
-    BOOST_REQUIRE_EQUAL(tx.vShieldedSpend[0].vchNullifierBindingProof.size(),
-                        (size_t)NULLIFIER_BINDING_PROOF_SIZE + 1);
-
-    CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "long binding proof");
-}
-
-// Same exactness requirement on the point.
-BOOST_AUTO_TEST_CASE(spend_with_wrong_sized_nullifier_point_is_rejected)
-{
-    NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
+    for (int nShape = 0; nShape < 8; ++nShape)
     {
         SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-        CTransaction tx = BuildValidSpendTx(note);
-        tx.vShieldedSpend[0].vchNullifierPoint.resize(NULLIFIER_POINT_SIZE - 1);
-        CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "short nullifier point");
-    }
-    {
-        SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-        CTransaction tx = BuildValidSpendTx(note);
-        tx.vShieldedSpend[0].vchNullifierPoint.push_back(0x00);
-        CheckConnectInputsRejects(tx, &guard.tip, CI_MISSING, "long nullifier point");
+        uint256 nfForged = GetRandHash();
+        CTransaction tx = (nShape == 7) ? BuildValidSpendTx(note, &nfForged)
+                                        : BuildValidSpendTx(note);
+        CShieldedSpendDescription& sp = tx.vShieldedSpend[0];
+        std::string strCase;
+        switch (nShape)
+        {
+        case 0: strCase = "a well-formed bound spend"; break;
+        case 1: sp.vchNullifierPoint.clear();
+                strCase = "no nullifier point"; break;
+        case 2: sp.vchNullifierBindingProof.clear();
+                strCase = "no binding proof"; break;
+        case 3: sp.vchNullifierBindingProof.resize(NULLIFIER_BINDING_PROOF_SIZE - 1);
+                strCase = "short binding proof"; break;
+        case 4: sp.vchNullifierBindingProof.push_back(0x00);
+                strCase = "long binding proof"; break;
+        case 5: sp.vchNullifierPoint.resize(NULLIFIER_POINT_SIZE - 1);
+                strCase = "short nullifier point"; break;
+        case 6: sp.vchNullifierBindingProof[100] ^= 0x01;
+                strCase = "tampered binding proof"; break;
+        default: strCase = "unbound nullifier tag"; break;
+        }
+
+        Outcome out = RunConnectInputs(tx, &guard.tip);
+        BOOST_CHECK_MESSAGE(!out.fAccepted,
+            strCase + ": ConnectInputs ACCEPTED an FCMP-era shielded spend");
+        BOOST_CHECK_MESSAGE(LogHas(out.strLog, CI_FCMP_ERA),
+            strCase + ": ConnectInputs did not refuse with the FCMP-era rule; "
+            "captured: " + Excerpt(out.strLog));
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, CI_MISSING) &&
+                            !LogHas(out.strLog, CI_MISMATCH) &&
+                            !LogHas(out.strLog, CI_FAILED),
+            strCase + ": a nullifier-binding reason was reached, so the site is "
+            "reachable again and this suite must carry the binding cases; "
+            "captured: " + Excerpt(out.strLog));
     }
 }
 
-// Correct sizes, wrong contents: the size test must not be the only gate.
-BOOST_AUTO_TEST_CASE(spend_with_tampered_binding_proof_is_rejected)
+// Ladder arithmetic: the FCMP gate is below the binding gate, and every legacy shielded
+// version at the binding gate is at or above the FCMP version.
+BOOST_AUTO_TEST_CASE(neither_binding_site_has_a_reachable_height)
 {
     NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    CTransaction tx = BuildValidSpendTx(note);
-    tx.vShieldedSpend[0].vchNullifierBindingProof[100] ^= 0x01;
-    BOOST_REQUIRE_EQUAL(tx.vShieldedSpend[0].vchNullifierBindingProof.size(),
-                        (size_t)NULLIFIER_BINDING_PROOF_SIZE);
-
-    CheckConnectInputsRejects(tx, &guard.tip, CI_FAILED, "tampered binding proof");
-}
-
-// The spent-set key must be the tag of the bound point, not a free field.
-BOOST_AUTO_TEST_CASE(spend_with_unbound_nullifier_tag_is_rejected)
-{
-    NfBindTipGuard guard;
-    RequireForkWindow();
-    BOOST_REQUIRE(CZKContext::Initialize());
-    LOCK(cs_main);
-
-    SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
-    uint256 nfForged = GetRandHash();
-    BOOST_REQUIRE(nfForged != 0);
-    BOOST_REQUIRE(nfForged != NullifierTagFromPoint(note.vchNfPoint));
-    CTransaction tx = BuildValidSpendTx(note, &nfForged);
-    BOOST_REQUIRE(tx.vShieldedSpend[0].nullifier == nfForged);
-
-    CheckConnectInputsRejects(tx, &guard.tip, CI_MISMATCH, "unbound nullifier tag");
-}
-
-// The relay site's binding check has no reachable height while the binding gate
-// sits at or above the FCMP gate: every height that runs it is already rejected
-// by the post-FCMP version check above it, and an FCMP-era version is rejected
-// there by the membership verifier instead. When this fails the site became
-// reachable and the cases above should be extended to CTxMemPool::accept.
-BOOST_AUTO_TEST_CASE(mempool_binding_site_has_no_reachable_height)
-{
-    NfBindTipGuard guard;
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLIFIER_BINDING >= FORK_HEIGHT_FCMP_VALIDATION,
+        "the binding gate moved below the FCMP gate; ConnectInputs nullifier "
+        "binding is reachable again, so extend this suite");
     BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLIFIER_BINDING - 1 >= FORK_HEIGHT_FCMP_VALIDATION,
-        "CTxMemPool::accept nullifier binding is now reachable on regtest; extend this suite");
+        "CTxMemPool::accept nullifier binding is now reachable on regtest; "
+        "extend this suite");
+    BOOST_CHECK_MESSAGE(NFBIND_TX_VERSION >= SHIELDED_TX_VERSION_FCMP,
+        "a pre-FCMP shielded version can carry a spend past the FCMP-era rule; "
+        "extend this suite");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
