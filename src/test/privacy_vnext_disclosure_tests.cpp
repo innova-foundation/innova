@@ -359,7 +359,9 @@ bool BuildMaskedTransfer(const FundedNote& funded, uint8_t nMask,
         return false;
     PrivacyVNextDerivedKeys change;
     if (!DerivePrivacyVNextChangeKeys(DisclosureDigest(0x63), funded.genesis,
-                                      LocalNetwork(), change, error))
+                                      LocalNetwork(),
+                                      PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, change,
+                                      error))
         return false;
     std::vector<PrivacyVNextNewOutput> outs(2);
     outs[0].recipient.nNetwork = LocalNetwork();
@@ -675,10 +677,13 @@ BOOST_AUTO_TEST_CASE(change_keys_are_never_an_issued_address)
     const PrivacyVNextDigest genesis = LocalGenesis();
     std::string error;
 
-    PrivacyVNextDerivedKeys change;
-    BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(), change, error),
-        error);
+    // The legacy index and both ends of the rotated range, since self-pay now draws
+    // anywhere inside it and the separation has to hold at every draw.
+    std::vector<uint32_t> vSelfPay;
+    vSelfPay.push_back(PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX);
+    vSelfPay.push_back(PRIVACY_VNEXT_INTERNAL_CHANGE_BASE);
+    vSelfPay.push_back(PRIVACY_VNEXT_INTERNAL_CHANGE_BASE + 1);
+    vSelfPay.push_back(0xffffffffU);
 
     // Issuance refuses at PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES, so the issuable range is
     // [0, PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES). Both ends are covered plus a run at the
@@ -688,29 +693,46 @@ BOOST_AUTO_TEST_CASE(change_keys_are_never_an_issued_address)
         vIssuable.push_back(i);
     vIssuable.push_back(PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES - 1);
 
-    for (size_t i = 0; i < vIssuable.size(); ++i)
+    for (size_t s = 0; s < vSelfPay.size(); ++s)
     {
-        PrivacyVNextDerivedKeys issued;
+        PrivacyVNextDerivedKeys change;
         BOOST_REQUIRE_MESSAGE(
-            DerivePrivacyVNextKeys(seed, genesis, vIssuable[i], LocalNetwork(), 0,
-                                   issued, error),
+            DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(), vSelfPay[s],
+                                         change, error),
             error);
-        BOOST_CHECK_MESSAGE(
-            change.spendPublic != issued.spendPublic,
-            strprintf("change shares its spend key with issuable index %u",
-                      vIssuable[i]));
-        BOOST_CHECK_MESSAGE(
-            change.viewPublic != issued.viewPublic,
-            strprintf("change shares its view key with issuable index %u",
-                      vIssuable[i]));
+        for (size_t i = 0; i < vIssuable.size(); ++i)
+        {
+            PrivacyVNextDerivedKeys issued;
+            BOOST_REQUIRE_MESSAGE(
+                DerivePrivacyVNextKeys(seed, genesis, vIssuable[i], LocalNetwork(), 0,
+                                       issued, error),
+                error);
+            BOOST_CHECK_MESSAGE(
+                change.spendPublic != issued.spendPublic,
+                strprintf("self-pay index %u shares its spend key with issuable "
+                          "index %u", vSelfPay[s], vIssuable[i]));
+            BOOST_CHECK_MESSAGE(
+                change.viewPublic != issued.viewPublic,
+                strprintf("self-pay index %u shares its view key with issuable "
+                          "index %u", vSelfPay[s], vIssuable[i]));
+        }
     }
 
-    // The separation only holds while the change index sits outside everything the
-    // allocator can reach.
-    BOOST_CHECK(PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX >= PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
-    // And the change key has to fit the scan alongside every issuable one, or a full
-    // wallet would build a key list the scan ABI refuses and would scan nothing.
-    BOOST_CHECK_LE((size_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 1,
+    // The separation only holds while the whole self-pay range sits outside everything
+    // the allocator can reach.
+    BOOST_CHECK(PRIVACY_VNEXT_INTERNAL_CHANGE_BASE >= PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
+    BOOST_CHECK(PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX >= PRIVACY_VNEXT_INTERNAL_CHANGE_BASE);
+    // Deriving self-pay below the base is refused where the key is made, so no caller
+    // can compute the index some other way and pay change to a handed-out address.
+    PrivacyVNextDerivedKeys refused;
+    BOOST_CHECK(!DerivePrivacyVNextChangeKeys(
+        seed, genesis, LocalNetwork(), PRIVACY_VNEXT_INTERNAL_CHANGE_BASE - 1,
+        refused, error));
+    BOOST_CHECK(!DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(), 0,
+                                              refused, error));
+    // And both self-pay keys have to fit the scan alongside every issuable one, or a
+    // full wallet would build a key list the scan ABI refuses and would scan nothing.
+    BOOST_CHECK_LE((size_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 2,
                    (size_t)PRIVACY_VNEXT_MAX_SCAN_KEYS);
 }
 
@@ -736,7 +758,9 @@ BOOST_AUTO_TEST_CASE(a_disclosing_transfer_publishes_no_issued_address)
     PrivacyVNextDerivedKeys change;
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextChangeKeys(DisclosureDigest(0x63), funded.genesis,
-                                     LocalNetwork(), change, error),
+                                     LocalNetwork(),
+                                     PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, change,
+                                     error),
         error);
 
     const uint64_t nFee = 100;
@@ -799,10 +823,8 @@ BOOST_AUTO_TEST_CASE(a_disclosing_transfer_publishes_no_issued_address)
     }
 }
 
-// Change that a scan cannot reach is change that cannot be spent, and unshield is
-// retired, so it would be value with no recovery path. Moving change off the issued
-// range put it outside the bound a scan derives from issuance, so the key list has to
-// carry it explicitly.
+// Change sits outside the issued range, so the scan key list carries it explicitly,
+// including the pre-rotation index for change built before rotation.
 BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
 {
     const PrivacyVNextDigest seed = DisclosureDigest(0x71);
@@ -820,7 +842,9 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
 
     PrivacyVNextDerivedKeys change;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(), change, error),
+        DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(),
+                                     PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, change,
+                                     error),
         error);
     BOOST_CHECK(vKeys[nIssued].scanSecret == change.viewSecret);
     BOOST_CHECK(vKeys[nIssued].spendMaterial == change.spendSecret);
@@ -1448,7 +1472,9 @@ BOOST_AUTO_TEST_CASE(each_mask_publishes_exactly_the_fields_its_clear_bits_name)
     PrivacyVNextDerivedKeys change;
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextChangeKeys(DisclosureDigest(0x63), funded.genesis,
-                                     LocalNetwork(), change, error),
+                                     LocalNetwork(),
+                                     PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, change,
+                                     error),
         error);
     PrivacyVNextDigest authority;
     BOOST_REQUIRE_MESSAGE(SenderAuthorityOf(funded, 0x36, authority, error), error);

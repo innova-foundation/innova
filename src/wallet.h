@@ -32,12 +32,21 @@ extern CHooks* hooks;
 extern bool fWalletUnlockStakingOnly;
 extern bool fConfChange;
 class CAccountingEntry;
+// Self-pay index for one payload, derived from its sorted key images and transparent
+// binding. Always carries PRIVACY_VNEXT_INTERNAL_CHANGE_BASE, outside every issuable index.
+uint32_t PrivacyVNextChangeIndexFor(
+    const PrivacyVNextDigest& genesis,
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& transparentBinding,
+    const std::vector<PrivacyVNextDigest>& vKeyImages);
+
 // Keys every self-pay output is sent to: a spend's change, and the receiver a shield
 // pays into. One function, so no self-pay site can be left on a user-facing index
-// while the others move.
+// while the others move. Refuses any index the allocator could issue.
 bool DerivePrivacyVNextChangeKeys(const PrivacyVNextDigest& seed,
                                   const PrivacyVNextDigest& genesis,
                                   uint8_t nNetwork,
+                                  uint32_t nChangeIndex,
                                   PrivacyVNextDerivedKeys& keysOut,
                                   std::string& strErrorOut);
 
@@ -304,12 +313,21 @@ public:
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
-    // The one place a scan's key list is built: every issued index plus change.
     bool BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
                                    const PrivacyVNextDigest& genesis,
                                    uint8_t nNetwork,
                                    std::vector<PrivacyVNextScanKey>& vKeysOut,
                                    std::string& strErrorOut) const;
+    // Trim `vKeys` back to the base list and append the self-pay key this payload's
+    // own nonce names. Called per payload, because the index differs per payload.
+    bool ExtendPrivacyVNextScanKeysForPayload(
+        const PrivacyVNextDigest& seed,
+        const PrivacyVNextDigest& genesis,
+        uint8_t nNetwork,
+        const CTransaction& tx,
+        size_t nBaseKeys,
+        std::vector<PrivacyVNextScanKey>& vKeys,
+        std::string& strErrorOut) const;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
     // Assigns tree positions for every epoch up to `nThroughEpoch` that still holds an
     // unplaced note of ours, not just the most recent one.
