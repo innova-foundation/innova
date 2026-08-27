@@ -942,11 +942,9 @@ fn mask_sweep() -> &'static [MaskCase; 8] {
     })
 }
 
-// A receiver disclosure names an address, and the address plus the output's own tweak
-// ephemeral plus the shared point the disclosure publishes determine the note's one-time
-// key. That key is what a sender disclosure of the later spend publishes, so disclosing
-// the receiver of one transaction pre-commits the sender privacy of whoever spends that
-// output next -- to everyone, not only to the parties.
+// A receiver disclosure makes the note's one-time key computable, so a later
+// sender-disclosing spend of it is publicly linked to the creation. A hidden-sender spend
+// publishes no key.
 #[test]
 fn a_receiver_disclosure_predicts_the_authority_a_later_spend_publishes() {
     let lineage = lineage();
@@ -1029,6 +1027,57 @@ fn a_private_spend_of_a_disclosed_note_matches_nothing_it_published() {
         published.intersection(&disclosed).next().is_none(),
         "the composed link is computational, so no field recurs to find it by"
     );
+}
+
+// With L = x*I and A = x*G, a disclosed creation makes all four values readable; the
+// creation-to-spend edge of a hidden-sender spend then rests on deciding that relation.
+#[test]
+fn a_receiver_disclosure_leaves_the_whole_linking_relation_readable() {
+    let lineage = lineage();
+    let creation = read_wire(&lineage.disclosed_creation);
+    let private = read_wire(&lineage.private_spend);
+
+    // Positive controls: the legs are read from the payloads that carry them, and the
+    // spend under test is the one that publishes no authority of its own.
+    assert_eq!(creation.mask, 0);
+    assert_eq!(creation.receiver_addresses.len(), 2);
+    assert_eq!(private.mask, 7);
+    assert!(private.sender_authorities.is_empty());
+    assert_eq!(private.key_images.len(), 1);
+
+    let authority = authority_from_chain(&creation, 0);
+    let base = note::key_image_base_checked(&creation.owners[0])
+        .expect("the output key a payload carries must have a key image base");
+    assert_eq!(
+        base,
+        lineage.spent.key_image_base(),
+        "the base a reader derives from the chain's output key is the note's own"
+    );
+    assert_eq!(private.key_images[0], lineage.spent.key_image());
+    assert_eq!(authority, lineage.spent.authority());
+
+    // One secret ties the four: A = x*G, published by nothing here, and L = x*I,
+    // published by the spend.
+    assert_eq!(
+        (ED25519_BASEPOINT_POINT * lineage.spent.x)
+            .compress()
+            .to_bytes(),
+        authority
+    );
+    assert_eq!(
+        (point(&base) * lineage.spent.x).compress().to_bytes(),
+        private.key_images[0]
+    );
+
+    // The control: the relation names one note. The creation's other output does not
+    // satisfy it, so this is not an identity that holds for anything.
+    assert_ne!(
+        (point(&base) * lineage.second_output.x)
+            .compress()
+            .to_bytes(),
+        private.key_images[0]
+    );
+    assert_ne!(lineage.second_output.authority(), authority);
 }
 
 // The ledger records the same thing from a spend at every mask: no pruning, anchor is an
