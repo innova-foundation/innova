@@ -329,6 +329,204 @@ BOOST_AUTO_TEST_CASE(the_self_pay_index_moves_with_the_payload_and_stays_interna
                                            RotationDigest(0x5a), vAscending));
 }
 
+// Every mask that leaves the receiver bit clear publishes the outputs, so the pseudonym
+// spanned all four of them and so must its removal. Covering one mask would leave a
+// wallet that alternates masks linkable across the ones nothing checked.
+BOOST_AUTO_TEST_CASE(every_receiver_disclosing_mask_publishes_a_fresh_change_address)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNotes funded;
+    FundNotes(txdb, 4, funded, 0x55);
+
+    const PrivacyVNextDigest senderSeed = RotationDigest(0x55);
+    PrivacyVNextDerivedKeys payee;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(RotationDigest(0x56), funded.genesis, 0,
+                               LocalNetwork(), 0, payee, error),
+        error);
+
+    // Masks 0, 1, 4 and 5: every value with iv5::DISCLOSURE_HIDE_RECEIVER clear.
+    const uint8_t vMasks[4] = { 0, 1, 4, 5 };
+    const uint64_t nPaid = 1500;
+    const uint64_t nFee = 100;
+
+    // The control: at the pre-rotation index all four masks publish one set of 64
+    // bytes. It is what the absence checks below are absence *of*, and it is what says
+    // the needle is findable in a payload of each mask at all.
+    std::vector<unsigned char> vFixedBytes;
+    for (size_t m = 0; m < 4; ++m)
+    {
+        PrivacyVNextDerivedKeys fixedChange;
+        std::vector<unsigned char> fixedPayload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildTransferWithChangeAt(funded, m, senderSeed,
+                                      PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX,
+                                      vMasks[m], payee, nPaid, nFee, fixedChange,
+                                      fixedPayload, error),
+            error);
+        if (vFixedBytes.empty())
+            vFixedBytes = AddressBytes(fixedChange);
+        BOOST_REQUIRE(AddressBytes(fixedChange) == vFixedBytes);
+        BOOST_CHECK_MESSAGE(
+            PayloadContains(fixedPayload, vFixedBytes),
+            strprintf("mask %u published no change address at the fixed index, so "
+                      "its absence below would prove nothing", (unsigned)vMasks[m]));
+    }
+
+    // The same four masks with the index drawn per payload, each spending its own note.
+    std::vector<std::vector<unsigned char> > vPayloads;
+    std::vector<std::vector<unsigned char> > vAddresses;
+    for (size_t i = 0; i < 4; ++i)
+    {
+        const uint8_t nMask = vMasks[i];
+        const std::vector<PrivacyVNextDigest> vSpent(1, funded.vKeyImages[i]);
+        PrivacyVNextDerivedKeys change;
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildTransferWithChangeAt(funded, i, senderSeed,
+                                      ChangeIndexForSpendOf(funded.genesis, vSpent),
+                                      nMask, payee, nPaid, nFee, change, payload,
+                                      error),
+            error);
+        vPayloads.push_back(payload);
+        vAddresses.push_back(AddressBytes(change));
+    }
+
+    for (size_t i = 0; i < 4; ++i)
+    {
+        BOOST_CHECK_MESSAGE(
+            PayloadContains(vPayloads[i], vAddresses[i]),
+            strprintf("the mask-%u transfer published no change address at all",
+                      (unsigned)vMasks[i]));
+        BOOST_CHECK_MESSAGE(
+            !PayloadContains(vPayloads[i], vFixedBytes),
+            strprintf("the mask-%u transfer still carried the fixed change address",
+                      (unsigned)vMasks[i]));
+        // Across masks, not only within one: a wallet that alternates masks must not
+        // become linkable at the seam between them.
+        for (size_t j = 0; j < 4; ++j)
+        {
+            if (i == j)
+                continue;
+            BOOST_CHECK_MESSAGE(
+                vAddresses[i] != vAddresses[j],
+                strprintf("the mask-%u and mask-%u transfers drew the same change "
+                          "address", (unsigned)vMasks[i], (unsigned)vMasks[j]));
+            BOOST_CHECK_MESSAGE(
+                !PayloadContains(vPayloads[i], vAddresses[j]),
+                strprintf("the mask-%u transfer republished the mask-%u transfer's "
+                          "change address", (unsigned)vMasks[i], (unsigned)vMasks[j]));
+        }
+    }
+}
+
+// A multi-note spend draws from every key image it publishes, and a scan recovers the
+// same index from the payload alone (one note cannot tell these apart).
+BOOST_AUTO_TEST_CASE(a_multi_note_spend_draws_from_every_key_image_it_publishes)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNotes funded;
+    FundNotes(txdb, 2, funded, 0x39);
+
+    const PrivacyVNextDigest senderSeed = RotationDigest(0x39);
+    PrivacyVNextDerivedKeys payee;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(RotationDigest(0x3a), funded.genesis, 0,
+                               LocalNetwork(), 0, payee, error),
+        error);
+
+    // Key images of the selected notes, in reverse of the builder order: selection order is not
+    // payload order, and the scan sees only the latter.
+    std::vector<PrivacyVNextDigest> vSelected;
+    vSelected.push_back(funded.vKeyImages[0]);
+    vSelected.push_back(funded.vKeyImages[1]);
+    const uint32_t nIndex = ChangeIndexForSpendOf(funded.genesis, vSelected);
+
+    PrivacyVNextDerivedKeys change;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextChangeKeys(senderSeed, funded.genesis, LocalNetwork(),
+                                     nIndex, change, error),
+        error);
+
+    const uint64_t nPaid = 1500;
+    const uint64_t nFee = 100;
+    const uint64_t nChange = funded.nAmount * 2 - nPaid - nFee;
+    std::vector<PrivacyVNextNewOutput> outs(2);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = payee.spendPublic;
+    outs[0].recipient.viewPublic = payee.viewPublic;
+    outs[0].nAmount = nPaid;
+    outs[1].recipient.nNetwork = LocalNetwork();
+    outs[1].recipient.nAddressType = 0;
+    outs[1].recipient.spendPublic = change.spendPublic;
+    outs[1].recipient.viewPublic = change.viewPublic;
+    outs[1].nAmount = nChange;
+
+    std::vector<PrivacyVNextSpendNote> vSpends;
+    vSpends.push_back(funded.vNotes[1]);
+    vSpends.push_back(funded.vNotes[0]);
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            LocalNetwork(), 5, funded.genesis, change.outgoingViewSecret,
+            funded.finalizedRoot, funded.nTreeSize, NoTransparentSide(), nFee,
+            vSpends, outs, payload, error),
+        error);
+
+    PrivacyVNextStateEffects effects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects)
+                      .IsValid());
+    BOOST_REQUIRE_EQUAL(effects.keyImages.size(), 2U);
+    // The two orders have to differ, or the equality below would hold whether or not
+    // the draw sorts and the check would be worth nothing.
+    BOOST_REQUIRE_MESSAGE(effects.keyImages != vSelected,
+                          "the payload published the key images in the order the "
+                          "index was drawn from, so this case no longer separates a "
+                          "sorted draw from an unsorted one");
+    std::vector<PrivacyVNextDigest> vPublished(effects.keyImages.begin(),
+                                               effects.keyImages.end());
+    std::vector<PrivacyVNextDigest> vExpected(vSelected);
+    std::sort(vPublished.begin(), vPublished.end());
+    std::sort(vExpected.begin(), vExpected.end());
+    BOOST_CHECK_MESSAGE(vPublished == vExpected,
+                        "the payload does not publish the key images the self-pay "
+                        "index was drawn from");
+    BOOST_CHECK_MESSAGE(
+        ChangeIndexForSpendOf(funded.genesis, effects.keyImages) == nIndex,
+        "the index a scan draws from the published order is not the one the builder "
+        "drew from its selection order");
+
+    // Dropping one image draws a different index, which is what says both were load
+    // bearing rather than the first one alone.
+    BOOST_CHECK(ChangeIndexForSpendOf(
+                    funded.genesis,
+                    std::vector<PrivacyVNextDigest>(1, vSelected[0])) != nIndex);
+
+    // And the scan reaches it from the carrying transaction with nothing else.
+    CWallet localWallet;
+    std::vector<PrivacyVNextScanKey> vKeys;
+    BOOST_REQUIRE_MESSAGE(
+        localWallet.BuildPrivacyVNextScanKeys(senderSeed, funded.genesis,
+                                              LocalNetwork(), vKeys, error),
+        error);
+    const size_t nBaseKeys = vKeys.size();
+    const CTransaction txCarrier = CarrierOf(payload);
+    BOOST_REQUIRE_MESSAGE(
+        localWallet.ExtendPrivacyVNextScanKeysForPayload(
+            senderSeed, funded.genesis, LocalNetwork(), txCarrier, nBaseKeys, vKeys,
+            error),
+        error);
+    std::vector<PrivacyVNextScanMatch> vMatches;
+    BOOST_REQUIRE_MESSAGE(ScanFinds(payload, vKeys, vMatches, error), error);
+    BOOST_REQUIRE_EQUAL(vMatches.size(), 1U);
+    BOOST_CHECK_EQUAL(vMatches[0].nAmount, nChange);
+    BOOST_CHECK_EQUAL((size_t)vMatches[0].nKeyIndex, nBaseKeys);
+}
+
 // Two disclosing transfers from one wallet must publish different change-address
 // bytes, or they are linkable to each other.
 BOOST_AUTO_TEST_CASE(two_disclosing_transfers_publish_different_change_addresses)
@@ -584,6 +782,245 @@ BOOST_AUTO_TEST_CASE(the_scan_budget_carries_every_issued_index_and_both_self_pa
     BOOST_CHECK(!localWallet.ExtendPrivacyVNextScanKeysForPayload(
         seed, genesis, LocalNetwork(), txEmpty, vFull.size(), vFull, error));
     BOOST_CHECK(!error.empty());
+}
+
+// A block with pre-rotation and rotated self-pay outputs, scanned through the wallet
+// entry point used by connect and rescan: both must open.
+BOOST_AUTO_TEST_CASE(the_wallet_block_scan_recovers_pre_rotation_and_rotated_change)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNotes funded;
+    FundNotes(txdb, 2, funded, 0x63);
+
+    const PrivacyVNextDigest senderSeed = RotationDigest(0x63);
+    PrivacyVNextDerivedKeys payee;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(RotationDigest(0x64), funded.genesis, 0,
+                               LocalNetwork(), 0, payee, error),
+        error);
+
+    const uint64_t nPaid = 1500;
+    const uint64_t nFee = 100;
+    const uint64_t nChange = funded.nAmount - nPaid - nFee;
+
+    // Note 0 pays change at the index every wallet used before rotation.
+    PrivacyVNextDerivedKeys legacyChange;
+    std::vector<unsigned char> legacyPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildTransferWithChangeAt(funded, 0, senderSeed,
+                                  PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, 7, payee,
+                                  nPaid, nFee, legacyChange, legacyPayload, error),
+        error);
+
+    // Note 1 pays change at the index its own key image names.
+    const std::vector<PrivacyVNextDigest> vSpent(1, funded.vKeyImages[1]);
+    const uint32_t nRotated = ChangeIndexForSpendOf(funded.genesis, vSpent);
+    BOOST_REQUIRE(nRotated != PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX);
+    PrivacyVNextDerivedKeys rotatedChange;
+    std::vector<unsigned char> rotatedPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildTransferWithChangeAt(funded, 1, senderSeed, nRotated, 7, payee, nPaid,
+                                  nFee, rotatedChange, rotatedPayload, error),
+        error);
+
+    CBlock block;
+    block.vtx.push_back(CarrierOf(legacyPayload));
+    block.vtx.push_back(CarrierOf(rotatedPayload));
+    const uint256 hashLegacy = block.vtx[0].GetHash();
+    const uint256 hashRotated = block.vtx[1].GetHash();
+    BOOST_REQUIRE(hashLegacy != hashRotated);
+
+    CBlockIndex index;
+    index.nHeight = 100;
+    const std::set<uint256> setNoneSkipped;
+
+    // The negative control runs first: a wallet holding a different seed scans the same
+    // block through the same call and must open nothing. Without it, a scan that
+    // credited every output it saw would read as a pass below.
+    CWallet stranger;
+    const PrivacyVNextDigest strangerSeed = RotationDigest(0x2d);
+    stranger.vchPrivacyVNextSeed.assign(strangerSeed.begin(), strangerSeed.end());
+    BOOST_REQUIRE_MESSAGE(
+        stranger.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error),
+        error);
+    BOOST_CHECK_MESSAGE(stranger.vPrivacyVNextNotes.empty(),
+                        "a wallet that owns none of these outputs opened one anyway");
+
+    CWallet sender;
+    sender.vchPrivacyVNextSeed.assign(senderSeed.begin(), senderSeed.end());
+    BOOST_REQUIRE_MESSAGE(
+        sender.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error), error);
+    BOOST_REQUIRE_EQUAL(sender.vPrivacyVNextNotes.size(), 2U);
+
+    const CPrivacyVNextWalletNote* pLegacy = 0;
+    const CPrivacyVNextWalletNote* pRotated = 0;
+    for (size_t i = 0; i < sender.vPrivacyVNextNotes.size(); ++i)
+    {
+        if (sender.vPrivacyVNextNotes[i].txhash == hashLegacy)
+            pLegacy = &sender.vPrivacyVNextNotes[i];
+        if (sender.vPrivacyVNextNotes[i].txhash == hashRotated)
+            pRotated = &sender.vPrivacyVNextNotes[i];
+    }
+    BOOST_REQUIRE_MESSAGE(pLegacy != 0,
+                          "the wallet scan lost change built at the pre-rotation "
+                          "index; a wallet holding older change would strand it");
+    BOOST_REQUIRE_MESSAGE(pRotated != 0,
+                          "the wallet scan did not reach the rotated self-pay index");
+    BOOST_CHECK_EQUAL(pLegacy->nAmount, nChange);
+    BOOST_CHECK_EQUAL(pRotated->nAmount, nChange);
+    BOOST_CHECK(pLegacy->IsComplete());
+    BOOST_CHECK(pRotated->IsComplete());
+    BOOST_CHECK_EQUAL(pLegacy->nHeight, index.nHeight);
+
+    // Found is not spendable. The recovered pre-rotation note is placed in a tree and
+    // spent through the builder the wallet's own spend path calls, so what passes here
+    // is live authority rather than a scan echoing an amount back.
+    const CPrivacyVNextWalletNote legacyNote = *pLegacy;
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(TrimPrivacyVNextTreeStore(txdb, 0, treeState, error),
+                          error);
+
+    PrivacyVNextOutputLeaf leaf;
+    std::memcpy(leaf.owner.data(), &legacyNote.vchOwner[0], 32);
+    std::memcpy(leaf.nullifierBase.data(), &legacyNote.vchNullifierBase[0], 32);
+    std::memcpy(leaf.commitment.data(), &legacyNote.vchCommitment[0], 32);
+    std::vector<PrivacyVNextOutputLeaf> vLeaves(1, leaf);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error), error);
+    const std::vector<uint64_t> vTargets(1, (uint64_t)0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets, vchPaths,
+                                  error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+
+    PrivacyVNextSpendNote spend;
+    std::memcpy(spend.spendSecret.data(), &legacyNote.vchSpendSecret[0], 32);
+    std::memcpy(spend.y.data(), &legacyNote.vchY[0], 32);
+    std::memcpy(spend.mask.data(), &legacyNote.vchMask[0], 32);
+    spend.nAmount = legacyNote.nAmount;
+    spend.leaf = leaf;
+    spend.vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    const uint64_t nOnward = 400;
+    const uint64_t nOnwardFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs(2);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = payee.spendPublic;
+    outs[0].recipient.viewPublic = payee.viewPublic;
+    outs[0].nAmount = nOnward;
+    outs[1].recipient.nNetwork = LocalNetwork();
+    outs[1].recipient.nAddressType = 0;
+    outs[1].recipient.spendPublic = legacyChange.spendPublic;
+    outs[1].recipient.viewPublic = legacyChange.viewPublic;
+    outs[1].nAmount = legacyNote.nAmount - nOnward - nOnwardFee;
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
+    std::vector<unsigned char> onwardPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            LocalNetwork(), 7, funded.genesis, legacyChange.outgoingViewSecret,
+            finalizedRoot, nTreeSize, NoTransparentSide(), nOnwardFee,
+            std::vector<PrivacyVNextSpendNote>(1, spend), outs, onwardPayload,
+            error),
+        "recovered pre-rotation change could not be spent: " + error);
+
+    // The spend retires the key image the recovered note carries, which is what makes
+    // it that note rather than a second one that happens to hold the same value.
+    PrivacyVNextStateEffects effects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, onwardPayload,
+                      effects)
+                      .IsValid());
+    BOOST_REQUIRE_EQUAL(effects.keyImages.size(), 1U);
+    BOOST_CHECK(std::memcmp(effects.keyImages[0].data(),
+                            &legacyNote.vchKeyImage[0], 32) == 0);
+}
+
+// The budget claim is about a wallet at the issuance bound, so it has to be made at the
+// bound. A fresh wallet carries one issued index and clears every check by 1021.
+BOOST_AUTO_TEST_CASE(the_scan_budget_holds_at_the_issuance_bound)
+{
+    const PrivacyVNextDigest genesis = LocalGenesis();
+    const PrivacyVNextDigest seed = RotationDigest(0x4b);
+    std::string error;
+
+    CWallet atBound;
+    atBound.privacyVNextSeedRecord.nNextAddressIndex =
+        PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES;
+    BOOST_REQUIRE_EQUAL(atBound.GetPrivacyVNextScanIndexCount(),
+                        PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
+
+    std::vector<PrivacyVNextScanKey> vKeys;
+    BOOST_REQUIRE_MESSAGE(
+        atBound.BuildPrivacyVNextScanKeys(seed, genesis, LocalNetwork(), vKeys,
+                                          error),
+        "a wallet issued to the bound cannot build a scan list at all: " + error);
+    const size_t nBaseKeys = vKeys.size();
+    BOOST_CHECK_EQUAL(nBaseKeys, (size_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 1);
+
+    // The worst case the ABI has to hold: every issued index, the legacy self-pay key,
+    // and the rotated key one payload names.
+    CTxDB txdb("r+");
+    FundedNotes funded;
+    FundNotes(txdb, 1, funded, 0x4c);
+    PrivacyVNextDerivedKeys payee;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(RotationDigest(0x4d), funded.genesis, 0,
+                               LocalNetwork(), 0, payee, error),
+        error);
+    const std::vector<PrivacyVNextDigest> vSpent(1, funded.vKeyImages[0]);
+    PrivacyVNextDerivedKeys change;
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildTransferWithChangeAt(funded, 0, seed,
+                                  ChangeIndexForSpendOf(funded.genesis, vSpent), 7,
+                                  payee, 1500, 100, change, payload, error),
+        error);
+    const CTransaction txCarrier = CarrierOf(payload);
+
+    BOOST_REQUIRE_MESSAGE(
+        atBound.ExtendPrivacyVNextScanKeysForPayload(
+            seed, genesis, LocalNetwork(), txCarrier, nBaseKeys, vKeys, error),
+        "a wallet at the bound cannot carry the rotated self-pay key: " + error);
+    BOOST_CHECK_EQUAL(vKeys.size(), (size_t)PRIVACY_VNEXT_MAX_SCAN_KEYS);
+
+    // The same payload one slot past the bound. Refusing here and accepting above is
+    // what says the refusal is the list length rather than anything about the payload.
+    std::vector<PrivacyVNextScanKey> vOver(PRIVACY_VNEXT_MAX_SCAN_KEYS);
+    error.clear();
+    BOOST_CHECK(!atBound.ExtendPrivacyVNextScanKeysForPayload(
+        seed, genesis, LocalNetwork(), txCarrier, vOver.size(), vOver, error));
+    BOOST_CHECK(!error.empty());
+
+    // A wallet issued one index past the current bound -- reachable only for one issued
+    // under the older, larger bound -- must refuse loudly rather than scan a short list
+    // and report the blocks as covered.
+    CWallet overBound;
+    overBound.privacyVNextSeedRecord.nNextAddressIndex =
+        PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 1;
+    std::vector<PrivacyVNextScanKey> vRefused;
+    error.clear();
+    BOOST_CHECK(!overBound.BuildPrivacyVNextScanKeys(seed, genesis, LocalNetwork(),
+                                                     vRefused, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK(vRefused.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
