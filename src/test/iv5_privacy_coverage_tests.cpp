@@ -1237,6 +1237,103 @@ BOOST_AUTO_TEST_CASE(a_block_with_no_shielded_transaction_still_persists_the_tre
 }
 
 // ---------------------------------------------------------------------------
+// R-NS-004: a legacy NullStake coinstake block does not connect; reason derived from height.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(a_block_whose_coinstake_is_a_nullstake_encoding_does_not_connect)
+{
+    LadderGuard guard;
+    guard.SelectRegtest();
+
+    const char* kFCMPEra =
+        "carries an FCMP-era shielded spend whose membership is unverifiable; "
+        "the encoding is permanently invalid";
+    const char* kPostDAG =
+        "ConnectBlock() : proof-of-stake blocks are not allowed after DAG fork";
+    const char* kNullStakeV1 = "NullStake stake note membership is unverifiable";
+    const char* kNullStakeV2 = "NullStake V2 stake note membership is unverifiable";
+    const char* kNullStakeV3 = "NullStake V3 stake note membership is unverifiable";
+
+    MineTo(BestIndex()->nHeight + 2);
+    BOOST_REQUIRE_GE(BestIndex()->nHeight + 1, FORK_HEIGHT_NULLSTAKE_V3);
+
+    const int nStakeVersions[] = {SHIELDED_TX_VERSION_NULLSTAKE,
+                                  SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                                  SHIELDED_TX_VERSION_NULLSTAKE_COLD};
+    for (size_t i = 0; i < sizeof(nStakeVersions) / sizeof(nStakeVersions[0]); ++i)
+    {
+        Candidate cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+
+        // What CheckBlock requires of a proof-of-stake block: an empty coinbase
+        // output and a coinstake at index 1 stamped with the block's own time.
+        cb.block.vtx[0].vout.resize(1);
+        cb.block.vtx[0].vout[0].SetEmpty();
+
+        CTransaction stake;
+        stake.nVersion = nStakeVersions[i];
+        stake.nTime = cb.block.nTime;
+        stake.vin.push_back(CTxIn(uint256(0x5104), 0));
+        stake.vout.resize(2);
+        stake.vout[0].SetEmpty();
+        stake.vout[1].nValue = 1 * COIN;
+        stake.vShieldedSpend.resize(1);
+        stake.vShieldedSpend[0].nullifier = uint256(0xFC3D02);
+        stake.nValueBalance = -1;
+        BOOST_REQUIRE(stake.IsCoinStake() && stake.IsShielded());
+
+        cb.block.vtx.insert(cb.block.vtx.begin() + 1, stake);
+        BOOST_REQUIRE(cb.block.IsProofOfStake());
+        BOOST_REQUIRE(SealCandidate(cb));
+
+        const std::string strCase =
+            strprintf("a block whose coinstake is NullStake version %d",
+                      nStakeVersions[i]);
+        ConnectOutcome out = ConnectAndRollBack(cb);
+        ExpectBlockReason(out,
+                          cb.Height() >= FORK_HEIGHT_DAG ? kPostDAG : kFCMPEra,
+                          strCase);
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kNullStakeV1) &&
+                            !LogHas(out.strLog, kNullStakeV2) &&
+                            !LogHas(out.strLog, kNullStakeV3),
+            strCase + ": a NullStake coinstake branch was reached, so those three "
+            "branches decide again and each needs its own case; captured: " +
+            Excerpt(out.strLog));
+    }
+}
+
+// Below the DAG gate: every NullStake version and gate is at or above the FCMP
+// one, so the block-level FCMP-era rule runs first. Checked on all three networks.
+BOOST_AUTO_TEST_CASE(the_nullstake_coinstake_branches_have_no_reachable_shape)
+{
+    LadderGuard guard;
+
+    BOOST_CHECK_GE(SHIELDED_TX_VERSION_NULLSTAKE, SHIELDED_TX_VERSION_FCMP);
+    BOOST_CHECK_GE(SHIELDED_TX_VERSION_NULLSTAKE_V2, SHIELDED_TX_VERSION_FCMP);
+    BOOST_CHECK_GE(SHIELDED_TX_VERSION_NULLSTAKE_COLD, SHIELDED_TX_VERSION_FCMP);
+
+    for (int nPass = 0; nPass < 3; ++nPass)
+    {
+        if (nPass == 0)
+            guard.SelectRegtest();
+        else if (nPass == 1)
+            guard.SelectTestnet();
+        else
+            guard.SelectMainnet();
+
+        const std::string strNet = nPass == 0 ? "regtest"
+                                 : nPass == 1 ? "testnet" : "mainnet";
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE >= FORK_HEIGHT_FCMP_VALIDATION,
+            strNet + ": the NullStake gate moved below the FCMP gate, so the "
+            "NullStake coinstake branch decides again and needs its own case");
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_V2 >= FORK_HEIGHT_FCMP_VALIDATION,
+            strNet + ": the NullStake V2 gate moved below the FCMP gate");
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_V3 >= FORK_HEIGHT_FCMP_VALIDATION,
+            strNet + ": the NullStake V3 gate moved below the FCMP gate");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // R-FCMP-001: curve-tree snapshots from FCMP activation until the epoch-root height only.
 // ---------------------------------------------------------------------------
 
@@ -1365,6 +1462,116 @@ BOOST_AUTO_TEST_CASE(a_shielded_coinstake_is_refused_outside_the_nullstake_versi
         "generation-window branch in ConnectBlock has become reachable and this "
         "suite should cover it");
 }
+
+// ---------------------------------------------------------------------------
+// R-SEAL-004: a block with an FCMP-era shielded spend does not connect; one field per arm.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(a_block_carrying_an_fcmp_era_shielded_spend_does_not_connect)
+{
+    LadderGuard guard;
+    guard.SelectRegtest();
+
+    const char* kFCMPEra =
+        "carries an FCMP-era shielded spend whose membership is unverifiable; "
+        "the encoding is permanently invalid";
+
+    MineTo(BestIndex()->nHeight + 2);
+    BOOST_REQUIRE_GE(BestIndex()->nHeight + 1, FORK_HEIGHT_FCMP_VALIDATION);
+
+    Candidate control;
+    BOOST_REQUIRE(BuildCandidate(control));
+    BOOST_REQUIRE(SealCandidate(control));
+    ConnectOutcome ok = ConnectAndRollBack(control);
+    BOOST_REQUIRE_MESSAGE(ok.Ok(),
+        "the producer's own block was refused; captured: " + Excerpt(ok.strLog));
+
+    CBlockIndex* pFunding = AncestorAtHeight(BestIndex()->nHeight - 1);
+    BOOST_REQUIRE(pFunding != NULL);
+    CBlock funding;
+    BOOST_REQUIRE(funding.ReadFromDisk(pFunding, true));
+    BOOST_REQUIRE(!funding.vtx.empty());
+
+    // One shielded-spend-carrying transaction, built once and re-versioned per
+    // arm. Only the version and the spend vector are read by the rule.
+    CTransaction spendShape;
+    spendShape.vin.push_back(CTxIn(funding.vtx[0].GetHash(), 0));
+    spendShape.vout.push_back(CTxOut(1, funding.vtx[0].vout[0].scriptPubKey));
+    spendShape.vShieldedSpend.resize(1);
+    spendShape.vShieldedSpend[0].nullifier = uint256(0xFC3D01);
+    spendShape.vShieldedSpend[0].cv = SomeCommitment(1);
+
+    // Every FCMP-era version, including the three NullStake generations and the
+    // reclaim version, is refused.
+    const int nEraVersions[] = {SHIELDED_TX_VERSION_FCMP,
+                                SHIELDED_TX_VERSION_NULLSTAKE,
+                                SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                                SHIELDED_TX_VERSION_NULLSTAKE_COLD,
+                                SHIELDED_TX_VERSION_MOFN_MINT,
+                                SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM};
+    for (size_t i = 0; i < sizeof(nEraVersions) / sizeof(nEraVersions[0]); ++i)
+    {
+        Candidate cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+        CTransaction tx = spendShape;
+        tx.nVersion = nEraVersions[i];
+        tx.nTime = cb.block.nTime;
+        cb.block.vtx.push_back(tx);
+        BOOST_REQUIRE(SealCandidate(cb));
+        ExpectBlockReason(ConnectAndRollBack(cb), kFCMPEra,
+                          strprintf("a block carrying a version-%d shielded spend",
+                                    nEraVersions[i]));
+    }
+
+    // The version leg. One version below the floor, same spend vector: refused
+    // for its own reasons, never with this one.
+    {
+        Candidate cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+        CTransaction tx = spendShape;
+        tx.nVersion = SHIELDED_TX_VERSION_FCMP - 1;
+        tx.nTime = cb.block.nTime;
+        cb.block.vtx.push_back(tx);
+        BOOST_REQUIRE(SealCandidate(cb));
+        ConnectOutcome out = ConnectAndRollBack(cb);
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kFCMPEra),
+            "the rule fired below the FCMP version floor, so the arms above are "
+            "the fixture and not the rule; captured: " + Excerpt(out.strLog));
+    }
+
+    // The emptiness leg, at the FCMP version. This is the vNext envelope's shape
+    // too: a version at or above the floor carrying no shielded spend.
+    {
+        Candidate cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+        CTransaction tx = spendShape;
+        tx.nVersion = SHIELDED_TX_VERSION_FCMP;
+        tx.nTime = cb.block.nTime;
+        tx.vShieldedSpend.clear();
+        cb.block.vtx.push_back(tx);
+        BOOST_REQUIRE(SealCandidate(cb));
+        ConnectOutcome out = ConnectAndRollBack(cb);
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kFCMPEra),
+            "the rule fired on a transaction carrying no shielded spend, so it "
+            "covers the vNext envelope as well; captured: " + Excerpt(out.strLog));
+    }
+
+    // The same, at the vNext version itself.
+    {
+        Candidate cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+        CTransaction tx = spendShape;
+        tx.nVersion = SHIELDED_TX_VERSION_DSP;
+        tx.nTime = cb.block.nTime;
+        tx.vShieldedSpend.clear();
+        cb.block.vtx.push_back(tx);
+        BOOST_REQUIRE(SealCandidate(cb));
+        ConnectOutcome out = ConnectAndRollBack(cb);
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kFCMPEra),
+            "the rule fired on the vNext envelope; captured: " + Excerpt(out.strLog));
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // R-MASK-014: a coinbase IV5 payload spends nothing, charges no fee, balance = fee sum.
