@@ -146,57 +146,6 @@ CTransaction BuildReclaimTx()
 
 BOOST_AUTO_TEST_SUITE(fcmp_root_tests)
 
-BOOST_AUTO_TEST_CASE(finalized_epoch_root_policy_rejects_wrong_stale_missing_roots)
-{
-    const uint256 hashFinalizedRoot(111111);
-    const uint256 hashWrongRoot(222222);
-    const uint256 hashStaleRoot(333333);
-    std::string strError;
-
-    CTransaction valid = BuildFCMPSpendTx(hashFinalizedRoot);
-    BOOST_CHECK(CheckFCMPSpendRoots(valid,
-                                    FORK_HEIGHT_EPOCH_ROOT_FCMP,
-                                    hashFinalizedRoot,
-                                    strError));
-
-    CTransaction wrong = BuildFCMPSpendTx(hashWrongRoot);
-    strError.clear();
-    BOOST_CHECK(!CheckFCMPSpendRoots(wrong,
-                                     FORK_HEIGHT_EPOCH_ROOT_FCMP,
-                                     hashFinalizedRoot,
-                                     strError));
-    BOOST_CHECK(strError.find("does not match finalized epoch root") != std::string::npos);
-
-    CTransaction stale = BuildFCMPSpendTx(hashStaleRoot);
-    strError.clear();
-    BOOST_CHECK(!CheckFCMPSpendRoots(stale,
-                                     FORK_HEIGHT_EPOCH_ROOT_FCMP + 1,
-                                     hashFinalizedRoot,
-                                     strError));
-
-    CTransaction missing = BuildFCMPSpendTx(uint256(0));
-    strError.clear();
-    BOOST_CHECK(!CheckFCMPSpendRoots(missing,
-                                     FORK_HEIGHT_EPOCH_ROOT_FCMP,
-                                     hashFinalizedRoot,
-                                     strError));
-
-    CTransaction preForkMutable = BuildFCMPSpendTx(hashWrongRoot);
-    strError.clear();
-    BOOST_CHECK(CheckFCMPSpendRoots(preForkMutable,
-                                    FORK_HEIGHT_EPOCH_ROOT_FCMP - 1,
-                                    hashFinalizedRoot,
-                                    strError));
-
-    CTransaction noSpend;
-    noSpend.nVersion = SHIELDED_TX_VERSION_FCMP;
-    strError.clear();
-    BOOST_CHECK(CheckFCMPSpendRoots(noSpend,
-                                    FORK_HEIGHT_EPOCH_ROOT_FCMP,
-                                    hashFinalizedRoot,
-                                    strError));
-}
-
 BOOST_AUTO_TEST_CASE(v5_unbound_membership_is_stopped_at_public_relay_policy)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -243,17 +192,9 @@ BOOST_AUTO_TEST_CASE(v5_unbound_membership_is_stopped_at_public_relay_policy)
     spend.nullifier = uint256(0);
     tx.vShieldedSpend.push_back(spend);
 
-    std::string rootError;
-    BOOST_REQUIRE(CheckFCMPSpendRoots(tx,
-                                     FORK_HEIGHT_EPOCH_ROOT_FCMP,
-                                     unrelatedTree.GetRoot(),
-                                     rootError));
-
-    // Matching the root field in the transaction is only envelope equality. The
-    // proof itself establishes no membership, so the verifier rejects it for the
-    // unrelated tree at any height, gate or no gate.
-    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), proof,
-                                 suppliedLeaf, 0 /* below every gate */));
+    // Matching the root field in the transaction is only envelope equality; no
+    // membership statement survives in this envelope. What refuses it, and in
+    // what order, is what the rest of this case measures.
 
     // Confirm that nDoS is a reliable sentinel for the next validation stage:
     // an isolated context-free check sees the intentionally zero nullifier.

@@ -1922,7 +1922,7 @@ public:
      */
     bool ConnectInputs(CTxDB& txdb, MapPrevTx inputs,
                        std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true, bool fSkipFCMP = false,
+                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true,
                        bool fValidatedCoinstake = false,
                        bool fAnonPrevalidated = false,
                        int nAnonCandidateHeight = -1,
@@ -2105,11 +2105,6 @@ public:
 
 
 
-/** Validate shielded spends against the FCMP root required at nBlockHeight. */
-bool CheckFCMPSpendRoots(const CTransaction& tx,
-                         int nBlockHeight,
-                         const uint256& hashExpectedRoot,
-                         std::string& strErrorOut);
 
 
 

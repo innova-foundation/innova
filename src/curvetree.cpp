@@ -681,33 +681,6 @@ bool CCurveTree::RebuildParentNodes()
     return true;
 }
 
-// The path-proof layer is deleted. The envelope still deserializes so
-// historical transactions and blocks parse, but nothing can establish
-// membership from it, so it is never accepted on any network at any height.
-bool VerifyFCMPProof(const CCurveTreeNode& root,
-                      const CFCMPProof& proof,
-                      const CPedersenCommitment& cv,
-                      int nEvalHeight)
-{
-    return false;
-}
-
-bool BatchVerifyFCMPProofs(const CCurveTreeNode& root,
-                            const std::vector<CFCMPProof>& vProofs,
-                            const std::vector<CPedersenCommitment>& vCommitments,
-                            int nEvalHeight)
-{
-    if (vProofs.size() != vCommitments.size())
-        return false;
-
-    for (size_t i = 0; i < vProofs.size(); i++)
-    {
-        if (!VerifyFCMPProof(root, vProofs[i], vCommitments[i], nEvalHeight))
-            return false;
-    }
-    return true;
-}
-
 int64_t CCurveTree::FindLeafIndex(const CPedersenCommitment& cv) const
 {
     if (vLevels.empty() || cv.IsNull())

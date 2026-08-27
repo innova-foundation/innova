@@ -180,7 +180,7 @@ Outcome RunConnectInputs(CTransaction& tx, const CBlockIndex* pindex)
     LogCapture capture;
     out.fAccepted = tx.ConnectInputs(txdb, mapInputs, mapTestPool,
                                      CDiskTxPos(1, 1, 1), pindex, true, false,
-                                     STANDARD_SCRIPT_VERIFY_FLAGS, true, true);
+                                     STANDARD_SCRIPT_VERIFY_FLAGS, true);
     out.strLog = capture.Release();
     return out;
 }
@@ -790,18 +790,7 @@ BOOST_AUTO_TEST_CASE(the_iv5_seal_is_mirrored_on_the_block_connection_path)
 }
 
 // ---------------------------------------------------------------------------
-// R-SEAL-003: private finality votes, certificates carrying private weight, and
-// tally shares are rejected on every non-regtest network at every height.
-//
-// The predicate is two legs joined by "or" -- the legacy-privacy policy, which
-// is true off regtest, and Boundary A, which is true on regtest above the
-// quarantine height. Each is asserted with the other false, and each object is
-// first shown to clear the seal on regtest below Boundary A: the object then
-// fails on its own merits with a different reason, which is what makes the
-// refusals above attributable to the seal rather than to the object.
-//
-// Nothing is disabled anywhere. The seal is read exactly as it ships; only the
-// network and the context height move.
+// R-SEAL-003: private votes refused everywhere; private-weight certs off regtest and above A.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
@@ -812,7 +801,7 @@ BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
     LOCK(cs_main);
 
     const char* kVoteSeal =
-        "legacy private-finality proofs are disabled pending privacy vNext";
+        "legacy private-finality proofs have no verifiable membership and are permanently invalid";
     const char* kShareSeal =
         "legacy private tally shares are disabled pending privacy vNext";
     const char* kCertSeal =
@@ -823,22 +812,33 @@ BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
     std::string strWhy;
 
     // -- the vote --------------------------------------------------------------
+    // Regtest below Boundary A: the vote rule is unconditional, so it is refused here too.
     guard.SelectRegtest();
     const int nOpenHeight = FORK_HEIGHT_DAG + 1;
     BOOST_REQUIRE(!IsLegacyPrivacyPolicyDisabled());
     BOOST_REQUIRE(!IsBoundaryAActiveAtHeight(nOpenHeight));
     {
         CFinalityVote vote = MakePrivateVote(nOpenHeight);
-        BOOST_REQUIRE_MESSAGE(
-            !tracker.CheckVote(vote, txdb, &strWhy,
-                               CFinalityVoteContext::ChainHeight(nOpenHeight), NULL),
-            "the control vote was accepted; it is meant to be refused further down");
-        BOOST_CHECK_MESSAGE(strWhy != kVoteSeal,
-            "the seal fired on regtest below Boundary A, so the arms below prove "
-            "nothing about the network: " + strWhy);
+        BOOST_CHECK(!tracker.CheckVote(vote, txdb, &strWhy,
+                                       CFinalityVoteContext::ChainHeight(nOpenHeight), NULL));
+        BOOST_CHECK_EQUAL(strWhy, kVoteSeal);
     }
 
-    // Regtest above the quarantine height: the Boundary-A leg, alone.
+    // The same object with a transparent proof mode. It is refused for its own
+    // reasons and never with this one, so the refusals here are the private
+    // encoding and not the fixture.
+    {
+        CFinalityVote vote = MakePrivateVote(nOpenHeight);
+        vote.nProofMode = FINALITY_PROOF_TRANSPARENT;
+        vote.privateProof.nProofMode = FINALITY_PROOF_TRANSPARENT;
+        BOOST_REQUIRE(!vote.IsPrivate());
+        BOOST_CHECK(!tracker.CheckVote(vote, txdb, &strWhy,
+                                       CFinalityVoteContext::ChainHeight(nOpenHeight), NULL));
+        BOOST_CHECK_MESSAGE(strWhy != kVoteSeal,
+            "a transparent vote was refused by the private-vote rule: " + strWhy);
+    }
+
+    // Regtest above the quarantine height, and both public networks.
     {
         const int nSealed = FORK_HEIGHT_BOUNDARY_A;
         BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nSealed));
@@ -848,7 +848,6 @@ BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
         BOOST_CHECK_EQUAL(strWhy, kVoteSeal);
     }
 
-    // Mainnet and testnet: the policy leg, at a height below every boundary.
     for (int nPass = 0; nPass < 2; ++nPass)
     {
         if (nPass == 0)
