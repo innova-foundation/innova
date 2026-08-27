@@ -1382,25 +1382,7 @@ BOOST_AUTO_TEST_CASE(the_mutable_curve_tree_window_is_where_the_ladder_puts_it)
 
 
 // ---------------------------------------------------------------------------
-// R-SH-004, the half of it that can execute.
-//
-// The rule says a shielded transaction may be the coinstake only when its
-// version is the NullStake generation permitted at that height. Two clauses
-// enforce that and only one of them can run.
-//
-//   version set   CTransaction::CheckTransaction refuses a coinstake under any
-//                 shielded version outside {2003, 2004, 2005}. Covered here.
-//   height window CBlock::ConnectBlock refuses a permitted version outside its
-//                 own generation's height range. NOT covered, and not coverable:
-//                 the only version whose branch and window disagree is 2003 at
-//                 or above the V2 fork, that branch requires a shielded spend,
-//                 and a spend's anchor must be MIN_SHIELDED_SPEND_DEPTH blocks
-//                 deep while proof-of-stake blocks stop connecting at the DAG
-//                 gate -- one block sooner than the earliest anchor can age.
-//                 The arithmetic is asserted below so the day a gate moves this
-//                 case says so.
-//
-// No covering edge rests on this case: half a rule tested is not the rule.
+// R-SH-004: a coinstake-shaped tx with legacy shielded version outside 2003-2005 is invalid.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_shielded_coinstake_is_refused_outside_the_nullstake_versions)
