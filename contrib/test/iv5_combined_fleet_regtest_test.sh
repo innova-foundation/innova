@@ -651,6 +651,264 @@ except Exception: pass
 
 block_tx_count() { jlen "$(block_json "$1" "$2")" tx; }
 
+# ------------------------------------------------------------------
+# Pool accounting identity: ConnectBlock moves the pool by (balance - fee) of every IV5
+# tx, coinbase included, and nothing else. Both terms are read from serialized bytes.
+
+# INN decimal to whole satoshi, so the comparisons below are exact rather than a
+# float tolerance a one-satoshi imbalance would slip through.
+to_sat() { python3 -c "import decimal, sys; print(int(decimal.Decimal(sys.argv[1]).scaleb(8)))" "$1" 2>/dev/null; }
+
+IV5_TERMS_READER='
+import sys
+
+MARKER = bytes([0xff]) + b"IV5P"
+IV5_TX_VERSION = 2008
+# The payload prefix is fixed width up to the two value fields: schema(2),
+# operation, profile, authorization, mask, finality object, network, reserved,
+# genesis(32), parameter digest(32), finalized root(32), tree size(8).
+VB_OFFSET = 113
+FEE_OFFSET = 121
+
+
+def compact(b, o):
+    v = b[o]
+    o += 1
+    if v < 253:
+        return v, o
+    if v == 253:
+        return int.from_bytes(b[o:o + 2], "little"), o + 2
+    if v == 254:
+        return int.from_bytes(b[o:o + 4], "little"), o + 4
+    return int.from_bytes(b[o:o + 8], "little"), o + 8
+
+
+def read_tx(raw):
+    b = bytes.fromhex(raw)
+    version = int.from_bytes(b[0:4], "little")
+    o = 8
+    n, o = compact(b, o)
+    for _ in range(n):
+        o += 36
+        length, o = compact(b, o)
+        o += length + 4
+    vouts, o = compact(b, o)
+    for _ in range(vouts):
+        o += 8
+        length, o = compact(b, o)
+        o += length
+    o += 4
+    if version != IV5_TX_VERSION:
+        return None, vouts
+    if b[o:o + 5] != MARKER:
+        raise ValueError("no IV5 envelope marker at offset %d" % o)
+    o += 7
+    size, o = compact(b, o)
+    payload = b[o:o + size]
+    if len(payload) != size:
+        raise ValueError("the envelope declares %d payload bytes and carries %d"
+                         % (size, len(payload)))
+    # A short payload would read past its end and yield zero for both value fields
+    # rather than fail, which is the one way this reader could be quietly wrong.
+    if size < FEE_OFFSET + 8:
+        raise ValueError("a %d-byte payload is shorter than its own value fields" % size)
+    return {
+        "size": size,
+        "operation": payload[2],
+        "mask": payload[5],
+        "vb": int.from_bytes(payload[VB_OFFSET:VB_OFFSET + 8], "little", signed=True),
+        "fee": int.from_bytes(payload[FEE_OFFSET:FEE_OFFSET + 8], "little"),
+    }, vouts
+
+
+total = 0
+coinbase_term = 0
+iv5_rows = 0
+duplicates = 0
+fee_rows = 0
+note_rows = 0
+max_vouts = 0
+min_vouts = 0
+malformed = 0
+seen = set()
+detail = []
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) != 3:
+        if line.strip():
+            malformed += 1
+        continue
+    role, txid, raw = parts
+    if txid in seen:
+        duplicates += 1
+        continue
+    seen.add(txid)
+    try:
+        record, vouts = read_tx(raw)
+    except Exception as error:
+        sys.stdout.write("READER-ERROR %s %s\n" % (txid[:16], error))
+        sys.exit(1)
+    if role == "coinbase":
+        if vouts > max_vouts:
+            max_vouts = vouts
+        if min_vouts == 0 or vouts < min_vouts:
+            min_vouts = vouts
+    if record is None:
+        continue
+    iv5_rows += 1
+    delta = record["vb"] - record["fee"]
+    total += delta
+    if role == "coinbase":
+        coinbase_term += delta
+        if record["vb"] > 0:
+            note_rows += 1
+    elif record["fee"] > 0:
+        fee_rows += 1
+    detail.append("%s op=%d mask=%d size=%d vb=%d fee=%d"
+                  % (role, record["operation"], record["mask"], record["size"],
+                     record["vb"], record["fee"]))
+sys.stdout.write("%d %d %d %d %d %d %d %d %d %d\n"
+                 % (total, coinbase_term, total - coinbase_term, iv5_rows,
+                    duplicates, fee_rows, note_rows, max_vouts, min_vouts,
+                    malformed))
+for row in detail:
+    sys.stdout.write("# " + row + "\n")
+'
+
+# Cross-check the reader: payload length and mask from the bytes must equal the
+# node's own parse.
+assert_reader_agrees() {
+    local label="$1" node="$2" txid="$3" want="$4"
+    local raw parsed size mask json rpc_size rpc_mask
+    raw="$(rpc "$node" getrawtransaction "$txid" 2>/dev/null | tr -d '"[:space:]')"
+    parsed="$(printf "tx %s %s\n" "$txid" "$raw" | python3 -c "$IV5_TERMS_READER" 2>&1 | tail -1)"
+    size="$(printf '%s\n' "$parsed" | sed -n 's/.* size=\([0-9]*\) .*/\1/p')"
+    mask="$(printf '%s\n' "$parsed" | sed -n 's/.* mask=\([0-9]*\) .*/\1/p')"
+    json="$(rpc "$node" getrawtransaction "$txid" 1 2>/dev/null)"
+    rpc_size="$(jget2 "$json" privacy_vnext payload_size)"
+    rpc_mask="$(jget2 "$json" privacy_vnext disclosure_mask)"
+    if [ -z "$size" ] || [ "$size" != "$rpc_size" ] || [ "$mask" != "$rpc_mask" ]; then
+        fail "$label: the byte reader reads size='$size' mask='$mask' where the node reports size='$rpc_size' mask='$rpc_mask'"
+        return 1
+    fi
+    if [ "$mask" = "$want" ]; then
+        success "$label: the mask byte of the confirmed transaction is $mask, and the reader and the node agree on a $size-byte payload"
+        return 0
+    fi
+    fail "$label: the confirmed transaction's own bytes declare mask $mask, not the $want that was asked for"
+    return 1
+}
+
+# Every transaction the fleet connected in (h1, h2], as "role txid rawhex" lines.
+window_raw_txs() {
+    local node="$1" h1="$2" h2="$3" h bh list role txid raw
+    for ((h = h1 + 1; h <= h2; h++)); do
+        bh="$(block_hash "$node" "$h")"
+        [ ${#bh} -eq 64 ] || return 1
+        list="$(rpc "$node" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: txs = json.load(sys.stdin)["tx"]
+except Exception: sys.exit(1)
+for i, t in enumerate(txs): print(("coinbase" if i == 0 else "tx") + " " + t)
+')"
+        [ -n "$list" ] || return 1
+        while read -r role txid; do
+            [ ${#txid} -eq 64 ] || return 1
+            raw="$(rpc "$node" getrawtransaction "$txid" 2>/dev/null | tr -d '"[:space:]')"
+            [ ${#raw} -ge 20 ] || return 1
+            printf "%s %s %s\n" "$role" "$txid" "$raw"
+        done <<< "$list"
+    done
+}
+
+# The window sum and the counts that say whether it measured anything.
+WINDOW_TOTAL=0; WINDOW_COINBASE=0; WINDOW_NONCOINBASE=0; WINDOW_IV5=0
+WINDOW_DUPS=0; WINDOW_FEEROWS=0; WINDOW_NOTEROWS=0; WINDOW_MAXVOUTS=0
+WINDOW_MINVOUTS=0; WINDOW_MALFORMED=0; WINDOW_DETAIL=""
+window_pool_terms() {
+    local node="$1" h1="$2" h2="$3" out first
+    out="$(window_raw_txs "$node" "$h1" "$h2" | python3 -c "$IV5_TERMS_READER" 2>&1)" || {
+        WINDOW_DETAIL="$out"
+        return 1
+    }
+    first="$(printf '%s\n' "$out" | head -1)"
+    case "$first" in
+        READER-ERROR*) WINDOW_DETAIL="$first"; return 1 ;;
+    esac
+    read -r WINDOW_TOTAL WINDOW_COINBASE WINDOW_NONCOINBASE WINDOW_IV5 \
+            WINDOW_DUPS WINDOW_FEEROWS WINDOW_NOTEROWS WINDOW_MAXVOUTS \
+            WINDOW_MINVOUTS WINDOW_MALFORMED <<< "$first"
+    is_int "${WINDOW_TOTAL:-x}" || { WINDOW_DETAIL="$first"; return 1; }
+    WINDOW_DETAIL="$(printf '%s\n' "$out" | tail -n +2 | tr '\n' ';')"
+    return 0
+}
+
+#   pool(h2) - pool(h1) == sum over connected IV5 payloads of (balance - fee)
+# Controls: dropping the fee-note term or shifting the sum by one satoshi must break it.
+POOL_WINDOWS_CHECKED=0
+assert_pool_conserved_over_window() {
+    local label="$1" node="$2" h1="$3" h2="$4" before="$5" after="$6"
+    local before_sat after_sat delta
+    before_sat="$(to_sat "$before")"; after_sat="$(to_sat "$after")"
+    if ! is_int "${before_sat:-x}" || ! is_int "${after_sat:-x}"; then
+        fail "$label: the pool balance could not be read as satoshi ($before -> $after)"
+        return 1
+    fi
+    delta=$(( after_sat - before_sat ))
+    if ! window_pool_terms "$node" "$h1" "$h2"; then
+        fail "$label: the window ($h1, $h2] could not be read: $WINDOW_DETAIL"
+        return 1
+    fi
+
+    # Positive controls first. Every one of these can be false while the
+    # equality below still holds, and each of them makes it worth nothing.
+    if [ "$WINDOW_MALFORMED" -ne 0 ]; then
+        fail "$label: $WINDOW_MALFORMED row(s) in ($h1, $h2] could not be read as a transaction; the sum is missing a term"
+        return 1
+    fi
+    if [ "$WINDOW_DUPS" -ne 0 ]; then
+        fail "$label: $WINDOW_DUPS transaction(s) appear twice in ($h1, $h2]; the sum would double-count a DAG-merged payload"
+        return 1
+    fi
+    if [ "$WINDOW_IV5" -lt 2 ]; then
+        fail "$label: the window carries $WINDOW_IV5 IV5 payload(s); it cannot show a fee leaving and returning"
+        return 1
+    fi
+    if [ "$WINDOW_FEEROWS" -lt 1 ] || [ "$WINDOW_NOTEROWS" -lt 1 ]; then
+        fail "$label: the window carries $WINDOW_FEEROWS fee-paying payload(s) and $WINDOW_NOTEROWS crediting coinbase note(s); both are needed"
+        return 1
+    fi
+    if [ "$WINDOW_COINBASE" -eq 0 ]; then
+        fail "$label: the coinbase notes in the window sum to zero, so dropping them could not be detected"
+        return 1
+    fi
+
+    if [ "$delta" -eq "$WINDOW_TOTAL" ]; then
+        success "$label: the pool moved $delta satoshi over ($h1, $h2] and the payloads it connected declare $WINDOW_TOTAL"
+    else
+        fail "$label: the pool moved $delta satoshi over ($h1, $h2] against $WINDOW_TOTAL declared (coinbase $WINDOW_COINBASE, rest $WINDOW_NONCOINBASE) [$WINDOW_DETAIL]"
+        return 1
+    fi
+
+    # Negative controls: drop the coinbase fee-note term; shift the sum by one
+    # satoshi. Both must break the equality.
+    if [ "$delta" -ne "$WINDOW_NONCOINBASE" ]; then
+        success "$label: dropping the coinbase fee-note term breaks the identity ($WINDOW_NONCOINBASE against $delta), so that term is load-bearing"
+    else
+        fail "THE HARNESS CANNOT FAIL: $label: the identity survives dropping the coinbase fee-note term"
+        return 1
+    fi
+    if [ "$delta" -ne $(( WINDOW_TOTAL + 1 )) ]; then
+        success "$label: a one-satoshi imbalance is detected ($(( WINDOW_TOTAL + 1 )) against $delta)"
+    else
+        fail "THE HARNESS CANNOT FAIL: $label: a one-satoshi imbalance is not detected"
+        return 1
+    fi
+
+    POOL_WINDOWS_CHECKED=$((POOL_WINDOWS_CHECKED + 1))
+    return 0
+}
+
 # Tagged coinbase envelopes, one scriptPubKey hex per line. An envelope is
 # OP_RETURN <tag || object>; the tag follows the push opcode.
 tagged_scripts() {
@@ -1937,13 +2195,21 @@ MASK_CONSERVED=0
 disclosed_transfer() {
     local mask="$1" want_sender="$2" want_receiver="$3" want_amount="$4"
     local addr result txid declared target block h raw pool_before pool_after
+    local h_before h_after
 
     addr="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
     if [ ${#addr} -lt 20 ]; then
         fail "mask $mask: z_getnewiv5address failed"
         return 1
     fi
+    # The height the opening reading belongs to. Nothing mines between the two
+    # calls, and the second read of it says so rather than assuming it.
+    h_before="$(height 0)"
     pool_before="$(pool_value 0)"
+    if [ "$(height 0)" != "$h_before" ]; then
+        fail "mask $mask: the tip moved while the opening pool balance was read"
+        return 1
+    fi
     result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
     txid="$(jget "$result" txid)"
     if [ ${#txid} -ne 64 ]; then
@@ -1992,16 +2258,30 @@ disclosed_transfer() {
         fail "mask $mask: leaked transparent value"
     fi
 
-    # Conservation is measured once, on the first mask, because it needs the
-    # transfer to be the only transaction in its block and every later mask lands
-    # in a chain that is also carrying votes and settlements.
     pool_after="$(pool_value 0)"
+    h_after="$(height 0)"
+
+    # The mask this transaction declares, taken off its own serialized bytes
+    # rather than an RPC field that echoes back what the wallet was asked for.
+    assert_reader_agrees "mask $mask" 0 "$txid" "$mask"
+
+    # The block-local comparison reads only while the transfer is alone in its
+    # block, which holds for the first mask and for no later one.
     if [ "$MASK_CONSERVED" -eq 0 ]; then
         assert_transfer_conserved "mask $mask" "$h" "$pool_before" "$pool_after"
         MASK_CONSERVED=1
     fi
+
+    # The window form sums declared payloads only; settlements, votes and plain
+    # blocks declare nothing.
+    assert_pool_conserved_over_window "mask $mask" 0 "$h_before" "$h_after" \
+        "$pool_before" "$pool_after" || MASK_WINDOWS_FAILED=$((MASK_WINDOWS_FAILED + 1))
     return 0
 }
+
+MASK_WINDOWS_FAILED=0
+SWEEP_H_BEFORE="$(height 0)"
+SWEEP_POOL_BEFORE="$(pool_value 0)"
 
 for MASK in 0 1 2 3 4 5 6 7; do
     IFS='|' read -r WS WR WA <<< "$(mask_bit_flags "$MASK")"
@@ -2014,6 +2294,55 @@ if [ "$MASKS_EXERCISED" -eq 8 ]; then
     success "all eight disclosure masks confirmed on chain and converged fleet-wide"
 else
     fail "only $MASKS_EXERCISED of 8 disclosure masks were confirmed on chain"
+fi
+
+SWEEP_H_AFTER="$(height 0)"
+SWEEP_POOL_AFTER="$(pool_value 0)"
+
+if [ "$POOL_WINDOWS_CHECKED" -eq 8 ] && [ "$MASK_WINDOWS_FAILED" -eq 0 ]; then
+    success "value conservation is proved for all eight masks, each over a window free to carry anything"
+else
+    fail "value conservation was proved for $POOL_WINDOWS_CHECKED of 8 masks ($MASK_WINDOWS_FAILED window(s) failed)"
+fi
+
+# The epoch settlement is the transparent movement the identity has to be blind
+# to, so the measured span has to cover one.
+MASK_SETTLEMENT_HEIGHT=$(( MASK_HEIGHT + 24 ))
+if [ "$MASK_SETTLEMENT_HEIGHT" -gt "$SWEEP_H_BEFORE" ] && \
+   [ "$MASK_SETTLEMENT_HEIGHT" -le "$SWEEP_H_AFTER" ]; then
+    success "the measured span covers the epoch $MASK_EPOCH settlement height $MASK_SETTLEMENT_HEIGHT"
+else
+    fail "the mask sweep spans ($SWEEP_H_BEFORE, $SWEEP_H_AFTER], which does not cover the epoch $MASK_EPOCH settlement height $MASK_SETTLEMENT_HEIGHT"
+fi
+
+# The settlement reward is coin-age truncated to whole days; a 300-second
+# regtest epoch accrues under a coin-day, so the reward is zero here. Reported,
+# not assumed.
+SETTLE_VOUTS="$(jlen "$(rpc 0 getrawtransaction "$(coinbase_txid 0 "$MASK_SETTLEMENT_HEIGHT")" 1 2>/dev/null)" vout)"
+SETTLE_PREV_VOUTS="$(jlen "$(rpc 0 getrawtransaction "$(coinbase_txid 0 $(( MASK_SETTLEMENT_HEIGHT - 1 )))" 1 2>/dev/null)" vout)"
+if is_int "${SETTLE_VOUTS:-x}" && is_int "${SETTLE_PREV_VOUTS:-x}" && \
+   [ "$SETTLE_VOUTS" -gt "$SETTLE_PREV_VOUTS" ]; then
+    success "the settlement at $MASK_SETTLEMENT_HEIGHT pays $(( SETTLE_VOUTS - SETTLE_PREV_VOUTS )) output(s) the block before it does not, so a settlement payout is live inside the measured span"
+else
+    warn "the epoch $MASK_EPOCH settlement at $MASK_SETTLEMENT_HEIGHT carries $SETTLE_VOUTS coinbase outputs against $SETTLE_PREV_VOUTS before it: the finality reward truncates to zero at this vote weight, so no run of this harness exercises a settlement that pays"
+fi
+
+# And the whole sweep as one window: eight transfers, eight coinbase notes, the
+# settlement and every plain block between them, against a single pool movement.
+assert_pool_conserved_over_window "the mask sweep" 0 "$SWEEP_H_BEFORE" \
+    "$SWEEP_H_AFTER" "$SWEEP_POOL_BEFORE" "$SWEEP_POOL_AFTER"
+if [ "$WINDOW_IV5" -ge 16 ]; then
+    success "the sweep window carries $WINDOW_IV5 IV5 payloads, the eight transfers and their coinbase notes"
+else
+    fail "the sweep window carries $WINDOW_IV5 IV5 payloads, fewer than the sixteen the eight masks must have produced"
+fi
+
+# A window coinbase carries extra outputs (the finality certificate) that must
+# not reach the sum.
+if [ "$WINDOW_MAXVOUTS" -gt "$WINDOW_MINVOUTS" ]; then
+    success "a coinbase in the sweep window carries $WINDOW_MAXVOUTS outputs against $WINDOW_MINVOUTS on the plainest, and the identity held across it"
+else
+    fail "every coinbase in the sweep window carries $WINDOW_MAXVOUTS outputs, so the identity was never measured against extra coinbase content"
 fi
 
 BAD_MASK="$(rpc 0 z_iv5transfer "$IV5ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
