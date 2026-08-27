@@ -517,7 +517,8 @@ BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
 
     auto CoinDaysFor = [&](int64_t nTimeDiff) -> uint64_t {
         CBigNum bnCentSecond = CBigNum(nValueIn) * nTimeDiff / CENT;
-        return (bnCentSecond * CENT / COIN / (24 * 60 * 60)).getuint64();
+        CBigNum bnCoinDay = bnCentSecond * CENT / COIN / (24 * 60 * 60);
+        return bnCoinDay.getuint64();
     };
 
     BOOST_CHECK_MESSAGE(vCoinAge[0] == CoinDaysFor(vAges[0]),
