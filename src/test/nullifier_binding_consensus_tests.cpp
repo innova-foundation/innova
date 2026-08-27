@@ -234,6 +234,21 @@ Outcome RunConnectInputs(CTransaction& tx, const CBlockIndex* pindex)
     return out;
 }
 
+// The relay mirror of the site above. An isolated pool so an accepted arm cannot
+// leak into any other case, and fCheckInputs off so the reason under test is
+// reached without this fixture's inputs having to resolve.
+Outcome RunMempoolAccept(CTransaction& tx)
+{
+    Outcome out;
+    CTxDB txdb("r");
+    CTxMemPool isolatedPool;
+    bool fMissingInputs = false;
+    CLogCapture capture;
+    out.fAccepted = isolatedPool.accept(txdb, tx, false, &fMissingInputs, true);
+    out.strLog = capture.Release();
+    return out;
+}
+
 bool LogHas(const std::string& strLog, const std::string& strNeedle)
 {
     return strLog.find(strNeedle) != std::string::npos;
@@ -343,6 +358,46 @@ BOOST_AUTO_TEST_CASE(the_fcmp_era_rule_dominates_the_binding_site)
             strCase + ": a nullifier-binding reason was reached, so the site is "
             "reachable again and this suite must carry the binding cases; "
             "captured: " + Excerpt(out.strLog));
+    }
+}
+
+// The relay path refuses with the same rule at or above the FCMP gate and not one block
+// below.
+BOOST_AUTO_TEST_CASE(the_fcmp_era_rule_is_mirrored_on_the_relay_path)
+{
+    NfBindTipGuard guard;
+    RequireForkWindow();
+    BOOST_REQUIRE(CZKContext::Initialize());
+    LOCK(cs_main);
+
+    const char* kRelay =
+        "CTxMemPool::accept() : shielded spend 0 FCMP-era membership is "
+        "unverifiable; the encoding is permanently invalid";
+
+    // Below the gate: the rule's height condition is false and its reason must
+    // be absent.
+    {
+        SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
+        CTransaction tx = BuildValidSpendTx(note);
+        nBestHeight = FORK_HEIGHT_FCMP_VALIDATION - 1;
+        Outcome out = RunMempoolAccept(tx);
+        BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kRelay),
+            std::string("the relay rule fired below its own height, so the arm "
+                        "below proves nothing about it; captured: ") + Excerpt(out.strLog));
+    }
+
+    // At the gate.
+    {
+        SpendNote note = MakeNote(NFBIND_NOTE_VALUE);
+        CTransaction tx = BuildValidSpendTx(note);
+        nBestHeight = guard.tip.nHeight;
+        BOOST_REQUIRE_GE(nBestHeight, FORK_HEIGHT_FCMP_VALIDATION);
+        Outcome out = RunMempoolAccept(tx);
+        BOOST_CHECK_MESSAGE(!out.fAccepted,
+            "the relay path ACCEPTED an FCMP-era shielded spend");
+        BOOST_CHECK_MESSAGE(LogHas(out.strLog, kRelay),
+            std::string("the relay path did not refuse with the FCMP-era rule; "
+                        "captured: ") + Excerpt(out.strLog));
     }
 }
 
