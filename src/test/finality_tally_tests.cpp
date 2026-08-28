@@ -605,10 +605,6 @@ BOOST_AUTO_TEST_CASE(canonical_certificate_validation_requires_exact_rebuild)
 // SOFT names one block, so it needs a strict majority: an exactly even split names none,
 // since `2W >= A` at W == A/2 would give two siblings a SOFT certificate for one epoch.
 BOOST_AUTO_TEST_CASE(an_exactly_even_split_earns_no_soft_tier)
-// SOFT is a STRICT majority, and the only input that can tell the two forms
-// apart is an exact even split. `2W >= A` would name both halves of that split
-// SOFT at once, which is two finalized blocks at one epoch.
-BOOST_AUTO_TEST_CASE(an_exact_even_split_names_no_soft_block)
 {
     ScopedFinalityRegtest network;
     const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
@@ -618,12 +614,6 @@ BOOST_AUTO_TEST_CASE(an_exact_even_split_names_no_soft_block)
 
     std::vector<CFinalityVote> votes;
     for (int i = 0; i < FINALITY_MIN_VOTERS * 2; ++i)
-    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight), nTargetHeight);
-
-    const uint256 hashLeft(0xD1A0);
-    const uint256 hashRight(0xD1B0);
-
-    for (int i = 0; i < 2; ++i)
     {
         CKey key;
         key.MakeNewKey(true);
@@ -644,10 +634,36 @@ BOOST_AUTO_TEST_CASE(an_exact_even_split_names_no_soft_block)
     BOOST_CHECK_EQUAL(cert.nTier, (int)FINALITY_TENTATIVE);
     BOOST_CHECK(cert.nTier != (int)FINALITY_SOFT);
     BOOST_CHECK(cert.nTier != (int)FINALITY_HARD);
+}
+
+// SOFT is a STRICT majority, and the only input that can tell the two forms
+// apart is an exact even split. `2W >= A` would name both halves of that split
+// SOFT at once, which is two finalized blocks at one epoch.
+BOOST_AUTO_TEST_CASE(an_exact_even_split_names_no_soft_block)
+{
+    ScopedFinalityRegtest network;
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight), nTargetHeight);
+
+    const uint256 hashLeft(0xD1A0);
+    const uint256 hashRight(0xD1B0);
+
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < 2; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
             key, nEpoch, nTargetHeight, i == 0 ? hashLeft : hashRight);
+        vote.MarkCanonicalEnvelope();
+        votes.push_back(vote);
+    }
     BOOST_REQUIRE_EQUAL(votes[0].nVoteWeight, votes[1].nVoteWeight);
 
     CFinalityTallyCertificate split;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
         BuildCanonicalTransparentFinalityCertificate(votes, split, &error), error);
 
     // Exactly half the active weight on the winner: 2W == A.
@@ -664,6 +680,7 @@ BOOST_AUTO_TEST_CASE(an_exact_even_split_names_no_soft_block)
     // the tier is not simply unreachable for this vote set.
     votes[0].nVoteWeight += 1;
     CFinalityTallyCertificate majority;
+    BOOST_REQUIRE_MESSAGE(
         BuildCanonicalTransparentFinalityCertificate(votes, majority, &error), error);
     BOOST_CHECK(majority.hashBlock == hashLeft);
     BOOST_CHECK_EQUAL(majority.nTier, (int)FINALITY_SOFT);

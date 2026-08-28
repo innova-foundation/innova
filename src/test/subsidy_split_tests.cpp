@@ -242,11 +242,6 @@ BOOST_AUTO_TEST_CASE(reserve_is_the_declared_basis_point_share_of_issuance)
 
     const int vOffsets[] = { 1, 500, 12345, 250000 };
     for (int nOffset : vOffsets)
-// Recomputes the share from FINALITY_RESERVE_BPS in a wider type and different shape than
-// BpsShare, so a rate change cannot cancel on both sides.
-BOOST_AUTO_TEST_CASE(reserve_is_exactly_the_declared_basis_point_share)
-
-    for (int nOffset : { 0, 1, 500, 12345, 300000, 1900000 })
     {
         const int nHeight = GetForkHeightDAG() + nOffset;
         const int64_t nSchedule = GetBlockSubsidySchedule(nHeight);
@@ -258,6 +253,20 @@ BOOST_AUTO_TEST_CASE(reserve_is_exactly_the_declared_basis_point_share)
 
         BOOST_CHECK(nReserve * SUBSIDY_BPS_DEN <= nExact);
         BOOST_CHECK(nReserve * SUBSIDY_BPS_DEN > nExact - SUBSIDY_BPS_DEN);
+    }
+}
+
+// Recomputes the share from FINALITY_RESERVE_BPS in a wider type and different shape than
+// BpsShare, so a rate change cannot cancel on both sides.
+BOOST_AUTO_TEST_CASE(reserve_is_exactly_the_declared_basis_point_share)
+{
+    MainnetGuard guard;
+
+    for (int nOffset : { 0, 1, 500, 12345, 300000, 1900000 })
+    {
+        const int nHeight = GetForkHeightDAG() + nOffset;
+        const int64_t nSchedule = GetBlockSubsidySchedule(nHeight);
+        BOOST_REQUIRE(nSchedule > 0);
         // One basis point has to be a nonzero number of satoshi here, or the
         // comparison has no resolution and proves nothing.
         BOOST_REQUIRE(nSchedule / SUBSIDY_BPS_DEN > 0);
@@ -353,14 +362,11 @@ BOOST_AUTO_TEST_CASE(epoch_budget_accrues_over_the_preceding_epoch_where_it_is_v
     BOOST_REQUIRE(nPreceding != nContaining);
     BOOST_REQUIRE(nPreceding != nBefore);
 
-    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch, nHint), nPreceding);
-    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch + 1, nHint), nContaining);
-    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch - 1, nHint), nBefore);
-
-    // A closed sum over a height range: the hint selects nothing, so producer
-    // and validator reach the same number from the epoch number alone.
-    for (int nOtherHint : { 0, 1, nFork, nH0, nHp + 999999 })
-        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch, nOtherHint), nPreceding);
+    // A closed sum over a height range, keyed on the epoch number alone, so
+    // producer and validator reach the same number from the same input.
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch), nPreceding);
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch + 1), nContaining);
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch - 1), nBefore);
 }
 
 // Over an epoch, what blocks withheld is what the next settlement pays:

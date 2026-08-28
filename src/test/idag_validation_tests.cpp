@@ -263,9 +263,14 @@ BOOST_AUTO_TEST_CASE(equal_dag_score_above_v3_breaks_by_height_before_hash)
     mapBlockIndex.erase(hSecond);
     mapBlockIndex.erase(hFirst);
     mapBlockIndex.erase(hParent);
+    pindexBest = oldBest;
+}
+
 // At and above V3 an equal DAG score breaks on higher height first, then hash. Here the
 // lower tip holds the lower hash, so the two rules disagree.
 BOOST_AUTO_TEST_CASE(v3_equal_dag_score_breaks_by_height_before_hash)
+{
+    CBlockIndex* oldBest = pindexBest;
     BOOST_REQUIRE(g_dagManager.GetDAGTips().empty());
 
     // A block whose compact target is zero contributes no trust, which is what
@@ -294,6 +299,7 @@ BOOST_AUTO_TEST_CASE(v3_equal_dag_score_breaks_by_height_before_hash)
     root.phashBlock = &mapBlockIndex.find(hRoot)->first;
     highTip.phashBlock = &mapBlockIndex.find(hHigh)->first;
 
+    std::vector<uint256> noParents;
     std::vector<uint256> rootOnly;
     rootOnly.push_back(hRoot);
 
@@ -307,6 +313,7 @@ BOOST_AUTO_TEST_CASE(v3_equal_dag_score_breaks_by_height_before_hash)
     BOOST_REQUIRE_EQUAL(g_dagManager.GetDAGTips().size(), 2u);
     BOOST_REQUIRE(g_dagManager.ComputeDAGScore(&lowTip) == g_dagManager.ComputeDAGScore(&highTip));
 
+    CBlockIndex* selected = g_dagManager.SelectBestDAGTip();
     BOOST_CHECK(selected == &highTip);
 
     g_dagManager.RemoveBlockDAGData(hHigh);
@@ -1282,23 +1289,8 @@ BOOST_AUTO_TEST_CASE(anonymous_preimage_is_wallet_independent_and_bounded)
 }
 
 
-// R-EPV2-003. A V2-range epoch is staged inside the best-chain write batch, not
-// built when the block index is inserted. The difference is which arrivals can
-// move the canonical epoch cache: AddToBlockIndex runs for every block that
-// arrives, side branches included, while the best-chain path runs only for the
-// block that becomes the tip.
-//
-// On the ladder as configured the property holds for a stronger reason than the
-// staging branch: there is no V2-range epoch to stage. Schema V2 starts at the
-// DAG fork and schema V3 one post-DAG epoch above it, so the first epoch whose
-// range reaches V2 is [DAG, DAG+300) and its crossing block lands on V3 itself,
-// where both V2 predicates are already off. Every crossing below V3 therefore
-// completes an epoch that ends below V2, and the index path only ever owns those.
-// So this is what can honestly be executed: the index path never owns a V2-range
-// epoch, the two predicates never claim the same crossing, and the staging branch
-// they guard is unreached at the shipping gate values. The last of those is a
-// tripwire -- move V3 off the first post-DAG epoch crossing and the staging path
-// becomes live, at which point it needs a behavioural test rather than this one.
+// R-EPV2-003: V2-range epochs are staged in the best-chain batch, never at index insert.
+// No V2-range epoch exists at shipping values; if V3 moves, add a behavioural test.
 BOOST_AUTO_TEST_CASE(no_epoch_crossing_hands_a_v2_range_epoch_to_the_index_path)
 {
     const bool fOldRegTest = fRegTest;
@@ -1370,43 +1362,58 @@ BOOST_AUTO_TEST_CASE(no_epoch_crossing_hands_a_v2_range_epoch_to_the_index_path)
                             << nStagedSeen << " crossing(s)); it needs a behavioural "
                             "test of its own, because this case only says it is not "
                             "reached");
+}
+
 namespace
+{
 uint256 TestDAGParentHash(unsigned int i)
+{
     return uint256(1000 + i);
 }
 
 // Same payload layout and push encoding BuildDAGParentScript emits, with the
 // count free so a value the builder refuses can still be handed to a decoder.
 CScript MakeIDAGCommitmentScript(unsigned int nCount)
+{
     std::vector<unsigned char> vchData;
     vchData.insert(vchData.end(), DAG_PARENT_TAG, DAG_PARENT_TAG + 4);
     vchData.push_back((unsigned char)nCount);
     for (unsigned int i = 0; i < nCount; i++)
+    {
         const uint256 hash = TestDAGParentHash(i);
         const unsigned char* p = hash.begin();
         vchData.insert(vchData.end(), p, p + 32);
+    }
     CScript script;
     script << OP_RETURN << vchData;
     return script;
+}
 } // namespace
 
 // The parent cap belongs to the decoder, not to AcceptBlock: AcceptBlock only
 // ever sees the set a decoder returned, so the count check is what has to hold.
 BOOST_AUTO_TEST_CASE(dag_parent_commitment_cap_is_enforced_by_the_canonical_decoder)
+{
     const unsigned int nCap = (unsigned int)MAX_DAG_PARENTS;
 
     // At the cap the canonical decoder accepts and returns the whole set.
+    {
         const CScript script = MakeIDAGCommitmentScript(nCap);
         std::vector<uint256> vParents;
         std::string strError;
         BOOST_CHECK_EQUAL((int)DecodeCanonicalDAGParentScript(script, vParents, strError),
                           (int)DAG_PARENT_VALID);
         BOOST_CHECK_EQUAL(vParents.size(), nCap);
+    }
 
     // Past the cap, up to the widest count the one-byte field can name.
     const unsigned int vOversized[] = { nCap + 1, nCap + 2, nCap + 3, 64, 65, 255 };
     for (unsigned int nCount : vOversized)
+    {
         const CScript script = MakeIDAGCommitmentScript(nCount);
+        std::vector<uint256> vParents;
+        std::string strError;
+        BOOST_CHECK_EQUAL((int)DecodeCanonicalDAGParentScript(script, vParents, strError),
                           (int)DAG_PARENT_MALFORMED);
         BOOST_CHECK(vParents.empty());
         // Assert the count as the rejection reason: the re-encode comparison also fails on an
@@ -1421,21 +1428,27 @@ BOOST_AUTO_TEST_CASE(dag_parent_commitment_cap_is_enforced_by_the_canonical_deco
         std::string strExtractError;
         BOOST_CHECK(!ExtractCanonicalDAGParentCommitment(vScripts, vExtracted, strExtractError));
         BOOST_CHECK(vExtracted.empty());
+    }
 
     // The builder refuses to emit an oversized commitment, so a producer taking
     // the ordinary path cannot create one either.
+    {
         std::vector<uint256> vTooMany;
         for (unsigned int i = 0; i <= nCap; i++)
             vTooMany.push_back(TestDAGParentHash(i));
         BOOST_CHECK(BuildDAGParentScript(vTooMany).empty());
+    }
+}
 
 // From the POEM height a block contributes its entropy weight to chain trust,
 // not the inverse-target work value. The two are different numbers for the same
 // block, so a node still on the old form ranks branches differently.
 BOOST_AUTO_TEST_CASE(chain_trust_is_the_poem_entropy_weight_from_the_gate)
+{
     const bool fSavedRegTest = fRegTest;
     const bool fSavedTestNet = fTestNet;
     struct Restore
+    {
         bool fRegTestSaved, fTestNetSaved;
         ~Restore() { fRegTest = fRegTestSaved; fTestNet = fTestNetSaved; }
     } restore = { fSavedRegTest, fSavedTestNet };
@@ -1467,6 +1480,7 @@ BOOST_AUTO_TEST_CASE(chain_trust_is_the_poem_entropy_weight_from_the_gate)
     index.nHeight = FORK_HEIGHT_POEM - 1;
     BOOST_REQUIRE(index.nHeight < FORK_HEIGHT_DAG);
     BOOST_CHECK(index.GetBlockTrust() == nWorkValue);
+}
 
 // The pre-Boundary-A decoder reads its payload through CScript::GetOp, which
 // refuses any push above MAX_SCRIPT_ELEMENT_SIZE. Below Boundary A the parent
@@ -1474,6 +1488,7 @@ BOOST_AUTO_TEST_CASE(chain_trust_is_the_poem_entropy_weight_from_the_gate)
 // MAX_DAG_PARENTS is reached, and a commitment naming more simply decodes to
 // nothing. Pinned because the two eras do not share a ceiling.
 BOOST_AUTO_TEST_CASE(pre_boundary_a_parent_count_is_ceilinged_by_the_script_element_size)
+{
     const unsigned int nElementCeiling = (MAX_SCRIPT_ELEMENT_SIZE - 5) / 32;
     BOOST_REQUIRE(nElementCeiling < (unsigned int)MAX_DAG_PARENTS);
 
