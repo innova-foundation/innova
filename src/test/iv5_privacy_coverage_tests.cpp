@@ -1254,7 +1254,14 @@ BOOST_AUTO_TEST_CASE(a_block_whose_coinstake_is_a_nullstake_encoding_does_not_co
     const char* kNullStakeV2 = "NullStake V2 stake note membership is unverifiable";
     const char* kNullStakeV3 = "NullStake V3 stake note membership is unverifiable";
 
-    MineTo(BestIndex()->nHeight + 2);
+    // The floor is absolute, not relative to whatever height an earlier suite
+    // left. Run on its own this case starts below the V3 gate, and a fixture
+    // that cannot reach the gate aborts the whole suite -- which reports as a
+    // suite failure to anything that runs it filtered, mutation runs included.
+    int nTarget = BestIndex()->nHeight + 2;
+    if (nTarget < FORK_HEIGHT_NULLSTAKE_V3 - 1)
+        nTarget = FORK_HEIGHT_NULLSTAKE_V3 - 1;
+    MineTo(nTarget);
     BOOST_REQUIRE_GE(BestIndex()->nHeight + 1, FORK_HEIGHT_NULLSTAKE_V3);
 
     const int nStakeVersions[] = {SHIELDED_TX_VERSION_NULLSTAKE,
