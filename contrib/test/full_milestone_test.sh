@@ -1,12 +1,12 @@
 #!/bin/bash
 # Copyright (c) 2019-2026 The Innova developers
 # Full Milestone Integration Test
-# Tests ALL fork height milestones from genesis through NullStake V3
-# Runs 3 regtest nodes, mines through every fork, validates each feature
+# Runs 3 regtest nodes through every fork height up to NullStake V3 (block 7); v5 gates are not reached.
 # Author: 0xcircuitbreaker - CircuitBreaker
 
-# Don't use set -e since many tests are optional (skip on failure)
-# set -e
+# No set -e: a case whose precondition is unmet reports SKIP and the run
+# continues. A SKIP asserts nothing, so read the SKIPPED count with the exit
+# status.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -721,18 +721,24 @@ echo -e "${CYAN}SKIPPED: $SKIPPED${NC}"
 echo -e "Total: $((PASSED + FAILED + SKIPPED)) tests in ${ELAPSED}s"
 echo ""
 
-echo -e "${CYAN}Regtest Fork Heights Verified:${NC}"
+echo -e "${CYAN}Regtest fork heights this harness mines through:${NC}"
 echo "  Block 0: Genesis"
 echo "  Block 1: Cold Staking, Shielded TX, Ring Sig Deprecation"
 echo "  Block 2: DSP, NullSend, FCMP++, Lelantus Serial V2"
 echo "  Block 3: NullStake V1 (Private PoS)"
 echo "  Block 5: NullStake V2 (ZK Kernel Privacy)"
 echo "  Block 7: NullStake V3 (Private Cold Staking)"
+echo -e "${CYAN}Not reached here:${NC} POEM 9, DAG 11, DELEGSET 12, DAGKnight 13, B2C 14,"
+echo "  Boundary B 311. iv5_combined_fleet_regtest_test.sh covers those."
 
 if [ $FAILED -gt 0 ]; then
     echo -e "\n${RED}Some tests failed. Check debug.log in test directories for details.${NC}"
     exit 1
-else
-    echo -e "\n${GREEN}All tests passed!${NC}"
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+    echo -e "\n${YELLOW}$PASSED passed, $SKIPPED skipped. A skipped case asserted nothing;"
+    echo -e "this exit 0 covers the $PASSED that ran.${NC}"
     exit 0
 fi
+echo -e "\n${GREEN}All $PASSED tests passed!${NC}"
+exit 0

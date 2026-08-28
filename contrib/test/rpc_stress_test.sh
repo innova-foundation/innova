@@ -218,13 +218,6 @@ test_wallet_rpcs() {
         fail "listtransactions failed"
     fi
 
-    local winfo=$(rpc getwalletinfo 2>/dev/null || echo "")
-    if [ -n "$winfo" ] && echo "$winfo" | tr '\n' ' ' | grep -q '"walletname"\|"balance"'; then
-        success "getwalletinfo available"
-    else
-        log "getwalletinfo not available"
-    fi
-
     local privkey=$(rpc dumpprivkey "$addr" || echo "")
     if [ -n "$privkey" ] && [ ${#privkey} -ge 40 ]; then
         success "dumpprivkey works (${#privkey} chars)"
@@ -354,7 +347,7 @@ test_raw_tx_rpcs() {
         if [ -n "$rawtxdata" ]; then
             success "getrawtransaction returns data"
         else
-            log "getrawtransaction requires -txindex"
+            log "getrawtransaction returned nothing for $known_txid"
         fi
 
         local rawtxverbose=$(rpc getrawtransaction "$known_txid" 1 2>/dev/null || echo "")
