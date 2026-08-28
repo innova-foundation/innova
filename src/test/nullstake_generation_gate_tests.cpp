@@ -275,7 +275,8 @@ struct StakeCandidate
 bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
                          unsigned int nOut, int nTxVersion, StakeCandidate& out,
                          bool fB2CHiddenMofN = false,
-                         bool fNonNullKernelProof = false)
+                         bool fNonNullKernelProof = false,
+                         bool fShieldedSpend = false)
 {
     if (pindexParent == NULL || nOut >= txPrev.vout.size())
         return false;
@@ -296,6 +297,14 @@ bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
         txStake.nVersion = nTxVersion;
         if (!AttachSpendFreeShieldedBody(txStake, vchBlind))
             return false;
+        // One shielded spend, present but not proved. The block-level FCMP-era
+        // rule reads only the version and whether this vector is empty, and it
+        // runs before the transaction loop, so no verifier is reached.
+        if (fShieldedSpend)
+        {
+            txStake.vShieldedSpend.resize(1);
+            txStake.vShieldedSpend[0].nullifier = uint256(0xFC3D04);
+        }
         // Before the seal: the binding-sig hash commits to the kernel proof.
         if (fNonNullKernelProof)
             AttachNonNullKernelProof(txStake, nTxVersion);
@@ -653,6 +662,89 @@ BOOST_AUTO_TEST_CASE(the_b2c_hidden_bound_never_answers_where_the_branch_is_aliv
                             "at height " << arm.Height() << " the B2-c hidden-signer "
                             "bound decided the block, so it is reachable and "
                             "R-B2C-001 was retired wrongly; log: " << strLog);
+    }
+}
+
+// The FCMP-era rule refuses the shielded spend vector every NullStake branch
+// requires, so the membership refusals are unreachable. Heights 7 and 10 bound
+// the window where PoS still connects and all NullStake gates are open.
+BOOST_AUTO_TEST_CASE(a_nullstake_coinstake_carrying_a_shielded_spend_stops_at_the_fcmp_era_rule)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+    BOOST_REQUIRE_MESSAGE(FORK_HEIGHT_FCMP_VALIDATION == 2 && FORK_HEIGHT_NULLSTAKE == 3 &&
+                              FORK_HEIGHT_NULLSTAKE_V2 == 5 &&
+                              FORK_HEIGHT_NULLSTAKE_V3 == 7 && FORK_HEIGHT_DAG == 11,
+                          "the regtest ladder moved; heights 7 and 10 are chosen against "
+                          "the NullStake gates at 3, 5 and 7 under the DAG gate at 11, "
+                          "with the FCMP gate at 2 below all of them");
+
+    DetachedWalletGuard walletGuard;
+    MockClockGuard clockGuard;
+
+    BOOST_REQUIRE_MESSAGE(MineTo(9), "could not extend the fixture to height 9");
+    SetMockTime(GetTime() + 10 * CollateralnodePaymentWindowSeconds());
+
+    const char* kFCMPEra =
+        "carries an FCMP-era shielded spend whose membership is unverifiable";
+    const char* kPostDAG =
+        "proof-of-stake blocks are not allowed after DAG fork";
+    const char* kMembership[] = {
+        "NullStake stake note membership is unverifiable",
+        "NullStake V2 stake note membership is unverifiable",
+        "NullStake V3 stake note membership is unverifiable" };
+
+    const int vParents[] = { 6, 9 };
+    const int vVersions[] = { SHIELDED_TX_VERSION_NULLSTAKE,
+                              SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                              SHIELDED_TX_VERSION_NULLSTAKE_COLD };
+
+    for (size_t i = 0; i < ARRAYLEN(vParents); i++)
+    {
+        CBlockIndex* pindexParent = AncestorAt(vParents[i]);
+        BOOST_REQUIRE_MESSAGE(pindexParent != NULL,
+                              "no ancestor at height " << vParents[i]);
+        CTransaction txPrev;
+        unsigned int nOut = 0;
+        BOOST_REQUIRE_MESSAGE(FindFundingOutput(vParents[i], txPrev, nOut),
+                              "no unspent wallet output at or below height "
+                              << vParents[i]);
+
+        RequirePlainCoinstakeConnects(pindexParent, txPrev, nOut);
+
+        for (size_t v = 0; v < ARRAYLEN(vVersions); v++)
+        {
+            StakeCandidate arm;
+            BOOST_REQUIRE_MESSAGE(
+                BuildStakeCandidate(pindexParent, txPrev, nOut, vVersions[v], arm,
+                                    false, true, true),
+                "could not build the version " << vVersions[v]
+                << " coinstake carrying a shielded spend at height "
+                << pindexParent->nHeight + 1);
+            BOOST_REQUIRE_GE(arm.Height(), FORK_HEIGHT_NULLSTAKE_V3);
+            BOOST_REQUIRE_LT(arm.Height(), FORK_HEIGHT_DAG);
+
+            std::string strLog;
+            const CBlock::ConnectResult result = ConnectAndRollBack(arm, strLog);
+            BOOST_CHECK_MESSAGE(result == CBlock::CONNECT_RESULT_INVALID,
+                                "version " << vVersions[v] << " coinstake at height "
+                                << arm.Height() << " must be refused as consensus-invalid, "
+                                "got result " << (int)result << "; log: " << strLog);
+            BOOST_CHECK_MESSAGE(strLog.find(kFCMPEra) != std::string::npos,
+                                "version " << vVersions[v] << " coinstake at height "
+                                << arm.Height() << " was not refused by the FCMP-era rule, "
+                                "so a coinstake no longer matches it and the NullStake "
+                                "membership refusals below are what stands; log: " << strLog);
+            BOOST_CHECK_MESSAGE(strLog.find(kPostDAG) == std::string::npos,
+                                "the post-DAG rule answered at height " << arm.Height()
+                                << ", so this arm no longer reads the FCMP-era rule; log: "
+                                << strLog);
+            for (size_t m = 0; m < ARRAYLEN(kMembership); m++)
+                BOOST_CHECK_MESSAGE(strLog.find(kMembership[m]) == std::string::npos,
+                                    "a NullStake membership refusal decided the block at "
+                                    "height " << arm.Height() << ", so that branch is "
+                                    "reachable and needs its own case; log: " << strLog);
+        }
     }
 }
 
