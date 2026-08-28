@@ -226,6 +226,26 @@ bool AttachSpendFreeShieldedBody(CTransaction& tx, std::vector<unsigned char>& v
     return true;
 }
 
+// Smallest kernel proof each generation reads as non-null; placeholder bytes that
+// clear the proof-missing refusal and never reach a verifier.
+void AttachNonNullKernelProof(CTransaction& tx, int nTxVersion)
+{
+    if (nTxVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+    {
+        tx.nullstakeProof.vchProof.assign(1, 0x01);
+        return;
+    }
+    CBulletproofACProof* pProof = NULL;
+    if (nTxVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+        pProof = &tx.nullstakeProofV2.acProof;
+    else if (nTxVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+        pProof = &tx.nullstakeProofV3.acProof;
+    if (pProof == NULL)
+        return;
+    pProof->vchAI.assign(SECP256K1_POINT_SIZE, 0x02);
+    pProof->ipaProof.vchAFinal.assign(IPA_SCALAR_SIZE, 0x03);
+}
+
 // The binding signature over the finished transaction.
 bool SealShieldedBody(CTransaction& tx, const std::vector<unsigned char>& vchBlind)
 {
@@ -254,7 +274,8 @@ struct StakeCandidate
 
 bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
                          unsigned int nOut, int nTxVersion, StakeCandidate& out,
-                         bool fB2CHiddenMofN = false)
+                         bool fB2CHiddenMofN = false,
+                         bool fNonNullKernelProof = false)
 {
     if (pindexParent == NULL || nOut >= txPrev.vout.size())
         return false;
@@ -275,6 +296,9 @@ bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
         txStake.nVersion = nTxVersion;
         if (!AttachSpendFreeShieldedBody(txStake, vchBlind))
             return false;
+        // Before the seal: the binding-sig hash commits to the kernel proof.
+        if (fNonNullKernelProof)
+            AttachNonNullKernelProof(txStake, nTxVersion);
     }
     if (fB2CHiddenMofN)
     {
@@ -383,6 +407,27 @@ void CheckGateRefusal(CBlockIndex* pindexParent, const CTransaction& txPrev,
                         << " was not refused by \"" << strReason << "\"; log: " << strLog);
 }
 
+// The same arm, carrying a kernel proof its branch reads as present, so the
+// refusal comes from the check after the proof-missing one.
+void CheckRefusalWithKernelProof(CBlockIndex* pindexParent, const CTransaction& txPrev,
+                                 unsigned int nOut, int nTxVersion,
+                                 const std::string& strReason)
+{
+    StakeCandidate arm;
+    BOOST_REQUIRE_MESSAGE(BuildStakeCandidate(pindexParent, txPrev, nOut, nTxVersion, arm, false, true),
+                          "could not build the version " << nTxVersion
+                          << " coinstake at height " << pindexParent->nHeight + 1);
+    std::string strLog;
+    const CBlock::ConnectResult result = ConnectAndRollBack(arm, strLog);
+    BOOST_CHECK_MESSAGE(result == CBlock::CONNECT_RESULT_INVALID,
+                        "version " << nTxVersion << " coinstake at height " << arm.Height()
+                        << " must be refused as consensus-invalid, got result "
+                        << (int)result << "; log: " << strLog);
+    BOOST_CHECK_MESSAGE(strLog.find(strReason) != std::string::npos,
+                        "version " << nTxVersion << " coinstake at height " << arm.Height()
+                        << " was not refused by \"" << strReason << "\"; log: " << strLog);
+}
+
 } // namespace
 
 // Below its own fork height each generation is refused by its own branch, and
@@ -472,6 +517,54 @@ BOOST_AUTO_TEST_CASE(each_generation_requires_its_own_kernel_proof)
                      "NullStake V2 kernel proof missing");
     CheckGateRefusal(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE_COLD,
                      "NullStake V3 kernel proof missing");
+}
+
+// A spend-free body is refused by the next check after proof-missing; this is the
+// last reachable statement in each branch (a shielded spend is refused block-wide
+// by the FCMP-era rule first).
+BOOST_AUTO_TEST_CASE(each_generation_refuses_a_coinstake_with_no_shielded_spend)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+
+    DetachedWalletGuard walletGuard;
+    MockClockGuard clockGuard;
+
+    BOOST_REQUIRE_MESSAGE(MineTo(6), "could not extend the fixture to height 6");
+    SetMockTime(GetTime() + 10 * CollateralnodePaymentWindowSeconds());
+
+    const int nParentHeight = 6;    // the arms connect at 7: at or above all three gates
+    BOOST_REQUIRE(nParentHeight + 1 >= FORK_HEIGHT_NULLSTAKE_V3);
+    BOOST_REQUIRE(nParentHeight + 1 < FORK_HEIGHT_DAG);
+    BOOST_REQUIRE_MESSAGE(IsNullStakeBlockProductionReachableAtHeight(nParentHeight + 1),
+                          "height " << nParentHeight + 1 << " is outside the reachable "
+                          "NullStake window, so these arms would be decided by the "
+                          "shared reachability rule instead of by the branch");
+
+    CBlockIndex* pindexParent = AncestorAt(nParentHeight);
+    BOOST_REQUIRE(pindexParent != NULL);
+    CTransaction txPrev;
+    unsigned int nOut = 0;
+    BOOST_REQUIRE_MESSAGE(FindFundingOutput(nParentHeight, txPrev, nOut),
+                          "no unspent wallet output at or below height " << nParentHeight);
+
+    RequirePlainCoinstakeConnects(pindexParent, txPrev, nOut);
+
+    // The control for the arms: without the kernel proof the same body stops one
+    // check earlier, so reaching the spend refusal is the proof and not the shape.
+    CheckGateRefusal(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE,
+                     "NullStake kernel proof missing");
+    CheckGateRefusal(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                     "NullStake V2 kernel proof missing");
+    CheckGateRefusal(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE_COLD,
+                     "NullStake V3 kernel proof missing");
+
+    CheckRefusalWithKernelProof(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE,
+                                "NullStake coinstake has no shielded spends");
+    CheckRefusalWithKernelProof(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE_V2,
+                                "NullStake V2 coinstake has no shielded spends");
+    CheckRefusalWithKernelProof(pindexParent, txPrev, nOut, SHIELDED_TX_VERSION_NULLSTAKE_COLD,
+                                "NullStake V3 coinstake has no shielded spends");
 }
 
 // No fully valid NullStake block exists in [FORK_HEIGHT_NULLSTAKE, FORK_HEIGHT_DAG):
