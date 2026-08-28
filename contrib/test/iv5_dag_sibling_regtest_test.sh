@@ -1,26 +1,7 @@
 #!/bin/bash
 # Copyright (c) 2026 The Innova developers
-# IV5 DAG-sibling regtest: build the DAG shapes an epoch state has to survive.
-#
-# Every other IV5 harness runs on a single-parent chain, so the epoch build and
-# ConnectBlock always saw the same transactions and the two derivations of a
-# block's active set could not be told apart. This one puts a real sibling block
-# carrying an IV5 payload into the DAG and then merges it, in the two shapes that
-# separate them:
-#
-#   A. Two nodes mine the same IV5 transaction at the same height. One block wins
-#      the chain, the other is merged. The merged block is never connected, so
-#      nothing it carries may reach the epoch tree, the pool, the spent-key set or
-#      the active-transaction id list that the tree store and the wallet replay.
-#
-#   B. A node in a partition mines its own IV5 transaction, loses the race, and
-#      the transaction is re-mined into a later canonical block that merges the
-#      losing block. ConnectBlock connects that transaction; an epoch build that
-#      resolves conflicts from its own running order drops it, and the value it
-#      shielded disappears from the tree.
-#
-# The whole test is about one invariant: the epoch state records exactly the
-# transactions ConnectBlock connected, and nothing else.
+# IV5 DAG-sibling regtest: the epoch state must record exactly the transactions
+# ConnectBlock connected, across merged siblings, lost races and out-of-order sync.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1445,6 +1426,228 @@ PY
 
     assert_iv5_agrees "after resolving the sibling double spend"
 fi
+
+# ============================================================
+header "11. A node that syncs the whole DAG cold derives the same tree"
+# ============================================================
+
+# Cold sync delivers the DAG in a different order and builds epochs in batches; the
+# third node must reach the same root at the same tip.
+
+wait_same_tip || { fail "the pair holds different tips before the cold sync"; exit 1; }
+
+TIP_HEIGHT="$(height 0)"
+TIP_HASH="$(best_hash 0)"
+
+write_config 2
+start_node 2 || { fail "node2 did not start"; exit 1; }
+NUM_NODES=3
+redial_nodes
+
+# Inbound connections are limited to five per minute per address, so re-dial on the
+# limiter's period rather than every poll.
+SYNCED=0
+for ((i=0; i<900; i++)); do
+    if [ "$(best_hash 2)" = "$TIP_HASH" ]; then SYNCED=1; break; fi
+    [ $((i % 30)) -eq 29 ] && redial_nodes
+    sleep 2
+done
+if [ "$SYNCED" = "1" ]; then
+    success "node2 cold-synced $TIP_HEIGHT blocks to the same tip (${TIP_HASH:0:16})"
+else
+    fail "node2 did not reach the fleet tip (at $(height 2) vs $TIP_HEIGHT)"
+fi
+
+COLD_ROOT="$(iv5_tree_root 2)"
+COLD_SIZE="$(iv5_tree_size 2)"
+LIVE_ROOT="$(iv5_tree_root 0)"
+LIVE_SIZE="$(iv5_tree_size 0)"
+if [ ${#COLD_ROOT} -eq 64 ] && [ "$COLD_ROOT" = "$LIVE_ROOT" ] && [ "$COLD_SIZE" = "$LIVE_SIZE" ]; then
+    success "the cold-synced tree is identical: $COLD_SIZE leaves at ${COLD_ROOT:0:16}"
+else
+    fail "the cold-synced tree differs (${COLD_ROOT:0:16}/${COLD_SIZE:-?} vs ${LIVE_ROOT:0:16}/${LIVE_SIZE:-?})"
+fi
+
+COLD_STORE="$(iv5_store_size 2)"
+if [ "$COLD_STORE" = "$COLD_SIZE" ]; then
+    success "node2's tree store is level with its epoch tree at $COLD_STORE leaves"
+else
+    fail "node2's store holds ${COLD_STORE:-?} against an epoch tree of ${COLD_SIZE:-?}"
+fi
+
+# Epoch 2 closed in section 4 and nothing later reaches below its boundary, so a
+# live re-read must equal the value section 4 recorded: the cold node rebuilt the
+# committed epoch, not just today's agreement.
+LIVE_DIGEST="$(epoch_field 0 "$EPOCH" epoch_state_digest)"
+if [ ${#LIVE_DIGEST} -eq 64 ] && [ "$LIVE_DIGEST" = "$DIGEST0" ]; then
+    success "epoch $EPOCH still carries the digest section 4 recorded (${DIGEST0:0:16})"
+else
+    fail "epoch $EPOCH moved under the later races ($LIVE_DIGEST vs $DIGEST0)"
+fi
+
+COLD_DIGEST="$(epoch_field 2 "$EPOCH" epoch_state_digest)"
+if [ ${#COLD_DIGEST} -eq 64 ] && [ "$COLD_DIGEST" = "$LIVE_DIGEST" ]; then
+    success "node2 rebuilt epoch $EPOCH to the same digest (${COLD_DIGEST:0:16})"
+else
+    fail "node2 rebuilt epoch $EPOCH to a different digest ($COLD_DIGEST vs $LIVE_DIGEST)"
+fi
+
+COLD_POOL="$(epoch_field 2 "$EPOCH" iv5_pool_balance)"
+LIVE_POOL="$(epoch_field 0 "$EPOCH" iv5_pool_balance)"
+if [ -n "$COLD_POOL" ] && [ "$COLD_POOL" = "$LIVE_POOL" ]; then
+    success "node2 derived the same epoch pool balance ($COLD_POOL INN)"
+else
+    fail "node2 derived a different epoch pool balance (${COLD_POOL:-?} vs ${LIVE_POOL:-?})"
+fi
+
+COLD_NULLS="$(epoch_field 2 "$EPOCH" iv5_nullifier_count)"
+LIVE_NULLS="$(epoch_field 0 "$EPOCH" iv5_nullifier_count)"
+if [ -n "$COLD_NULLS" ] && [ "$COLD_NULLS" = "$LIVE_NULLS" ]; then
+    success "node2 derived the same spent-key set ($COLD_NULLS)"
+else
+    fail "node2 derived a different spent-key set (${COLD_NULLS:-?} vs ${LIVE_NULLS:-?})"
+fi
+
+# The reorg epoch is the interesting one to rebuild cold: node2 never saw the
+# losing block arrive as a tip, only as a merge parent inside a batch. Section 9
+# undoes a CLOSED epoch 3, so epoch 3 is the one whose leaves were taken back.
+REORG_EPOCH=3
+COLD_REORG="$(epoch_field 2 "$REORG_EPOCH" epoch_state_digest)"
+LIVE_REORG="$(epoch_field 0 "$REORG_EPOCH" epoch_state_digest)"
+if [ ${#COLD_REORG} -eq 64 ] && [ "$COLD_REORG" = "$LIVE_REORG" ]; then
+    success "node2 rebuilt the reorg epoch $REORG_EPOCH to the same digest (${COLD_REORG:0:16})"
+else
+    fail "node2 rebuilt the reorg epoch to a different digest ($COLD_REORG vs $LIVE_REORG)"
+fi
+
+# The sibling double-spend epoch is the strongest cold case the evolved harness
+# offers: node2 replays the losing sibling as a merge parent, in a batch, having
+# never held either spend in a mempool.
+if [ "${S10_OK:-0}" = "1" ] && is_int "${DS_EPOCH:-}"; then
+    COLD_DS="$(epoch_field 2 "$DS_EPOCH" epoch_state_digest)"
+    COLD_DS_NULLS="$(epoch_field 2 "$DS_EPOCH" iv5_nullifier_count)"
+    LIVE_DS_NULLS="$(epoch_field 0 "$DS_EPOCH" iv5_nullifier_count)"
+    if [ ${#COLD_DS} -eq 64 ] && [ "$COLD_DS" = "$DS_DIGEST0" ]; then
+        success "node2 rebuilt the double-spend epoch $DS_EPOCH to the same digest (${COLD_DS:0:16})"
+    else
+        fail "node2 rebuilt the double-spend epoch to a different digest ($COLD_DS vs $DS_DIGEST0)"
+    fi
+    if [ -n "$COLD_DS_NULLS" ] && [ "$COLD_DS_NULLS" = "$LIVE_DS_NULLS" ]; then
+        success "node2 replayed the conflict to the same key-image count ($COLD_DS_NULLS)"
+    else
+        fail "node2 replayed the conflict to a different key-image count (${COLD_DS_NULLS:-?} vs ${LIVE_DS_NULLS:-?})"
+    fi
+else
+    fail "section 10 left no resolved double-spend epoch for the cold node to rebuild"
+fi
+
+# ============================================================
+header "12. No private coinstake is reachable on a DAG-active chain"
+# ============================================================
+
+# Proof-of-stake blocks are rejected above the DAG height. Stake in private mode and
+# check the chain never takes a NullStake block.
+
+STAKE_START="$(height 0)"
+STAKE_DIR="$(node_dir 0)"
+cp "$STAKE_DIR/innova.conf" "$STAKE_DIR/innova.conf.bak"
+stop_node 0 || { fail "node0 would not stop for the staking test"; exit 1; }
+{
+    grep -v -e '^staking=' -e '^stakingmode=' -e '^nofinalityvoting=' "$STAKE_DIR/innova.conf.bak"
+    echo "staking=1"
+    echo "stakingmode=nullstake"
+    echo "nofinalityvoting=1"
+} > "$STAKE_DIR/innova.conf"
+start_node 0 || { fail "node0 would not restart in private staking mode"; exit 1; }
+unlock 0
+rpc 0 setban "127.0.0.1" remove >/dev/null 2>&1 || true
+redial_nodes
+
+# An unrecognised mode falls back to transparent with a warning, and a
+# transparent staker would prove nothing about NullStake. No earlier run of this
+# harness sets the option, so a match can only come from this restart.
+if grep -q "Unknown -stakingmode" "$(debug_log 0)" 2>/dev/null; then
+    fail "node0 did not recognise -stakingmode=nullstake and fell back to transparent"
+else
+    success "node0 restarted with -stakingmode=nullstake accepted"
+fi
+
+STAKEINFO="$(rpc 0 getstakinginfo 2>&1)"
+SM_ENABLED="$(jget "$STAKEINFO" enabled)"
+SM_STAKING="$(jget "$STAKEINFO" staking)"
+SM_POS="$(jget "$STAKEINFO" pos_block_production)"
+SM_WEIGHT="$(jget "$STAKEINFO" weight)"
+
+if [ "$SM_ENABLED" = "true" ]; then
+    success "node0 came back with staking enabled"
+else
+    fail "node0 did not come back with staking enabled (enabled='$SM_ENABLED')"
+fi
+
+# Anti-vacuity, and the load-bearing premise of the whole section: a wallet with
+# no stake weight would produce no coinstake for reasons that have nothing to do
+# with the DAG gate, and every assertion below would pass over an empty test.
+if is_int "$SM_WEIGHT" && [ "$SM_WEIGHT" -gt 0 ]; then
+    success "the wallet offers $SM_WEIGHT of stake weight, so the staker has something to try"
+else
+    fail "the wallet has no stake weight ('$SM_WEIGHT'); a chain with no PoS block would prove nothing"
+fi
+
+if [ "$SM_POS" = "false" ]; then
+    success "the node reports proof-of-stake block production unreachable at height $(height 0)"
+else
+    fail "the node still reports proof-of-stake block production reachable (pos_block_production='$SM_POS')"
+fi
+if [ "$SM_STAKING" = "false" ]; then
+    success "the staker stays down despite -staking=1 and $SM_WEIGHT of weight"
+else
+    fail "the staker reports itself running on a DAG-active chain (staking='$SM_STAKING')"
+fi
+
+# A staking window on an idle chain proves nothing: the kernel only competes when
+# blocks are being produced, so keep the chain moving while the staker runs.
+sleep 30
+mine_to 0 $((STAKE_START + 20)) || warn "node0 could not mine during the staking window"
+sleep 30
+
+STAKE_END="$(height 0)"
+POS_FOUND=""
+if is_int "$STAKE_END" && [ "$STAKE_END" -gt "$STAKE_START" ]; then
+    for ((h=STAKE_START+1; h<=STAKE_END; h++)); do
+        case "$(jget "$(rpc 0 getblock "$(block_hash 0 "$h")" 2>/dev/null)" flags)" in
+            proof-of-stake*) POS_FOUND="$h"; break ;;
+        esac
+    done
+fi
+if [ "$STAKE_END" -le "$STAKE_START" ]; then
+    fail "the chain did not advance during the staking window, so nothing was proven"
+elif [ -z "$POS_FOUND" ]; then
+    success "no proof-of-stake block over $((STAKE_END - STAKE_START)) blocks ($STAKE_START..$STAKE_END) with private staking on"
+else
+    fail "a proof-of-stake block was accepted at height $POS_FOUND on a DAG-active chain"
+fi
+
+# The whole post-DAG range has to be proof-of-work, not just the staking window.
+POW_SAMPLES=0
+POW_BAD=0
+STEP=$(( (STAKE_END - BOUNDARY_B) / 20 )); [ "$STEP" -lt 1 ] && STEP=1
+for ((h=BOUNDARY_B; h<=STAKE_END; h+=STEP)); do
+    FLAGS="$(jget "$(rpc 0 getblock "$(block_hash 0 "$h")" 2>/dev/null)" flags)"
+    POW_SAMPLES=$((POW_SAMPLES + 1))
+    case "$FLAGS" in
+        proof-of-work*) ;;
+        *) POW_BAD=$((POW_BAD + 1)); warn "height $h reports flags '$FLAGS'" ;;
+    esac
+done
+if [ "$POW_SAMPLES" -gt 0 ] && [ "$POW_BAD" -eq 0 ]; then
+    success "all $POW_SAMPLES sampled post-Boundary-B blocks are proof-of-work"
+else
+    fail "$POW_BAD of $POW_SAMPLES sampled post-Boundary-B blocks are not proof-of-work"
+fi
+
+stop_node 0 || true
+mv "$STAKE_DIR/innova.conf.bak" "$STAKE_DIR/innova.conf"
+start_node 0 || { fail "node0 would not restart after the staking test"; exit 1; }
 
 connect_nodes
 wait_peers >/dev/null 2>&1 || true
