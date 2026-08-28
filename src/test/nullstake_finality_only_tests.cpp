@@ -258,4 +258,49 @@ BOOST_AUTO_TEST_CASE(checktransaction_refuses_every_nullstake_generation_publicl
     }
 }
 
+// The B2-c hidden-signer bound is reachable only in [FORK_HEIGHT_NULLSTAKE_DELEGSET,
+// FORK_HEIGHT_NULLSTAKE_B2C), above the DAG gate; on mainnet the window is empty.
+BOOST_AUTO_TEST_CASE(the_b2c_hidden_coinstake_bound_has_no_height_to_decide_at)
+{
+    NetworkGuard guard;
+
+    for (int nPass = 0; nPass < 3; nPass++)
+    {
+        if (nPass == 0)
+            SelectMainnet();
+        else if (nPass == 1)
+            SelectTestnet();
+        else
+            SelectRegtest();
+
+        const std::string strNet = nPass == 0 ? "mainnet"
+                                 : nPass == 1 ? "testnet" : "regtest";
+
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_B2C >= FORK_HEIGHT_NULLSTAKE_DELEGSET,
+            strNet + ": the B2C gate moved below DELEGSET, which opens a window where "
+            "the hidden-signer bound decides and so needs its own case");
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET >= FORK_HEIGHT_DAG,
+            strNet + ": the DELEGSET gate moved below the DAG gate, so a proof-of-stake "
+            "block now reaches the coinstake dispatch inside the hidden-signer window");
+    }
+
+    // Which mechanism carries which network. Without this the ordering check above
+    // would pass on a ladder that had collapsed every window to empty, and nothing
+    // would say the DAG ordering is what does the work.
+    SelectMainnet();
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET == FORK_HEIGHT_NULLSTAKE_B2C,
+        "mainnet no longer co-activates DELEGSET and B2C, so the window is no longer "
+        "empty and only the DAG ordering closes it");
+
+    SelectTestnet();
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_B2C > FORK_HEIGHT_NULLSTAKE_DELEGSET,
+        "testnet lost its non-empty hidden-signer window, so the DAG ordering check "
+        "above passes vacuously there");
+
+    SelectRegtest();
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_B2C > FORK_HEIGHT_NULLSTAKE_DELEGSET,
+        "regtest lost its non-empty hidden-signer window, so the DAG ordering check "
+        "above passes vacuously there");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
