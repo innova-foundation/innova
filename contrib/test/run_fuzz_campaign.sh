@@ -11,7 +11,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 COMMIT="$(git -C "$SRC/.." rev-parse HEAD 2>/dev/null || echo unknown)"
 OUT="${FUZZ_OUT:-/tmp/innova-fuzz-$STAMP}"
 
-TARGETS="fuzz_deserialize fuzz_script fuzz_block_header"
+TARGETS="fuzz_deserialize fuzz_script fuzz_block_header fuzz_privacy_payload"
 
 # Count live workers for a target. pgrep -x fails on names over 15 characters;
 # pgrep -f also matches this script, so exclude our own pid.
