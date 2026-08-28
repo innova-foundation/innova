@@ -322,6 +322,14 @@ bool ReadDAGParentCommitmentAtHeight(
     return false;
 }
 
+unsigned int MaxDAGParentsAtHeight(int nHeight)
+{
+    if (IsBoundaryAActiveAtHeight(nHeight))
+        return (unsigned int)MAX_DAG_PARENTS;
+    return std::min((unsigned int)MAX_DAG_PARENTS,
+                    MAX_DAG_PARENTS_PRE_BOUNDARY_A);
+}
+
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents)
 {
     if (vParents.empty() || vParents.size() > MAX_DAG_PARENTS)

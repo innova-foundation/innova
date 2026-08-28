@@ -96,6 +96,139 @@ BOOST_AUTO_TEST_CASE(dag_parent_boundary_a_canonical_matrix)
         exactlyOne, decoded, error));
 }
 
+// Below Boundary A a payload wide enough to carry 33 parents is refused by CScript::GetOp
+// before the count is read, so the count bound is reachable only by a payload claiming
+// more parents than it carries.
+BOOST_AUTO_TEST_CASE(dag_parent_pre_boundary_a_count_bound_is_reachable)
+{
+    struct Local
+    {
+        // Claims nClaimed parents while carrying only nCarried, so the payload
+        // stays inside the push limit and the count guard is what answers.
+        static CScript Claim(unsigned int nClaimed, unsigned int nCarried)
+        {
+            std::vector<unsigned char> vch(DAG_PARENT_TAG, DAG_PARENT_TAG + 4);
+            vch.push_back((unsigned char)nClaimed);
+            for (unsigned int i = 1; i <= nCarried; ++i)
+            {
+                uint256 hash(i);
+                vch.insert(vch.end(), hash.begin(), hash.end());
+            }
+            CScript script;
+            script << OP_RETURN << vch;
+            return script;
+        }
+    };
+
+    // Every count above the bound that the one-octet field can express, in a
+    // payload small enough to reach the guard.
+    for (unsigned int nClaimed = MAX_DAG_PARENTS + 1; nClaimed <= 255; ++nClaimed)
+    {
+        const CScript script = Local::Claim(nClaimed, 1);
+        BOOST_REQUIRE(script.size() <= MAX_SCRIPT_ELEMENT_SIZE + 4);
+        BOOST_CHECK_MESSAGE(
+            ExtractDAGParents(script).empty(),
+            "pre-Boundary-A decoder admitted a commitment claiming " +
+                std::to_string(nClaimed) + " parents");
+    }
+
+    // Zero is outside the same range.
+    BOOST_CHECK(ExtractDAGParents(Local::Claim(0, 0)).empty());
+
+    // A count inside the bound but not carried is refused for length, so the
+    // check above is the count rule and not the length rule wearing its name.
+    BOOST_CHECK(ExtractDAGParents(Local::Claim(MAX_DAG_PARENTS, 1)).empty());
+}
+
+BOOST_AUTO_TEST_CASE(dag_parent_commitment_decodes_at_the_height_that_built_it)
+{
+    struct Local
+    {
+        static std::vector<uint256> Parents(unsigned int nCount)
+        {
+            std::vector<uint256> v;
+            for (unsigned int i = 1; i <= nCount; ++i)
+                v.push_back(uint256(i));
+            return v;
+        }
+
+        // What AcceptBlock will do with this script at this height.
+        static bool DecodesAtHeight(int nHeight, const CScript& script,
+                                    std::vector<uint256>& vOut)
+        {
+            if (IsBoundaryAActiveAtHeight(nHeight))
+            {
+                std::string strError;
+                std::vector<CScript> vScripts(1, script);
+                return ExtractCanonicalDAGParentCommitment(vScripts, vOut,
+                                                           strError);
+            }
+            vOut = ExtractDAGParents(script);
+            return !vOut.empty();
+        }
+    };
+
+    const int nHeights[] = { GetForkHeightDAG(),
+                             GetForkHeightDAG() + 1,
+                             GetForkHeightBoundaryA() - 1,
+                             GetForkHeightBoundaryA(),
+                             GetForkHeightBoundaryA() + 1 };
+
+    for (int nHeight : nHeights)
+    {
+        const unsigned int nCap = MaxDAGParentsAtHeight(nHeight);
+        BOOST_REQUIRE_MESSAGE(nCap >= 1 && nCap <= (unsigned int)MAX_DAG_PARENTS,
+                              "cap at height " + std::to_string(nHeight) +
+                                  " is outside 1..MAX_DAG_PARENTS");
+
+        // Everything the producer may build at this height is readable by the
+        // decoder that will validate it, and reads back as exactly what was
+        // committed. This is the property the producer cap exists to hold.
+        for (unsigned int nCount = 1; nCount <= nCap; ++nCount)
+        {
+            const std::vector<uint256> vParents = Local::Parents(nCount);
+            const CScript script = BuildDAGParentScript(vParents);
+            BOOST_REQUIRE_MESSAGE(script.size() > 0,
+                                  "builder refused " + std::to_string(nCount) +
+                                      " parents");
+            std::vector<uint256> vDecoded;
+            BOOST_CHECK_MESSAGE(
+                Local::DecodesAtHeight(nHeight, script, vDecoded),
+                "height " + std::to_string(nHeight) + ": commitment naming " +
+                    std::to_string(nCount) +
+                    " parents does not decode at the height that built it");
+            BOOST_CHECK_MESSAGE(
+                vDecoded == vParents,
+                "height " + std::to_string(nHeight) + ": commitment naming " +
+                    std::to_string(nCount) + " parents did not round-trip");
+        }
+
+        // The cap is the decoder's own limit and not an arbitrary smaller
+        // number: one more parent stops decoding at this height. Without this
+        // the cap could be lowered to 1 and the loop above would still pass.
+        if (nCap < (unsigned int)MAX_DAG_PARENTS)
+        {
+            const CScript wide = BuildDAGParentScript(Local::Parents(nCap + 1));
+            BOOST_REQUIRE(wide.size() > 0);
+            std::vector<uint256> vDecoded;
+            BOOST_CHECK_MESSAGE(
+                !Local::DecodesAtHeight(nHeight, wide, vDecoded),
+                "height " + std::to_string(nHeight) + ": cap of " +
+                    std::to_string(nCap) + " is below what the decoder accepts");
+        }
+    }
+
+    // Below Boundary A the ceiling is the script push limit, so it must move
+    // with that limit rather than be restated beside it.
+    BOOST_CHECK_EQUAL(MaxDAGParentsAtHeight(GetForkHeightDAG()),
+                      (MAX_SCRIPT_ELEMENT_SIZE - DAG_PARENT_PAYLOAD_HEADER) / 32);
+
+    // At and above Boundary A the strict decoder parses the payload directly and
+    // the full range is available.
+    BOOST_CHECK_EQUAL(MaxDAGParentsAtHeight(GetForkHeightBoundaryA()),
+                      (unsigned int)MAX_DAG_PARENTS);
+}
+
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 {
     BOOST_REQUIRE(fRegTest);

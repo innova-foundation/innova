@@ -26,6 +26,17 @@ class CTxDB;
 
 static const int MAX_DAG_PARENTS = 32;          // max parents per block (1 primary + 31 merge)
 static const unsigned char DAG_PARENT_TAG[4] = { 0x49, 0x44, 0x41, 0x47 }; // "IDAG"
+
+// IDAG payload framing: 4 tag bytes then a one-octet parent count.
+static const unsigned int DAG_PARENT_PAYLOAD_HEADER = 5;
+
+// Below Boundary A the commitment is read back through CScript::GetOp, which
+// refuses any push above MAX_SCRIPT_ELEMENT_SIZE, so the pre-A decoder cannot
+// see a payload wider than that however many parents the count claims. Derive
+// the pre-A ceiling from the same limit rather than restating it, so raising
+// MAX_SCRIPT_ELEMENT_SIZE or the framing moves both sides together.
+static const unsigned int MAX_DAG_PARENTS_PRE_BOUNDARY_A =
+    (MAX_SCRIPT_ELEMENT_SIZE - DAG_PARENT_PAYLOAD_HEADER) / 32;
 static const int GHOSTDAG_K = 18;               // anticone tolerance for blue coloring (pre-DAGKNIGHT)
 static const int DAG_MERGE_DEPTH = 64;          // merge parents within this depth of primary (~64s at 1s blocks)
 static const int DAG_PRUNE_DEPTH = 100000;      // prune DAG data older than this (~28h at 1s blocks)
@@ -95,6 +106,12 @@ bool ReadDAGParentCommitmentAtHeight(
     int nHeight,
     std::vector<uint256>& vParents,
     std::string& strError);
+
+/** Parents a block at nHeight may commit to and still have its commitment read
+ *  back by the decoder that validates at that height. AcceptBlock swaps decoders
+ *  at Boundary A, and the pre-A one is the narrower of the two, so a producer
+ *  that ignores the height can build a commitment its own validator refuses. */
+unsigned int MaxDAGParentsAtHeight(int nHeight);
 
 /** Build a coinbase OP_RETURN script committing to DAG parents.
  *  Format: OP_RETURN <IDAG tag(4) || count(1) || hash1(32) || hash2(32) || ...> */
