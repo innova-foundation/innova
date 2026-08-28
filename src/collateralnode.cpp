@@ -557,15 +557,6 @@ struct CompareValueOnly
     }
 };
 
-struct CompareLastPaidBlock
-{
-    bool operator()(const pair<int, CCollateralNode*>& t1,
-                    const pair<int, CCollateralNode*>& t2) const
-    {
-        return (t1.first != t2.first ? t1.first > t2.first : t1.second->CalculateScore(1, pindexBest->nHeight) > t2.second->CalculateScore(1, pindexBest->nHeight));
-    }
-};
-
 struct CompareLastPayRate
 {
     bool operator()(const pair<int, CCollateralNode*>& t1,
@@ -587,17 +578,6 @@ struct CompareLastPay
             return (t1.second->IsActive() < t2.second->IsActive()); //always put actives before non-actives
         }
         return false;
-    }
-    CBlockIndex* pindex;
-};
-
-struct CompareSigTimeTo
-{
-    CompareSigTimeTo(CBlockIndex* pindex) { this->pindex = pindex; }
-    bool operator()(const pair<int, CCollateralNode*>& t1,
-                    const pair<int, CCollateralNode*>& t2) const
-    {
-        return (t2.second->nTimeRegistered > pindex->GetBlockTime() && t1.second->nTimeRegistered == t2.second->nTimeRegistered ? t1.second->CalculateScore(1, pindex->nHeight) > t2.second->CalculateScore(1, pindex->nHeight) : t2.second->nTimeRegistered > pindex->GetBlockTime());
     }
     CBlockIndex* pindex;
 };
