@@ -1334,6 +1334,144 @@ BOOST_AUTO_TEST_CASE(the_nullstake_coinstake_branches_have_no_reachable_shape)
 }
 
 // ---------------------------------------------------------------------------
+// R-B2C-001 (retired): the DAG-gate PoS refusal and CheckVote answer first at each limb.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(a_b2c_hidden_coinstake_is_refused_before_its_own_bound)
+{
+    LadderGuard guard;
+    guard.SelectRegtest();
+
+    const char* kPostDAG =
+        "ConnectBlock() : proof-of-stake blocks are not allowed after DAG fork";
+    const char* kB2CBound =
+        "NullStake V3 B2-c hidden coinstake before B2C fork height";
+    const char* kDelegSetBound =
+        "NullStake V3 M-of-N coinstake before DELEGSET fork height";
+
+    // Absolute, so the case neither depends on nor moves the shared chain height
+    // beyond what it needs: the window the retired bound named is at or above the
+    // DAG gate on every network.
+    MineTo(FORK_HEIGHT_DAG);
+
+    Candidate cb;
+    BOOST_REQUIRE(BuildCandidate(cb));
+    BOOST_REQUIRE_GE(cb.Height(), FORK_HEIGHT_DAG);
+
+    cb.block.vtx[0].vout.resize(1);
+    cb.block.vtx[0].vout[0].SetEmpty();
+
+    // The shape the retired rule named: a V3 cold coinstake carrying an M-of-N
+    // proof tagged with the hidden-signer authorization mode.
+    CTransaction stake;
+    stake.nVersion = SHIELDED_TX_VERSION_NULLSTAKE_COLD;
+    stake.nTime = cb.block.nTime;
+    stake.vin.push_back(CTxIn(uint256(0xB2C001), 0));
+    stake.vout.resize(2);
+    stake.vout[0].SetEmpty();
+    stake.vout[1].nValue = 1 * COIN;
+    stake.vShieldedSpend.resize(1);
+    stake.vShieldedSpend[0].nullifier = uint256(0xB2C002);
+    stake.nValueBalance = -1;
+    stake.nullstakeProofV3.acProof.vchAI.assign(33, 0x33);
+    stake.nullstakeProofV3.acProof.ipaProof.vchAFinal.assign(32, 0x34);
+    stake.nullstakeProofV3.nThresholdM = 2;
+    stake.nullstakeProofV3.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+    stake.nullstakeProofV3.vStakerSet.assign(3, std::vector<unsigned char>(33, 0x02));
+    stake.nullstakeProofV3.hiddenAuth.vchResearchProof.assign(64, 0x35);
+
+    BOOST_REQUIRE(stake.IsCoinStake() && stake.IsShielded());
+    BOOST_REQUIRE(!stake.nullstakeProofV3.IsNull());
+    BOOST_REQUIRE(stake.nullstakeProofV3.nThresholdM > 0);
+    BOOST_REQUIRE_EQUAL(stake.nullstakeProofV3.nAuthMode,
+                        NULLSTAKE_AUTHMODE_B2C_HIDDEN);
+
+    cb.block.vtx.insert(cb.block.vtx.begin() + 1, stake);
+    BOOST_REQUIRE(cb.block.IsProofOfStake());
+    BOOST_REQUIRE(SealCandidate(cb));
+
+    ConnectOutcome out = ConnectAndRollBack(cb);
+    ExpectBlockReason(out, kPostDAG, "a B2-c hidden M-of-N coinstake");
+    BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kB2CBound),
+        "the B2-c hidden-signer bound decided this block, so it is reachable and "
+        "R-B2C-001's coinstake limb was retired wrongly; captured: " +
+        Excerpt(out.strLog));
+    BOOST_CHECK_MESSAGE(!LogHas(out.strLog, kDelegSetBound),
+        "the DELEGSET bound decided this block, so the coinstake dispatch is "
+        "reachable at this height; captured: " + Excerpt(out.strLog));
+}
+
+BOOST_AUTO_TEST_CASE(a_b2c_hidden_private_vote_is_refused_before_its_own_bound)
+{
+    LadderGuard guard;
+    TipHeightGuard tipGuard;
+    guard.SelectRegtest();
+    BOOST_REQUIRE(CZKContext::Initialize());
+    LOCK(cs_main);
+
+    const char* kVoteSeal =
+        "legacy private-finality proofs have no verifiable membership and are permanently invalid";
+
+    CFinalityTracker tracker;
+    CTxDB txdb("r");
+    std::string strWhy;
+
+    // The vote the deleted bound existed to refuse, at a height inside the window
+    // it would have refused it in.
+    CFinalityVote vote = MakePrivateVote(FORK_HEIGHT_DAG + 1);
+    vote.nProofMode = FINALITY_PROOF_NULLSTAKE_V3_COLD;
+    vote.privateProof.nProofMode = vote.nProofMode;
+    vote.privateProof.nullStakeV3Proof.acProof.vchAI.assign(33, 0x33);
+    vote.privateProof.nullStakeV3Proof.acProof.ipaProof.vchAFinal.assign(32, 0x34);
+    vote.privateProof.nullStakeV3Proof.nThresholdM = 2;
+    vote.privateProof.nullStakeV3Proof.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+    vote.privateProof.nullStakeV3Proof.vStakerSet.assign(
+        3, std::vector<unsigned char>(33, 0x02));
+    vote.privateProof.nullStakeV3Proof.hiddenAuth.vchResearchProof.assign(64, 0x35);
+
+    BOOST_REQUIRE(vote.IsPrivate());
+    BOOST_REQUIRE(vote.IsValid());
+    BOOST_REQUIRE_MESSAGE(vote.nHeight < FORK_HEIGHT_NULLSTAKE_B2C,
+        "the epoch arithmetic no longer places this vote below the B2C gate, so "
+        "the case no longer probes the window the retired bound named");
+
+    BOOST_CHECK(!tracker.CheckVote(vote, txdb, &strWhy,
+                                   CFinalityVoteContext::ChainHeight(vote.nHeight),
+                                   NULL));
+    BOOST_CHECK_EQUAL(strWhy, kVoteSeal);
+
+    // The auth mode plays no part in that answer: the public half-aggregated tier
+    // is refused with the same reason, at the same height.
+    CFinalityVote halfAgg = vote;
+    halfAgg.privateProof.nullStakeV3Proof.nAuthMode = NULLSTAKE_AUTHMODE_HALFAGG;
+    halfAgg.privateProof.nullStakeV3Proof.hiddenAuth =
+        CNullStakeMofNHiddenAuthProof();
+    halfAgg.privateProof.nullStakeV3Proof.vSignerPubKeys.assign(
+        2, std::vector<unsigned char>(33, 0x02));
+    halfAgg.privateProof.nullStakeV3Proof.vSignerRPoints.assign(
+        2, std::vector<unsigned char>(33, 0x03));
+    halfAgg.privateProof.nullStakeV3Proof.vchAggregatedSScalar.assign(32, 0x04);
+    BOOST_REQUIRE(halfAgg.IsValid());
+    BOOST_CHECK(!tracker.CheckVote(halfAgg, txdb, &strWhy,
+                                   CFinalityVoteContext::ChainHeight(halfAgg.nHeight),
+                                   NULL));
+    BOOST_CHECK_EQUAL(strWhy, kVoteSeal);
+
+    // The control the two checks above need: a transparent vote reaches the same
+    // call and is never refused with this reason, so the seal is the private
+    // encoding and not the fixture.
+    CFinalityVote transparent = vote;
+    transparent.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    transparent.privateProof.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    BOOST_REQUIRE(!transparent.IsPrivate());
+    BOOST_CHECK(!tracker.CheckVote(transparent, txdb, &strWhy,
+                                   CFinalityVoteContext::ChainHeight(transparent.nHeight),
+                                   NULL));
+    BOOST_CHECK_MESSAGE(strWhy != kVoteSeal,
+        "a transparent vote was refused by the private-vote rule: " + strWhy);
+}
+
+// ---------------------------------------------------------------------------
 // R-FCMP-001: curve-tree snapshots from FCMP activation until the epoch-root height only.
 // ---------------------------------------------------------------------------
 

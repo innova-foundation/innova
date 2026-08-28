@@ -253,7 +253,8 @@ struct StakeCandidate
 };
 
 bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
-                         unsigned int nOut, int nTxVersion, StakeCandidate& out)
+                         unsigned int nOut, int nTxVersion, StakeCandidate& out,
+                         bool fB2CHiddenMofN = false)
 {
     if (pindexParent == NULL || nOut >= txPrev.vout.size())
         return false;
@@ -274,6 +275,22 @@ bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
         txStake.nVersion = nTxVersion;
         if (!AttachSpendFreeShieldedBody(txStake, vchBlind))
             return false;
+    }
+    if (fB2CHiddenMofN)
+    {
+        // M-of-N cold-stake coinstake must keep all value shielded, or ConnectInputs
+        // refuses the transparent pay-back before the version gate.
+        txStake.vout[1].nValue = 0;
+
+        // The shape the B2-c bound names: an M-of-N V3 kernel proof tagged with
+        // the hidden-signer authorization mode. Set before the signature and the
+        // binding seal so the arm is signed over the body it carries.
+        txStake.nullstakeProofV3.acProof.vchAI.assign(33, 0x33);
+        txStake.nullstakeProofV3.acProof.ipaProof.vchAFinal.assign(32, 0x34);
+        txStake.nullstakeProofV3.nThresholdM = 2;
+        txStake.nullstakeProofV3.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+        txStake.nullstakeProofV3.vStakerSet.assign(3, std::vector<unsigned char>(33, 0x02));
+        txStake.nullstakeProofV3.hiddenAuth.vchResearchProof.assign(64, 0x35);
     }
     if (!SignSignature(*pwalletMain, txPrev, txStake, 0, SIGHASH_ALL))
         return false;
@@ -475,6 +492,75 @@ BOOST_AUTO_TEST_CASE(the_window_admits_no_fully_valid_nullstake_block)
                         << ", which is below the DAG gate " << FORK_HEIGHT_DAG
                         << ": the NullStake accept path is reachable again and needs "
                         "a positive control, not this measurement");
+}
+
+// R-B2C-001: the B2-c bound is only reached after the DELEGSET bound, whose window
+// lies at or above the DAG gate. Below it, the DELEGSET bound must answer.
+BOOST_AUTO_TEST_CASE(the_b2c_hidden_bound_never_answers_where_the_branch_is_alive)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+    BOOST_REQUIRE_MESSAGE(FORK_HEIGHT_NULLSTAKE_V3 == 7 && FORK_HEIGHT_DAG == 11 &&
+                              FORK_HEIGHT_NULLSTAKE_DELEGSET == 12 &&
+                              FORK_HEIGHT_NULLSTAKE_B2C == 14,
+                          "the regtest NullStake ladder moved; the heights below are "
+                          "chosen against V3 at 7 under the DAG gate at 11, with "
+                          "DELEGSET 12 and B2C 14 above it");
+
+    // What the two bounds' windows are, restated from the gates themselves: the
+    // branch is alive on [V3, DAG) and the B2-c bound can only decide on
+    // [DELEGSET, B2C). The two do not meet.
+    BOOST_REQUIRE_GE(FORK_HEIGHT_NULLSTAKE_DELEGSET, FORK_HEIGHT_DAG);
+    BOOST_REQUIRE_GT(FORK_HEIGHT_DAG, FORK_HEIGHT_NULLSTAKE_V3);
+
+    DetachedWalletGuard walletGuard;
+    MockClockGuard clockGuard;
+
+    BOOST_REQUIRE_MESSAGE(MineTo(9), "could not extend the fixture to height 9");
+    SetMockTime(GetTime() + 10 * CollateralnodePaymentWindowSeconds());
+
+    const char* kDelegSet = "NullStake V3 M-of-N coinstake before DELEGSET fork height";
+    const char* kB2C = "NullStake V3 B2-c hidden coinstake before B2C fork height";
+
+    // Candidate heights 7 and 10: the bottom and top of the window where the V3
+    // branch is alive, both below DELEGSET and below B2C.
+    const int vParents[] = { 6, 9 };
+    for (size_t i = 0; i < ARRAYLEN(vParents); i++)
+    {
+        CBlockIndex* pindexParent = AncestorAt(vParents[i]);
+        BOOST_REQUIRE_MESSAGE(pindexParent != NULL,
+                              "no ancestor at height " << vParents[i]);
+        CTransaction txPrev;
+        unsigned int nOut = 0;
+        BOOST_REQUIRE_MESSAGE(FindFundingOutput(vParents[i], txPrev, nOut),
+                              "no unspent wallet output at or below height "
+                              << vParents[i]);
+
+        RequirePlainCoinstakeConnects(pindexParent, txPrev, nOut);
+
+        StakeCandidate arm;
+        BOOST_REQUIRE_MESSAGE(
+            BuildStakeCandidate(pindexParent, txPrev, nOut,
+                                SHIELDED_TX_VERSION_NULLSTAKE_COLD, arm, true),
+            "could not build the B2-c hidden M-of-N coinstake at height "
+            << pindexParent->nHeight + 1);
+        BOOST_REQUIRE_LT(arm.Height(), FORK_HEIGHT_NULLSTAKE_B2C);
+
+        std::string strLog;
+        const CBlock::ConnectResult result = ConnectAndRollBack(arm, strLog);
+        BOOST_CHECK_MESSAGE(result == CBlock::CONNECT_RESULT_INVALID,
+                            "the B2-c hidden coinstake at height " << arm.Height()
+                            << " must be refused as consensus-invalid, got result "
+                            << (int)result << "; log: " << strLog);
+        BOOST_CHECK_MESSAGE(strLog.find(kDelegSet) != std::string::npos,
+                            "at height " << arm.Height() << " the DELEGSET bound did "
+                            "not answer, so the bound that starves the B2-c bound in "
+                            "the reachable window is gone; log: " << strLog);
+        BOOST_CHECK_MESSAGE(strLog.find(kB2C) == std::string::npos,
+                            "at height " << arm.Height() << " the B2-c hidden-signer "
+                            "bound decided the block, so it is reachable and "
+                            "R-B2C-001 was retired wrongly; log: " << strLog);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
