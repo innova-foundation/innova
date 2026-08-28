@@ -19,8 +19,10 @@
 // cross-checked against two further peers. First gate 7,980,000 leads that tip
 // by 62,702 blocks: ~10.6 days at the measured 14.6-second spacing, ~10.9 days
 // at 15 seconds. Gates after the DAG gate (base 7,950,000) arrive at 1-second
-// spacing, so the whole tail lands within ~31 hours of DAG activation rather
-// than months later.
+// spacing, so the whole tail lands within ~14 hours of DAG activation rather
+// than months later: DAGKNIGHT at base 8,000,000 is the last rung, 50,000
+// blocks above the DAG gate. The figure was ~31 hours while the M-of-N
+// cold-staking gates sat at base 8,060,000; those are retired.
 //
 // Recheck before tagging: the tip advances ~5,900 blocks a day, so this lead
 // decays by a day for every day it sits unreleased. The release policy enforces

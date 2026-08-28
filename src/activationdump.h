@@ -206,12 +206,21 @@ inline std::string GetActivationLadderJSON()
       &GetForkHeightCommitteeSigCanonical, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_TALLY_GOVERNANCE", "GetForkHeightTallyGovernance", "src/main.h",
       &GetForkHeightTallyGovernance, true, NULL, NULL, "FORK_HEIGHT_DAG", true, NULL, "activates_at", NULL, NULL },
+    // Retired from the public ladder: legacy 2005-2007 envelopes and legacy private votes
+    // are rejected off regtest by IsLegacyPrivacyPolicyDisabled before the gate is read.
+    // Only regtest keeps a height; elsewhere the unset sentinel, not a scheduled rung.
     { "FORK_HEIGHT_NULLSTAKE_DELEGSET", "GetForkHeightNullStakeDelegSet", "src/main.h",
-      &GetForkHeightNullStakeDelegSet, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+      &GetForkHeightNullStakeDelegSet, false,
+      &PRIVACY_VNEXT_HEIGHT_UNSET, "PRIVACY_VNEXT_HEIGHT_UNSET",
+      NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_NULLSTAKE_RECLAIM", "GetForkHeightNullStakeReclaim", "src/main.h",
-      &GetForkHeightNullStakeReclaim, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+      &GetForkHeightNullStakeReclaim, false,
+      &PRIVACY_VNEXT_HEIGHT_UNSET, "PRIVACY_VNEXT_HEIGHT_UNSET",
+      NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_NULLSTAKE_B2C", "GetForkHeightNullStakeB2C", "src/main.h",
-      &GetForkHeightNullStakeB2C, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+      &GetForkHeightNullStakeB2C, false,
+      &PRIVACY_VNEXT_HEIGHT_UNSET, "PRIVACY_VNEXT_HEIGHT_UNSET",
+      NULL, false, NULL, "activates_at", NULL, NULL },
     // Zero off mainnet means no reset, so the same literal that makes ring
     // signatures active everywhere disables this gate.
     { "FORK_HEIGHT_IDNS_RESET", "GetForkHeightIDNSReset", "src/main.h",

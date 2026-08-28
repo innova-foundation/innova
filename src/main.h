@@ -501,13 +501,20 @@ inline int GetForkHeightBoundaryA()
 // IsShieldedVNextConsensusReady(), which is regtest-only, and the Rust
 // CONSENSUS_CAPABILITIES word is still zero, so scheduling B turns on the pool's
 // state machinery (schema-V4 epoch records, pool accounting, tree store) and
-// nothing that validates a proof. Those two switches are what the FCMP++
-// candidate's independent review gates, and they are the last ones to move: the
-// height moves here, the verifier does not move until that review lands.
+// nothing that validates a proof. That pair is what the FCMP++ candidate's
+// independent review gates and is the last thing to move: the height moves here,
+// the verifier does not move until that review lands.
 //
-// An earlier revision required B strictly after A and a post-DAG block rate
-// measured on a live network first. Both assumed two releases with the DAG fork
-// running in between, and neither is reachable when one release carries both.
+// Placement is bounded below only. B >= A is what BoundaryOrderingHolds()
+// states; nothing bounds it above any more, because the 8,060,000 rung that used
+// to supply a ceiling held the three M-of-N cold-staking gates and those are
+// retired from the public ladder below.
+//
+// Two earlier requirements went with the two-release plan that assumed them: B
+// strictly after A, and a post-DAG block rate measured on a live network before
+// tagging. One release carries both boundaries, so the DAG is not live until
+// this same tag ships. Anything needing post-DAG spacing derives it from
+// POST_DAG_TARGET_SPACING.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb); defaults to
 // the sentinel.
@@ -764,55 +771,46 @@ inline int GetForkHeightTallyGovernance()
 }
 #define FORK_HEIGHT_TALLY_GOVERNANCE (GetForkHeightTallyGovernance())
 
-// Hard fork height for B2-e: half-aggregated Schnorr M-of-N shielded cold staking
-// (public-signer tier). Sequenced after the committee-governance fork; activate on
-// mainnet only once the open release gates clear.
+// M-of-N cold-staking gates, off the public ladder: they return the sentinel off regtest
+// so the guarded paths fail closed.
+
+// B2-e: half-aggregated Schnorr M-of-N shielded cold staking (public-signer tier).
 inline int GetForkHeightNullStakeDelegSet()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
     if (fRegTest) return 12;
-    if (fTestNet) return 1500;       // live-chain, after D2 + a canary window
-    return ShiftMainnetV5Activation(8060000); // reviewed Boundary-B slot
+    return PRIVACY_VNEXT_HEIGHT_UNSET;
 }
 #define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
 
-// Hard fork height for B2-e Phase 3c.4: owner-override reclaim of an idle M-of-N cold-stake note.
+// B2-e Phase 3c.4: owner-override reclaim of an idle M-of-N cold-stake note.
 inline int GetForkHeightNullStakeReclaim()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
     if (fRegTest) return 12;
-    if (fTestNet) return 1500;
-    return ShiftMainnetV5Activation(8060000);
+    return PRIVACY_VNEXT_HEIGHT_UNSET;
 }
 #define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
 
-// B2-c (Increment 4): activation height for the ZK-HIDDEN-SIGNER M-of-N authorization tier (nAuthMode ==
-// NULLSTAKE_AUTHMODE_B2C_HIDDEN). MUST be >= FORK_HEIGHT_NULLSTAKE_DELEGSET on every network: a B2-c stake
-// reuses the M-of-N cv3 leaf + delegation-set machinery that DELEGSET activates. Gated at the height-aware
-// consensus CALL SITES (coinstake ConnectBlock, finality vote, mempool), never inside the verifier.
+// B2-c: ZK-hidden-signer M-of-N tier (NULLSTAKE_AUTHMODE_B2C_HIDDEN). Must be
+// >= FORK_HEIGHT_NULLSTAKE_DELEGSET. Gated at the consensus call sites, not the verifier.
 inline int GetForkHeightNullStakeB2C()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
     if (fRegTest) return 14;         // > DELEGSET(12), so e2e can exercise pre/post-B2C with one 2006 note
-    if (fTestNet) return 1600;       // after DELEGSET(1500) + a canary window
-    return ShiftMainnetV5Activation(8060000); // co-batched slot; legacy mode remains retired
+    return PRIVACY_VNEXT_HEIGHT_UNSET;
 }
 #define FORK_HEIGHT_NULLSTAKE_B2C (GetForkHeightNullStakeB2C())
 
-// B2-e Phase 3c.4: staking-INACTIVITY timelock for an owner reclaim — the spent cv3 leaf must have
-// been on-chain (un-restaked) for at least this many blocks before the owner may reclaim it. Staking
-// re-mints the note (resetting its leaf age), so this must safely exceed the set's realistic re-stake
-// interval, and must be >> MIN_SHIELDED_SPEND_DEPTH.
+// B2-e: blocks a spent cv3 leaf must sit un-restaked before an owner reclaim. Must exceed
+// the realistic re-stake interval and be >> MIN_SHIELDED_SPEND_DEPTH. Only regtest reaches it.
 inline int GetReclaimTimelock()
 {
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 20;         // short for regtest e2e
-    if (fTestNet) return 720;        // ~12h at 60s spacing
-    return 43200;                    // mainnet: ~30 days at 60s spacing
+    if (fTestNet) return 720;
+    return 43200;
 }
 #define RECLAIM_TIMELOCK (GetReclaimTimelock())
 
