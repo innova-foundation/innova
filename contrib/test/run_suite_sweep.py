@@ -2,19 +2,17 @@
 # Copyright (c) 2026 The Innova developers
 """Run the regtest suites named in suites.json, concurrently and isolated.
 
-Reads the manifest rather than globbing contrib/test/*.sh. The glob picks up
-build helpers whose non-zero exit is correct behaviour, and a sweep that scores
-those as failures teaches everyone to ignore red.
+Reads the manifest rather than globbing contrib/test/*.sh: the glob picks up
+build helpers whose non-zero exit is correct behaviour.
 
-Each suite is given its own port window via IV5_TEST_PORT_BASE=auto, which the
-harnesses now honour, so --jobs > 1 is safe. Before this existed a sweep
-exported a port base no harness read, and concurrent runs of one harness fought
-over the same sockets.
+Each suite is given its own port window via IV5_TEST_PORT_BASE=auto. A harness
+that does not source lib/testports.sh ignores that and binds fixed sockets, so
+the manifest marks it fixed_ports and those run serially after the parallel batch.
 
-Output is a JSON record per suite: exit status, wall time, and the PASS/FAIL
-*case* counts scraped from the harness output. Case counts are the comparable
-quantity across runs; assertion counts are not, because miner_tests and
-mruset_tests are nondeterministic.
+Output is a JSON record per suite: exit status, wall time, and the PASS/FAIL case
+counts scraped from the harness output. Case counts are the comparable quantity
+across runs; assertion counts are not, because miner_tests and mruset_tests are
+nondeterministic.
 
   ./run_suite_sweep.py --list
   ./run_suite_sweep.py --jobs 4 --output /var/tmp/sweep.json
@@ -108,7 +106,8 @@ def run_one(entry, innovad, timeout_scale, log_dir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=1,
-                    help="suites to run concurrently (safe: each takes its own port window)")
+                    help="suites to run concurrently; fixed_ports entries are run "
+                         "serially afterwards because they bind fixed sockets")
     ap.add_argument("--only", default="",
                     help="substring filter on suite name")
     ap.add_argument("--kinds", default="suite,selftest,static",
@@ -147,18 +146,32 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"[sweep] {len(entries)} suites, jobs={args.jobs}, logs in {log_dir}")
 
+    # A fixed_ports entry ignores IV5_TEST_PORT_BASE, so two of them can bind the
+    # same socket. They run one at a time, after the batch that is safe in parallel.
+    parallel = [e for e in entries if not e.get("fixed_ports")]
+    serial = [e for e in entries if e.get("fixed_ports")]
+    if serial:
+        print(f"[sweep] {len(serial)} fixed-port suite(s) deferred to a serial pass: "
+              f'{", ".join(e["name"] for e in serial)}')
+
     results = []
+
+    def report(r):
+        results.append(r)
+        mark = "ok  " if r["ok"] else "FAIL"
+        extra = " TIMEOUT" if r["timed_out"] else ""
+        print(f'[{mark}] {r["name"]:45s} '
+              f'{r["cases_passed"]:3d}p/{r["cases_failed"]:3d}f '
+              f'{r["elapsed_seconds"]:7.1f}s exit={r["exit_code"]}{extra}')
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {pool.submit(run_one, e, args.innovad, args.timeout_scale, log_dir): e
-                   for e in entries}
+                   for e in parallel}
         for fut in concurrent.futures.as_completed(futures):
-            r = fut.result()
-            results.append(r)
-            mark = "ok  " if r["ok"] else "FAIL"
-            extra = " TIMEOUT" if r["timed_out"] else ""
-            print(f'[{mark}] {r["name"]:45s} '
-                  f'{r["cases_passed"]:3d}p/{r["cases_failed"]:3d}f '
-                  f'{r["elapsed_seconds"]:7.1f}s exit={r["exit_code"]}{extra}')
+            report(fut.result())
+
+    for entry in serial:
+        report(run_one(entry, args.innovad, args.timeout_scale, log_dir))
 
     results.sort(key=lambda r: r["name"])
     failed = [r for r in results if not r["ok"]]

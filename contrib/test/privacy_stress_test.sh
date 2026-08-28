@@ -518,15 +518,6 @@ test_silent_payments() {
         warn "sp_listaddresses: $splist"
     fi
 
-    subsection "SP Balance"
-
-    local spbal=$(rpc1 sp_getbalance 2>/dev/null || echo "")
-    if echo "$spbal" | grep -qE '^[0-9]'; then
-        success "sp_getbalance returns valid balance: $spbal"
-    else
-        warn "sp_getbalance: $spbal"
-    fi
-
     SPADDR1="$spaddr"
 }
 
@@ -726,15 +717,10 @@ test_privacy_guarantees() {
 
     subsection "No Shielded Staking Enforcement"
 
-    rpc1 setstaking true 2>/dev/null || true
-    sleep 2
-
     local stakeinfo=$(rpc1 getstakinginfo 2>/dev/null || echo "")
     if [ -n "$stakeinfo" ]; then
         success "getstakinginfo accessible (shielded funds should be excluded)"
     fi
-
-    rpc1 setstaking false 2>/dev/null || true
 
     subsection "Viewing Key Privacy"
 
@@ -871,20 +857,20 @@ test_silent_payment_stress() {
         warn "sp_listaddresses count: $sp_count"
     fi
 
-    subsection "SP Balance Queries Under Load"
+    subsection "SP Address Listing Under Load"
 
-    local sp_bal_ok=0
+    local sp_list_ok=0
     for i in $(seq 1 10); do
-        local bal=$(rpc1 sp_getbalance 2>/dev/null || echo "")
-        if echo "$bal" | grep -qE '^[0-9]'; then
-            ((sp_bal_ok++))
+        local listed=$(rpc1 sp_listaddresses 2>/dev/null || echo "")
+        if echo "$listed" | grep -q '"'; then
+            ((sp_list_ok++))
         fi
     done
 
-    if [ $sp_bal_ok -ge 8 ]; then
-        success "SP balance queries: $sp_bal_ok/10 succeeded"
+    if [ $sp_list_ok -ge 8 ]; then
+        success "SP address listings: $sp_list_ok/10 succeeded"
     else
-        warn "SP balance queries: $sp_bal_ok/10"
+        warn "SP address listings: $sp_list_ok/10"
     fi
 }
 

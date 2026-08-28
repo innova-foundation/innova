@@ -4,6 +4,17 @@ Comprehensive stress testing and validation suite for Innova Core.
 
 ## Test Scripts Overview
 
+`suites.json` is the canonical inventory and the only list a sweep reads:
+
+```bash
+python3 contrib/test/run_suite_sweep.py --list      # every runnable suite
+python3 contrib/test/run_suite_sweep.py --jobs 4 --output sweep.json
+```
+
+The table below covers the pre-v5 stress harnesses only. The IDAG, IV5, finality
+and privacy suites are in `suites.json`; adding one here as well would only give
+it a second place to go stale.
+
 | Script | Focus Area | Nodes | Mode |
 |--------|-----------|-------|------|
 | `quick_test.sh` | Basic sanity checks | 1 | Testnet |
@@ -157,26 +168,30 @@ brew install jq bc curl
 
 ## Port Allocation
 
-Each test uses isolated ports to avoid conflicts:
+Ports come from `lib/testports.sh`, not from literals in each harness. A harness
+asks for a slot and gets its historical port when no base is set, or a port in
+the caller's window when one is:
 
-| Test | P2P Ports | RPC Ports |
-|------|-----------|-----------|
-| staking_stress | 21445-21447 | 21500-21502 |
-| wallet_stress | 22445-22446 | 22500-22501 |
-| tx_stress | 23445-23446 | 23500-23501 |
-| rpc_stress | 24445 | 24500 |
-| security_stress | 25445-25446 | 25500-25501 |
-| blockchain_stress | 26445-26447 | 26500-26502 |
-| cold_staking | 20445-20446 | 20500-20501 |
-| spv_staking | 20545-20546 | 20600-20601 |
+```bash
+IV5_TEST_PORT_BASE=auto bash contrib/test/wallet_stress_test.sh   # private window
+bash contrib/test/wallet_stress_test.sh                           # historical ports
+```
+
+`check_port_isolation.py` evaluates every harness under two bases and fails any
+that ignores the variable. The harnesses it currently names bind fixed sockets
+and cannot run beside each other; `suites.json` marks them `fixed_ports` and the
+sweep runs those serially.
 
 ## Cleanup
 
-All tests clean up automatically on exit via `trap`. If a test is interrupted, processes can be killed manually:
+All tests clean up automatically on exit via `trap`. If a test is interrupted,
+kill the leftover daemons by PID — a pattern kill on `innovad` also matches
+unrelated nodes on the host, including a mainnet wallet:
 
 ```bash
-pkill -f "innovad.*stress\|innovad.*staking\|innovad.*test"
-rm -rf /tmp/innova_*
+pgrep -fl innovad          # identify the datadir in each command line first
+kill <pid>
+rm -rf "$TEST_DIR"         # the datadir the harness printed, not /tmp/innova_*
 ```
 
 ---

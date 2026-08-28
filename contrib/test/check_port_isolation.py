@@ -2,12 +2,9 @@
 # Copyright (c) 2026 The Innova developers
 """Verify that every harness honours IV5_TEST_PORT_BASE.
 
-The previous state of this tree was the reason this check exists: a sweep
-exported IV5_TEST_PORT_BASE and no harness read it, so `grep -l` found nothing
-and serial runs only looked isolated. A check that merely greps for the variable
-name would have passed then too, so this one also *evaluates* each harness's
-port assignments under two different bases and compares the numbers that come
-out.
+A grep for the variable name passes on a tree where nothing reads it, so this
+evaluates each harness's port assignments under two different bases and compares
+the numbers that come out.
 
 Checks per harness that launches a daemon:
   1. it sources lib/testports.sh

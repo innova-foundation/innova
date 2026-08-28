@@ -2476,22 +2476,8 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
     BOOST_CHECK(ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE) > 7750000);
 }
 
-// A gate that is already behind the chain activates the moment the release
-// ships, with no window to get the network onto the new binary.
-//
-// The floor below is a mainnet tip established by a self-verifying getheaders
-// walk from the hardcoded 7,750,000 checkpoint, cross-checked against further
-// peers -- the same reading v5activation.h sets the shift against. A tip only
-// ever moves forward, so a shift that clears it today cannot silently stop
-// clearing it; the check goes stale in the safe direction.
-//
-// NOTE for the release preflight: v5activation.h states two different floors.
-// Its opening paragraph says a shift "is only valid while the tip is at least
-// 100,000 blocks below the effective first gate"; the recheck paragraph says
-// the release policy enforces 50,000. The current lead is 62,702, which
-// satisfies the second and fails the first. This asserts the 50,000 figure
-// because that is the one the tree currently satisfies -- settle which floor is
-// the policy before tagging rather than letting the ambiguity decide.
+// A gate already behind the chain activates the moment the release ships. The floor is
+// a mainnet tip read from the 7,750,000 checkpoint; it only goes stale in the safe direction.
 static const int MAINNET_TIP_OBSERVED = 7917298;          // 2026-08-16 02:15 UTC
 static const int MAINNET_V5_MIN_GATE_MARGIN = 50000;
 

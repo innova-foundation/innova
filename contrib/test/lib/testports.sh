@@ -1,28 +1,7 @@
 #!/bin/bash
 # Copyright (c) 2026 The Innova developers
-# Port allocation and daemon teardown shared by the regtest/testnet harnesses.
-#
-# Sourced, never executed.
-#
-# Why this exists: every harness used to hardcode its listen/RPC/IDNS ports. A
-# sweep exported a port base that no harness read, so serial runs only looked
-# isolated and two concurrent runs of the same harness silently fought over the
-# same sockets. The failure surfaced as "node did not come up", which reads as a
-# product defect and is not one.
-#
-# Port selection
-#   IV5_TEST_PORT_BASE unset   -> every harness keeps its historical literals.
-#   IV5_TEST_PORT_BASE=<n>     -> slot k binds <n>+k. Caller owns the window.
-#   IV5_TEST_PORT_BASE=auto    -> a free, unclaimed window is located and locked
-#                                 for the lifetime of this process.
-#
-# A harness asks for ports by slot, never by literal:
-#   source "$SCRIPT_DIR/lib/testports.sh"
-#   iv5_ports_init my_harness
-#   NODE1_PORT=$(iv5_port 0 27445)   # slot 0, historical default 27445
-#
-# Ports are then asserted free before anything binds them, so a held port is
-# reported as a held port instead of as a node that failed to start.
+# Port allocation and daemon teardown for harnesses (sourced). IV5_TEST_PORT_BASE unset
+# keeps literals, <n> binds <n>+slot, auto locks a free window; use iv5_port <slot> <default>.
 
 # Guard against double-sourcing.
 if [ -n "${IV5_TESTPORTS_SOURCED:-}" ]; then
