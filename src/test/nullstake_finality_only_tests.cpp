@@ -284,23 +284,29 @@ BOOST_AUTO_TEST_CASE(the_b2c_hidden_coinstake_bound_has_no_height_to_decide_at)
             "block now reaches the coinstake dispatch inside the hidden-signer window");
     }
 
-    // Which mechanism carries which network. Without this the ordering check above
-    // would pass on a ladder that had collapsed every window to empty, and nothing
-    // would say the DAG ordering is what does the work.
+    // Which mechanism carries which network. Public networks retire the gates to the
+    // sentinel, so the window is empty there; regtest still opens one, which keeps the
+    // DAG-ordering check above non-vacuous.
     SelectMainnet();
     BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET == FORK_HEIGHT_NULLSTAKE_B2C,
         "mainnet no longer co-activates DELEGSET and B2C, so the window is no longer "
         "empty and only the DAG ordering closes it");
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET == PRIVACY_VNEXT_HEIGHT_UNSET,
+        "mainnet scheduled a retired M-of-N gate, so the window is no longer empty "
+        "by retirement and rests on the DAG ordering alone");
 
     SelectTestnet();
-    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_B2C > FORK_HEIGHT_NULLSTAKE_DELEGSET,
-        "testnet lost its non-empty hidden-signer window, so the DAG ordering check "
-        "above passes vacuously there");
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET == FORK_HEIGHT_NULLSTAKE_B2C,
+        "testnet no longer co-activates DELEGSET and B2C, so the window is no longer "
+        "empty and only the DAG ordering closes it");
+    BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_DELEGSET == PRIVACY_VNEXT_HEIGHT_UNSET,
+        "testnet scheduled a retired M-of-N gate, so the window is no longer empty "
+        "by retirement and rests on the DAG ordering alone");
 
     SelectRegtest();
     BOOST_CHECK_MESSAGE(FORK_HEIGHT_NULLSTAKE_B2C > FORK_HEIGHT_NULLSTAKE_DELEGSET,
         "regtest lost its non-empty hidden-signer window, so the DAG ordering check "
-        "above passes vacuously there");
+        "above passes vacuously on every network");
 }
 
 // No public-network height may have Boundary B live and the fee-note fork not yet live:

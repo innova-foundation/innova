@@ -218,15 +218,14 @@ BOOST_AUTO_TEST_CASE(dag_parent_commitment_decodes_at_the_height_that_built_it)
         }
     }
 
-    // Below Boundary A the ceiling is the script push limit, so it must move
-    // with that limit rather than be restated beside it.
+    // Both decoders parse the bounded push directly, so the full range is available on
+    // either side of Boundary A.
     BOOST_CHECK_EQUAL(MaxDAGParentsAtHeight(GetForkHeightDAG()),
-                      (MAX_SCRIPT_ELEMENT_SIZE - DAG_PARENT_PAYLOAD_HEADER) / 32);
-
-    // At and above Boundary A the strict decoder parses the payload directly and
-    // the full range is available.
+                      (unsigned int)MAX_DAG_PARENTS);
     BOOST_CHECK_EQUAL(MaxDAGParentsAtHeight(GetForkHeightBoundaryA()),
                       (unsigned int)MAX_DAG_PARENTS);
+    BOOST_CHECK(DAG_PARENT_PAYLOAD_HEADER + (unsigned int)MAX_DAG_PARENTS * 32 >
+                (unsigned int)MAX_SCRIPT_ELEMENT_SIZE);
 }
 
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)

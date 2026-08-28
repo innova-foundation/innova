@@ -324,10 +324,10 @@ bool ReadDAGParentCommitmentAtHeight(
 
 unsigned int MaxDAGParentsAtHeight(int nHeight)
 {
-    if (IsBoundaryAActiveAtHeight(nHeight))
-        return (unsigned int)MAX_DAG_PARENTS;
-    return std::min((unsigned int)MAX_DAG_PARENTS,
-                    MAX_DAG_PARENTS_PRE_BOUNDARY_A);
+    // Both decoders bound the set by the count byte against MAX_DAG_PARENTS, not the element size.
+    // The height stays an input because AcceptBlock chooses the decoder by it.
+    (void)nHeight;
+    return (unsigned int)MAX_DAG_PARENTS;
 }
 
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents)

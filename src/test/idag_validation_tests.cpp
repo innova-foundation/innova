@@ -1482,22 +1482,14 @@ BOOST_AUTO_TEST_CASE(chain_trust_is_the_poem_entropy_weight_from_the_gate)
     BOOST_CHECK(index.GetBlockTrust() == nWorkValue);
 }
 
-// The pre-Boundary-A decoder reads its payload through CScript::GetOp, which
-// refuses any push above MAX_SCRIPT_ELEMENT_SIZE. Below Boundary A the parent
-// count is therefore ceilinged by the script element size well before
-// MAX_DAG_PARENTS is reached, and a commitment naming more simply decodes to
-// nothing. Pinned because the two eras do not share a ceiling.
-BOOST_AUTO_TEST_CASE(pre_boundary_a_parent_count_is_ceilinged_by_the_script_element_size)
+// The permissive pre-Boundary-A decoder never yields more than MAX_DAG_PARENTS,
+// whatever the count byte names (decoder agreement: dag_parent_commitment_tests).
+BOOST_AUTO_TEST_CASE(pre_boundary_a_parent_count_is_bounded_by_the_consensus_maximum)
 {
-    const unsigned int nElementCeiling = (MAX_SCRIPT_ELEMENT_SIZE - 5) / 32;
-    BOOST_REQUIRE(nElementCeiling < (unsigned int)MAX_DAG_PARENTS);
+    BOOST_CHECK_EQUAL(ExtractDAGParents(MakeIDAGCommitmentScript(MAX_DAG_PARENTS)).size(),
+                      (size_t)MAX_DAG_PARENTS);
+    BOOST_CHECK(ExtractDAGParents(MakeIDAGCommitmentScript(MAX_DAG_PARENTS + 1)).empty());
 
-    BOOST_CHECK_EQUAL(ExtractDAGParents(MakeIDAGCommitmentScript(nElementCeiling)).size(),
-                      nElementCeiling);
-    BOOST_CHECK(ExtractDAGParents(MakeIDAGCommitmentScript(nElementCeiling + 1)).empty());
-
-    // Whatever the count byte names, the legacy path never yields more than the
-    // consensus maximum.
     for (unsigned int nCount = 1; nCount <= 255; nCount++)
         BOOST_CHECK(ExtractDAGParents(MakeIDAGCommitmentScript(nCount)).size()
                         <= (size_t)MAX_DAG_PARENTS);
