@@ -4112,7 +4112,7 @@ static void QueueBlockInventory(CNode* pfrom, const uint256& hash, std::set<uint
     pfrom->vInventoryToSend.push_back(inv);
 }
 
-static void PushBlockAnnouncement(CNode* pnode, const CBlock& header, bool fForce)
+void PushBlockAnnouncement(CNode* pnode, const CBlock& header, bool fForce)
 {
     if (!pnode)
         return;
@@ -15681,9 +15681,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         //
         // Message: inventory
         //
-        vector<CInv> vInv;
+        vector<CInv> vInv; // explicit requests, always sent as inv; tips use PushBlockAnnouncement
         vector<CInv> vInvWait;
-        vector<CBlock> vBlockHeaders;
         {
             LOCK(pto->cs_inventory);
             vInv.reserve(pto->vInventoryToSend.size());
@@ -15725,19 +15724,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 bool fKnownInserted = pto->setInventoryKnown.insert(inv).second;
                 if (fForceInventory || fKnownInserted)
                 {
-                    if (inv.type == MSG_BLOCK && pto->fPreferHeaders)
-                    {
-                        map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(inv.hash);
-                        if (mi != mapBlockIndex.end())
-                        {
-                            CBlockIndex* pindex = (*mi).second;
-                            vBlockHeaders.push_back(pindex->GetBlockHeader());
-                        }
-                    }
-                    else
-                    {
-                        vInv.push_back(inv);
-                    }
+                    vInv.push_back(inv);
                     if (vInv.size() >= 1000)
                     {
                         pto->PushMessage("inv", vInv);
@@ -15751,8 +15738,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         }
         if (!vInv.empty())
             pto->PushMessage("inv", vInv);
-        if (!vBlockHeaders.empty())
-            pto->PushMessage("headers", vBlockHeaders);
 
 
         // getdata moved outside cs_main (below) for IBD reliability

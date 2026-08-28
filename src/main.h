@@ -1000,6 +1000,9 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
 bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
 bool ProcessMessages(CNode* pfrom);
 bool SendMessages(CNode* pto, bool fSendTrickle);
+// BIP130 tip announcement: headers to a sendheaders peer, inv otherwise. Distinct
+// from the vInventoryToSend queue, which answers requests and is always inv.
+void PushBlockAnnouncement(CNode* pnode, const CBlock& header, bool fForce);
 bool LoadExternalBlockFile(FILE* fileIn);
 
 //void PushGetBlocks(CNode* pnode, CBlockIndex* pindexBegin, uint256 hashEnd);
