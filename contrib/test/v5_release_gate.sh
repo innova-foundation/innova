@@ -1,11 +1,7 @@
 #!/bin/bash
 # Local/CI orchestrator for the v5 internal release audit.
-# --all means static checks, the evidence gate, a clean platform build/
-# release-check, and the repository integration suites. Hosted sanitizer and
-# candidate-evidence policy remain separate mandatory release jobs.
-#
-# The evidence gate is fail-closed: evidence no repository command can produce
-# is reported missing and fails the gate. A --selftest is not evidence.
+# The evidence gate is fail-closed: missing evidence fails it, and --selftest is not evidence.
+# Evidence lives in V5_EVIDENCE_DIR, one document and one log per release-policy verification field.
 
 set -euo pipefail
 
@@ -30,8 +26,33 @@ STATIC_COMMANDS=(
     "python3 $ROOT/contrib/testnet_tools/v5_testnet_rollout.py --selftest"
     "python3 $ROOT/contrib/testnet_tools/v5_mainnet_activation.py --selftest"
     "python3 $SCRIPT_DIR/check_v5_release_policy.py --selftest"
+    "python3 $SCRIPT_DIR/v5_verification_evidence.py --selftest"
     "python3 $ROOT/src/privacy_vnext/rust/tools/verify_provenance.py"
 )
+
+# One producer per REQUIRED_VERIFICATION_FIELDS entry: produce_<obligation>_evidence.sh answers
+# for <obligation>_sha256, so the field is read from the file name.
+VERIFICATION_PRODUCERS=(
+    "$SCRIPT_DIR/produce_asan_lsan_evidence.sh"
+    "$SCRIPT_DIR/produce_fuzz_corpora_evidence.sh"
+    "$SCRIPT_DIR/produce_integration_evidence.sh"
+    "$SCRIPT_DIR/produce_linux_clean_evidence.sh"
+    "$SCRIPT_DIR/produce_macos_clean_evidence.sh"
+    "$SCRIPT_DIR/produce_performance_evidence.sh"
+    "$SCRIPT_DIR/produce_qt5_compat_evidence.sh"
+    "$SCRIPT_DIR/produce_ubsan_evidence.sh"
+)
+
+EVIDENCE_TOOL="$SCRIPT_DIR/v5_verification_evidence.py"
+EVIDENCE_DIR="${V5_EVIDENCE_DIR:-${TMPDIR:-/tmp}/innova-v5-evidence}"
+
+# produce_asan_lsan_evidence.sh -> asan_lsan_sha256
+producer_field() {
+    local name
+    name="$(basename "$1")"
+    name="${name#produce_}"
+    printf '%s_sha256\n' "${name%_evidence.sh}"
+}
 
 # A four-node differential needs four running nodes on one network with mining
 # paused. Point these at a real inventory to produce the evidence; unset, the
@@ -227,8 +248,52 @@ PY
         missing=1
     fi
 
+    log "checking the evidence documents behind the verification digests"
+    local producer field commit fields=() allow=()
+    commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$commit" ] || fail "the gate must run in a git checkout; the digests are keyed to a commit"
+    [ "${V5_EVIDENCE_ALLOW_DIRTY:-0}" = "1" ] && allow=(--allow-dirty)
+    for producer in "${VERIFICATION_PRODUCERS[@]}"; do
+        [ -x "$producer" ] || fail "wired producer is missing or not executable: $producer"
+        field="$(producer_field "$producer")"
+        fields+=(--field "$field")
+        if ! python3 "$EVIDENCE_TOOL" verify --field "$field" --dir "$EVIDENCE_DIR" \
+                --commit "$commit" ${allow+"${allow[@]}"} >/dev/null 2>"${DIFFERENTIAL_TMP%/}/v5-evidence-$field.err"; then
+            printf '[v5-release-gate] MISSING EVIDENCE: %s\n' "$field" >&2
+            sed 's/^/    /' "${DIFFERENTIAL_TMP%/}/v5-evidence-$field.err" >&2 || true
+            printf '    produce it with %s (it records the run, or fails)\n' \
+                "${producer#$ROOT/}" >&2
+            missing=1
+        fi
+        rm -f "${DIFFERENTIAL_TMP%/}/v5-evidence-$field.err"
+    done
+    # The index is the block a release manifest carries under "verification"; it is
+    # written from the documents on disk, never transcribed.
+    python3 "$EVIDENCE_TOOL" index "${fields[@]}" --dir "$EVIDENCE_DIR" \
+        --commit "$commit" ${allow+"${allow[@]}"} >/dev/null 2>&1 || true
+
     [ "$missing" -eq 0 ] || fail "required release evidence is missing (see MISSING lines above)"
     log "evidence gate passed"
+}
+
+# Runs every wired producer. Each either reuses the document already written for
+# this commit or performs its run; a host that can do neither fails here, because
+# an obligation that exits 0 without evidence is the failure this chain prevents.
+run_verification() {
+    local producer field status=0 failed=()
+    log "producing release verification evidence into $EVIDENCE_DIR"
+    for producer in "${VERIFICATION_PRODUCERS[@]}"; do
+        field="$(producer_field "$producer")"
+        log "running $(basename "$producer") for $field"
+        status=0
+        V5_EVIDENCE_DIR="$EVIDENCE_DIR" "$producer" || status=$?
+        [ "$status" -eq 0 ] || failed+=("$field (exit $status)")
+    done
+    if [ "${#failed[@]}" -gt 0 ]; then
+        printf '[v5-release-gate] verification evidence not produced: %s\n' "${failed[*]}" >&2
+        fail "one or more verification producers did not produce evidence"
+    fi
+    log "verification evidence complete"
 }
 
 print_suites() {
@@ -237,6 +302,9 @@ print_suites() {
         printf 'executed\tstatic\t%s\n' "$entry"
     done
     printf 'executed\tunit\tmake release-check\n'
+    for entry in "${VERIFICATION_PRODUCERS[@]}"; do
+        printf 'executed\tverification\t%s\n' "$entry"
+    done
     for entry in "${INTEGRATION_SUITES[@]}"; do
         printf 'executed\tintegration\t%s\n' "$entry"
     done
@@ -323,16 +391,21 @@ case "$MODE" in
     --evidence)
         run_evidence
         ;;
+    --verification)
+        run_verification
+        ;;
     --print-suites)
         print_suites
         ;;
     --all)
         run_static
-        run_evidence
         run_unit
-        run_integration
+        # The integration suites run here, once, through the producer that records
+        # them; run_evidence then reads every document this produced.
+        run_verification
+        run_evidence
         ;;
     *)
-        fail "usage: $0 [--static|--unit|--integration|--evidence|--print-suites|--all]"
+        fail "usage: $0 [--static|--unit|--integration|--verification|--evidence|--print-suites|--all]"
         ;;
 esac

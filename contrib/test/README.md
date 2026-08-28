@@ -178,3 +178,46 @@ All tests clean up automatically on exit via `trap`. If a test is interrupted, p
 pkill -f "innovad.*stress\|innovad.*staking\|innovad.*test"
 rm -rf /tmp/innova_*
 ```
+
+---
+
+## Release verification evidence
+
+`check_v5_release_policy.py` requires a SHA-256 for every field of
+`REQUIRED_VERIFICATION_FIELDS` in the release manifest's `verification` block.
+Eight of those fields are produced here, one producer each:
+
+| Field | Producer | Host |
+|-------|----------|------|
+| `asan_lsan_sha256` | `produce_asan_lsan_evidence.sh` | Linux |
+| `ubsan_sha256` | `produce_ubsan_evidence.sh` | Linux |
+| `linux_clean_sha256` | `produce_linux_clean_evidence.sh` | Linux |
+| `macos_clean_sha256` | `produce_macos_clean_evidence.sh` | macOS |
+| `qt5_compat_sha256` | `produce_qt5_compat_evidence.sh` | any, Qt5 qmake |
+| `fuzz_corpora_sha256` | `produce_fuzz_corpora_evidence.sh` | Linux, clang |
+| `integration_sha256` | `produce_integration_evidence.sh` | any, built `innovad` |
+| `performance_sha256` | `produce_performance_evidence.sh` | any, built `innovad` |
+
+Each producer either reuses the document already written for this commit or
+performs the run, and writes `<obligation>.json` plus `<obligation>.log` into
+`V5_EVIDENCE_DIR` (default `$TMPDIR/innova-v5-evidence`). The document's own
+SHA-256 is the manifest value; `v5_verification_evidence.py index` writes them all
+to `verification.json` in the same directory, which is the block a manifest
+carries. A producer never exits 0 without a document: a host that cannot perform
+the run and has no document for this commit fails and names the file to copy in.
+
+```bash
+contrib/test/v5_release_gate.sh --verification   # run every producer
+contrib/test/v5_release_gate.sh --evidence       # verify the documents, write verification.json
+```
+
+Cross-platform runs collect: produce the macOS document on a Mac, copy
+`macos_clean.json` and `macos_clean.log` into the Linux host's `V5_EVIDENCE_DIR`,
+and the gate verifies it there. Documents are keyed to the commit and to the log
+they name, so one from another commit, or one whose log was edited afterwards, is
+refused rather than reused.
+
+`performance_sha256` additionally needs a reviewed floor in
+`contrib/test/performance_baseline.json`. None is committed yet, so that producer
+measures, writes `performance_baseline.candidate.json` for review and fails: a
+throughput figure with nothing to fail against is a number, not evidence.
