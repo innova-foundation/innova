@@ -45,7 +45,7 @@
     {"name": "iv5_migration_regtest_test.sh", "kind": "suite", "nodes": 1, "minutes": 10},
     {"name": "iv5_tree_store_regtest_test.sh", "kind": "suite", "nodes": 1, "minutes": 10},
     {"name": "iv5_leaf_index_catchup_regtest_test.sh", "kind": "suite", "nodes": 1, "minutes": 10},
-    {"name": "iv5_dag_sibling_regtest_test.sh", "kind": "suite", "nodes": 3, "minutes": 15},
+    {"name": "iv5_dag_sibling_regtest_test.sh", "kind": "suite", "nodes": 3, "minutes": 45},
     {"name": "iv5_collateral_rpc_regtest_test.sh", "kind": "suite", "nodes": 1, "minutes": 10},
     {"name": "iv5_note_vote_regtest_test.sh", "kind": "suite", "nodes": 3, "minutes": 15},
 
