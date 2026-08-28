@@ -48,11 +48,8 @@ void testRingSigs(int nRingSize)
 
     uint256 preimage;
     BOOST_CHECK(1 == RAND_bytes((uint8_t*) preimage.begin(), 32));
-    //BOOST_MESSAGE("Txn preimage: " << HexStr(preimage));
 
-    //BOOST_MESSAGE("nRingSize: " << nRingSize);
     int iSender = GetRandInt(nRingSize);
-    //BOOST_MESSAGE("sender: " << iSender);
 
     ec_secret sSpend;
     ec_point pkSpend;
@@ -115,10 +112,8 @@ void testRingSigABs(int nRingSize)
 
     uint256 preimage;
     BOOST_CHECK(1 == RAND_bytes((uint8_t*) preimage.begin(), 32));
-    //BOOST_MESSAGE("Txn preimage: " << HexStr(preimage));
 
     int iSender = GetRandInt(nRingSize);
-    //BOOST_MESSAGE("sender: " << iSender);
 
     ec_point pSigC;
 
