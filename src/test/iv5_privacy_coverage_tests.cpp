@@ -1254,8 +1254,14 @@ BOOST_AUTO_TEST_CASE(a_block_whose_coinstake_is_a_nullstake_encoding_does_not_co
     const char* kNullStakeV2 = "NullStake V2 stake note membership is unverifiable";
     const char* kNullStakeV3 = "NullStake V3 stake note membership is unverifiable";
 
-    MineTo(BestIndex()->nHeight + 2);
-    BOOST_REQUIRE_GE(BestIndex()->nHeight + 1, FORK_HEIGHT_NULLSTAKE_V3);
+    // An absolute floor, not only a relative bump: run filtered, this suite is
+    // the first to touch the shared chain and +2 does not reach the V3 gate.
+    const int nV3 = FORK_HEIGHT_NULLSTAKE_V3;
+    int nTarget = BestIndex()->nHeight + 2;
+    if (nTarget < nV3 - 1)
+        nTarget = nV3 - 1;
+    MineTo(nTarget);
+    BOOST_REQUIRE_GE(BestIndex()->nHeight + 1, nV3);
 
     const int nStakeVersions[] = {SHIELDED_TX_VERSION_NULLSTAKE,
                                   SHIELDED_TX_VERSION_NULLSTAKE_V2,
