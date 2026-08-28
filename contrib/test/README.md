@@ -17,6 +17,7 @@ Comprehensive stress testing and validation suite for Innova Core.
 | `blockchain_stress_test.sh` | Chain structure & reorgs | 3 | Regtest |
 | `rpc_stress_test.sh` | Full RPC interface | 1 | Regtest |
 | `security_stress_test.sh` | Security & attack vectors | 2 | Regtest |
+| `crash_injection_test.sh` | SIGKILL recovery at the batched persistence points | 3 | Regtest |
 
 Additional scripts in `src/`:
 | Script | Focus Area |
