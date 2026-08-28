@@ -729,6 +729,19 @@ public:
         size_t& nNotesUsedOut,
         std::string& strErrorOut);
 
+    // Carry a data stamp on a spend funded from the pool. Nothing crosses the
+    // transparent boundary: the notes pay the fee, the remainder returns to this
+    // wallet, and the single zero-value OP_RETURN output rides inside the payload's
+    // transparent binding. `scriptStamp` must be a standard TX_NULL_DATA script.
+    bool CreatePrivacyVNextStamp(
+        const CScript& scriptStamp,
+        uint8_t nDisclosureMask,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        int64_t& nFeeOut,
+        size_t& nNotesUsedOut,
+        std::string& strErrorOut);
+
     // Spend notes back out to a transparent address. The payload releases the
     // amount and the transaction pays it to that address.
     bool CreatePrivacyVNextUnshield(

@@ -78,12 +78,12 @@ CScript PodStampScript(int nType, const std::vector<unsigned char>& vDigest,
 bool PodParseStampScript(const CScript& script, CPodStamp& stampOut);
 bool PodFindStamp(const CTransaction& tx, CPodStamp& stampOut);
 
-// Builds, signs and commits the stamp tx. Returns "" on success; any other
-// value is the reason the stamp was not published, and wtxNew is meaningless.
+// Builds, signs and commits the stamp tx. Returns "" on success, else the reason.
+// fFromPool funds it from v2008 notes (requires Boundary B); the stamp names no address.
 std::string PodCreateStamp(CWallet* pwallet, int nType,
                            const std::vector<unsigned char>& vDigest,
                            const std::vector<unsigned char>& vLocator,
-                           CWalletTx& wtxNew);
+                           CWalletTx& wtxNew, bool fFromPool = false);
 
 // The RPCs that read a server-side path publish any file the node's user can
 // read, so they are off unless -enablefilerpc=1. Throws when not enabled.

@@ -457,9 +457,9 @@ static PodTargetKind PodClassifyTarget(const std::string& strTarget, bool fFileA
 
 Value proofofdata(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 1 || params.size() > 2)
+    if (fHelp || params.size() < 1 || params.size() > 3)
         throw runtime_error(
-            "proofofdata <filelocation> [blinded]\n"
+            "proofofdata <filelocation> [blinded] [frompool]\n"
             "\nAnchors a SHA-256 digest of a local file in an OP_RETURN output on the Innova\n"
             "chain, so the file's existence at that block's time can be proven later.\n"
             "The file is hashed locally and is never uploaded anywhere.\n"
@@ -469,11 +469,18 @@ Value proofofdata(const Array& params, bool fHelp)
             "                     SHA-256(SHA-256(file) || salt) rather than the file's plain\n"
             "                     SHA-256. Save the returned salt: without it the stamp cannot\n"
             "                     be proven, and it is stored only in this wallet.\n"
+            "3. frompool          (boolean, optional, default=false) Fund the stamp from\n"
+            "                     shielded notes instead of transparent coins.\n"
             "\nWith blinded=false the on-chain digest is exactly what `sha256sum` prints, so\n"
             "anyone can verify the stamp with coreutils and a block explorer - but the digest\n"
             "then identifies the file to anyone who already holds a copy of it.\n"
             "\nThe stamp costs a normal transaction fee. The 0.01 INN it moves is paid back to\n"
             "this wallet; nothing is burned.\n"
+            "\nA transparent stamp names the address that paid it, so every stamp an address\n"
+            "makes is linkable to the others and to that address's whole transaction history.\n"
+            "With frompool=true the stamp is carried by a shielded transfer: it has no input\n"
+            "or output address at all, and two stamps from the same wallet are unlinkable.\n"
+            "The digest, the stamp's existence and its block time stay public either way.\n"
             "\nThis command reads a path on the node's filesystem and requires -enablefilerpc=1.\n"
             "Verify a stamp with podverify.\n");
 
@@ -489,6 +496,10 @@ Value proofofdata(const Array& params, bool fHelp)
     bool fBlinded = true;
     if (params.size() > 1)
         fBlinded = params[1].get_bool();
+
+    bool fFromPool = false;
+    if (params.size() > 2)
+        fFromPool = params[2].get_bool();
 
     boost::filesystem::path p(strFile);
     std::string strBase = p.filename().string();
@@ -516,7 +527,7 @@ Value proofofdata(const Array& params, bool fHelp)
         wtx.mapValue["podsalt"] = HexStr(vSalt.begin(), vSalt.end());
 
     strError = PodCreateStamp(pwalletMain, nType, vStampDigest,
-                              std::vector<unsigned char>(), wtx);
+                              std::vector<unsigned char>(), wtx, fFromPool);
     if (strError != "")
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
@@ -528,6 +539,7 @@ Value proofofdata(const Array& params, bool fHelp)
         obj.push_back(Pair("salt",   HexStr(vSalt.begin(), vSalt.end())));
     obj.push_back(Pair("stampdigest", HexStr(vStampDigest.begin(), vStampDigest.end())));
     obj.push_back(Pair("podtxid",    wtx.GetHash().GetHex()));
+    obj.push_back(Pair("funding",    fFromPool ? "shielded" : "transparent"));
     if (fBlinded)
         obj.push_back(Pair("warning",
             "Save the salt. Without it this stamp proves nothing about the file."));

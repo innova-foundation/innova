@@ -8,8 +8,11 @@
 #include "core.h"
 #include "innovarpc.h"
 #include "main.h"
+#include "shielded.h"
 #include "util.h"
 #include "wallet.h"
+
+#include <limits>
 
 #include <openssl/sha.h>
 
@@ -258,10 +261,34 @@ bool PodFindStamp(const CTransaction& tx, CPodStamp& stampOut)
     return false;
 }
 
+// The stamp rides a note transfer: notes pay the fee, the remainder comes back as
+// notes, and the OP_RETURN is the only output. It is inside the payload's transparent
+// binding, so no relay or miner can strip or redirect it.
+static std::string PodCreateStampFromPool(CWallet* pwallet,
+                                          const CScript& scriptStamp,
+                                          CWalletTx& wtxNew)
+{
+    const int nCandidateHeight = nBestHeight == std::numeric_limits<int>::max()
+                                     ? nBestHeight : nBestHeight + 1;
+    if (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
+        !IsShieldedVNextConsensusReady())
+        return "Shielded stamps are not active on this network yet.";
+
+    int64_t nFee = 0;
+    size_t nNotesUsed = 0;
+    std::string strError;
+    if (!pwallet->CreatePrivacyVNextStamp(scriptStamp,
+                                          iv5::WALLET_DEFAULT_DISCLOSURE_MASK,
+                                          true, wtxNew, nFee, nNotesUsed,
+                                          strError))
+        return "Shielded stamp failed: " + strError;
+    return "";
+}
+
 std::string PodCreateStamp(CWallet* pwallet, int nType,
                            const std::vector<unsigned char>& vDigest,
                            const std::vector<unsigned char>& vLocator,
-                           CWalletTx& wtxNew)
+                           CWalletTx& wtxNew, bool fFromPool)
 {
     if (!pwallet)
         return "Wallet is not available.";
@@ -276,6 +303,9 @@ std::string PodCreateStamp(CWallet* pwallet, int nType,
         return "Wallet is locked. Unlock it before stamping.";
     if (fWalletUnlockStakingOnly)
         return "Wallet is unlocked for staking only, unable to create transaction.";
+
+    if (fFromPool)
+        return PodCreateStampFromPool(pwallet, scriptStamp, wtxNew);
 
     CReserveKey changekey(pwallet);
     CReserveKey stampkey(pwallet);

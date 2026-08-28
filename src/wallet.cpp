@@ -11790,9 +11790,11 @@ static bool PreparePrivacyVNextSpend(
     nSelectedOut = 0;
     nFeeOut = 0;
 
-    if (nAmount <= 0)
+    // Zero is a stamp: it pays nobody and selects only enough to cover the fee. The
+    // paying callers reject it before they get here.
+    if (nAmount < 0)
     {
-        strErrorOut = "amount must be positive";
+        strErrorOut = "amount must not be negative";
         return false;
     }
     if (pwallet->vchPrivacyVNextSeed.size() != 32)
@@ -11914,6 +11916,11 @@ bool CWallet::CreatePrivacyVNextTransfer(
         strErrorOut = "an IV5 disclosure mask is three bits";
         return false;
     }
+    if (nAmount <= 0)
+    {
+        strErrorOut = "amount must be positive";
+        return false;
+    }
 
     // A transfer consumes notes, not outputs: it names no transparent input or output,
     // and the payload commits to exactly that. Settled first, because the change index
@@ -11980,6 +11987,115 @@ bool CWallet::CreatePrivacyVNextTransfer(
         if (!CommitTransaction(wtxNew, reservekey))
         {
             strErrorOut = "the transfer was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CWallet::CreatePrivacyVNextStamp(
+    const CScript& scriptStamp,
+    uint8_t nDisclosureMask,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    int64_t& nFeeOut,
+    size_t& nNotesUsedOut,
+    std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    nFeeOut = 0;
+    nNotesUsedOut = 0;
+    strErrorOut.clear();
+
+    if (nDisclosureMask > iv5::DISCLOSURE_MASK)
+    {
+        strErrorOut = "an IV5 disclosure mask is three bits";
+        return false;
+    }
+    if (scriptStamp.empty())
+    {
+        strErrorOut = "the stamp script is empty";
+        return false;
+    }
+    // The one shape the standardness carve-out admits, checked here so a stamp that
+    // could not relay is refused before it spends anything.
+    txnouttype whichType;
+    std::vector<std::vector<unsigned char> > vSolutions;
+    if (!Solver(scriptStamp, whichType, vSolutions) || whichType != TX_NULL_DATA)
+    {
+        strErrorOut = "an IV5 stamp output must be a standard OP_RETURN";
+        return false;
+    }
+
+    // Pays nobody: the notes are spent, the fee is paid, and the remainder returns to
+    // this wallet. Selection therefore only has to cover the fee.
+    std::vector<CPrivacyVNextWalletNote> vNotes;
+    int64_t nSelected = 0;
+    int64_t nFee = 0;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDerivedKeys changeKeys;
+    uint8_t nNetwork = 0;
+    if (!PreparePrivacyVNextSpend(this, 0, nFee, vNotes, nSelected, genesis,
+                                  changeKeys, nNetwork, strErrorOut))
+        return false;
+
+    // Two outputs to one internal receiver, split at a random point: the same arity
+    // every other IV5 spend carries, so the stamp's own notes read no differently from
+    // a transfer's recipient-and-change pair.
+    const int64_t nReturned = nSelected - nFee;
+    std::vector<PrivacyVNextNewOutput> vOutputs(2);
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        vOutputs[i].recipient.nNetwork = nNetwork;
+        vOutputs[i].recipient.nAddressType = 0;
+        vOutputs[i].recipient.spendPublic = changeKeys.spendPublic;
+        vOutputs[i].recipient.viewPublic = changeKeys.viewPublic;
+    }
+    SplitPrivacyVNextValue(nReturned, vOutputs[0].nAmount, vOutputs[1].nAmount);
+
+    // The stamp output is settled before the binding is taken, because the payload
+    // commits to vout and the proofs bind to the payload. A stamp appended afterwards
+    // would spend the notes for a transaction consensus rejects.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    txNew.vout.push_back(CTxOut(0, scriptStamp));
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    // No transparent output receives value, so the payload declares a balance of zero
+    // and the pool releases only the fee.
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
+                                changeKeys.outgoingViewSecret, transparentBinding,
+                                nNetwork, nDisclosureMask, nFee, 0, vchPayload,
+                                strErrorOut))
+        return false;
+
+    txNew.privacyVNext.vchPayload = vchPayload;
+    txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
+
+    std::string strReason;
+    if (!IsStandardTx(txNew, strReason))
+    {
+        strErrorOut = "the built stamp is nonstandard: " + strReason;
+        return false;
+    }
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+    nFeeOut = nFee;
+    nNotesUsedOut = vNotes.size();
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the stamp was built but could not be committed";
             return false;
         }
     }
@@ -12258,6 +12374,12 @@ bool CWallet::CreatePrivacyVNextUnshield(
     {
         strErrorOut = strprintf("IV5 unshield is retired at height %d",
                                 FORK_HEIGHT_IV5_FEE_NOTE);
+        return false;
+    }
+
+    if (nAmount <= 0)
+    {
+        strErrorOut = "amount must be positive";
         return false;
     }
 
