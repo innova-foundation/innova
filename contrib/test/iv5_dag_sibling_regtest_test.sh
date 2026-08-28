@@ -203,6 +203,18 @@ partition_nodes() {
     return 1
 }
 
+# Re-dial every ordered pair to re-trigger a missed block request. Idempotent for
+# connected peers and refused by bans, so it cannot rejoin a partition.
+redial_nodes() {
+    local a b
+    for ((a=0; a<NUM_NODES; a++)); do
+        for ((b=0; b<NUM_NODES; b++)); do
+            [ "$a" = "$b" ] && continue
+            rpc "$a" addnode "127.0.0.1:$(node_port "$b")" onetry >/dev/null 2>&1 || true
+        done
+    done
+}
+
 wait_sync() {
     local target="$1" max="${2:-1200}" n h
     for ((i=0; i<max; i++)); do
@@ -212,16 +224,21 @@ wait_sync() {
             if ! is_int "$h" || [ "$h" -lt "$target" ]; then ok=0; break; fi
         done
         [ "$ok" -eq 1 ] && return 0
+        # Mining at regtest speed outruns block announcement often enough that a
+        # node arrives here stalled a few blocks short with its peers still up.
+        [ $((i % 30)) -eq 29 ] && redial_nodes
         sleep 1
     done
     return 1
 }
 
 wait_same_tip() {
-    for _ in $(seq 1 180); do
+    local i
+    for ((i=0; i<180; i++)); do
         local a b
         a="$(best_hash 0)"; b="$(best_hash 1)"
         if [ ${#a} -eq 64 ] && [ "$a" = "$b" ]; then return 0; fi
+        [ $((i % 30)) -eq 29 ] && redial_nodes
         sleep 1
     done
     return 1
