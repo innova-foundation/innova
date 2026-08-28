@@ -9,14 +9,18 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_block_propagation_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_idag_block_prop}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_idag_block_prop)}"
 NUM_NODES="${NUM_NODES:-5}"
-BASE_PORT="${BASE_PORT:-27980}"
-BASE_RPC="${BASE_RPC:-28040}"
-BASE_IDNS="${BASE_IDNS:-8080}"
+BASE_PORT="${BASE_PORT:-$(iv5_port 0 27980)}"
+BASE_RPC="${BASE_RPC:-$(iv5_port 16 28040)}"
+BASE_IDNS="${BASE_IDNS:-$(iv5_port 32 8080)}"
 RPCUSER="${RPCUSER:-idagblockprop}"
 RPCPASS="${RPCPASS:-idagblockproppass}"
 
@@ -100,7 +104,7 @@ cleanup() {
         rpc "$node" stop >/dev/null 2>&1 || true
     done
     sleep 2
-    pkill -f "innovad.*innova_idag_block_prop" 2>/dev/null || true
+    iv5_kill_daemons "innova_idag_block_prop" TERM 2>/dev/null || true
     if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
     else

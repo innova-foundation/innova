@@ -11,14 +11,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init pod_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${POD_TEST_DIR:-/tmp/innova_pod_$$}"
 NODE_DIR="$TEST_DIR/node0"
-PORT="${POD_PORT:-29500}"
-RPC="${POD_RPC:-29501}"
-IDNS="${POD_IDNS:-29502}"
+PORT="${POD_PORT:-$(iv5_port 0 29500)}"
+RPC="${POD_RPC:-$(iv5_port 1 29501)}"
+IDNS="${POD_IDNS:-$(iv5_port 2 29502)}"
 RPCUSER="podtest"
 RPCPASS="podtestpass"
 
@@ -268,7 +272,7 @@ header "4. Hyperfile against a reachable IPFS API"
 
 ENDPOINT="${POD_IPFS_ENDPOINT:-}"
 if [ -z "$ENDPOINT" ] && [ -f "$SCRIPT_DIR/ipfs_api_stub.py" ]; then
-    STUB_PORT="${POD_IPFS_PORT:-25801}"
+    STUB_PORT="${POD_IPFS_PORT:-$(iv5_port 3 25801)}"
     python3 "$SCRIPT_DIR/ipfs_api_stub.py" "$STUB_PORT" > "$TEST_DIR/ipfs_stub.log" 2>&1 &
     STUB_PID=$!
     for _ in $(seq 1 20); do

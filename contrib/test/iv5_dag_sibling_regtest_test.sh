@@ -30,14 +30,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_dag_sibling_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_SIBLING_TEST_DIR:-/tmp/innova_iv5_sibling_$$}"
 NUM_NODES=2
-BASE_PORT="${IV5_SIBLING_BASE_PORT:-28800}"
-BASE_RPC="${IV5_SIBLING_BASE_RPC:-28860}"
-BASE_IDNS="${IV5_SIBLING_BASE_IDNS:-8880}"
+BASE_PORT="${IV5_SIBLING_BASE_PORT:-$(iv5_port 0 28800)}"
+BASE_RPC="${IV5_SIBLING_BASE_RPC:-$(iv5_port 16 28860)}"
+BASE_IDNS="${IV5_SIBLING_BASE_IDNS:-$(iv5_port 32 8880)}"
 RPCUSER="iv5sib"
 RPCPASS="iv5sibpass"
 WALLETPASS="iv5sibwallet"

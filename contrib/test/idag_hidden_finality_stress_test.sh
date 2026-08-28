@@ -11,6 +11,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_hidden_finality_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
@@ -19,9 +23,9 @@ NUM_NODES="${IDAG_HIDDEN_NODES:-3}"
 TARGET_BLOCKS="${IDAG_HIDDEN_BLOCKS:-60}"
 KEEP_DIR="${IDAG_HIDDEN_KEEP_DIR:-0}"
 PORT_OFFSET="${IDAG_HIDDEN_PORT_OFFSET:-0}"
-BASE_PORT="${IDAG_HIDDEN_BASE_PORT:-18122}"
-BASE_RPC="${IDAG_HIDDEN_BASE_RPC:-19172}"
-BASE_IDNS="${IDAG_HIDDEN_BASE_IDNS:-8342}"
+BASE_PORT="${IDAG_HIDDEN_BASE_PORT:-$(iv5_port 0 18122)}"
+BASE_RPC="${IDAG_HIDDEN_BASE_RPC:-$(iv5_port 16 19172)}"
+BASE_IDNS="${IDAG_HIDDEN_BASE_IDNS:-$(iv5_port 32 8342)}"
 MINE_TIMEOUT_PER_BLOCK="${IDAG_HIDDEN_MINE_TIMEOUT_PER_BLOCK:-30}"
 SYNC_TIMEOUT="${IDAG_HIDDEN_SYNC_TIMEOUT:-90}"
 RPCUSER="hiddenfinality"
@@ -179,7 +183,7 @@ cleanup() {
     for ((node=0; node<NUM_NODES; node++)); do
         rpc "$node" stop >/dev/null 2>&1 || true
     done
-    pkill -f "innovad.*${TEST_DIR}" 2>/dev/null || true
+    iv5_kill_daemons "${TEST_DIR}" TERM 2>/dev/null || true
     sleep 2
     if [ "$KEEP_DIR" = "1" ]; then
         log "Preserving $TEST_DIR"
@@ -316,7 +320,17 @@ PRIVATE_VOTES=$(json_field "$FININFO" "private_votes")
 [ "$FORK_ACTIVE" = "true" ] && success "finality fork active" || fail "finality fork inactive"
 [ "$MODEL" = "active-epoch-committed-weight" ] && success "dynamic finality model reported" || fail "unexpected finality model: $MODEL"
 [ "$ABS_FLOOR" = "false" ] && success "absolute stake floor disabled" || fail "absolute stake floor not disabled"
-[ "$PRIVATE_MODE" = "hidden-weight-nullstake" ] && success "hidden finality mode reported" || fail "unexpected private finality mode: $PRIVATE_MODE"
+# private_finality_mode tracks Boundary B: 'disabled' below it, 'privacy_vnext' at
+# or above. Assert it against the boundary state in the same response.
+BOUNDARY_B_ACTIVE=$(json_field "$FININFO" "boundary_b_active")
+if [ "$BOUNDARY_B_ACTIVE" = "true" ]; then
+    EXPECTED_PRIVATE_MODE="privacy_vnext"
+else
+    EXPECTED_PRIVATE_MODE="disabled"
+fi
+[ "$PRIVATE_MODE" = "$EXPECTED_PRIVATE_MODE" ] \
+    && success "private finality mode is $PRIVATE_MODE, matching boundary_b_active=$BOUNDARY_B_ACTIVE" \
+    || fail "private finality mode is $PRIVATE_MODE, expected $EXPECTED_PRIVATE_MODE at boundary_b_active=$BOUNDARY_B_ACTIVE"
 [ "$TALLY_REQUIRED" = "true" ] && success "private votes require tally certificates" || fail "private tally gate not reported"
 [ "$PRIVATE_PROMOTION" = "false" ] && success "private promotion disabled without committee config" || fail "private promotion unexpectedly enabled"
 [ "$TALLY_THRESHOLD_VALID" = "false" ] && success "missing tally threshold reported invalid" || fail "missing tally threshold not reported invalid"

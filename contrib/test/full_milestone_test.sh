@@ -16,23 +16,27 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
 
-TEST_DIR="/tmp/innova_milestone_test"
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init full_milestone_test || exit 1
+INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
+
+TEST_DIR="$(iv5_test_dir /tmp/innova_milestone_test)"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 NODE3_DIR="$TEST_DIR/node3"
 
-NODE1_PORT=26445
-NODE2_PORT=26446
-NODE3_PORT=26447
-NODE1_RPC=26500
-NODE2_RPC=26501
-NODE3_RPC=26502
-NODE1_IDNS=6565
-NODE2_IDNS=6566
-NODE3_IDNS=6567
+NODE1_PORT="$(iv5_port 0 26445)"
+NODE2_PORT="$(iv5_port 1 26446)"
+NODE3_PORT="$(iv5_port 2 26447)"
+NODE1_RPC="$(iv5_port 3 26500)"
+NODE2_RPC="$(iv5_port 4 26501)"
+NODE3_RPC="$(iv5_port 5 26502)"
+NODE1_IDNS="$(iv5_port 6 6565)"
+NODE2_IDNS="$(iv5_port 7 6566)"
+NODE3_IDNS="$(iv5_port 8 6567)"
 
 RPCUSER="milestonetest"
 RPCPASS="testpass123"
@@ -204,7 +208,7 @@ cleanup() {
     if [ $CLEANUP_DONE -eq 1 ]; then return; fi
     CLEANUP_DONE=1
     log "Cleaning up processes..."
-    pkill -f "innovad.*milestone_test" 2>/dev/null || true
+    iv5_kill_daemons "milestone_test" TERM 2>/dev/null || true
     sleep 2
     if [ $FAILED -gt 0 ]; then
         log "Preserving test directories in $TEST_DIR for debugging"
@@ -227,7 +231,7 @@ if [ ! -f "$INNOVAD" ]; then
 fi
 log "Found innovad binary"
 
-pkill -f "innovad.*milestone_test" 2>/dev/null || true
+iv5_kill_daemons "milestone_test" TERM 2>/dev/null || true
 sleep 1
 
 rm -rf "$TEST_DIR"

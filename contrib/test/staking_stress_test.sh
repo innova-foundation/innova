@@ -14,17 +14,21 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
 
-TEST_DIR="/tmp/innova_staking_stress"
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init staking_stress_test || exit 1
+INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
+
+TEST_DIR="$(iv5_test_dir /tmp/innova_staking_stress)"
 STAKER_DIR="$TEST_DIR/staker"
 VALIDATOR_DIR="$TEST_DIR/validator"
 
-STAKER_PORT=19445
-VALIDATOR_PORT=19446
-STAKER_RPC=19500
-VALIDATOR_RPC=19501
+STAKER_PORT="$(iv5_port 0 19445)"
+VALIDATOR_PORT="$(iv5_port 1 19446)"
+STAKER_RPC="$(iv5_port 2 19500)"
+VALIDATOR_RPC="$(iv5_port 3 19501)"
 
 PASSED=0
 FAILED=0
@@ -59,7 +63,7 @@ get_json_val() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*staking_stress" 2>/dev/null || true
+    iv5_kill_daemons "staking_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

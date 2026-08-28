@@ -14,20 +14,24 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
 
-TEST_DIR="/tmp/innova_cold_stake_test"
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init cold_staking_test || exit 1
+INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
+
+TEST_DIR="$(iv5_test_dir /tmp/innova_cold_stake_test)"
 OWNER_DIR="$TEST_DIR/owner"
 STAKER_DIR="$TEST_DIR/staker"
 VALIDATOR_DIR="$TEST_DIR/validator"
 
-OWNER_PORT=20445
-STAKER_PORT=20446
-VALIDATOR_PORT=20447
-OWNER_RPC=20500
-STAKER_RPC=20501
-VALIDATOR_RPC=20502
+OWNER_PORT="$(iv5_port 0 20445)"
+STAKER_PORT="$(iv5_port 1 20446)"
+VALIDATOR_PORT="$(iv5_port 2 20447)"
+OWNER_RPC="$(iv5_port 3 20500)"
+STAKER_RPC="$(iv5_port 4 20501)"
+VALIDATOR_RPC="$(iv5_port 5 20502)"
 
 PASSED=0
 FAILED=0
@@ -43,7 +47,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*cold_stake_test" 2>/dev/null || true
+    iv5_kill_daemons "cold_stake_test" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }
@@ -56,6 +60,35 @@ check_binary() {
         exit 1
     fi
     log "Found innovad binary"
+}
+
+# Waits for the balance, not a fixed delay: coinbase must mature after setgenerate.
+# wait_for_balance <node-rpc-fn> <amount> [timeout-seconds]
+wait_for_balance() {
+    local rpc_fn="$1" want="$2" timeout="${3:-300}"
+    local i balance
+    for ((i = 0; i < timeout; i++)); do
+        balance="$("$rpc_fn" getbalance 2>/dev/null | tr -d '"[:space:]')"
+        if [ -n "$balance" ] && amount_ge "$balance" "$want"; then
+            log "Balance reached $balance INN after ${i}s"
+            return 0
+        fi
+        sleep 1
+    done
+    balance="$("$rpc_fn" getbalance 2>/dev/null | tr -d '"[:space:]')"
+    warn "balance stalled at ${balance:-unknown} INN, wanted $want after ${timeout}s"
+    return 1
+}
+
+amount_ge() {
+    python3 - "$1" "$2" <<'PY'
+from decimal import Decimal, InvalidOperation
+import sys
+try:
+    sys.exit(0 if Decimal(sys.argv[1] or "0") >= Decimal(sys.argv[2] or "0") else 1)
+except (InvalidOperation, IndexError):
+    sys.exit(1)
+PY
 }
 
 setup_nodes() {
@@ -178,9 +211,18 @@ test_rpc_commands() {
 test_delegation_creation() {
     section "Cold Staking Delegation"
 
-    log "Mining 150 blocks on owner node..."
+    local delegation_amount="5000"
+
+    log "Mining on owner node until $delegation_amount INN is spendable..."
     rpc_owner setgenerate true 150 >/dev/null 2>&1 || true
-    sleep 2
+    if ! wait_for_balance rpc_owner "$delegation_amount" 600; then
+        # Keep mining rather than delegating against a balance that cannot cover it.
+        rpc_owner setgenerate true 150 >/dev/null 2>&1 || true
+        wait_for_balance rpc_owner "$delegation_amount" 600 || {
+            fail "owner never reached $delegation_amount INN; cannot test delegation"
+            return 0
+        }
+    fi
 
     local balance=$(rpc_owner getbalance 2>/dev/null | tr -d ' ')
     log "Owner balance: $balance INN"
@@ -192,7 +234,6 @@ test_delegation_creation() {
     fi
     log "Staker address: $staker_addr"
 
-    local delegation_amount="5000"
     log "Delegating $delegation_amount INN to staker..."
     local result=$(rpc_owner delegatestake "$staker_addr" "$delegation_amount" 2>/dev/null || echo "ERROR")
 
@@ -367,9 +408,14 @@ test_revokecoldstaking_rpc() {
 test_large_delegation() {
     section "Large Delegation Amounts"
 
-    log "Mining additional blocks for large balance..."
+    local large_amount="50000"
+
+    log "Mining until $large_amount INN is spendable..."
     rpc_owner setgenerate true 200 >/dev/null 2>&1 || true
-    sleep 3
+    if ! wait_for_balance rpc_owner "$large_amount" 900; then
+        warn "owner never reached $large_amount INN; skipping the large-delegation case"
+        return
+    fi
 
     local balance=$(rpc_owner getbalance 2>/dev/null | tr -d ' ')
     log "Owner balance: $balance INN"
@@ -380,7 +426,6 @@ test_large_delegation() {
         return
     fi
 
-    local large_amount="50000"
     local result=$(rpc_owner delegatestake "$staker_addr" "$large_amount" 2>/dev/null || echo "ERROR")
     if echo "$result" | grep -q "txid"; then
         success "Large delegation of $large_amount INN created"

@@ -11,14 +11,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_spend_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_SPEND_TEST_DIR:-/tmp/innova_iv5_spend_$$}"
 NUM_NODES=3
-BASE_PORT="${IV5_SPEND_BASE_PORT:-28450}"
-BASE_RPC="${IV5_SPEND_BASE_RPC:-28500}"
-BASE_IDNS="${IV5_SPEND_BASE_IDNS:-8560}"
+BASE_PORT="${IV5_SPEND_BASE_PORT:-$(iv5_port 0 28450)}"
+BASE_RPC="${IV5_SPEND_BASE_RPC:-$(iv5_port 16 28500)}"
+BASE_IDNS="${IV5_SPEND_BASE_IDNS:-$(iv5_port 32 8560)}"
 RPCUSER="iv5spend"
 RPCPASS="iv5spendpass"
 WALLETPASS="iv5spendwallet"
@@ -416,7 +420,7 @@ cleanup() {
     for ((n=0; n<NUM_NODES; n++)); do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
     for ((n=0; n<NUM_NODES; n++)); do rpc "$n" stop >/dev/null 2>&1 || true; done
     for ((n=0; n<NUM_NODES; n++)); do wait_rpc_down "$n" >/dev/null 2>&1 || true; done
-    pkill -f "datadir=$TEST_DIR" 2>/dev/null || true
+    iv5_kill_daemons "datadir=$TEST_DIR" TERM 2>/dev/null || true
     if [ "${IV5_SPEND_KEEP_DIR:-0}" = "1" ] || [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
     else

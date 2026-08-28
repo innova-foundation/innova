@@ -13,17 +13,21 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 REGTEST_DIR="/tmp/innova_regtest"
 NODE1_DIR="$REGTEST_DIR/node1"
 NODE2_DIR="$REGTEST_DIR/node2"
 
-NODE1_PORT=18445
-NODE2_PORT=18446
-NODE1_RPC=18500
-NODE2_RPC=18501
+NODE1_PORT="$(iv5_port 0 18445)"
+NODE2_PORT="$(iv5_port 1 18446)"
+NODE1_RPC="$(iv5_port 2 18500)"
+NODE2_RPC="$(iv5_port 3 18501)"
 
 PASSED=0
 FAILED=0
@@ -35,7 +39,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*-regtest" 2>/dev/null || true
+    iv5_kill_daemons "-regtest" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$REGTEST_DIR"
 }

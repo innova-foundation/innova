@@ -9,13 +9,17 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_1s_sync_regression_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_idag_1s_sync}"
-BASE_PORT="${BASE_PORT:-27660}"
-BASE_RPC="${BASE_RPC:-27720}"
-BASE_IDNS="${BASE_IDNS:-7780}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_idag_1s_sync)}"
+BASE_PORT="${BASE_PORT:-$(iv5_port 0 27660)}"
+BASE_RPC="${BASE_RPC:-$(iv5_port 16 27720)}"
+BASE_IDNS="${BASE_IDNS:-$(iv5_port 32 7780)}"
 RPCUSER="${RPCUSER:-idagsync}"
 RPCPASS="${RPCPASS:-idagsyncpass}"
 KEEP_DIR="${KEEP_DIR:-0}"
@@ -53,7 +57,7 @@ cleanup() {
         rpc "$node" stop >/dev/null 2>&1 || true
     done
     sleep 2
-    pkill -f "innovad.*innova_idag_1s_sync" 2>/dev/null || true
+    iv5_kill_daemons "innova_idag_1s_sync" TERM 2>/dev/null || true
     if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
     else

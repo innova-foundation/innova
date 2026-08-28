@@ -52,14 +52,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_note_vote_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_NOTE_VOTE_TEST_DIR:-${TEST_DIR:-/tmp/innova_iv5_notevote_$$}}"
 NUM_NODES=3
-BASE_PORT="${IV5_NOTE_VOTE_BASE_PORT:-28650}"
-BASE_RPC="${IV5_NOTE_VOTE_BASE_RPC:-28700}"
-BASE_IDNS="${IV5_NOTE_VOTE_BASE_IDNS:-8760}"
+BASE_PORT="${IV5_NOTE_VOTE_BASE_PORT:-$(iv5_port 0 28650)}"
+BASE_RPC="${IV5_NOTE_VOTE_BASE_RPC:-$(iv5_port 16 28700)}"
+BASE_IDNS="${IV5_NOTE_VOTE_BASE_IDNS:-$(iv5_port 32 8760)}"
 RPCUSER="iv5notevote"
 RPCPASS="iv5notevotepass"
 WALLETPASS="iv5notevotewallet"

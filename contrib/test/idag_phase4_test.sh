@@ -12,19 +12,23 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_phase4_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_dagknight_test"
+TEST_DIR="$(iv5_test_dir /tmp/innova_dagknight_test)"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 
-NODE1_PORT=27645
-NODE2_PORT=27646
-NODE1_RPC=27700
-NODE2_RPC=27701
-NODE1_IDNS=7765
-NODE2_IDNS=7766
+NODE1_PORT="$(iv5_port 0 27645)"
+NODE2_PORT="$(iv5_port 1 27646)"
+NODE1_RPC="$(iv5_port 2 27700)"
+NODE2_RPC="$(iv5_port 3 27701)"
+NODE1_IDNS="$(iv5_port 4 7765)"
+NODE2_IDNS="$(iv5_port 5 7766)"
 
 RPCUSER="dktest"
 RPCPASS="testpass789"
@@ -100,7 +104,7 @@ mine_blocks() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*dagknight_test" 2>/dev/null || true
+    iv5_kill_daemons "dagknight_test" TERM 2>/dev/null || true
     sleep 3
     rm -rf "$TEST_DIR"
 }
@@ -205,11 +209,21 @@ else
     fail "DAGKNIGHT should be active at height $BLOCKS: $DK_ACTIVE2"
 fi
 
+# Post-activation the RPC reports the full ordering contract string, not the family
+# name. Pin it and cross-check it against the advertised contract.
+DAGKNIGHT_CONTRACT="dagknight_adaptive_k_anchor_pure_v1"
 ALGO2=$(json_field "$DAGINFO2" "ordering_algorithm")
-if [ "$ALGO2" = "DAGKNIGHT" ]; then
-    success "Ordering algorithm switched to DAGKNIGHT"
+if [ "$ALGO2" = "$DAGKNIGHT_CONTRACT" ]; then
+    success "Ordering algorithm switched to $DAGKNIGHT_CONTRACT"
 else
-    fail "Expected DAGKNIGHT, got: $ALGO2"
+    fail "Expected $DAGKNIGHT_CONTRACT, got: $ALGO2"
+fi
+
+CONTRACT2=$(json_field "$DAGINFO2" "dagknight_contract")
+if [ "$CONTRACT2" = "$ALGO2" ]; then
+    success "ordering_algorithm matches the advertised dagknight_contract"
+else
+    fail "ordering_algorithm ($ALGO2) disagrees with dagknight_contract ($CONTRACT2)"
 fi
 
 # Check fork height field
@@ -378,7 +392,7 @@ header "Cleanup"
 rpc1 stop > /dev/null 2>&1
 rpc2 stop > /dev/null 2>&1
 sleep 3
-pkill -f "innovad.*dagknight_test" 2>/dev/null || true
+iv5_kill_daemons "dagknight_test" TERM 2>/dev/null || true
 sleep 2
 rm -rf "$TEST_DIR"
 

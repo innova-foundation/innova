@@ -12,19 +12,23 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_phase3_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_dag_p3_test"
+TEST_DIR="$(iv5_test_dir /tmp/innova_dag_p3_test)"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 
-NODE1_PORT=27545
-NODE2_PORT=27546
-NODE1_RPC=27600
-NODE2_RPC=27601
-NODE1_IDNS=7665
-NODE2_IDNS=7666
+NODE1_PORT="$(iv5_port 0 27545)"
+NODE2_PORT="$(iv5_port 1 27546)"
+NODE1_RPC="$(iv5_port 2 27600)"
+NODE2_RPC="$(iv5_port 3 27601)"
+NODE1_IDNS="$(iv5_port 4 7665)"
+NODE2_IDNS="$(iv5_port 5 7666)"
 
 RPCUSER="dagp3test"
 RPCPASS="testpass456"
@@ -59,8 +63,8 @@ mine_blocks() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*dag_p3_test" 2>/dev/null || true
-    pkill -f "innovad.*dag_p3_debug" 2>/dev/null || true
+    iv5_kill_daemons "dag_p3_test" TERM 2>/dev/null || true
+    iv5_kill_daemons "dag_p3_debug" TERM 2>/dev/null || true
     sleep 3
     rm -rf "$TEST_DIR"
 }
@@ -435,7 +439,7 @@ rpc1 stop > /dev/null 2>&1
 rpc2 stop > /dev/null 2>&1
 sleep 3
 
-pkill -f "innovad.*dag_p3_test" 2>/dev/null || true
+iv5_kill_daemons "dag_p3_test" TERM 2>/dev/null || true
 sleep 2
 rm -rf "$TEST_DIR"
 

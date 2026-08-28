@@ -9,14 +9,19 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_tps_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_tps}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_tps)}"
 NUM_NODES="${NUM_NODES:-4}"
 MIN_PEERS="${MIN_PEERS:-3}"
-BASE_PORT="${BASE_PORT:-29000}"
-BASE_RPC="${BASE_RPC:-29100}"
+BASE_PORT="${BASE_PORT:-$(iv5_port 0 29000)}"
+BASE_RPC="${BASE_RPC:-$(iv5_port 16 29100)}"
+BASE_IDNS="${BASE_IDNS:-$(iv5_port 32 29200)}"
 RPCUSER="${RPCUSER:-tpstest}"
 RPCPASS="${RPCPASS:-tpstestpass}"
 
@@ -262,9 +267,9 @@ get_block_json() {
 }
 
 cleanup() {
-    pkill -f "innovad.*innova_tps" 2>/dev/null || true
+    iv5_kill_daemons "innova_tps" TERM 2>/dev/null || true
     sleep 2
-    pkill -9 -f "innovad.*innova_tps" 2>/dev/null || true
+    iv5_kill_daemons "innova_tps" KILL 2>/dev/null || true
     sleep 1
     if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
@@ -293,7 +298,7 @@ nobootstrap=1
 nosmsg=1
 upnp=0
 listenonion=0
-idnsport=$((29200 + i))
+idnsport=$((BASE_IDNS + i))
 debug=0
 staking=0
 stakingmode=0
