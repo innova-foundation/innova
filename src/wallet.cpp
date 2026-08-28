@@ -12027,6 +12027,16 @@ bool CWallet::CreatePrivacyVNextStamp(
         return false;
     }
 
+    // The stamp output is settled before the binding is taken, because the payload
+    // commits to vout, the proofs bind to the payload, and the change index is drawn
+    // from the same binding. A stamp appended afterwards would spend the notes for a
+    // transaction consensus rejects.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    txNew.vout.push_back(CTxOut(0, scriptStamp));
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
     // Pays nobody: the notes are spent, the fee is paid, and the remainder returns to
     // this wallet. Selection therefore only has to cover the fee.
     std::vector<CPrivacyVNextWalletNote> vNotes;
@@ -12035,8 +12045,9 @@ bool CWallet::CreatePrivacyVNextStamp(
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
-    if (!PreparePrivacyVNextSpend(this, 0, nFee, vNotes, nSelected, genesis,
-                                  changeKeys, nNetwork, strErrorOut))
+    if (!PreparePrivacyVNextSpend(this, 0, transparentBinding, nFee, vNotes,
+                                  nSelected, genesis, changeKeys, nNetwork,
+                                  strErrorOut))
         return false;
 
     // Two outputs to one internal receiver, split at a random point: the same arity
@@ -12052,15 +12063,6 @@ bool CWallet::CreatePrivacyVNextStamp(
         vOutputs[i].recipient.viewPublic = changeKeys.viewPublic;
     }
     SplitPrivacyVNextValue(nReturned, vOutputs[0].nAmount, vOutputs[1].nAmount);
-
-    // The stamp output is settled before the binding is taken, because the payload
-    // commits to vout and the proofs bind to the payload. A stamp appended afterwards
-    // would spend the notes for a transaction consensus rejects.
-    CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
-    txNew.vout.push_back(CTxOut(0, scriptStamp));
-    PrivacyVNextDigest transparentBinding;
-    PrivacyVNextBindingOf(txNew, transparentBinding);
 
     // No transparent output receives value, so the payload declares a balance of zero
     // and the pool releases only the fee.
