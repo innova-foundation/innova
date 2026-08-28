@@ -151,6 +151,10 @@ public:
     bool initialize(const CBlockIndex* pindex);
 };
 
+// Selection score for one candidate: the block hash mixed with the candidate's
+// outpoint. Advisory only -- read by the collateralnode RPCs, not by validation.
+uint256 CollateralnodeScoreMix(const uint256& hashBlock, const uint256& aux);
+
 //
 // The Collateralnode Class. For managing the collateral process. It contains the input of the 25000 INN, signature to prove
 // it's the one who own that ip address and code for calculating the payment election.

@@ -557,15 +557,6 @@ struct CompareValueOnly
     }
 };
 
-struct CompareLastPaidBlock
-{
-    bool operator()(const pair<int, CCollateralNode*>& t1,
-                    const pair<int, CCollateralNode*>& t2) const
-    {
-        return (t1.first != t2.first ? t1.first > t2.first : t1.second->CalculateScore(1, pindexBest->nHeight) > t2.second->CalculateScore(1, pindexBest->nHeight));
-    }
-};
-
 struct CompareLastPayRate
 {
     bool operator()(const pair<int, CCollateralNode*>& t1,
@@ -587,17 +578,6 @@ struct CompareLastPay
             return (t1.second->IsActive() < t2.second->IsActive()); //always put actives before non-actives
         }
         return false;
-    }
-    CBlockIndex* pindex;
-};
-
-struct CompareSigTimeTo
-{
-    CompareSigTimeTo(CBlockIndex* pindex) { this->pindex = pindex; }
-    bool operator()(const pair<int, CCollateralNode*>& t1,
-                    const pair<int, CCollateralNode*>& t2) const
-    {
-        return (t2.second->nTimeRegistered > pindex->GetBlockTime() && t1.second->nTimeRegistered == t2.second->nTimeRegistered ? t1.second->CalculateScore(1, pindex->nHeight) > t2.second->CalculateScore(1, pindex->nHeight) : t2.second->nTimeRegistered > pindex->GetBlockTime());
     }
     CBlockIndex* pindex;
 };
@@ -1255,21 +1235,31 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
 // the proof of work for that block. The further away they are the better, the furthest will win the election
 // and get paid this block
 //
+uint256 CollateralnodeScoreMix(const uint256& hashBlock, const uint256& aux)
+{
+    static_assert(sizeof(uint256) == 32, "score mix assumes a 32-byte uint256");
+
+    // Both operands are copied into one buffer so the hashed range lies inside a
+    // single object. Hashing from the start of one local to the end of another is
+    // undefined and the two locals' relative placement differs by compiler.
+    unsigned char buf[64];
+    memcpy(buf, hashBlock.begin(), 32);
+    memcpy(buf + 32, aux.begin(), 32);
+
+    uint256 hash2 = Tribus(buf, buf + 32);
+    uint256 hash3 = Tribus(buf, buf + 64);
+
+    return (hash3 > hash2 ? hash3 - hash2 : hash2 - hash3);
+}
+
 uint256 CCollateralNode::CalculateScore(int mod, int64_t nBlockHeight)
 {
     if(pindexBest == NULL) return 0;
 
     uint256 hash = 0;
-    uint256 aux = vin.prevout.hash + vin.prevout.n;
-
     if(!GetBlockHash(hash, nBlockHeight)) return 0;
 
-    uint256 hash2 = Tribus(BEGIN(hash), END(hash)); //Tribus Algo Integrated, WIP
-    uint256 hash3 = Tribus(BEGIN(hash), END(aux));
-
-    uint256 r = (hash3 > hash2 ? hash3 - hash2 : hash2 - hash3);
-
-    return r;
+    return CollateralnodeScoreMix(hash, vin.prevout.hash + vin.prevout.n);
 }
 
 void CCollateralNode::Check(bool forceCheck)
