@@ -2427,13 +2427,11 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
 
 // A gate that is already behind the chain activates the moment the release
 // ships, with no window to get the network onto the new binary.
-//
 // The floor below is a mainnet tip established by a self-verifying getheaders
 // walk from the hardcoded 7,750,000 checkpoint, cross-checked against further
 // peers -- the same reading v5activation.h sets the shift against. A tip only
 // ever moves forward, so a shift that clears it today cannot silently stop
 // clearing it; the check goes stale in the safe direction.
-//
 // NOTE for the release preflight: v5activation.h states two different floors.
 // Its opening paragraph says a shift "is only valid while the tip is at least
 // 100,000 blocks below the effective first gate"; the recheck paragraph says
@@ -2445,10 +2443,6 @@ static const int MAINNET_TIP_OBSERVED = 7917298;          // 2026-08-16 02:15 UT
 static const int MAINNET_V5_MIN_GATE_MARGIN = 50000;
 
 BOOST_AUTO_TEST_CASE(v5_activation_first_gate_clears_the_release_margin_floor)
-{
-    NetFlagGuard guard;
-    fRegTest = false;
-    fTestNet = false;
 
     const int nFirst = ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE);
 
@@ -2467,6 +2461,47 @@ BOOST_AUTO_TEST_CASE(v5_activation_first_gate_clears_the_release_margin_floor)
     // Every later gate is above the first, so clearing the floor once clears it
     // for the whole ladder.
     BOOST_CHECK(GetForkHeightDAG() > nFirst);
+// Versions 2000-2007 are rejected on every public network at every height, context-free:
+// the identical transaction is accepted on regtest and refused on a public network.
+BOOST_AUTO_TEST_CASE(legacy_shielded_versions_are_refused_on_every_public_network)
+    const bool fSavedRegTest = fRegTest;
+    const bool fSavedTestNet = fTestNet;
+    struct Restore
+    {
+        bool fRegTestSaved, fTestNetSaved;
+        ~Restore() { fRegTest = fRegTestSaved; fTestNet = fTestNetSaved; }
+    } restore = { fSavedRegTest, fSavedTestNet };
+
+    int nDifferentialVersions = 0;
+    for (int nVersion = SHIELDED_TX_VERSION;
+         nVersion <= SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM; nVersion++)
+        // A minimal legacy shielded transaction: one shielded output, so the
+        // shape checks that follow the seal have as little to say as possible.
+        CTransaction tx;
+        tx.nVersion = nVersion;
+        tx.vin.push_back(CTxIn(COutPoint(uint256(0x5EA1), 0)));
+        tx.vout.push_back(CTxOut(CENT, CScript() << OP_TRUE));
+        tx.vShieldedOutput.push_back(CShieldedOutputDescription());
+        BOOST_REQUIRE(tx.IsShielded());
+
+        // Every public network refuses it at every height, whatever else the
+        // version requires.
+        fRegTest = false;
+        fTestNet = false;
+        BOOST_CHECK_MESSAGE(!tx.CheckTransaction(),
+                            strprintf("version %d accepted on mainnet", nVersion));
+
+        fTestNet = true;
+                            strprintf("version %d accepted on testnet", nVersion));
+
+        // Some versions carry further requirements this skeleton fails on regtest too;
+        // a version regtest accepts attributes the verdicts above to the seal.
+        fRegTest = true;
+        if (tx.CheckTransaction())
+            nDifferentialVersions++;
+    }
+
+    BOOST_CHECK(nDifferentialVersions > 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
