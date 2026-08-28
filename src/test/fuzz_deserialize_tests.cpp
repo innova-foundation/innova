@@ -2313,8 +2313,9 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8220300);
 
-    // Boundary B stays unset on mainnet until privacy vNext is scheduled.
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);
+    // Boundary B is an alias of A, so the ladder carries both on one flag day.
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());
+    BOOST_CHECK(IsBoundaryBConfigured());
 
     // The slots co-batched at the reviewed Boundary-B rung sit above the DAG
     // gate, not merely above NullStake v3: they run on DAG-ordered blocks.
@@ -2348,9 +2349,10 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), nPostBoundaryB);
     BOOST_CHECK(nPostBoundaryB > GetForkHeightBoundaryA());
 
-    // Once B leaves the sentinel it has to land strictly inside that window.
+    // Once B leaves the sentinel it has to land inside that window. A shares the
+    // window's lower edge, so equality is the shipped case.
     BOOST_CHECK(!IsBoundaryBConfigured() ||
-                (GetForkHeightBoundaryB() > GetForkHeightBoundaryA() &&
+                (GetForkHeightBoundaryB() >= GetForkHeightBoundaryA() &&
                  GetForkHeightBoundaryB() < nPostBoundaryB));
 }
 

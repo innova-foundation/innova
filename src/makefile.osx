@@ -274,6 +274,7 @@ TEST_OBJS= \
     obj/test/ladder_pin_tests.o \
     obj/test/blockindex_nsize_tests.o \
     obj/test/cn_rescan_tests.o \
+    obj/test/boundary_b_schedule_tests.o \
     obj/test/supply_cap_tests.o \
     obj/test/subsidy_split_tests.o \
     obj/test/emission_schedule_walk_tests.o \
