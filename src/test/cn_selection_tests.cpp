@@ -166,6 +166,80 @@ unsigned int LowWord(const uint256& n)
 
 } // namespace
 
+// The score mixes the block hash with the candidate's outpoint. The vectors are the
+// deployed (gcc) answers, pinned so the well-defined range matches on every compiler.
+BOOST_AUTO_TEST_CASE(the_score_mix_matches_its_pinned_vectors)
+{
+    struct { const char* pszBlock; const char* pszAux; const char* pszScore; } vec[] = {
+        { "00000000000000000000000000000000000000000000000000000000000000ff",
+          "0000000000000000000000000000000000000000000000000000000000000001",
+          "02bbad5d3261bd83afd91313b2f2559ca4803147e9b99413f37f751f67b31ce9" },
+        // A zero outpoint term against a non-zero block hash: a mix that dropped
+        // the outpoint would answer this and the next vector the same.
+        { "a3f1c09b2e7d4856190bacde3f2718650d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+          "0000000000000000000000000000000000000000000000000000000000000000",
+          "5904bfe9308d1deb946ec1818f924e2cb9e72c1040b40db74f19bf93ed578f92" },
+        { "a3f1c09b2e7d4856190bacde3f2718650d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+          "5c4b3a29180716f5e4d3c2b1a09f8e7d6c5b4a39281706fedcba9876543210ff",
+          "03e5b60e0408349287ecff861e95f28e57211c0779d51cbea74e04c356b64e5b" },
+    };
+
+    for (size_t i = 0; i < sizeof(vec) / sizeof(vec[0]); i++)
+    {
+        const uint256 hashBlock(std::string(vec[i].pszBlock));
+        const uint256 aux(std::string(vec[i].pszAux));
+        BOOST_CHECK_MESSAGE(
+            CollateralnodeScoreMix(hashBlock, aux).ToString() == std::string(vec[i].pszScore),
+            "vector " << i << ": expected " << vec[i].pszScore << ", got "
+                      << CollateralnodeScoreMix(hashBlock, aux).ToString());
+    }
+
+    // The two operands enter the hashed range in a fixed order, so they are not
+    // interchangeable; a mix that concatenated them the other way round would
+    // still be well defined but would move every score on the live network.
+    const uint256 hashBlock(std::string(vec[2].pszBlock));
+    const uint256 aux(std::string(vec[2].pszAux));
+    BOOST_CHECK_MESSAGE(CollateralnodeScoreMix(aux, hashBlock) != CollateralnodeScoreMix(hashBlock, aux),
+                        "the block hash and the outpoint term are hashed in a "
+                        "fixed order; swapping them must not answer the same");
+}
+
+// What the undefined range cost in practice: a build that dropped the outpoint
+// from it scored every candidate off the block hash alone, so the election
+// returned the first enabled entry whatever the block and was not a lottery.
+BOOST_AUTO_TEST_CASE(the_payee_score_varies_with_the_candidate)
+{
+    CollateralnodeViewGuard guard;
+
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+    BOOST_REQUIRE_MESSAGE(!IsInitialBlockDownload(),
+                          "CalculateScore is not reached during initial download");
+    BOOST_REQUIRE(EnsureChainHeight(4));
+    const int64_t nBlockHeight = pindexBest->nHeight;
+
+    const int nCandidates = 32;
+    std::vector<uint256> vScores;
+    for (int i = 0; i < nCandidates; i++)
+    {
+        CCollateralNode mn = MakeNode(CountedHash(i), 0, PROTOCOL_VERSION);
+        vScores.push_back(mn.CalculateScore(1, nBlockHeight));
+    }
+
+    // Positive control: an unanswerable height scores every candidate zero.
+    BOOST_REQUIRE_MESSAGE(vScores[0] != uint256(0),
+                          "the block-hash lookup did not answer at height "
+                          << nBlockHeight << ", so every score is zero and the "
+                          "distinctness below would prove nothing");
+
+    std::set<uint256> setDistinct(vScores.begin(), vScores.end());
+    BOOST_CHECK_MESSAGE(setDistinct.size() == (size_t)nCandidates,
+                        "candidates differing only in their outpoint must score "
+                        "differently; got " << setDistinct.size()
+                        << " distinct scores across " << nCandidates
+                        << " candidates");
+}
+
 // R-CS-004. From FORK_HEIGHT_COLD_STAKING the payee election compares full 256-bit
 // scores; below it, the low 32 bits. The case requires a pair the two widths order
 // differently, then moves only the height.
