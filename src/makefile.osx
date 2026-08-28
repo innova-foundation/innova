@@ -269,6 +269,7 @@ TEST_OBJS= \
     obj/test/nullstake_finality_only_tests.o \
     obj/test/retarget_tests.o \
     obj/test/emission_curve_tests.o \
+    obj/test/reserve_accrual_window_tests.o \
     obj/test/reward_display_tests.o \
     obj/test/ladder_pin_tests.o \
     obj/test/blockindex_nsize_tests.o \
@@ -443,6 +444,7 @@ check-cn-rescan: test_innova
 check-emission-curve: test_innova
 	./test_innova --run_test=emission_curve_tests
 	./test_innova --run_test=reward_display_tests
+	./test_innova --run_test=reserve_accrual_window_tests
 
 check-emission-schedule-walk: test_innova
 	./test_innova --run_test=emission_schedule_walk_tests
