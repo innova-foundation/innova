@@ -265,8 +265,7 @@ QStringList WalletModel::getSilentPaymentAddresses() const
 // RPC method whitelist for GUI
 static const char* allowedRPCMethods[] = {
     "z_shield", "z_unshield", "z_send", "z_getnewaddress",
-    "z_listaddresses", "z_getbalance", "sp_getnewaddress",
-    "sp_listaddresses", "sp_send", "getnewaddress",
+    "z_listaddresses", "z_getbalance", "getnewaddress",
     "getnewstakingaddress", "getinfo", NULL
 };
 
