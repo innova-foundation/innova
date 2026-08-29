@@ -52,9 +52,26 @@ def pro_core_sources(path):
     return stems
 
 
+def check_pro_entries_exist(pro_text, failures):
+    """A .pro entry whose file was deleted stops the GUI build with "No rule to
+    make target". Generated headers are exempt."""
+    generated = {"src/build.h"}
+    seen = set()
+    for match in re.finditer(r"(src/[A-Za-z0-9_/]+\.(?:cpp|h|ui|qrc))", pro_text):
+        name = match.group(1)
+        if name in seen or name in generated:
+            continue
+        seen.add(name)
+        if not os.path.exists(os.path.join(ROOT, name)):
+            failures.append("innova-qt.pro lists %s, which does not exist" % name)
+
+
 def main():
-    pro = pro_core_sources(os.path.join(ROOT, "innova-qt.pro"))
+    pro_path = os.path.join(ROOT, "innova-qt.pro")
+    pro = pro_core_sources(pro_path)
     problems = []
+    with open(pro_path) as handle:
+        check_pro_entries_exist(handle.read(), problems)
     for name in ("makefile.unix", "makefile.osx"):
         mk = makefile_core_objects(os.path.join(ROOT, "src", name))
         # Compare only stems that exist as C++ sources; assembly and platform
