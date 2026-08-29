@@ -1,23 +1,32 @@
 #include "privacypage.h"
-#include "walletmodel.h"
-#include "bitcoinunits.h"
-#include "optionsmodel.h"
-#include "guiconstants.h"
-#include "main.h"
-#include "privacyuipolicy.h"
 
-#include <QMessageBox>
+#include "bitcoinunits.h"
+#include "disclosuremaskwidget.h"
+#include "finalitystatuswidget.h"
+#include "guiconstants.h"
+#include "iv5rpcbridge.h"
+#include "optionsmodel.h"
+#include "privatecollateralwidget.h"
+#include "walletmodel.h"
+
 #include <QApplication>
 #include <QClipboard>
-#include <limits>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QTabWidget>
+#include <QVBoxLayout>
 
 PrivacyPage::PrivacyPage(QWidget *parent) :
     QWidget(parent),
-    model(0),
-    legacyPrivacyControlsEnabled(false)
+    model(0)
 {
     setupUI();
-    applyPrivacyPolicy();
 }
 
 void PrivacyPage::setupUI()
@@ -25,551 +34,393 @@ void PrivacyPage::setupUI()
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(20, 20, 20, 20);
 
-    // Title
-    QLabel *titleLabel = new QLabel(tr("Privacy Dashboard"));
+    QLabel *titleLabel = new QLabel(tr("Privacy"));
     titleLabel->setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 10px;");
     mainLayout->addWidget(titleLabel);
 
-    QLabel *descLabel = new QLabel(tr("Manage your shielded (private) funds. Shield coins to hide them from the public ledger, "
-                                      "send privately between shielded addresses, or unshield to make them transparent again."));
+    QLabel *descLabel = new QLabel(tr(
+        "Value in this wallet lives in the pool as notes. A payment out of it has no "
+        "transparent inputs and no transparent outputs whatever it discloses, so "
+        "there is no shielded and transparent side to move value between. What a "
+        "payment reveals is decided by its disclosure mask, and by nothing else."));
     descLabel->setWordWrap(true);
     descLabel->setStyleSheet("color: #888; margin-bottom: 15px;");
     mainLayout->addWidget(descLabel);
 
     availabilityLabel = new QLabel();
     availabilityLabel->setWordWrap(true);
-    availabilityLabel->setStyleSheet(
-        "color: #d98c00; font-weight: bold; margin-bottom: 8px;");
+    availabilityLabel->setStyleSheet("color: #d98c00; font-weight: bold; margin-bottom: 8px;");
+    availabilityLabel->setVisible(false);
     mainLayout->addWidget(availabilityLabel);
 
-    // Balance section
-    QGroupBox *balanceGroup = new QGroupBox(tr("Privacy Balances"));
+    QGroupBox *balanceGroup = new QGroupBox(tr("Balances"));
     QFormLayout *balanceLayout = new QFormLayout(balanceGroup);
-    labelTransparentBalance = new QLabel("0.00 INN");
-    labelTransparentBalance->setStyleSheet("font-weight: bold;");
-    labelShieldedBalance = new QLabel("0.00 INN");
-    labelShieldedBalance->setStyleSheet("font-weight: bold; color: #4CAF50;");
-    labelTotalPrivateBalance = new QLabel("0.00 INN");
-    labelTotalPrivateBalance->setStyleSheet("font-weight: bold;");
-    balanceLayout->addRow(tr("Transparent (public):"), labelTransparentBalance);
-    balanceLayout->addRow(tr("Shielded (private):"), labelShieldedBalance);
-    balanceLayout->addRow(tr("Total:"), labelTotalPrivateBalance);
+    labelPoolBalance = new QLabel(tr("unknown"));
+    labelPoolBalance->setStyleSheet("font-weight: bold; color: #4CAF50;");
+    labelPoolUnconfirmed = new QLabel(tr("unknown"));
+    labelNoteCount = new QLabel(tr("unknown"));
+    labelTransparentBalance = new QLabel(tr("unknown"));
+    labelSeedState = new QLabel(tr("unknown"));
+    labelScanGap = new QLabel(tr("unknown"));
+    balanceLayout->addRow(tr("Pool (spendable):"), labelPoolBalance);
+    balanceLayout->addRow(tr("Pool (unconfirmed):"), labelPoolUnconfirmed);
+    balanceLayout->addRow(tr("Notes held:"), labelNoteCount);
+    balanceLayout->addRow(tr("Transparent (not yet migrated):"), labelTransparentBalance);
+    balanceLayout->addRow(tr("IV5 seed:"), labelSeedState);
+    balanceLayout->addRow(tr("Scan gap:"), labelScanGap);
+    QPushButton *refreshButton = new QPushButton(tr("Refresh"));
+    balanceLayout->addRow(QString(), refreshButton);
     mainLayout->addWidget(balanceGroup);
+    connect(refreshButton, SIGNAL(clicked()), this, SLOT(onRefreshClicked()));
 
-    // Tab widget for operations
     QTabWidget *tabs = new QTabWidget();
+    tabs->addTab(buildSendTab(), tr("Send"));
+    tabs->addTab(buildMigrateTab(), tr("Migrate"));
+    tabs->addTab(buildAddressTab(), tr("Addresses"));
 
-    // === Tab 1: Shield / Unshield ===
-    QWidget *shieldTab = new QWidget();
-    QVBoxLayout *shieldLayout = new QVBoxLayout(shieldTab);
+    collateralWidget = new PrivateCollateralWidget();
+    tabs->addTab(collateralWidget, tr("Collateralnode"));
 
-    // Shield section
-    QGroupBox *shieldGroup = new QGroupBox(tr("Shield Coins (Transparent -> Private)"));
-    QFormLayout *shieldForm = new QFormLayout(shieldGroup);
-    shieldAmountEdit = new QLineEdit();
-    shieldAmountEdit->setPlaceholderText(tr("Amount to shield (or * for all)"));
-    shieldTargetCombo = new QComboBox();
-    shieldButton = new QPushButton(tr("Shield Coins"));
-    shieldButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 8px 16px; font-weight: bold; }");
-    shieldForm->addRow(tr("Amount:"), shieldAmountEdit);
-    shieldForm->addRow(tr("To z-address:"), shieldTargetCombo);
-    shieldForm->addRow("", shieldButton);
-    shieldLayout->addWidget(shieldGroup);
+    finalityWidget = new FinalityStatusWidget();
+    tabs->addTab(finalityWidget, tr("Finality"));
 
-    // Unshield section
-    QGroupBox *unshieldGroup = new QGroupBox(tr("Unshield Coins (Private -> Transparent)"));
-    QFormLayout *unshieldForm = new QFormLayout(unshieldGroup);
-    unshieldAmountEdit = new QLineEdit();
-    unshieldAmountEdit->setPlaceholderText(tr("Amount to unshield"));
-    unshieldToEdit = new QLineEdit();
-    unshieldToEdit->setPlaceholderText(tr("Transparent address to receive coins"));
-    unshieldButton = new QPushButton(tr("Unshield Coins"));
-    unshieldButton->setStyleSheet("QPushButton { background-color: #FF9800; color: white; padding: 8px 16px; font-weight: bold; }");
-    unshieldForm->addRow(tr("Amount:"), unshieldAmountEdit);
-    unshieldForm->addRow(tr("To address:"), unshieldToEdit);
-    unshieldForm->addRow("", unshieldButton);
-    shieldLayout->addWidget(unshieldGroup);
-    shieldLayout->addStretch();
+    mainLayout->addWidget(tabs, 1);
 
-    tabs->addTab(shieldTab, tr("Shield / Unshield"));
-
-    // === Tab 2: Send Shielded ===
-    QWidget *sendTab = new QWidget();
-    QVBoxLayout *sendLayout = new QVBoxLayout(sendTab);
-
-    QGroupBox *sendGroup = new QGroupBox(tr("Send Privately (z-address -> z-address)"));
-    QFormLayout *sendForm = new QFormLayout(sendGroup);
-    sendFromEdit = new QLineEdit();
-    sendFromEdit->setPlaceholderText(tr("Your z-address (leave empty for default)"));
-    sendToEdit = new QLineEdit();
-    sendToEdit->setPlaceholderText(tr("Recipient z-address or transparent address"));
-    sendAmountEdit = new QLineEdit();
-    sendAmountEdit->setPlaceholderText(tr("Amount to send"));
-    sendMemoEdit = new QLineEdit();
-    sendMemoEdit->setPlaceholderText(tr("Optional encrypted memo (max 512 chars)"));
-    sendShieldedButton = new QPushButton(tr("Send Privately"));
-    sendShieldedButton->setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 8px 16px; font-weight: bold; }");
-    sendForm->addRow(tr("From:"), sendFromEdit);
-    sendForm->addRow(tr("To:"), sendToEdit);
-    sendForm->addRow(tr("Amount:"), sendAmountEdit);
-    sendForm->addRow(tr("Memo:"), sendMemoEdit);
-    sendForm->addRow("", sendShieldedButton);
-    sendLayout->addWidget(sendGroup);
-    sendLayout->addStretch();
-
-    tabs->addTab(sendTab, tr("Send Private"));
-
-    // === Tab 3: Shielded Addresses ===
-    QWidget *addrTab = new QWidget();
-    QVBoxLayout *addrLayout = new QVBoxLayout(addrTab);
-
-    QLabel *addrDesc = new QLabel(tr("Your shielded (z-) addresses. Share these to receive private payments."));
-    addrDesc->setWordWrap(true);
-    addrLayout->addWidget(addrDesc);
-
-    zAddressList = new QListWidget();
-    zAddressList->setStyleSheet("QListWidget { font-family: monospace; }");
-    addrLayout->addWidget(zAddressList);
-
-    QHBoxLayout *addrButtons = new QHBoxLayout();
-    newZAddressButton = new QPushButton(tr("New z-Address"));
-    newZAddressButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 6px 12px; }");
-    copyAddressButton = new QPushButton(tr("Copy Selected"));
-    refreshButton = new QPushButton(tr("Refresh"));
-    addrButtons->addWidget(newZAddressButton);
-    addrButtons->addWidget(copyAddressButton);
-    addrButtons->addWidget(refreshButton);
-    addrButtons->addStretch();
-    addrLayout->addLayout(addrButtons);
-
-    tabs->addTab(addrTab, tr("Shielded Addresses"));
-
-    // === Tab 4: Silent Payment Addresses ===
-    QWidget *spTab = new QWidget();
-    QVBoxLayout *spLayout = new QVBoxLayout(spTab);
-
-    QLabel *spDesc = new QLabel(tr("Silent Payment addresses provide stealth receiving. Each sender derives a unique "
-                                    "one-time address from your SP address, so no two payments share an on-chain address. "
-                                    "Share your SP address publicly — receivers cannot be linked on the blockchain."));
-    spDesc->setWordWrap(true);
-    spLayout->addWidget(spDesc);
-
-    spAddressList = new QListWidget();
-    spAddressList->setStyleSheet("QListWidget { font-family: monospace; font-size: 11px; }");
-    spLayout->addWidget(spAddressList);
-
-    QHBoxLayout *spButtons = new QHBoxLayout();
-    newSPAddressButton = new QPushButton(tr("New SP Address"));
-    newSPAddressButton->setStyleSheet("QPushButton { background-color: #9C27B0; color: white; padding: 6px 12px; font-weight: bold; }");
-    copySPAddressButton = new QPushButton(tr("Copy Selected"));
-    spButtons->addWidget(newSPAddressButton);
-    spButtons->addWidget(copySPAddressButton);
-    spButtons->addStretch();
-    spLayout->addLayout(spButtons);
-
-    tabs->addTab(spTab, tr("Silent Payment Addresses"));
-
-    mainLayout->addWidget(tabs);
-
-    // Status bar
     statusLabel = new QLabel(tr("Ready"));
     statusLabel->setStyleSheet("color: #888; margin-top: 10px;");
     mainLayout->addWidget(statusLabel);
+}
 
-    // Connect signals
-    connect(shieldButton, SIGNAL(clicked()), this, SLOT(onShieldClicked()));
-    connect(unshieldButton, SIGNAL(clicked()), this, SLOT(onUnshieldClicked()));
-    connect(sendShieldedButton, SIGNAL(clicked()), this, SLOT(onSendShieldedClicked()));
-    connect(newZAddressButton, SIGNAL(clicked()), this, SLOT(onNewZAddressClicked()));
+QWidget* PrivacyPage::buildSendTab()
+{
+    QWidget *tab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(tab);
+
+    QGroupBox *group = new QGroupBox(tr("Send from the pool"));
+    QFormLayout *form = new QFormLayout(group);
+    sendToEdit = new QLineEdit();
+    sendToEdit->setPlaceholderText(tr("Recipient IV5 address"));
+    sendAmountEdit = new QLineEdit();
+    sendAmountEdit->setPlaceholderText(tr("Amount in INN"));
+    form->addRow(tr("To:"), sendToEdit);
+    form->addRow(tr("Amount:"), sendAmountEdit);
+    layout->addWidget(group);
+
+    QGroupBox *maskGroup = new QGroupBox(tr("What this payment publishes"));
+    QVBoxLayout *maskLayout = new QVBoxLayout(maskGroup);
+    maskWidget = new DisclosureMaskWidget();
+    maskLayout->addWidget(maskWidget);
+    layout->addWidget(maskGroup);
+
+    QHBoxLayout *buttons = new QHBoxLayout();
+    sendButton = new QPushButton(tr("Send"));
+    sendButton->setStyleSheet("QPushButton { background-color: #2196F3; color: white; "
+                              "padding: 8px 16px; font-weight: bold; }");
+    buttons->addWidget(sendButton);
+    buttons->addStretch();
+    layout->addLayout(buttons);
+    layout->addStretch();
+
+    connect(sendButton, SIGNAL(clicked()), this, SLOT(onSendClicked()));
+    return tab;
+}
+
+QWidget* PrivacyPage::buildMigrateTab()
+{
+    QWidget *tab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(tab);
+
+    QLabel *desc = new QLabel(tr(
+        "Moves transparent coins into the pool. One transparent address per call, so "
+        "a single transaction never publicly groups addresses the chain has not "
+        "already grouped, and the whole selected value moves with no transparent "
+        "change left behind."));
+    desc->setWordWrap(true);
+    desc->setStyleSheet("color: #888;");
+    layout->addWidget(desc);
+
+    // The way back out is a consensus height, not a build switch, so the state is
+    // read from the node rather than asserted here.
+    migrateNoticeLabel = new QLabel();
+    migrateNoticeLabel->setWordWrap(true);
+    migrateNoticeLabel->setStyleSheet("color: #d98c00; font-weight: bold;");
+    layout->addWidget(migrateNoticeLabel);
+
+    QGroupBox *group = new QGroupBox(tr("Migrate to the pool"));
+    QFormLayout *form = new QFormLayout(group);
+    migrateFromEdit = new QLineEdit();
+    migrateFromEdit->setPlaceholderText(tr("Transparent address (blank sweeps the largest)"));
+    migrateMaxInputsEdit = new QLineEdit();
+    migrateMaxInputsEdit->setPlaceholderText(tr("Maximum inputs (blank for the default)"));
+    form->addRow(tr("From:"), migrateFromEdit);
+    form->addRow(tr("Max inputs:"), migrateMaxInputsEdit);
+    migrateButton = new QPushButton(tr("Migrate"));
+    migrateButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; "
+                                 "padding: 8px 16px; font-weight: bold; }");
+    form->addRow(QString(), migrateButton);
+    layout->addWidget(group);
+    layout->addStretch();
+
+    connect(migrateButton, SIGNAL(clicked()), this, SLOT(onMigrateClicked()));
+    return tab;
+}
+
+QWidget* PrivacyPage::buildAddressTab()
+{
+    QWidget *tab = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout(tab);
+
+    QLabel *desc = new QLabel(tr(
+        "IV5 addresses are derived from the wallet's encrypted seed. The wallet "
+        "exposes no way to enumerate the addresses it has already issued, so this "
+        "list holds only the ones created since the wallet was started; a restart "
+        "empties it. The addresses themselves stay valid and are recovered from the "
+        "seed, not from this list."));
+    desc->setWordWrap(true);
+    desc->setStyleSheet("color: #888;");
+    layout->addWidget(desc);
+
+    addressList = new QListWidget();
+    addressList->setStyleSheet("QListWidget { font-family: monospace; font-size: 11px; }");
+    layout->addWidget(addressList, 1);
+
+    QHBoxLayout *buttons = new QHBoxLayout();
+    newAddressButton = new QPushButton(tr("New IV5 address"));
+    copyAddressButton = new QPushButton(tr("Copy selected"));
+    buttons->addWidget(newAddressButton);
+    buttons->addWidget(copyAddressButton);
+    buttons->addStretch();
+    layout->addLayout(buttons);
+
+    connect(newAddressButton, SIGNAL(clicked()), this, SLOT(onNewAddressClicked()));
     connect(copyAddressButton, SIGNAL(clicked()), this, SLOT(onCopyAddressClicked()));
-    connect(refreshButton, SIGNAL(clicked()), this, SLOT(onRefreshClicked()));
-    connect(newSPAddressButton, SIGNAL(clicked()), this, SLOT(onNewSPAddressClicked()));
-    connect(copySPAddressButton, SIGNAL(clicked()), this, SLOT(onCopySPAddressClicked()));
+    return tab;
 }
 
-void PrivacyPage::setModel(WalletModel *model)
+void PrivacyPage::setModel(WalletModel *modelIn)
 {
-    this->model = model;
-    applyPrivacyPolicy();
-    if (model)
-    {
-        refreshBalances();
-        refreshAddresses();
-        refreshSPAddresses();
-    }
-}
-
-void PrivacyPage::applyPrivacyPolicy()
-{
-    const int currentHeight = pindexBest ? pindexBest->nHeight : 0;
-    const PrivacyUiPolicy::Decision decision =
-        PrivacyUiPolicy::EvaluateLegacyControls(
-            fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false);
-    legacyPrivacyControlsEnabled = decision.legacyControlsEnabled;
-
-    shieldButton->setEnabled(legacyPrivacyControlsEnabled);
-    unshieldButton->setEnabled(legacyPrivacyControlsEnabled);
-    sendShieldedButton->setEnabled(legacyPrivacyControlsEnabled);
-    newZAddressButton->setEnabled(legacyPrivacyControlsEnabled);
-    newSPAddressButton->setEnabled(legacyPrivacyControlsEnabled);
-
-    if (legacyPrivacyControlsEnabled)
-    {
-        availabilityLabel->setText(tr(
-            "Legacy privacy controls are enabled for regtest historical testing only."));
-    }
-    else
-    {
-        availabilityLabel->setText(tr(
-            "The unsafe legacy privacy format is quarantined. Full-chain FCMP++ "
-            "selectable privacy modes 0-7 are mandatory for privacy vNext, but are "
-            "not yet available in this build; these controls cannot change the wallet."));
-    }
+    model = modelIn;
+    collateralWidget->setModel(modelIn);
+    refreshBalances();
 }
 
 void PrivacyPage::refreshBalances()
 {
-    if (!model || !model->getOptionsModel())
-        return;
+    Iv5Rpc::PoolSnapshot pool;
+    QString error;
+    const bool fHave = Iv5Rpc::FetchPool(pool, error);
 
-    int unit = model->getOptionsModel()->getDisplayUnit();
-    qint64 transparent = model->getBalance();
-    qint64 shielded = model->getShieldedBalance();
-
-    labelTransparentBalance->setText(BitcoinUnits::formatWithUnit(unit, transparent));
-    labelShieldedBalance->setText(BitcoinUnits::formatWithUnit(unit, shielded));
-
-    // Overflow-safe addition
-    qint64 total = transparent;
-    if (shielded > 0 && total > std::numeric_limits<qint64>::max() - shielded)
-        total = std::numeric_limits<qint64>::max();
-    else
-        total += shielded;
-    labelTotalPrivateBalance->setText(BitcoinUnits::formatWithUnit(unit, total));
-
-    // Populate shield target combo with z-addresses
-    QString currentTarget = shieldTargetCombo->currentText();
-    shieldTargetCombo->clear();
-    QStringList zAddrs = model->getShieldedAddresses();
-    if (zAddrs.isEmpty())
+    if (!fHave)
     {
-        shieldTargetCombo->addItem(tr("(Generate a z-address first)"));
+        availabilityLabel->setText(tr("The node could not report the pool: %1").arg(error));
+        availabilityLabel->setVisible(true);
+    }
+    else if (!pool.fBoundaryBActive)
+    {
+        availabilityLabel->setText(tr(
+            "Boundary B has not activated at this height. Sending from the pool and "
+            "migrating into it will be refused until it does."));
+        availabilityLabel->setVisible(true);
+    }
+    else if (!pool.fTransactionsAccepted)
+    {
+        availabilityLabel->setText(tr(
+            "Boundary B is active, but this node does not accept IV5 transactions "
+            "yet. Sending and migrating will be refused."));
+        availabilityLabel->setVisible(true);
     }
     else
     {
-        for (const QString& addr : zAddrs)
-            shieldTargetCombo->addItem(addr);
+        availabilityLabel->setVisible(false);
     }
-    // Restore selection
-    int idx = shieldTargetCombo->findText(currentTarget);
-    if (idx >= 0) shieldTargetCombo->setCurrentIndex(idx);
+
+    if (fHave)
+    {
+        // Unshield is not disabled in the build; it is retired at a height, and on a
+        // network with no such height scheduled it still works from the console.
+        if (pool.fUnshieldRetired)
+            migrateNoticeLabel->setText(tr(
+                "There is no way back out. Moving value out of the pool to a "
+                "transparent address was retired in consensus at height %1, which "
+                "this chain has passed.").arg(pool.nUnshieldRetirementHeight));
+        else if (pool.UnshieldRetirementScheduled())
+            migrateNoticeLabel->setText(tr(
+                "Moving value out of the pool to a transparent address is retired in "
+                "consensus at height %1. This wallet offers no way out even before "
+                "then, so treat migration as one-way.")
+                .arg(pool.nUnshieldRetirementHeight));
+        else
+            migrateNoticeLabel->setText(tr(
+                "No retirement height is set on this network, so consensus would "
+                "still accept value leaving the pool. This wallet offers no way out "
+                "regardless, so treat migration as one-way."));
+
+        labelPoolBalance->setText(pool.fHaveBalance
+                                      ? tr("%1 INN").arg(pool.dBalance, 0, 'f', 8)
+                                      : tr("unknown"));
+        labelPoolUnconfirmed->setText(tr("%1 INN").arg(pool.dUnconfirmed, 0, 'f', 8));
+        labelNoteCount->setText(QString::number(pool.nNoteCount));
+        labelSeedState->setText(pool.fSeedUnlocked
+                                    ? tr("unlocked")
+                                    : tr("locked, or this wallet has none"));
+        // -1 is the only value that means nothing went unscanned; anything else is a
+        // height whose payloads this wallet has not read, so notes may be missing.
+        labelScanGap->setText(pool.nScanGapHeight < 0
+                                  ? tr("none")
+                                  : tr("from height %1: run z_rescaniv5, notes may be "
+                                       "missing").arg(pool.nScanGapHeight));
+    }
+
+    if (model && model->getOptionsModel())
+    {
+        const int unit = model->getOptionsModel()->getDisplayUnit();
+        labelTransparentBalance->setText(
+            BitcoinUnits::formatWithUnit(unit, model->getBalance()));
+    }
 }
 
-void PrivacyPage::refreshAddresses()
+void PrivacyPage::onSendClicked()
 {
-    if (!model)
+    const QString to = sendToEdit->text().trimmed();
+    const QString amount = sendAmountEdit->text().trimmed();
+    if (to.isEmpty() || amount.isEmpty())
+    {
+        QMessageBox::warning(this, tr("Send"),
+                             tr("Enter a recipient address and an amount."));
+        return;
+    }
+
+    bool ok = false;
+    const double value = amount.toDouble(&ok);
+    if (!ok || value <= 0)
+    {
+        QMessageBox::warning(this, tr("Send"), tr("Enter a positive amount."));
+        return;
+    }
+
+    const int nMask = maskWidget->mask();
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this, tr("Confirm payment"),
+        tr("Send %1 INN to %2?\n\n%3")
+            .arg(amount)
+            .arg(to)
+            .arg(maskWidget->confirmationText()),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
         return;
 
-    zAddressList->clear();
-    QStringList addrs = model->getShieldedAddresses();
-    for (const QString& addr : addrs)
-        zAddressList->addItem(addr);
-
-    if (addrs.isEmpty())
-        zAddressList->addItem(tr("No shielded addresses yet. Click 'New z-Address' to create one."));
-}
-
-void PrivacyPage::refreshSPAddresses()
-{
-    if (!model)
+    if (model == 0)
         return;
-
-    spAddressList->clear();
-    QStringList addrs = model->getSilentPaymentAddresses();
-    for (const QString& addr : addrs)
-        spAddressList->addItem(addr);
-
-    if (addrs.isEmpty())
-        spAddressList->addItem(tr("No silent payment addresses yet. Click 'New SP Address' to create one."));
-}
-
-void PrivacyPage::onNewZAddressClicked()
-{
-    if (!model || !legacyPrivacyControlsEnabled)
-        return;
-
     WalletModel::UnlockContext ctx(model->requestUnlock());
     if (!ctx.isValid())
         return;
 
-    QString newAddr = model->getNewShieldedAddress();
-    if (newAddr.isEmpty())
+    statusLabel->setText(tr("Building the payment..."));
+    QApplication::processEvents();
+
+    QStringList params;
+    params << to << amount << QString::number(nMask);
+    QString result;
+    QString error;
+    if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))
     {
-        QMessageBox::warning(this, tr("Error"), tr("Failed to generate shielded address."));
+        statusLabel->setText(tr("Payment refused"));
+        QMessageBox::warning(this, tr("Send"), error);
         return;
     }
 
-    statusLabel->setText(tr("New z-address created: %1").arg(newAddr.left(20) + "..."));
-    refreshAddresses();
+    QString txid;
+    if (!Iv5Rpc::ReadField(result, "txid", txid))
+        txid = tr("(the node did not return a txid)");
+    statusLabel->setText(tr("Sent: %1").arg(txid));
+    sendAmountEdit->clear();
     refreshBalances();
-
-    // Copy to clipboard
-    QApplication::clipboard()->setText(newAddr);
-    QMessageBox::information(this, tr("New Shielded Address"),
-        tr("Your new shielded address has been created and copied to clipboard:\n\n%1").arg(newAddr));
+    QMessageBox::information(this, tr("Send"), result);
 }
 
-void PrivacyPage::onNewSPAddressClicked()
+void PrivacyPage::onMigrateClicked()
 {
-    if (!model || !legacyPrivacyControlsEnabled)
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this, tr("Migrate to the pool"),
+        tr("This sweeps one transparent address into the pool. Treat it as one-way: "
+           "this wallet offers no way to move value back out.\n\nContinue?"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
         return;
 
+    if (model == 0)
+        return;
     WalletModel::UnlockContext ctx(model->requestUnlock());
     if (!ctx.isValid())
         return;
 
-    QString newAddr = model->getNewSilentPaymentAddress();
-    if (newAddr.isEmpty())
+    QStringList params;
+    const QString from = migrateFromEdit->text().trimmed();
+    const QString maxInputs = migrateMaxInputsEdit->text().trimmed();
+    // z_shieldall takes maxinputs second, so a max with no address needs a
+    // placeholder the RPC reads as "pick the largest address".
+    if (!from.isEmpty() || !maxInputs.isEmpty())
+        params << from;
+    if (!maxInputs.isEmpty())
+        params << maxInputs;
+
+    statusLabel->setText(tr("Migrating..."));
+    QApplication::processEvents();
+
+    QString result;
+    QString error;
+    if (!Iv5Rpc::Call("z_shieldall", params, result, error))
     {
-        QMessageBox::warning(this, tr("Error"), tr("Failed to generate silent payment address. Check that your wallet is unlocked."));
+        statusLabel->setText(tr("Migration refused"));
+        QMessageBox::warning(this, tr("Migrate to the pool"), error);
         return;
     }
 
-    statusLabel->setText(tr("New SP address created"));
-    refreshSPAddresses();
+    statusLabel->setText(tr("Migrated"));
+    refreshBalances();
+    QMessageBox::information(this, tr("Migrate to the pool"), result);
+}
 
-    // Copy to clipboard
-    QApplication::clipboard()->setText(newAddr);
-    QMessageBox::information(this, tr("New Silent Payment Address"),
-        tr("Your new silent payment address has been created and copied to clipboard:\n\n%1\n\n"
-           "Share this address publicly. Each sender will derive a unique one-time address, "
-           "so payments cannot be linked on the blockchain.").arg(newAddr));
+void PrivacyPage::onNewAddressClicked()
+{
+    if (model == 0)
+        return;
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+        return;
+
+    QString result;
+    QString error;
+    if (!Iv5Rpc::Call("z_getnewiv5address", QStringList(), result, error))
+    {
+        QMessageBox::warning(this, tr("New IV5 address"), error);
+        return;
+    }
+
+    QString address;
+    if (!Iv5Rpc::ReadField(result, "address", address) || address.isEmpty())
+    {
+        QMessageBox::warning(this, tr("New IV5 address"),
+                             tr("The node returned no address:\n\n%1").arg(result));
+        return;
+    }
+
+    addressList->addItem(address);
+    QApplication::clipboard()->setText(address);
+    statusLabel->setText(tr("New IV5 address created and copied to the clipboard"));
 }
 
 void PrivacyPage::onCopyAddressClicked()
 {
-    QListWidgetItem *item = zAddressList->currentItem();
-    if (item && !item->text().startsWith("No shielded"))
-    {
-        QApplication::clipboard()->setText(item->text());
-        statusLabel->setText(tr("Address copied to clipboard"));
-    }
-}
-
-void PrivacyPage::onCopySPAddressClicked()
-{
-    QListWidgetItem *item = spAddressList->currentItem();
-    if (item && !item->text().startsWith("No silent"))
-    {
-        QApplication::clipboard()->setText(item->text());
-        statusLabel->setText(tr("SP address copied to clipboard"));
-    }
+    QListWidgetItem *item = addressList->currentItem();
+    if (item == 0)
+        return;
+    QApplication::clipboard()->setText(item->text());
+    statusLabel->setText(tr("Address copied to the clipboard"));
 }
 
 void PrivacyPage::onRefreshClicked()
 {
     refreshBalances();
-    refreshAddresses();
-    refreshSPAddresses();
     statusLabel->setText(tr("Refreshed"));
-}
-
-void PrivacyPage::onShieldClicked()
-{
-    if (!model || !legacyPrivacyControlsEnabled)
-        return;
-
-    QString targetAddr = shieldTargetCombo->currentText();
-    if (targetAddr.isEmpty() || targetAddr.startsWith("("))
-    {
-        QMessageBox::warning(this, tr("Shield Coins"), tr("Please generate a z-address first."));
-        return;
-    }
-
-    QString amountStr = shieldAmountEdit->text().trimmed();
-    if (amountStr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Shield Coins"), tr("Please enter an amount to shield."));
-        return;
-    }
-
-    // Validate amount
-    if (amountStr != "*")
-    {
-        bool ok;
-        double amt = amountStr.toDouble(&ok);
-        if (!ok || amt <= 0)
-        {
-            QMessageBox::warning(this, tr("Shield Coins"), tr("Please enter a valid positive amount."));
-            return;
-        }
-    }
-
-    // Confirmation
-    QMessageBox::StandardButton reply = QMessageBox::question(this, tr("Confirm Shield"),
-        tr("Shield %1 INN to your private address?\n\nTo: %2").arg(amountStr, targetAddr.left(30) + "..."),
-        QMessageBox::Yes | QMessageBox::No);
-
-    if (reply != QMessageBox::Yes)
-        return;
-
-    WalletModel::UnlockContext ctx(model->requestUnlock());
-    if (!ctx.isValid())
-        return;
-
-    statusLabel->setText(tr("Shielding coins..."));
-    QApplication::processEvents();
-
-    QString result;
-    WalletModel::StatusCode status = model->shieldCoins("*", amountStr, result);
-    if (status == WalletModel::OK)
-    {
-        statusLabel->setText(tr("Shield transaction sent successfully"));
-        shieldAmountEdit->clear();
-        refreshBalances();
-        QMessageBox::information(this, tr("Shield Coins"),
-            tr("Coins are being shielded. The transaction has been broadcast.\n\n%1").arg(result));
-    }
-    else
-    {
-        statusLabel->setText(tr("Shield failed"));
-        QMessageBox::warning(this, tr("Shield Coins"),
-            tr("Failed to shield coins:\n\n%1").arg(result));
-    }
-}
-
-void PrivacyPage::onUnshieldClicked()
-{
-    if (!model || !legacyPrivacyControlsEnabled)
-        return;
-
-    QString toAddr = unshieldToEdit->text().trimmed();
-    QString amountStr = unshieldAmountEdit->text().trimmed();
-
-    if (toAddr.isEmpty() || amountStr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Unshield Coins"), tr("Please enter both a destination address and amount."));
-        return;
-    }
-
-    // Validate amount
-    bool amtOk;
-    double amt = amountStr.toDouble(&amtOk);
-    if (!amtOk || amt <= 0)
-    {
-        QMessageBox::warning(this, tr("Unshield Coins"), tr("Please enter a valid positive amount."));
-        return;
-    }
-
-    QMessageBox::StandardButton reply = QMessageBox::question(this, tr("Confirm Unshield"),
-        tr("Unshield %1 INN to transparent address?\n\nTo: %2").arg(amountStr, toAddr),
-        QMessageBox::Yes | QMessageBox::No);
-
-    if (reply != QMessageBox::Yes)
-        return;
-
-    WalletModel::UnlockContext ctx(model->requestUnlock());
-    if (!ctx.isValid())
-        return;
-
-    statusLabel->setText(tr("Unshielding coins..."));
-    QApplication::processEvents();
-
-    // Use the first z-address as source
-    QStringList zAddrs = model->getShieldedAddresses();
-    if (zAddrs.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Unshield Coins"), tr("No shielded addresses found. Cannot unshield."));
-        return;
-    }
-
-    QString result;
-    WalletModel::StatusCode status = model->unshieldCoins(zAddrs.first(), toAddr, amountStr, result);
-    if (status == WalletModel::OK)
-    {
-        statusLabel->setText(tr("Unshield transaction sent successfully"));
-        unshieldAmountEdit->clear();
-        unshieldToEdit->clear();
-        refreshBalances();
-        QMessageBox::information(this, tr("Unshield Coins"),
-            tr("Coins are being unshielded. The transaction has been broadcast.\n\n%1").arg(result));
-    }
-    else
-    {
-        statusLabel->setText(tr("Unshield failed"));
-        QMessageBox::warning(this, tr("Unshield Coins"),
-            tr("Failed to unshield coins:\n\n%1").arg(result));
-    }
-}
-
-void PrivacyPage::onSendShieldedClicked()
-{
-    if (!model || !legacyPrivacyControlsEnabled)
-        return;
-
-    QString toAddr = sendToEdit->text().trimmed();
-    QString amountStr = sendAmountEdit->text().trimmed();
-
-    if (toAddr.isEmpty() || amountStr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Send Private"), tr("Please enter a recipient address and amount."));
-        return;
-    }
-
-    // Validate amount
-    bool amtOk;
-    double amt = amountStr.toDouble(&amtOk);
-    if (!amtOk || amt <= 0)
-    {
-        QMessageBox::warning(this, tr("Send Private"), tr("Please enter a valid positive amount."));
-        return;
-    }
-
-    QMessageBox::StandardButton reply = QMessageBox::question(this, tr("Confirm Private Send"),
-        tr("Send %1 INN privately?\n\nTo: %2").arg(amountStr, toAddr.left(40) + "..."),
-        QMessageBox::Yes | QMessageBox::No);
-
-    if (reply != QMessageBox::Yes)
-        return;
-
-    WalletModel::UnlockContext ctx(model->requestUnlock());
-    if (!ctx.isValid())
-        return;
-
-    statusLabel->setText(tr("Sending privately..."));
-    QApplication::processEvents();
-
-    // Use specified from address or first z-address
-    QString fromAddr = sendFromEdit->text().trimmed();
-    if (fromAddr.isEmpty())
-    {
-        QStringList zAddrs = model->getShieldedAddresses();
-        if (!zAddrs.isEmpty())
-            fromAddr = zAddrs.first();
-    }
-
-    if (fromAddr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Send Private"), tr("No shielded address available to send from. Create a z-address first."));
-        return;
-    }
-
-    QString result;
-    WalletModel::StatusCode status = model->sendShielded(fromAddr, toAddr, amountStr, 0, result);
-    if (status == WalletModel::OK)
-    {
-        statusLabel->setText(tr("Private send transaction broadcast"));
-        sendAmountEdit->clear();
-        sendToEdit->clear();
-        sendMemoEdit->clear();
-        refreshBalances();
-        QMessageBox::information(this, tr("Send Private"),
-            tr("Private transaction sent successfully.\n\n%1").arg(result));
-    }
-    else
-    {
-        statusLabel->setText(tr("Private send failed"));
-        QMessageBox::warning(this, tr("Send Private"),
-            tr("Failed to send privately:\n\n%1").arg(result));
-    }
 }

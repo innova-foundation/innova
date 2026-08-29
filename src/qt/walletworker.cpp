@@ -62,49 +62,6 @@ QString WalletWorker::executeRPCInternal(const QString& command, QString& errorO
     catch (std::exception& e) { errorOut = QString::fromStdString(e.what()); return QString(); }
 }
 
-void WalletWorker::doShield(const QString& fromAddr, const QString& amount)
-{
-    emit operationProgress("shield", "Generating zero-knowledge proof...");
-
-    QString from = fromAddr.isEmpty() ? "\"*\"" : ("\"" + fromAddr + "\"");
-    QString cmd = QString("z_shield %1 %2").arg(from, amount);
-    QString error;
-    QString result = executeRPCInternal(cmd, error);
-
-    if (!error.isEmpty())
-        emit operationComplete(false, "shield", error);
-    else
-        emit operationComplete(true, "shield", result);
-}
-
-void WalletWorker::doUnshield(const QString& fromZAddr, const QString& toAddr, const QString& amount)
-{
-    emit operationProgress("unshield", "Generating zero-knowledge proof...");
-
-    QString cmd = QString("z_unshield \"%1\" \"%2\" %3").arg(fromZAddr, toAddr, amount);
-    QString error;
-    QString result = executeRPCInternal(cmd, error);
-
-    if (!error.isEmpty())
-        emit operationComplete(false, "unshield", error);
-    else
-        emit operationComplete(true, "unshield", result);
-}
-
-void WalletWorker::doSendShielded(const QString& fromAddr, const QString& toAddr, const QString& amount, int privacyMode)
-{
-    emit operationProgress("send_shielded", "Creating FCMP++ proof and shielded transaction...");
-
-    QString cmd = QString("z_send \"%1\" \"%2\" %3 %4").arg(fromAddr, toAddr, amount).arg(privacyMode);
-    QString error;
-    QString result = executeRPCInternal(cmd, error);
-
-    if (!error.isEmpty())
-        emit operationComplete(false, "send_shielded", error);
-    else
-        emit operationComplete(true, "send_shielded", result);
-}
-
 void WalletWorker::doSendTransparent(const QString& toAddr, const QString& amount)
 {
     emit operationProgress("send", "Creating transaction...");

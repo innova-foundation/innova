@@ -91,7 +91,10 @@ public:
     qint64 getWatchImmatureBalance() const;
 
     // Privacy/Shielded operations
+    /** Legacy (pre-2008) shielded pool balance. Retained for wallets holding legacy notes. */
     qint64 getShieldedBalance() const;
+    /** Spendable balance held in the v2008 privacy pool. */
+    qint64 getPrivateBalance() const;
     QString getNewShieldedAddress();
     QStringList getShieldedAddresses() const;
     /** Execute a whitelisted RPC command and return the result string. Returns empty on error. */
@@ -202,7 +205,7 @@ private:
     qint64 cachedWatchOnlyBalance;
     qint64 cachedWatchUnconfBalance;
     qint64 cachedWatchImmatureBalance;
-    qint64 cachedShieldedBalance;
+    qint64 cachedPrivateBalance;
     WalletThread *walletThread;
 
     qint64 cachedNumTransactions;
@@ -232,7 +235,7 @@ public slots:
 
 signals:
     // Signal that balance in wallet changed
-    void balanceChanged(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 shieldedBalance);
+    void balanceChanged(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 privateBalance);
 
     // Number of transactions in wallet changed
     void numTransactionsChanged(int count);

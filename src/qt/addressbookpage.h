@@ -73,8 +73,6 @@ private slots:
     void on_verifyMessage_clicked();
     void selectionChanged();
     void on_showQRCode_clicked();
-    void onNewShieldedAddressClicked();
-    void onNewSPAddressClicked();
     void onNewStakingAddressClicked();
     /** Spawn contextual menu (right mouse menu) for address book entry */
     void contextualMenu(const QPoint &point);

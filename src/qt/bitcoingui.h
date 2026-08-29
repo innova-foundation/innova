@@ -110,7 +110,6 @@ private:
     Hyperfile *hyperfilePage;
     StakingPage *stakingPage;
     PrivacyPage *privacyPage;
-    QWidget *nullsendPage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -145,7 +144,6 @@ private:
     QAction *hyperfileAction;
     QAction *stakingAction;
     QAction *privacyAction;
-    QAction *nullsendAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
@@ -266,8 +264,6 @@ private slots:
     void gotoStakingPage();
     /** Switch to Privacy page */
     void gotoPrivacyPage();
-    /** Switch to NullSend page */
-    void gotoNullSendPage();
 
 
 

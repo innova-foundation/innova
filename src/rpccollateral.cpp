@@ -1271,8 +1271,8 @@ Value collateralnode(const Array& params, bool fHelp)
         obj.push_back(Pair("members", arr));
         obj.push_back(Pair("count", (int)vEntries.size()));
         obj.push_back(Pair("note",
-                           "the committee draw is a later increment; this is the set "
-                           "it will draw from"));
+                           "the set the term draw at this anchor reads; "
+                           "'getfinalityinfo' reports the seats it produced"));
         return obj;
     }
 

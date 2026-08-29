@@ -1,3 +1,6 @@
+#ifndef INN_NAMECOIN_H
+#define INN_NAMECOIN_H
+
 #include "db.h"
 #include "txdb-leveldb.h"
 #include "innovarpc.h"
@@ -488,3 +491,5 @@ struct nameTempProxy
     uint256 hash;
     CNameIndex ind;
 };
+
+#endif // INN_NAMECOIN_H

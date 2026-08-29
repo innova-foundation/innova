@@ -146,7 +146,7 @@
           <item row="2" column="0">
            <widget class="QLabel" name="labelShieldedText">
             <property name="text">
-             <string>Shielded (Private):</string>
+             <string>Private Pool:</string>
             </property>
            </widget>
           </item>
@@ -162,7 +162,7 @@
              <cursorShape>IBeamCursor</cursorShape>
             </property>
             <property name="toolTip">
-             <string>Coins in the shielded (private) pool — hidden from the public ledger</string>
+             <string>Spendable balance in the private pool</string>
             </property>
             <property name="text">
              <string notr="true">0 INN</string>

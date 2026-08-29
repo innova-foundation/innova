@@ -409,8 +409,5 @@ extern json_spirit::Value n_importdelegation(const json_spirit::Array& params, b
 extern json_spirit::Value n_revokecoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_coldstakeinfo(const json_spirit::Array& params, bool fHelp);
 
-extern json_spirit::Value sp_getnewaddress(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sp_listaddresses(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sp_send(const json_spirit::Array& params, bool fHelp);
 
 #endif

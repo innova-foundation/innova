@@ -518,7 +518,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/hyperfile.h \
     src/qt/stakingpage.h \
     src/qt/privacypage.h \
-    src/qt/nullsendpage.h \
+    src/qt/iv5rpcbridge.h \
+    src/qt/disclosuremaskwidget.h \
+    src/qt/finalitystatuswidget.h \
+    src/qt/privatecollateralwidget.h \
     src/qt/chatwidget.h \
     src/qt/emojipicker.h \
     src/qt/walletworker.h \
@@ -577,6 +580,9 @@ HEADERS += src/qt/bitcoingui.h \
     src/silentpayments.h \
     src/dandelion.h \
     src/finality.h \
+    src/finality_schedule.h \
+    src/privacy_vnext_builder.h \
+    src/privacy_vnext_store.h \
     src/subsidy.h \
     src/finality_note.h \
     src/dag.h \
@@ -688,7 +694,10 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/hyperfile.cpp \
     src/qt/stakingpage.cpp \
     src/qt/privacypage.cpp \
-    src/qt/nullsendpage.cpp \
+    src/qt/iv5rpcbridge.cpp \
+    src/qt/disclosuremaskwidget.cpp \
+    src/qt/finalitystatuswidget.cpp \
+    src/qt/privatecollateralwidget.cpp \
     src/qt/chatwidget.cpp \
     src/qt/emojipicker.cpp \
     src/qt/walletworker.cpp \
@@ -804,6 +813,9 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/silentpayments.cpp \
     src/dandelion.cpp \
     src/finality.cpp \
+    src/finality_schedule.cpp \
+    src/privacy_vnext_builder.cpp \
+    src/privacy_vnext_store.cpp \
     src/subsidy.cpp \
     src/finality_note.cpp \
     src/dag.cpp \
