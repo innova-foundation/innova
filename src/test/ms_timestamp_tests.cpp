@@ -641,10 +641,11 @@ BOOST_AUTO_TEST_CASE(the_boundary_blocks_carry_what_their_heights_require)
     BOOST_CHECK_EQUAL(pindexBelow->GetBlockTimeMs(),
                       pindexBelow->GetBlockTime() * 1000);
 
-    std::unique_ptr<CBlock> pAt(MineOne());
+    // The block landing exactly on the gate. The template is checked, then its offset
+    // is overwritten with a nonzero value, since a regtest offset floors at 0 and
+    // comparing against 0 would pass without the cache.
+    std::unique_ptr<CBlock> pAt(BuildTemplate());
     BOOST_REQUIRE(pAt.get() != NULL);
-    BOOST_REQUIRE_EQUAL(BestIndex()->nHeight, nBase + 2);
-    BOOST_CHECK_EQUAL(BestIndex()->nHeight, FORK_HEIGHT_MS_TIMESTAMP);
 
     const int nOut = FindMsOutput(*pAt);
     BOOST_REQUIRE_MESSAGE(nOut >= 0,
@@ -654,17 +655,31 @@ BOOST_AUTO_TEST_CASE(the_boundary_blocks_carry_what_their_heights_require)
     BOOST_CHECK_GE(nOut, 1);
     BOOST_CHECK_EQUAL(pAt->vtx[0].vout[nOut].nValue, 0);
 
+    const uint16_t nForced = 617;
+    BOOST_REQUIRE_NE(nForced, 0);
+    pAt->vtx[0].vout[nOut].scriptPubKey = BuildMsTimestampScript(nForced);
+    pAt->hashMerkleRoot = pAt->BuildMerkleTree();
+    BOOST_REQUIRE(SolveBlock(pAt.get()));
+    const uint256 hashAt = pAt->GetHash();
+    BOOST_REQUIRE(ProcessBlock(NULL, pAt.get()));
+    BOOST_REQUIRE_EQUAL(BestIndex()->nHeight, nBase + 2);
+    BOOST_CHECK_EQUAL(BestIndex()->nHeight, FORK_HEIGHT_MS_TIMESTAMP);
+
     uint16_t nCommitted = 0;
     std::string strError;
     BOOST_REQUIRE(ExtractCanonicalMsTimestampCommitment(CoinbaseScripts(*pAt),
                                                         nCommitted, strError));
+    BOOST_CHECK_EQUAL(nCommitted, nForced);
     BOOST_CHECK_LE((unsigned int)nCommitted, MS_TIMESTAMP_MAX);
 
-    CBlockIndex* pindexAt = IndexFor(pAt->GetHash());
+    CBlockIndex* pindexAt = IndexFor(hashAt);
     BOOST_REQUIRE(pindexAt != NULL);
-    BOOST_CHECK_EQUAL(pindexAt->nTimeMs, nCommitted);
+    BOOST_REQUIRE_EQUAL(pindexAt->nHeight, FORK_HEIGHT_MS_TIMESTAMP);
+    // The block on the gate itself, not one above it: a cache that starts one
+    // block late reads 0 here.
+    BOOST_CHECK_EQUAL(pindexAt->nTimeMs, nForced);
     BOOST_CHECK_EQUAL(pindexAt->GetBlockTimeMs(),
-                      MsTimestampCombine(pAt->nTime, nCommitted));
+                      MsTimestampCombine(pAt->nTime, nForced));
 }
 
 // At or above the gate a missing commitment is invalid. The positive control
