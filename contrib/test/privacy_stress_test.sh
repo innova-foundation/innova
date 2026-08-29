@@ -2,7 +2,7 @@
 # Copyright (c) 2019-2026 The Innova developers
 # Innova Privacy Suite Stress Test
 # Comprehensive stress testing of shielded transactions, Lelantus proofs,
-# Silent Payments, Dandelion++, and all privacy RPC commands.
+# Dandelion++, and all privacy RPC commands.
 # Author: 0xcircuitbreaker - CircuitBreaker
 
 set -e
@@ -483,46 +483,6 @@ test_double_spend_prevention() {
 
 
 # ============================================================
-# TEST SUITE 5: SILENT PAYMENTS (BIP-352)
-# ============================================================
-test_silent_payments() {
-    section "TEST SUITE 5: Silent Payments"
-
-    subsection "Address Generation"
-
-    local spaddr=$(rpc1 sp_getnewaddress 2>/dev/null || echo "")
-    if [ -n "$spaddr" ] && [ ${#spaddr} -gt 20 ]; then
-        success "sp_getnewaddress returns valid address (${#spaddr} chars)"
-    else
-        if echo "$spaddr" | grep -qi "error\|not.*found\|method"; then
-            warn "Silent payments RPC not available: $spaddr"
-            return
-        fi
-        fail "sp_getnewaddress failed: '$spaddr'"
-        return
-    fi
-
-    local spaddr2=$(rpc1 sp_getnewaddress 2>/dev/null || echo "")
-    if [ "$spaddr" != "$spaddr2" ]; then
-        success "Multiple sp_getnewaddress calls produce unique addresses"
-    else
-        fail "sp_getnewaddress returned duplicate"
-    fi
-
-    subsection "SP Address Listing"
-
-    local splist=$(rpc1 sp_listaddresses 2>/dev/null || echo "")
-    if echo "$splist" | tr '\n' ' ' | grep -qE '\[.*\]'; then
-        success "sp_listaddresses returns address list"
-    else
-        warn "sp_listaddresses: $splist"
-    fi
-
-    SPADDR1="$spaddr"
-}
-
-
-# ============================================================
 # TEST SUITE 6: DANDELION++ NETWORK PRIVACY
 # ============================================================
 test_dandelion() {
@@ -822,60 +782,6 @@ test_stress_load() {
 
 
 # ============================================================
-# TEST SUITE 11: SILENT PAYMENT STRESS
-# ============================================================
-test_silent_payment_stress() {
-    section "TEST SUITE 11: Silent Payment Stress"
-
-    subsection "Mass SP Address Generation"
-
-    local sp_gen_count=0
-    for i in $(seq 1 20); do
-        local addr=$(rpc1 sp_getnewaddress 2>/dev/null || echo "")
-        if [ -n "$addr" ] && [ ${#addr} -gt 10 ]; then
-            ((sp_gen_count++))
-        fi
-    done
-
-    if [ $sp_gen_count -ge 18 ]; then
-        success "SP mass generation: $sp_gen_count/20 addresses"
-    else
-        if [ $sp_gen_count -eq 0 ]; then
-            warn "Silent payments RPC not available, skipping"
-            return
-        fi
-        fail "SP mass generation: only $sp_gen_count/20"
-    fi
-
-    subsection "SP List Performance"
-
-    local sp_list=$(rpc1 sp_listaddresses 2>/dev/null || echo "")
-    local sp_count=$(echo "$sp_list" | grep -c '"' || echo "0")
-    if [ "$sp_count" -gt 10 ] 2>/dev/null; then
-        success "sp_listaddresses shows $((sp_count/2))+ addresses"
-    else
-        warn "sp_listaddresses count: $sp_count"
-    fi
-
-    subsection "SP Address Listing Under Load"
-
-    local sp_list_ok=0
-    for i in $(seq 1 10); do
-        local listed=$(rpc1 sp_listaddresses 2>/dev/null || echo "")
-        if echo "$listed" | grep -q '"'; then
-            ((sp_list_ok++))
-        fi
-    done
-
-    if [ $sp_list_ok -ge 8 ]; then
-        success "SP address listings: $sp_list_ok/10 succeeded"
-    else
-        warn "SP address listings: $sp_list_ok/10"
-    fi
-}
-
-
-# ============================================================
 # TEST SUITE 12: NODE STABILITY UNDER PRIVACY LOAD
 # ============================================================
 test_node_stability() {
@@ -944,7 +850,7 @@ test_node_stability() {
 main() {
     echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║     INNOVA PRIVACY SUITE - COMPREHENSIVE STRESS TEST    ║${NC}"
-    echo -e "${CYAN}║  Shielded Tx | Silent Payments | Dandelion++ | Lelantus ║${NC}"
+    echo -e "${CYAN}║       Shielded Tx | Dandelion++ | Lelantus proofs       ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}\n"
 
     check_binary
@@ -958,13 +864,11 @@ main() {
     test_shielded_transactions
     test_shielded_validation
     test_double_spend_prevention
-    test_silent_payments
     test_dandelion
     test_edge_cases
     test_reorg_resilience
     test_privacy_guarantees
     test_stress_load
-    test_silent_payment_stress
     test_node_stability
 
     echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
