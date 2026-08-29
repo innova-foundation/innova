@@ -37,7 +37,7 @@ using boost::placeholders::_5;
 WalletModel::WalletModel(CWallet *wallet, OptionsModel *optionsModel, QObject *parent) :
     QObject(parent), wallet(wallet), optionsModel(optionsModel), addressTableModel(0),
     transactionTableModel(0),
-    cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedShieldedBalance(0),
+    cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedPrivateBalance(0),
     cachedNumTransactions(0),
     cachedEncryptionStatus(Unencrypted),
     cachedNumBlocks(0)
@@ -174,7 +174,7 @@ void WalletModel::checkBalanceChanged()
     qint64 newStake = getStakeAmount();
     qint64 newUnconfirmedBalance = getUnconfirmedBalance();
     qint64 newImmatureBalance = getImmatureBalance();
-    qint64 newShieldedBalance = getShieldedBalance();
+    qint64 newPrivateBalance = getPrivateBalance();
     // Watch Only
     qint64 newWatchOnlyBalance = 0;
     qint64 newWatchUnconfBalance = 0;
@@ -186,21 +186,31 @@ void WalletModel::checkBalanceChanged()
         newWatchImmatureBalance = getWatchImmatureBalance();
     }
 
-    if(cachedBalance != newBalance || cachedLockedBalance != newLockedBalance || cachedStake != newStake || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance || cachedShieldedBalance != newShieldedBalance)
+    if(cachedBalance != newBalance || cachedLockedBalance != newLockedBalance || cachedStake != newStake || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance || cachedPrivateBalance != newPrivateBalance)
     {
         cachedBalance = newBalance;
         cachedStake = newStake;
         cachedUnconfirmedBalance = newUnconfirmedBalance;
         cachedImmatureBalance = newImmatureBalance;
-        cachedShieldedBalance = newShieldedBalance;
+        cachedPrivateBalance = newPrivateBalance;
 
-        emit balanceChanged(newBalance, newLockedBalance, newStake, newUnconfirmedBalance, newImmatureBalance, newWatchOnlyBalance, newWatchUnconfBalance, newWatchImmatureBalance, newShieldedBalance);
+        emit balanceChanged(newBalance, newLockedBalance, newStake, newUnconfirmedBalance, newImmatureBalance, newWatchOnlyBalance, newWatchUnconfBalance, newWatchImmatureBalance, newPrivateBalance);
     }
 }
 
 qint64 WalletModel::getShieldedBalance() const
 {
     return wallet->GetShieldedBalance();
+}
+
+qint64 WalletModel::getPrivateBalance() const
+{
+    // GetPrivacyVNextBalance takes cs_shielded then cs_main; a block connect
+    // holds them the other way. Take cs_main first, cached value on contention.
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+        return cachedPrivateBalance;
+    return wallet->GetPrivacyVNextBalance();
 }
 
 // Helper: serialize shielded address to base58 string (same as rpcshielded.cpp)
