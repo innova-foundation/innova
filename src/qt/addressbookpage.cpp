@@ -69,22 +69,10 @@ AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
 
         // Add address type generation buttons for the Receive tab
         {
-            QPushButton *btnNewShielded = new QPushButton(tr("New &z-Address"), this);
-            btnNewShielded->setToolTip(tr("Generate a new shielded (private) address"));
-            btnNewShielded->setStyleSheet("QPushButton { color: #4CAF50; font-weight: bold; }");
-            ui->horizontalLayout->insertWidget(1, btnNewShielded);
-            connect(btnNewShielded, SIGNAL(clicked()), this, SLOT(onNewShieldedAddressClicked()));
-
-            QPushButton *btnNewSP = new QPushButton(tr("New &SP Address"), this);
-            btnNewSP->setToolTip(tr("Generate a new Silent Payment address"));
-            btnNewSP->setStyleSheet("QPushButton { color: #9C27B0; font-weight: bold; }");
-            ui->horizontalLayout->insertWidget(2, btnNewSP);
-            connect(btnNewSP, SIGNAL(clicked()), this, SLOT(onNewSPAddressClicked()));
-
             QPushButton *btnNewStaking = new QPushButton(tr("New S&taking Addr"), this);
             btnNewStaking->setToolTip(tr("Generate a new staking address for cold staking"));
             btnNewStaking->setStyleSheet("QPushButton { color: #FF9800; font-weight: bold; }");
-            ui->horizontalLayout->insertWidget(3, btnNewStaking);
+            ui->horizontalLayout->insertWidget(1, btnNewStaking);
             connect(btnNewStaking, SIGNAL(clicked()), this, SLOT(onNewStakingAddressClicked()));
 
 #ifdef USE_QRCODE
@@ -483,76 +471,6 @@ void AddressBookPage::selectNewAddress(const QModelIndex &parent, int begin, int
 void AddressBookPage::setWalletModel(WalletModel *walletModel)
 {
     this->walletModel = walletModel;
-}
-
-void AddressBookPage::onNewShieldedAddressClicked()
-{
-    if (!walletModel)
-        return;
-
-    bool ok;
-    QString label = QInputDialog::getText(this, tr("New Shielded Address"),
-        tr("Label for new z-address (optional):"), QLineEdit::Normal, "", &ok);
-    if (!ok) return;
-
-    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
-    if (!ctx.isValid())
-        return;
-
-    QString newAddr = walletModel->getNewShieldedAddress();
-    if (newAddr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Error"), tr("Failed to generate shielded address."));
-        return;
-    }
-
-    // Save label for this z-address (persisted via QSettings)
-    if (!label.isEmpty())
-    {
-        QSettings settings;
-        settings.setValue("addrLabel/" + newAddr, label);
-    }
-
-    // Full refresh so z-address appears with correct "Shielded" type
-    if (model) model->refresh();
-
-    QApplication::clipboard()->setText(newAddr);
-    QMessageBox::information(this, tr("New Shielded Address"),
-        tr("Address copied to clipboard:\n\n%1").arg(newAddr));
-}
-
-void AddressBookPage::onNewSPAddressClicked()
-{
-    if (!walletModel)
-        return;
-
-    bool ok;
-    QString label = QInputDialog::getText(this, tr("New Silent Payment Address"),
-        tr("Label for new SP address (optional):"), QLineEdit::Normal, "", &ok);
-    if (!ok) return;
-
-    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
-    if (!ctx.isValid())
-        return;
-
-    QString newAddr = walletModel->getNewSilentPaymentAddress();
-    if (newAddr.isEmpty())
-    {
-        QMessageBox::warning(this, tr("Error"), tr("Failed to generate silent payment address."));
-        return;
-    }
-
-    if (!label.isEmpty())
-    {
-        QSettings settings;
-        settings.setValue("addrLabel/" + newAddr, label);
-    }
-    if (model) model->refresh();
-
-    QApplication::clipboard()->setText(newAddr);
-    QMessageBox::information(this, tr("New Silent Payment Address"),
-        tr("Address copied to clipboard:\n\n%1\n\n"
-           "Share publicly. Each sender derives a unique one-time address.").arg(newAddr));
 }
 
 void AddressBookPage::onNewStakingAddressClicked()
