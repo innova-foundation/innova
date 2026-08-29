@@ -348,19 +348,8 @@ inline int GetForkHeightChaumianCJ()
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
-// Millisecond block-timestamp offset carried in a coinbase OP_RETURN.
-//
-// From this height a coinbase carries exactly one well-formed IMTS commitment
-// and the offset is in 0..999; below it the commitment is absent. The offset
-// relaxes no second-resolution rule and nothing consumes it for retargeting --
-// v5 writes the field so v6 has real sub-second history to tune against.
-//
-// Mainnet base sits between the IDNS reset (7,900,000) and POEM (7,940,000),
-// 20,000 blocks clear of the rung below and 30,000 below the DAG gate, so it
-// is adjacent to neither and produces a soak window at 15-second spacing
-// before the DAG fork changes the spacing.
-//
-// Regtest-only override (-regtestmstimestamp) for rehearsing the boundary.
+// Coinbase millisecond-offset commitment (IMTS, 0..999): exactly one from this height,
+// none below; unused in v5. -regtestmstimestamp overrides on regtest.
 extern int nRegtestMsTimestampHeight;
 
 inline int GetForkHeightMsTimestamp()
