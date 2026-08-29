@@ -709,4 +709,226 @@ BOOST_AUTO_TEST_CASE(regtest_bits_were_already_pinned_at_the_limit)
     }
 }
 
+// ---------------------------------------------------------------------------
+// The 15s -> 1s transition at FORK_HEIGHT_DAG; difficulty is not reset there.
+// ---------------------------------------------------------------------------
+
+// One post-DAG retarget moves the target by at most +187/181 (~3.31%) or -1%, so the
+// 15x renormalisation cannot happen in one step.
+BOOST_AUTO_TEST_CASE(a_postdag_retarget_step_is_bounded_in_both_directions)
+{
+    const CBigNum bnLimit = bnProofOfWorkLimit;
+    const unsigned int nPrevBits = (bnLimit / 100000).GetCompact();
+    const CBigNum bnPrev = TargetOf(nPrevBits);
+
+    size_t nEased = 0, nTightened = 0;
+
+    for (int nWindow = 1; nWindow <= POST_DAG_RETARGET_WINDOW; nWindow++)
+    {
+        // 0 .. 8x the target span covers both clamps with room either side.
+        for (int64_t nSpan = 0; nSpan <= 8 * nWindow + 16; nSpan++)
+        {
+            const unsigned int nNext = ComputeRetargetedBits(nPrevBits, nSpan, 1,
+                                                             nWindow, true, bnLimit);
+            const CBigNum bnNext = TargetOf(nNext);
+
+            BOOST_CHECK_MESSAGE(bnNext * 181 <= bnPrev * 187,
+                "window " << nWindow << " span " << nSpan
+                << ": one step eased the target by more than 187/181");
+            BOOST_CHECK_MESSAGE(bnNext * 100 >= bnPrev * 99,
+                "window " << nWindow << " span " << nSpan
+                << ": one step tightened the target by more than 1%");
+
+            if (bnNext > bnPrev) nEased++;
+            if (bnNext < bnPrev) nTightened++;
+        }
+    }
+
+    // The ease cap is exactly 187/181 and is window independent: the window
+    // cancels in ((I-1)*T + 2*4T) / ((I+1)*T). Pin that at every width, or the
+    // bound above could hold merely because nothing ever approached it.
+    for (int nWindow = 1; nWindow <= POST_DAG_RETARGET_WINDOW; nWindow++)
+    {
+        const unsigned int nCap = ComputeRetargetedBits(nPrevBits, 8 * nWindow, 1,
+                                                        nWindow, true, bnLimit);
+        const CBigNum bnCap = TargetOf(nCap);
+        // 0.1% tolerance absorbs the 24-bit mantissa of the compact encoding.
+        BOOST_CHECK_MESSAGE(bnCap * 181 * 1000 >= bnPrev * 187 * 999,
+            "window " << nWindow << ": the maximum observation did not reach the "
+            "187/181 ease cap, so the cap is not window independent");
+    }
+
+    // Guard the guard: bounds proved over a sweep that never moved the target
+    // would hold for any controller at all.
+    BOOST_CHECK_MESSAGE(nEased > 100, "the sweep never eased the target");
+    BOOST_CHECK_MESSAGE(nTightened > 100, "the sweep never tightened the target");
+}
+
+namespace {
+
+struct ForkSim
+{
+    double dFirstGap;      // expected spacing of the first post-fork block
+    double dTailSpacing;   // mean real gap over the tail of the post-fork run
+    int    nRampBlocks;    // post-fork blocks until expected spacing first < 1.1s
+    double dRampSeconds;   // real seconds spent in the ramp
+    double dMaxStepRatio;  // largest single-step target increase observed
+    bool   fHitLimit;      // did the target ever clamp at the proof-of-work limit
+
+    ForkSim() : dFirstGap(0.0), dTailSpacing(0.0), nRampBlocks(-1),
+                dRampSeconds(0.0), dMaxStepRatio(1.0), fHitLimit(false) {}
+};
+
+// Closed-loop run across FORK_HEIGHT_DAG through GetNextTargetRequired, from an
+// equilibrium 15s chain. dHashrateMul scales hashrate at the boundary.
+ForkSim SimulateFork(int nPostBlocks, uint64_t seed, double dHashrateMul)
+{
+    const int nDAG = FORK_HEIGHT_DAG;
+    const CBigNum bnLimit = bnProofOfWorkLimit;
+    const unsigned int nStartBits = (bnLimit / 100000).GetCompact();
+
+    std::vector<CBlockIndex> vChain;
+    vChain.resize(nDAG + nPostBlocks + 2);
+
+    for (int i = 0; i < nDAG; i++)
+    {
+        vChain[i].nHeight = i;
+        vChain[i].nTime = 1700000000u + (unsigned int)(i * PRE_DAG_TARGET_SPACING);
+        vChain[i].nBits = nStartBits;
+        vChain[i].nFlags = 0; // proof-of-work
+        vChain[i].pprev = (i == 0) ? NULL : &vChain[i - 1];
+    }
+
+    const double dWork0 = TargetOf(nStartBits).getuint256().getdouble();
+    const double dHashrate = (std::pow(2.0, 256.0) / dWork0)
+                             / (double)PRE_DAG_TARGET_SPACING * dHashrateMul;
+
+    ForkSim r;
+    Rng rng(seed);
+    double dNow = (double)vChain[nDAG - 1].nTime;
+    double dElapsed = 0.0;
+    std::vector<double> vGaps;
+
+    for (int h = nDAG; h < nDAG + nPostBlocks; h++)
+    {
+        const unsigned int nBits = GetNextTargetRequired(&vChain[h - 1], false);
+
+        const CBigNum bnNow = TargetOf(nBits);
+        const CBigNum bnWas = TargetOf(vChain[h - 1].nBits);
+        if (bnNow >= bnLimit)
+            r.fHitLimit = true;
+        const double dRatio = bnNow.getuint256().getdouble()
+                              / bnWas.getuint256().getdouble();
+        if (dRatio > r.dMaxStepRatio) r.dMaxStepRatio = dRatio;
+
+        const double dMean = (std::pow(2.0, 256.0)
+                              / bnNow.getuint256().getdouble()) / dHashrate;
+        if (h == nDAG)
+            r.dFirstGap = dMean;
+        if (r.nRampBlocks < 0 && dMean < 1.1)
+        {
+            r.nRampBlocks = h - nDAG;
+            r.dRampSeconds = dElapsed;
+        }
+
+        const double dGap = rng.Exponential(dMean);
+        dNow += dGap;
+        dElapsed += dGap;
+        vGaps.push_back(dGap);
+
+        // Stamped the way the node stamps: whole seconds from the wall clock,
+        // bumped past the parent's median-time-past when AcceptBlock would
+        // otherwise refuse the block.
+        int64_t nStamp = (int64_t)dNow;
+        const int64_t nMedian = vChain[h - 1].GetPastTimeLimit();
+        if (nStamp <= nMedian) nStamp = nMedian + 1;
+
+        vChain[h].nHeight = h;
+        vChain[h].nTime = (unsigned int)nStamp;
+        vChain[h].nBits = nBits;
+        vChain[h].nFlags = 0;
+        vChain[h].pprev = &vChain[h - 1];
+    }
+
+    double dSum = 0.0;
+    const size_t nHalf = vGaps.size() / 2;
+    for (size_t i = nHalf; i < vGaps.size(); i++) dSum += vGaps[i];
+    r.dTailSpacing = dSum / (double)(vGaps.size() - nHalf);
+    return r;
+}
+
+} // namespace
+
+// The transition itself: a chain that crosses the fork carrying 15s difficulty
+// must renormalise onto the 1s target, do it gradually, and not overshoot onto
+// the proof-of-work limit on the way.
+BOOST_AUTO_TEST_CASE(the_dag_fork_renormalises_from_the_predag_cadence)
+{
+    TestNetGuard guard;
+    BOOST_REQUIRE(FORK_HEIGHT_DAG > 2 && FORK_HEIGHT_DAG < 1000);
+
+    const ForkSim r = SimulateFork(4000, 20260825ULL, 1.0);
+
+    BOOST_TEST_MESSAGE("15:1 fork: first post-fork expected gap " << r.dFirstGap
+                       << "s, ramp " << r.nRampBlocks << " blocks / "
+                       << r.dRampSeconds << "s, tail spacing " << r.dTailSpacing
+                       << "s, max single-step ease " << r.dMaxStepRatio);
+
+    // The fork inherits the pre-DAG cadence: ~15s against a 1s target. If this
+    // failed the fixture would not be starting from the surplus at all.
+    BOOST_CHECK_MESSAGE(r.dFirstGap > 13.0 && r.dFirstGap < 17.0,
+        "expected the first post-fork block to inherit the 15s cadence, got "
+        << r.dFirstGap);
+
+    // No difficulty cliff: the spacing constant changes 15x in one height but no
+    // single retarget may move the target by more than the clamp allows.
+    BOOST_CHECK_MESSAGE(r.dMaxStepRatio < 187.0 / 181.0 + 1e-6,
+        "a single retarget step eased by " << r.dMaxStepRatio);
+
+    // And no collapse: easing must stop at the equilibrium, not at the limit.
+    BOOST_CHECK_MESSAGE(!r.fHitLimit,
+        "the transition drove the target onto the proof-of-work limit");
+
+    // ln(15)/ln(187/181) ~ 83 blocks; the bound is loose on purpose.
+    BOOST_CHECK_MESSAGE(r.nRampBlocks > 0 && r.nRampBlocks < 200,
+        "renormalisation took " << r.nRampBlocks << " blocks");
+    BOOST_CHECK_MESSAGE(r.dRampSeconds > 0.0 && r.dRampSeconds < 45 * 60,
+        "renormalisation took " << r.dRampSeconds << "s of wall clock");
+
+    // It lands on the target and stays there.
+    BOOST_CHECK_MESSAGE(r.dTailSpacing > 0.9 && r.dTailSpacing < 1.1,
+        "post-transition spacing settled at " << r.dTailSpacing << "s");
+}
+
+// The same transition when hashrate also moves at the boundary, which is the
+// realistic case for a flag-day fork: miners join or leave as it activates.
+// Halving the hashrate makes the renormalisation 30x, doubling it 7.5x.
+BOOST_AUTO_TEST_CASE(the_dag_fork_absorbs_a_hashrate_change_at_the_boundary)
+{
+    TestNetGuard guard;
+
+    const double vMul[] = { 0.5, 2.0, 4.0 };
+    for (size_t i = 0; i < sizeof(vMul) / sizeof(vMul[0]); i++)
+    {
+        const ForkSim r = SimulateFork(4000, 4242000ULL + i, vMul[i]);
+
+        BOOST_TEST_MESSAGE("hashrate x" << vMul[i] << " at the fork: first gap "
+                           << r.dFirstGap << "s, ramp " << r.nRampBlocks
+                           << " blocks / " << r.dRampSeconds << "s, tail spacing "
+                           << r.dTailSpacing << "s");
+
+        BOOST_CHECK_MESSAGE(r.dMaxStepRatio < 187.0 / 181.0 + 1e-6,
+            "hashrate x" << vMul[i] << ": a single step eased by " << r.dMaxStepRatio);
+        BOOST_CHECK_MESSAGE(!r.fHitLimit,
+            "hashrate x" << vMul[i] << ": the transition hit the proof-of-work limit");
+        BOOST_CHECK_MESSAGE(r.nRampBlocks > 0 && r.nRampBlocks < 250,
+            "hashrate x" << vMul[i] << ": renormalisation took " << r.nRampBlocks
+            << " blocks");
+        BOOST_CHECK_MESSAGE(r.dRampSeconds > 0.0 && r.dRampSeconds < 60 * 60,
+            "hashrate x" << vMul[i] << ": renormalisation took " << r.dRampSeconds << "s");
+        BOOST_CHECK_MESSAGE(r.dTailSpacing > 0.9 && r.dTailSpacing < 1.1,
+            "hashrate x" << vMul[i] << ": spacing settled at " << r.dTailSpacing << "s");
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
