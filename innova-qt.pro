@@ -586,6 +586,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/subsidy.h \
     src/finality_note.h \
     src/dag.h \
+    src/mstimestamp.h \
     src/blockprofile.h \
     src/init.h \
     src/bootstrap.h \
@@ -819,6 +820,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/subsidy.cpp \
     src/finality_note.cpp \
     src/dag.cpp \
+    src/mstimestamp.cpp \
     src/blockprofile.cpp
 
 #### I n n o v a sources
