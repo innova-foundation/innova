@@ -2,20 +2,20 @@
 #define PRIVACYPAGE_H
 
 #include <QWidget>
-#include <QLabel>
-#include <QLineEdit>
-#include <QPushButton>
-#include <QComboBox>
-#include <QTextEdit>
-#include <QGroupBox>
-#include <QListWidget>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QFormLayout>
-#include <QTabWidget>
 
+class QLabel;
+class QLineEdit;
+class QListWidget;
+class QPushButton;
+class QTabWidget;
+class DisclosureMaskWidget;
+class FinalityStatusWidget;
+class PrivateCollateralWidget;
 class WalletModel;
 
+/** The v2008 privacy surface: what a transaction discloses, migration into the
+ *  pool, private collateralnode registration, and finality status.
+ */
 class PrivacyPage : public QWidget
 {
     Q_OBJECT
@@ -25,59 +25,47 @@ public:
     void setModel(WalletModel *model);
 
 private slots:
-    void onShieldClicked();
-    void onUnshieldClicked();
-    void onSendShieldedClicked();
-    void onNewZAddressClicked();
-    void onRefreshClicked();
+    void onSendClicked();
+    void onMigrateClicked();
+    void onNewAddressClicked();
     void onCopyAddressClicked();
-    void onNewSPAddressClicked();
-    void onCopySPAddressClicked();
+    void onRefreshClicked();
 
 private:
+    void setupUI();
+    void refreshBalances();
+    QWidget* buildSendTab();
+    QWidget* buildMigrateTab();
+    QWidget* buildAddressTab();
+
     WalletModel *model;
 
-    // Balance display
+    QLabel *availabilityLabel;
+    QLabel *labelPoolBalance;
+    QLabel *labelPoolUnconfirmed;
+    QLabel *labelNoteCount;
     QLabel *labelTransparentBalance;
-    QLabel *labelShieldedBalance;
-    QLabel *labelTotalPrivateBalance;
+    QLabel *labelSeedState;
+    QLabel *labelScanGap;
 
-    // Shield/Unshield tab
-    QLineEdit *shieldAmountEdit;
-    QComboBox *shieldTargetCombo;
-    QPushButton *shieldButton;
-    QLineEdit *unshieldAmountEdit;
-    QLineEdit *unshieldToEdit;
-    QPushButton *unshieldButton;
-
-    // Send Shielded tab
-    QLineEdit *sendFromEdit;
     QLineEdit *sendToEdit;
     QLineEdit *sendAmountEdit;
-    QLineEdit *sendMemoEdit;
-    QPushButton *sendShieldedButton;
+    DisclosureMaskWidget *maskWidget;
+    QPushButton *sendButton;
 
-    // Address Management tab (z-addresses)
-    QListWidget *zAddressList;
-    QPushButton *newZAddressButton;
+    QLabel *migrateNoticeLabel;
+    QLineEdit *migrateFromEdit;
+    QLineEdit *migrateMaxInputsEdit;
+    QPushButton *migrateButton;
+
+    QListWidget *addressList;
+    QPushButton *newAddressButton;
     QPushButton *copyAddressButton;
-    QPushButton *refreshButton;
 
-    // Silent Payment Addresses tab
-    QListWidget *spAddressList;
-    QPushButton *newSPAddressButton;
-    QPushButton *copySPAddressButton;
+    PrivateCollateralWidget *collateralWidget;
+    FinalityStatusWidget *finalityWidget;
 
-    // Status
-    QLabel *availabilityLabel;
     QLabel *statusLabel;
-    bool legacyPrivacyControlsEnabled;
-
-    void setupUI();
-    void applyPrivacyPolicy();
-    void refreshBalances();
-    void refreshAddresses();
-    void refreshSPAddresses();
 };
 
 #endif // PRIVACYPAGE_H
