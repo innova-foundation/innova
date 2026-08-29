@@ -518,6 +518,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/hyperfile.h \
     src/qt/stakingpage.h \
     src/qt/privacypage.h \
+    src/qt/iv5rpcbridge.h \
+    src/qt/disclosuremaskwidget.h \
+    src/qt/finalitystatuswidget.h \
+    src/qt/privatecollateralwidget.h \
     src/qt/nullsendpage.h \
     src/qt/chatwidget.h \
     src/qt/emojipicker.h \
@@ -691,6 +695,10 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/hyperfile.cpp \
     src/qt/stakingpage.cpp \
     src/qt/privacypage.cpp \
+    src/qt/iv5rpcbridge.cpp \
+    src/qt/disclosuremaskwidget.cpp \
+    src/qt/finalitystatuswidget.cpp \
+    src/qt/privatecollateralwidget.cpp \
     src/qt/nullsendpage.cpp \
     src/qt/chatwidget.cpp \
     src/qt/emojipicker.cpp \
