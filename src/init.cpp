@@ -1290,12 +1290,15 @@ bool AppInit2()
                nRegtestIDNSResetHeight);
     }
 
+    // The commitment is required from this height and forbidden below it, so a
+    // rehearsal chain needs blocks on both sides. Zero would put the gate on
+    // genesis, which carries no commitment, and the node would refuse to start.
     if (mapArgs.count("-regtestmstimestamp"))
     {
         if (!fRegTest)
             return InitError(_("-regtestmstimestamp requires -regtest"));
         const int64_t nGate = GetArg("-regtestmstimestamp", 0);
-        if (nGate < 0 || nGate > (int64_t)INT_MAX)
+        if (nGate < 1 || nGate > (int64_t)INT_MAX)
             return InitError(_("-regtestmstimestamp is out of range"));
         nRegtestMsTimestampHeight = (int)nGate;
         printf("Millisecond-timestamp gate: height=%d (regtest only)\n",
