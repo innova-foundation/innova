@@ -214,6 +214,7 @@ BOOST_AUTO_TEST_CASE(every_mainnet_gate_derives_from_the_shift)
         GetForkHeightShielded(), GetForkHeightDSP(), GetForkHeightNullSend(),
         GetForkHeightNullStake(), GetForkHeightNullStakeV2(),
         GetForkHeightNullStakeV3(), GetForkHeightChaumianCJ(),
+        GetForkHeightMsTimestamp(),
         GetForkHeightPoem(), GetForkHeightFinality(), GetForkHeightDAG(),
         GetForkHeightDAGKnight(),
     };
