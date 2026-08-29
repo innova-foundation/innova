@@ -43,7 +43,6 @@ private slots:
     void showRestartWarning_Proxy();
     void showRestartWarning_Lang();
     void updateDisplayUnit();
-    void updateStakingModeDescription();
     void handleProxyIpValid(QValidatedLineEdit *object, bool fState);
 
 signals:
