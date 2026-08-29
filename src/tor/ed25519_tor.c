@@ -39,6 +39,9 @@
 #include "ed25519_donna_tor.h"
 #include "ed25519-randombytes.h"
 #include "ed25519-hash.h"
+/* memwipe() and crypto_strongest_rand() live here; without it clang treats
+   them as implicit declarations, which is an error under C99 and later. */
+#include "crypto.h"
 
 typedef unsigned char ed25519_signature[64];
 typedef unsigned char ed25519_public_key[32];
