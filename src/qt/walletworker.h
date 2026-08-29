@@ -20,15 +20,6 @@ public:
     void setWallet(CWallet *wallet);
 
 public slots:
-    /** Shield coins via z_shield RPC. */
-    void doShield(const QString& fromAddr, const QString& amount);
-
-    /** Unshield coins via z_unshield RPC. */
-    void doUnshield(const QString& fromZAddr, const QString& toAddr, const QString& amount);
-
-    /** Send shielded via z_send RPC. */
-    void doSendShielded(const QString& fromAddr, const QString& toAddr, const QString& amount, int privacyMode);
-
     /** Send transparent via sendtoaddress. */
     void doSendTransparent(const QString& toAddr, const QString& amount);
 
