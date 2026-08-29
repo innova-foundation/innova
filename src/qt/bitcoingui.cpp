@@ -41,7 +41,6 @@
 #include "hyperfile.h"
 #include "stakingpage.h"
 #include "privacypage.h"
-#include "nullsendpage.h"
 #include "chatwidget.h"
 #include "managenamespage.h"
 
@@ -207,7 +206,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     hyperfilePage = new Hyperfile(this);
     stakingPage = new StakingPage(this);
     privacyPage = new PrivacyPage(this);
-    nullsendPage = new NullSendPage(this);
     chatWidget = new ChatWidget(this);
     manageNamesPage = new ManageNamesPage(this);
 
@@ -251,7 +249,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(hyperfilePage);
     centralWidget->addWidget(stakingPage);
     centralWidget->addWidget(privacyPage);
-    centralWidget->addWidget(nullsendPage);
     setCentralWidget(centralWidget);
 
     // Create status bar
@@ -395,12 +392,6 @@ void BitcoinGUI::createActions()
     marketAction->setCheckable(true);
     tabGroup->addAction(marketAction);
 
-    nullsendAction = new QAction(QIcon(":/icons/mark"), tr("&NullSend"), this);
-    nullsendAction->setToolTip(tr("NullSend multi-party mixing for transaction unlinkability"));
-    nullsendAction->setCheckable(true);
-    nullsendAction->setStatusTip(tr("NullSend Mixing"));
-    tabGroup->addAction(nullsendAction);
-
     manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
     manageNamesAction->setToolTip(tr("Manage Innova NVS"));
     manageNamesAction->setCheckable(true);
@@ -515,8 +506,6 @@ void BitcoinGUI::createActions()
     connect(stakingAction, SIGNAL(triggered()), this, SLOT(gotoStakingPage()));
     connect(privacyAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(privacyAction, SIGNAL(triggered()), this, SLOT(gotoPrivacyPage()));
-    connect(nullsendAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(nullsendAction, SIGNAL(triggered()), this, SLOT(gotoNullSendPage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -671,7 +660,6 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(addressBookAction);
   mainToolbar->addAction(stakingAction);        // Staking page
   mainToolbar->addAction(mintingAction);         // Staking Inputs
-  mainToolbar->addAction(nullsendAction);        // NullSend mixing
   mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(idagAction);
@@ -789,7 +777,6 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
     manageNamesPage->setModel(walletModel);
         stakingPage->setModel(walletModel);
         privacyPage->setModel(walletModel);
-        qobject_cast<NullSendPage*>(nullsendPage)->setModel(walletModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
         connect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
@@ -1310,15 +1297,6 @@ void BitcoinGUI::gotoPrivacyPage()
 {
     privacyAction->setChecked(true);
     centralWidget->setCurrentWidget(privacyPage);
-
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-}
-
-void BitcoinGUI::gotoNullSendPage()
-{
-    nullsendAction->setChecked(true);
-    centralWidget->setCurrentWidget(nullsendPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);

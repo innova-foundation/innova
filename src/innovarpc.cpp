@@ -502,9 +502,6 @@ static const CRPCCommand vRPCCommands[] =
     { "n_coldstakeinfo",        &n_coldstakeinfo,        true,   false },
 
     /* Silent Payment Commands */
-    { "sp_getnewaddress",       &sp_getnewaddress,       false,  true },
-    { "sp_listaddresses",       &sp_listaddresses,       true,   false },
-    { "sp_send",                &sp_send,                false,  true },
 
     /* Finality commands */
     { "getfinalityinfo",        &getfinalityinfo,        true,   false },
@@ -1681,7 +1678,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_nullsend"            && n > 3) ConvertTo<int64_t>(params[3]);
     if (strMethod == "z_nullsend"            && n > 4) ConvertTo<int64_t>(params[4]);
 
-    if (strMethod == "sp_send"                && n > 1) ConvertTo<double>(params[1]);
 
     if (strMethod == "sendalert"              && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "sendalert"              && n > 3) ConvertTo<int64_t>(params[3]);

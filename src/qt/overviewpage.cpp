@@ -338,7 +338,7 @@ OverviewPage::~OverviewPage()
     delete ui;
 }
 
-void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 shieldedBalance)
+void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 privateBalance)
 {
     if (!model || !model->getOptionsModel())
         return;
@@ -361,15 +361,14 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelStake->setText(BitcoinUnits::formatWithUnit(unit, stake));
     ui->labelStake->setToolTip(tr("Stake balance"));
 
-    // Shielded (privacy) balance — always visible so users know it exists
+    // Spendable value held in the v2008 privacy pool.
     if (ui->labelShielded)
     {
-        ui->labelShielded->setText(BitcoinUnits::formatWithUnit(unit, shieldedBalance));
-        ui->labelShielded->setToolTip(tr("Shielded (private) balance — shield coins via the Send page to move funds here"));
+        ui->labelShielded->setText(BitcoinUnits::formatWithUnit(unit, privateBalance));
+        ui->labelShielded->setToolTip(tr("Spendable balance in the private pool"));
     }
 
-    // Include shielded in total
-    totalBalance += shieldedBalance;
+    totalBalance += privateBalance;
 
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));
@@ -471,7 +470,7 @@ void OverviewPage::setModel(WalletModel *model)
         ui->listTransactions->setModelColumn(TransactionTableModel::ToAddress);
 
         // Keep up to date with wallet
-        setBalance(model->getUnlockedBalance(), model->getLockedBalance(), model->getStakeAmount(), model->getUnconfirmedBalance(), model->getImmatureBalance(), model->getWatchBalance(), model->getWatchUnconfirmedBalance(), model->getWatchImmatureBalance(), model->getShieldedBalance());
+        setBalance(model->getUnlockedBalance(), model->getLockedBalance(), model->getStakeAmount(), model->getUnconfirmedBalance(), model->getImmatureBalance(), model->getWatchBalance(), model->getWatchUnconfirmedBalance(), model->getWatchImmatureBalance(), model->getPrivateBalance());
         connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)));
 
         // Watch Only
