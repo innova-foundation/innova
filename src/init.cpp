@@ -654,6 +654,7 @@ std::string HelpMessage()
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestidnsreset=<n>  " + _("Regtest only: IDNS name-reset rehearsal height (default: 0, no reset)") + "\n" +
+        "  -regtestmstimestamp=<n> " + _("Regtest only: millisecond block-timestamp activation height (default: 9)") + "\n" +
         "  -regtestcnpayments=<n>  " + _("Regtest only: collateralnode payment and enforcement activation height (default: 0, payments disabled)") + "\n" +
         "  -regtestcoldstaking=<n> " + _("Regtest only: cold-staking (P2CS) activation height (default: 0, gate stays at block 1)") + "\n" +
         "  -regtestsupplycapheight=<n> " + _("Regtest only: total-supply-cap activation height") + "\n" +
@@ -1287,6 +1288,18 @@ bool AppInit2()
         nRegtestIDNSResetHeight = (int)nReset;
         printf("IDNS reset rehearsal: height=%d (regtest only)\n",
                nRegtestIDNSResetHeight);
+    }
+
+    if (mapArgs.count("-regtestmstimestamp"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestmstimestamp requires -regtest"));
+        const int64_t nGate = GetArg("-regtestmstimestamp", 0);
+        if (nGate < 0 || nGate > (int64_t)INT_MAX)
+            return InitError(_("-regtestmstimestamp is out of range"));
+        nRegtestMsTimestampHeight = (int)nGate;
+        printf("Millisecond-timestamp gate: height=%d (regtest only)\n",
+               nRegtestMsTimestampHeight);
     }
 
     // Collateralnode payment rehearsal, regtest only. One height moves both payments and their

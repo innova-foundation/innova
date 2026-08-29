@@ -393,6 +393,7 @@ OBJS= \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
+    obj/mstimestamp.o \
     obj/blockprofile.o \
     obj/rpcsmessage.o \
     obj/rpcnyx.o \
@@ -479,6 +480,7 @@ OBJS= \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
+    obj/mstimestamp.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
