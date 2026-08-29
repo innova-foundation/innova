@@ -131,6 +131,7 @@ SecureZeroMemory(PVOID ptr, SIZE_T cnt)
 #include "container.h"
 #include "address.h"
 #include "sandbox.h"
+#include "crypto.h"
 
 /* Inline the strl functions if the platform doesn't have them. */
 #ifndef HAVE_STRLCPY
