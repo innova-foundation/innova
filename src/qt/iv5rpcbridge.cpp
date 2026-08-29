@@ -166,7 +166,7 @@ FinalitySnapshot::FinalitySnapshot() :
 
 QString FinalitySnapshot::LaneDescription() const
 {
-    if (fPrivateCertificatePresent)
+    if (fPrivateCertificatePresent || nPrivateCertificates > 0)
         return QObject::tr("private (committee tally), certificate version %1")
                    .arg(nCertificateVersion);
     if (fPendingPrivateCertificatePresent)
@@ -271,8 +271,21 @@ bool FetchFinality(FinalitySnapshot& out, QString& errorOut)
                 continue;
             bool fPrivate = false;
             ReadBool(arr[i].get_obj(), "private_weight", fPrivate);
-            if (fPrivate)
+            // A v4 note-tally certificate never sets private_weight, so identify
+            // it by its version and seated committee instead.
+            int nVer = 0;
+            ReadInt(arr[i].get_obj(), "version", nVer);
+            QString strSetHash;
+            ReadStr(arr[i].get_obj(), "committee_set_hash", strSetHash);
+            const bool fNoteLane =
+                nVer >= 4 && !strSetHash.isEmpty() &&
+                strSetHash.count(QChar('0')) != strSetHash.size();
+            if (fPrivate || fNoteLane)
+            {
                 out.nPrivateCertificates++;
+                if (nVer > out.nCertificateVersion)
+                    out.nCertificateVersion = nVer;
+            }
         }
     }
     return true;
