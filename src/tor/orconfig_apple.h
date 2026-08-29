@@ -599,6 +599,25 @@
 /* Enable large inode numbers on Mac OS X 10.5.  */
 #ifndef _DARWIN_USE_64_BIT_INODE
 # define _DARWIN_USE_64_BIT_INODE 1
+
+/* OpenSSL 1.1.0 provides these; the values probed above were generated against
+   the 1.0.x API, where the accessors did not exist and SSL_SESSION was public. */
+#include <openssl/opensslv.h>
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#ifndef HAVE_SSL_GET_CLIENT_CIPHERS
+#define HAVE_SSL_GET_CLIENT_CIPHERS 1
+#endif
+#ifndef HAVE_SSL_SESSION_GET_MASTER_KEY
+#define HAVE_SSL_SESSION_GET_MASTER_KEY 1
+#endif
+#ifndef HAVE_SSL_GET_CLIENT_RANDOM
+#define HAVE_SSL_GET_CLIENT_RANDOM 1
+#endif
+#ifndef HAVE_SSL_GET_SERVER_RANDOM
+#define HAVE_SSL_GET_SERVER_RANDOM 1
+#endif
+#endif
+
 #endif
 
 /* Number of bits in a file offset, on hosts where this is settable. */
