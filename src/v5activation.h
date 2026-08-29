@@ -50,7 +50,7 @@
 // literals behind, which silently pays whole tiers on the wrong side of the
 // divisor. emission_curve_tests pins both halves.
 static const int MAINNET_V5_ACTIVATION_BASE = 7800000;
-static const int MAINNET_V5_ACTIVATION_SHIFT = 270000;    // first gate 8,070,000
+static const int MAINNET_V5_ACTIVATION_SHIFT = 500000;    // first gate 8,300,000
 
 inline int ShiftMainnetV5Activation(int nBaseHeight)
 {

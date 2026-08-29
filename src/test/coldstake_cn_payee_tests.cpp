@@ -2,38 +2,9 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// Behavioural cover for the cold-stake branch of ConnectBlock: the gate, the
-// repayment floor, the collateralnode payment cap, and the payee check.
-//
-// The payee half. The expected payee is read from the gossiped winner schedule
-// and the gossiped collateralnode list. Neither is derivable from the chain: the
-// schedule is relayed and pruned, and the list is empty until peers answer a list
-// request. So the same block gets different answers on different nodes, and the
-// rejection may never be written into the block index -- BLOCK_FAILED_VALID is
-// serialized and cleared only by reconsiderblock.
-//
-// This site activates at height 1 on regtest, so the path is driven end to end
-// here: a real chain, a real P2CS delegation, a real cold-stake coinstake
-// carrying a payment to a payee this node has not heard of, and a real
-// ConnectBlock. The three arms connect the same block bytes every time; only the
-// node-local state around it changes. The proof-of-work payment sites needed
-// -regtestcnpayments before they could run at all and are driven in
-// cn_pow_payment_tests; cn_payment_verdict_tests keeps the structural half.
-//
-// The value half. OP_CHECKCOLDSTAKEVERIFY enforces its own copy of the output
-// structure and its own collateralnode-payment cap, and the interpreter runs
-// first, so a case has to prove which of the two refused the block. Every arm
-// below therefore calls VerifySignature on the same coinstake it hands to
-// ConnectBlock and asserts the interpreter's answer: where the interpreter
-// accepts, the ConnectBlock clause is the sole enforcer and the arm covers it;
-// where the interpreter refuses, the arm says so and claims nothing.
-//
-// The window this branch governs is [FORK_HEIGHT_COLD_STAKING, FORK_HEIGHT_DAG),
-// because no coinstake of any shape connects at or above the DAG fork. On
-// mainnet that is 8,070,000 to 8,220,000, plus every later replay of it. On
-// regtest the DAG fork is height 11, which is the whole block budget this suite
-// has to build in -- hence one shared funding transaction rather than one per
-// case.
+// Cold-stake branch of ConnectBlock: gate, repayment floor, CN payment cap and payee. A
+// payee refusal must be transient; each value arm asserts OP_CHECKCOLDSTAKEVERIFY's verdict.
+// Window is [FORK_HEIGHT_COLD_STAKING, FORK_HEIGHT_DAG), 11 on regtest.
 
 #include <boost/test/unit_test.hpp>
 
