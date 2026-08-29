@@ -10389,6 +10389,13 @@ bool ProduceFinalityVote()
         CBlock blockFrom;
         if (!blockFrom.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))
             continue;
+        // Mirror the validator's boundary rule: a proof minted after the epoch
+        // boundary rejects the whole vote, so never group one in.
+        std::map<uint256, CBlockIndex*>::iterator miFrom = mapBlockIndex.find(blockFrom.GetHash());
+        if (miFrom == mapBlockIndex.end() || miFrom->second == NULL)
+            continue;
+        if (miFrom->second->nHeight > nEpochHeight)
+            continue;
         if (blockFrom.GetBlockTime() + nStakeMinAge > pEpochBlock->GetBlockTime())
             continue;
 
