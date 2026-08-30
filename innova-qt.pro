@@ -174,6 +174,7 @@ contains(USE_NATIVETOR, -) {
         USE_NATIVETOR=1
     }
     DEFINES += USE_NATIVETOR=$$USE_NATIVETOR
+    QMAKE_CFLAGS += -fwrapv
     # HAVE_CONFIG_H is what makes tor's sources include orconfig.h. It must not
     # go in DEFINES: that reaches C++ too, and src/qt/notificator.h reads it as
     # the Bitcoin autotools flag and includes a bitcoin-config.h this tree has

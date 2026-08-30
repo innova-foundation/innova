@@ -98,7 +98,7 @@ endif
 # which only the trunnel sources include. Upstream scopes them per file; setting
 # them for every tor object has the same effect and keeps the two build systems
 # free of per-file flag machinery.
-TOR_CPPFLAGS = -DHAVE_CONFIG_H \
+TOR_CPPFLAGS = -DHAVE_CONFIG_H -fwrapv \
     -I$(CURDIR)/tor \
     -I$(CURDIR)/tor/src \
     -I$(CURDIR)/tor/src/ext \

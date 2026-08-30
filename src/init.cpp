@@ -1413,6 +1413,16 @@ bool AppInit2()
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
+#ifndef USE_NATIVETOR
+    // fNativeTor also gates network limiting, listening and discovery, and those
+    // branches are compiled in regardless. Accepting the flag on a build without
+    // a bundled Tor would confine the node to Tor, start none, and bind nothing.
+    if (fNativeTor)
+        return InitError(_("This build has no bundled Tor daemon, so -nativetor=1 "
+                           "would leave the node confined to Tor with none "
+                           "running. Rebuild with USE_NATIVETOR=1, or reach Tor "
+                           "with -tor=<addr> and an external client."));
+#endif
 
     // Nyx Messaging defaults (overridable in innova.conf).
     // Secure messaging is opt-in: -smsg defaults to off and there is deliberately
