@@ -183,6 +183,13 @@ bool LookupNumeric(const char *pszName, CService& addr, int portDefault = 0);
 //bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest, int portDefault = 0, int nTimeout = nConnectTimeout);
 bool ConnectSocket(const CService &addr, SOCKET& hSocketRet, int nTimeout, bool *outProxyConnectionFailed = 0);
 bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest, int portDefault, int nTimeout, bool *outProxyConnectionFailed = 0);
+/** SOCKS5 CONNECT request for a hostname destination (ATYP 0x03).
+ *  Exposed so a caller can assert on the bytes: a hostname CONNECT carries the
+ *  name and no address, so the client neither learns nor sends the peer's IP. */
+bool BuildSocks5ConnectRequest(const std::string& strDest, int port, std::vector<unsigned char>& vchOut);
+/** Dial strDest:port through the SOCKS5 proxy at addrProxy, by hostname.
+ *  strDest is never resolved locally and there is no direct-connection fallback. */
+bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout);
 /** Return readable error string for a network error code */
 std::string NetworkErrorString(int err);
 /** Close socket and set hSocket to INVALID_SOCKET */
