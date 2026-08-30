@@ -570,6 +570,7 @@ std::string HelpMessage()
         "  -bind=<addr>           " + _("Bind to given address. Use [host]:port notation for IPv6") + "\n" +
         "  -dnsseed               " + _("Find peers using DNS lookup (default: 1)") + "\n" +
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
+        "  -idnssocks=<ip:port>   " + _("SOCKS5 endpoint used to reach an IDNS rendezvous descriptor's onion service; 0 disables rendezvous dialing (default: 127.0.0.1:9050)") + "\n" +
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -stakingmode=<mode>    " + _("Staking mode: transparent or cold; legacy nullstake/coldprivate are regtest-only pending privacy vNext (default: transparent)") + "\n" +

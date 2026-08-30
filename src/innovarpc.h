@@ -312,6 +312,8 @@ extern json_spirit::Value name_count(const json_spirit::Array& params, bool fHel
 extern json_spirit::Value name_history(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_mempool(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_show(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_rendezvous(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_rendezvous_encode(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_debug(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value getnewstealthaddress(const json_spirit::Array& params, bool fHelp);

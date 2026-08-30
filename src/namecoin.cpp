@@ -4,6 +4,7 @@
 #include "script.h"
 #include "wallet.h"
 #include "innovarpc.h"
+#include "idnsdescriptor.h"
 
 extern CWallet* pwalletMain;
 extern std::map<uint256, CTransaction> mapTransactions;
@@ -1436,6 +1437,73 @@ Value name_show(const Array& params, bool fHelp)
     return oName;
 }
 
+Value name_rendezvous(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "name_rendezvous <name> [connect]\n"
+            "Classify a name's value as a conventional record or a Tor rendezvous descriptor.\n"
+            "With connect=true, also dial the service through the -idnssocks SOCKS5 endpoint\n"
+            "and report only whether the dial succeeded.\n"
+            "No form of this call reports an address for the service. A rendezvous is dialled\n"
+            "by hostname, so this node never learns the service's IP and has none to print.\n"
+            );
+
+    const bool fConnect = params.size() > 1 && params[1].get_bool();
+
+    const vector<unsigned char> vchName = vchFromValue(params[0]);
+    vector<unsigned char> vchValue;
+    {
+        LOCK(cs_main);
+        if (!GetNameValue(vchName, vchValue, true))
+            throw JSONRPCError(RPC_WALLET_ERROR, "name is not active");
+    }
+
+    const string strValue = stringFromVch(vchValue);
+    Object oInfo = IDnsValueInfo(stringFromVch(vchName), strValue);
+    if (!fConnect)
+        return oInfo;
+
+    CIDnsRendezvous rendezvous;
+    string strErr;
+    if (ClassifyIDnsValue(strValue, rendezvous, strErr) != IDNS_VALUE_RENDEZVOUS)
+    {
+        oInfo.push_back(Pair("connected", false));
+        oInfo.push_back(Pair("connect_error", "value is not a resolvable rendezvous descriptor"));
+        return oInfo;
+    }
+
+    SOCKET hSocket = INVALID_SOCKET;
+    const bool fConnected = ConnectIDnsRendezvous(rendezvous, hSocket, strErr);
+    if (fConnected)
+        CloseSocket(hSocket);
+    oInfo.push_back(Pair("connected", fConnected));
+    if (!fConnected)
+        oInfo.push_back(Pair("connect_error", strErr));
+    return oInfo;
+}
+
+Value name_rendezvous_encode(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw runtime_error(
+            "name_rendezvous_encode <onionhost> <port>\n"
+            "Build the canonical rendezvous descriptor value for a v3 onion service.\n"
+            "Pass the result to name_new or name_update as the name value.\n"
+            "The hostname is lowercased; the v3 checksum is not verified.\n"
+            );
+
+    const int nPort = params[1].get_int();
+    string strValue, strErr;
+    if (!BuildIDnsRendezvous(params[0].get_str(), nPort, strValue, strErr))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strErr);
+
+    Object oOut;
+    oOut.push_back(Pair("value", strValue));
+    oOut.push_back(Pair("length", (int)strValue.size()));
+    return oOut;
+}
+
 Value name_mempool (const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -1839,6 +1907,13 @@ Value name_new(const Array& params, bool fHelp)
     return ret.hex.GetHex();
 }
 
+// Allocation for name operations without an explicit destination. fAllowReuse is false,
+// so it never falls back to the wallet's default key (a shared holding address).
+bool GetNameDestinationKey(CPubKey& pubkeyOut)
+{
+    return pwalletMain->GetKeyFromPool(pubkeyOut, false);
+}
+
 NameTxReturn name_new(const vector<unsigned char> &vchName,
               const vector<unsigned char> &vchValue,
               const int nRentalDays, string strAddress)
@@ -1906,7 +1981,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
             scriptPubKey = GetScriptForDestination(address.Get());
         } else {
             CPubKey vchPubKey;
-            if(!pwalletMain->GetKeyFromPool(vchPubKey))
+            if(!GetNameDestinationKey(vchPubKey))
             {
                 ret.err_msg = "failed to get key from pool";
                 return ret;
@@ -2123,7 +2198,7 @@ NameTxReturn name_update(const vector<unsigned char> &vchName,
         else
         {
             CPubKey vchPubKey;
-            if(!pwalletMain->GetKeyFromPool(vchPubKey, true))
+            if(!GetNameDestinationKey(vchPubKey))
             {
                 ret.err_msg = "failed to get key from pool";
                 return ret;
@@ -2262,7 +2337,7 @@ NameTxReturn name_delete(const vector<unsigned char> &vchName)
 
     //form script and send
         CPubKey vchPubKey;
-        if(!pwalletMain->GetKeyFromPool(vchPubKey, true))
+        if(!GetNameDestinationKey(vchPubKey))
         {
             ret.err_msg = "failed to get key from pool";
             return ret;

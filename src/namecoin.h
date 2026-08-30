@@ -10,6 +10,7 @@
 
 class CBitcoinAddress;
 class CKeyStore;
+class CPubKey;
 struct NameIndexStats;
 
 static const int NAMECOIN_TX_VERSION = 0x0333; //0x0333 is initial version
@@ -464,6 +465,11 @@ bool DecodeNameScript(const CScript& script, NameTxInfo& ret, CScript::const_ite
 bool DecodeNameTx(const CTransaction& tx, NameTxInfo& nti, bool checkValuesCorrectness = true, bool checkAddressAndIfIsMine = false);
 void GetNameList(const std::vector<unsigned char> &vchNameUniq, std::map<std::vector<unsigned char>, NameTxInfo> &mapNames, std::map<std::vector<unsigned char>, NameTxInfo> &mapPending);
 bool GetNameValue(const std::vector<unsigned char> &vchName, std::vector<unsigned char> &vchValue, bool checkPending);
+
+// Destination key for a name operation. Reuse is refused, so a name output
+// never falls back to the wallet's default key: two operations share a holding
+// address only when the operator names one.
+bool GetNameDestinationKey(CPubKey& pubkeyOut);
 
 bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL);
 struct NameTxReturn

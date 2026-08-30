@@ -211,13 +211,35 @@ bool static Socks4(const CService &addrDest, SOCKET& hSocket)
     return true;
 }
 
+// SOCKS5 CONNECT for a hostname destination. ATYP is 0x03, so the request
+// carries the name and no address: the caller does not resolve the destination
+// and therefore never holds its IP.
+bool BuildSocks5ConnectRequest(const string& strDest, int port, std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (strDest.empty() || strDest.size() > 255)
+        return false;
+    if (port < 1 || port > 65535)
+        return false;
+    vchOut.push_back(0x05);                              // version
+    vchOut.push_back(0x01);                              // CONNECT
+    vchOut.push_back(0x00);                              // reserved
+    vchOut.push_back(0x03);                              // ATYP: domain name
+    vchOut.push_back((unsigned char)strDest.size());
+    vchOut.insert(vchOut.end(), strDest.begin(), strDest.end());
+    vchOut.push_back((unsigned char)((port >> 8) & 0xFF));
+    vchOut.push_back((unsigned char)(port & 0xFF));
+    return true;
+}
+
 bool static Socks5(string strDest, int port, SOCKET& hSocket)
 {
     printf("SOCKS5 connecting %s\n", strDest.c_str());
-    if (strDest.size() > 255)
+    std::vector<unsigned char> vchRequest;
+    if (!BuildSocks5ConnectRequest(strDest, port, vchRequest))
     {
         closesocket(hSocket);
-        return error("Hostname too long");
+        return error("Invalid SOCKS5 destination");
     }
     char pszSocks5Init[] = "\5\1\0";
     char *pszSocks5 = pszSocks5Init;
@@ -240,14 +262,8 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket)
         closesocket(hSocket);
         return error("Proxy failed to initialize");
     }
-    string strSocks5("\5\1");
-    strSocks5 += '\000'; strSocks5 += '\003';
-    strSocks5 += static_cast<char>(std::min((int)strDest.size(), 255));
-    strSocks5 += strDest;
-    strSocks5 += static_cast<char>((port >> 8) & 0xFF);
-    strSocks5 += static_cast<char>((port >> 0) & 0xFF);
-    ret = send(hSocket, strSocks5.c_str(), strSocks5.size(), MSG_NOSIGNAL);
-    if (ret != (ssize_t)strSocks5.size())
+    ret = send(hSocket, (const char*)&vchRequest[0], vchRequest.size(), MSG_NOSIGNAL);
+    if (ret != (ssize_t)vchRequest.size())
     {
         closesocket(hSocket);
         return error("Error sending to proxy");
@@ -545,6 +561,28 @@ bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest
                 return false;
             break;
     }
+
+    hSocketRet = hSocket;
+    return true;
+}
+
+// Dial a hostname through one named SOCKS5 proxy, independent of the global proxy tables.
+// The destination is never resolved locally, so it can be an onion and cannot leak to DNS.
+bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout)
+{
+    hSocketRet = INVALID_SOCKET;
+
+    std::vector<unsigned char> vchRequest;
+    if (!BuildSocks5ConnectRequest(strDest, port, vchRequest))
+        return error("ConnectSocks5ByName: invalid destination");
+    if (!addrProxy.IsValid())
+        return error("ConnectSocks5ByName: invalid proxy endpoint");
+
+    SOCKET hSocket = INVALID_SOCKET;
+    if (!ConnectSocketDirectly(addrProxy, hSocket, nTimeout))
+        return false;
+    if (!Socks5(strDest, port, hSocket))
+        return false;
 
     hSocketRet = hSocket;
     return true;
