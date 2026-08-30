@@ -1964,7 +1964,11 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "getfinalityinfo\n"
-            "Returns information about the PoS finality gadget.\n");
+            "Returns information about the PoS finality gadget.\n"
+            "The \"note_votes\" object reports the note-weighted (private) lane:\n"
+            "counted/equivocated tags for the current epoch, held and pending\n"
+            "votes, and the tally partials seen. Every other vote field on this\n"
+            "call counts transparent-carrier votes only.\n");
 
     Object result;
 
@@ -2292,6 +2296,35 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     else if (nDecryptableTallyShares > 0 || nTallyAggregatePartials > 0)
         strPrivatePromotionStatus = "collecting-partials";
     result.push_back(Pair("private_promotion_status", strPrivatePromotionStatus));
+
+    // The note lane, which the fields above do not cover (they count CFinalityVote
+    // carriers and v4 certificates). Counted-set numbers as the tally uses them; an
+    // equivocated tag is not counted.
+    {
+        Object note;
+        std::vector<CNoteFinalityVote> vCountedNoteVotes =
+            g_finalityTracker.GetCountedEpochNoteVotes(nCurrentEpoch);
+        Array noteTags;
+        for (size_t i = 0; i < vCountedNoteVotes.size(); i++)
+            noteTags.push_back(vCountedNoteVotes[i].GetVoteTag().GetHex());
+        note.push_back(Pair("configured", IsIV5NoteVoteConfigured()));
+        note.push_back(Pair("activation_height", FORK_HEIGHT_IV5_NOTE_VOTE));
+        note.push_back(Pair("active", IsIV5NoteVoteActiveAtHeight(nCurrentHeight)));
+        note.push_back(Pair("epoch", nCurrentEpoch));
+        note.push_back(Pair("counted", g_finalityTracker.GetEpochNoteVoteCount(nCurrentEpoch)));
+        note.push_back(Pair("equivocated",
+                            g_finalityTracker.GetEpochEquivocatedNoteVoteCount(nCurrentEpoch)));
+        // Below "counted" only if a counted tag's vote body is no longer held.
+        note.push_back(Pair("resolved", (int)vCountedNoteVotes.size()));
+        note.push_back(Pair("pending",
+                            (int)g_finalityTracker.GetPendingNoteVotesForBlock(
+                                nCurrentHeight + 1).size()));
+        note.push_back(Pair("deferred", (int)g_finalityTracker.GetDeferredNoteVoteCount()));
+        note.push_back(Pair("tally_partials",
+                            g_finalityTracker.GetEpochNoteTallyPartialCount(nCurrentEpoch)));
+        note.push_back(Pair("tags", noteTags));
+        result.push_back(Pair("note_votes", note));
+    }
 
     CEpochState currentEpochState;
     if (g_dagManager.GetEpochState(nCurrentEpoch, currentEpochState))
@@ -2629,7 +2662,10 @@ Value getepochinfo(const Array& params, bool fHelp)
         throw runtime_error(
             "getepochinfo [epoch]\n"
             "Returns information about a DAG epoch.\n"
-            "If epoch is omitted, returns the current epoch.\n");
+            "If epoch is omitted, returns the current epoch.\n"
+            "note_votes_counted/note_vote_tags are the note votes this epoch's\n"
+            "tally may count; they come from memory, so an epoch past the\n"
+            "retained window reads zero.\n");
 
     LOCK(cs_main);
 
@@ -2686,6 +2722,20 @@ Value getepochinfo(const Array& params, bool fHelp)
         result.push_back(Pair("schema_version", EpochStateSchemaForHeight(state.nHeightEnd)));
         result.push_back(Pair("anchor_rule", EpochStateAnchorRuleForHeight(state.nHeightEnd)));
         result.push_back(Pair("epoch_state_digest", state.GetDigest().GetHex()));
+
+        // Note votes this epoch's tally may count. The tracker holds these in
+        // memory, so an epoch older than the retained window reads zero here
+        // even though its certificate is on chain.
+        std::vector<CNoteFinalityVote> vCountedNoteVotes =
+            g_finalityTracker.GetCountedEpochNoteVotes(nEpoch);
+        Array noteTags;
+        for (size_t i = 0; i < vCountedNoteVotes.size(); i++)
+            noteTags.push_back(vCountedNoteVotes[i].GetVoteTag().GetHex());
+        result.push_back(Pair("note_votes_counted",
+                              g_finalityTracker.GetEpochNoteVoteCount(nEpoch)));
+        result.push_back(Pair("note_votes_equivocated",
+                              g_finalityTracker.GetEpochEquivocatedNoteVoteCount(nEpoch)));
+        result.push_back(Pair("note_vote_tags", noteTags));
 
         Array blocks;
         for (const uint256& hash : state.vBlockHashes)
