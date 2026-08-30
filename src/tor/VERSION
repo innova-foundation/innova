@@ -67,12 +67,33 @@ Subset and exclusions
 This is a client-only vendoring: enough tor to perform a v3 onion rendezvous
 and to run an onion service for inbound P2P, and nothing else.
 
-The compiled set is 370 objects, derived empirically rather than by hand: the
-upstream build links the tor binary as tor_main.o plus libtor.a, so the object
-set is exactly the members of libtor.a. src/app/main/tor_main.c is excluded
-because it defines main(), which would collide with innovad. The on-disk set is
-the exact header/source closure of those objects, taken from the build's own
-.deps/*.Po files on both platforms and unioned.
+891 files, 290k lines on disk; 369 of them compile. The set is derived
+empirically rather than by hand. The upstream build links the tor binary as
+tor_main.o plus libtor.a, so the compiled set is exactly the members of
+libtor.a, less two files:
+
+  src/app/main/tor_main.c   defines main(), which would collide with innovad
+  src/core/proto/proto_ext_or.c
+                            parses the extended ORPort protocol, which only a
+                            bridge or relay speaks. Its implementation is in
+                            feature/relay/ext_orport.c, part of the excluded
+                            relay module. Upstream never notices because it
+                            links from an archive and the member is simply never
+                            pulled; Innova links the objects directly, which
+                            would force it in and leave ext_or_cmd_new
+                            undefined. Confirmed against a linker map: of 369
+                            archive members, 363 are pulled, and this is the
+                            only unpulled one that cannot also link standalone.
+
+The on-disk set is the header/source closure of those objects, taken from the
+build's own .deps/*.Po files on Linux and macOS and unioned. The macOS closure
+is a strict subset of the Linux one; the single source that differs is
+src/ext/readpassphrase.c, which macOS does not compile and which self-guards on
+HAVE_READPASSPHRASE, so one source list serves both platforms.
+
+Two upstream sources share the basename conflux.c (core/or and trunnel), which
+is why objects are built into a mirrored tree under obj/tor rather than a flat
+directory.
 
 Excluded, with reasons:
 
