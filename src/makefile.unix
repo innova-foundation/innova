@@ -46,15 +46,6 @@ ifneq ($(BDB_BREW_PREFIX),)
     LIBS += -L$(BDB_BREW_PREFIX)/lib
 endif
 
-OPENSSL_VERSION := $(shell pkg-config --modversion openssl 2>/dev/null)
-ifneq ($(OPENSSL_VERSION),)
-ifeq ($(origin USE_NATIVETOR), file)
-ifneq ($(filter 3.%,$(OPENSSL_VERSION)),)
-    USE_NATIVETOR := -
-endif
-endif
-endif
-
 LMODE = dynamic
 LMODE2 = dynamic
 ifdef STATIC
@@ -93,8 +84,33 @@ ifndef USE_NATIVETOR
   override USE_NATIVETOR = -
 endif
 ifneq (${USE_NATIVETOR}, -)
-  DEFS += $(addprefix -I,$(CURDIR)/tor) -DUSE_NATIVETOR=$(USE_NATIVETOR)
+  DEFS += -DUSE_NATIVETOR=$(USE_NATIVETOR)
 endif
+
+# Include and define surface for the vendored tor sources only; it is kept off
+# the global DEFS so tor's headers cannot shadow Innova's. HAVE_CONFIG_H is what
+# makes tor's sources pull in orconfig.h; the path macros live in orconfig.h.
+# These must precede $(xCFLAGS) on the command line: src/ carries a stale copy of
+# tor's ed25519 tree that nothing compiles, and -Isrc would otherwise satisfy
+# tor's own "ed25519/donna/..." includes from it.
+# ED25519_* are read only under tor/src/ext/ed25519/donna, whose sole compiled
+# file is ed25519_tor.c, and TRUNNEL_LOCAL_H only by ext/trunnel/trunnel-impl.h,
+# which only the trunnel sources include. Upstream scopes them per file; setting
+# them for every tor object has the same effect and keeps the two build systems
+# free of per-file flag machinery.
+TOR_CPPFLAGS = -DHAVE_CONFIG_H \
+    -I$(CURDIR)/tor \
+    -I$(CURDIR)/tor/src \
+    -I$(CURDIR)/tor/src/ext \
+    -I$(CURDIR)/tor/src/ext/trunnel \
+    -I$(CURDIR)/tor/src/trunnel \
+    -DTRUNNEL_LOCAL_H \
+    -DED25519_CUSTOMRANDOM -DED25519_CUSTOMHASH -DED25519_SUFFIX=_donna
+
+# Upstream tor is warning-clean under its own flag set, not under Innova's.
+# Quieten the third-party noise rather than editing vendored sources.
+TOR_WARNFLAGS = -Wno-unused-parameter -Wno-missing-field-initializers \
+    -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-but-set-variable
 
 ifndef USE_IPFS
   override USE_IPFS = -
@@ -186,333 +202,99 @@ ifdef DEBUG_LOCKORDER
     xCXXFLAGS += -DDEBUG_LOCKORDER
 endif
 
+# Vendored tor object list, generated from src/tor/tor_sources.txt by
+# contrib/gen_tor_sources.py. TOR_OBJS is undefined when native tor is off.
 ifeq (${USE_NATIVETOR}, 1)
-OBJS= \
-	obj/address.o \
-	obj/addressmap.o \
-	obj/aes.o \
-	obj/anonymize.o \
-	obj/backtrace.o \
-	obj/blinding.o \
-	obj/bridges.o \
-	obj/buffers.o \
-	obj/cell_common.o \
-	obj/cell_establish_intro.o \
-	obj/cell_introduce1.o \
-	obj/channel.o \
-	obj/channeltls.o \
-	obj/circpathbias.o \
-	obj/circuitbuild.o \
-	obj/circuitlist.o \
-	obj/circuitmux.o \
-	obj/circuitmux_ewma.o \
-	obj/circuitstats.o \
-	obj/circuituse.o \
-	obj/command.o \
-	obj/compat_libevent.o \
-	obj/compat_pthreads.o \
-	obj/compat_threads.o \
-	obj/compat_time.o \
-	obj/config.o \
-	obj/confparse.o \
-	obj/connection.o \
-	obj/connection_edge.o \
-	obj/connection_or.o \
-	obj/container.o \
-	obj/control.o \
-	obj/crypto.o \
-	obj/crypto_curve25519.o \
-	obj/crypto_ed25519.o \
-	obj/crypto_format.o \
-	obj/crypto_pwbox.o \
-	obj/crypto_s2k.o \
-	obj/cpuworker.o \
-	obj/csiphash.o \
-	obj/curve25519-donna.o \
-	obj/di_ops.o \
-	obj/dircollate.o \
-	obj/directory.o \
-	obj/dirserv.o \
-	obj/dirvote.o \
-	obj/dns.o \
-	obj/dnsserv.o \
-	obj/ed25519_cert.o \
-	obj/ed25519_tor.o \
-	obj/entrynodes.o \
-	obj/ext_orport.o \
-	obj/fe_copy.o \
-	obj/fe_cmov.o \
-	obj/fe_isnegative.o \
-	obj/fe_sq.o \
-	obj/fe_pow22523.o \
-	obj/fe_isnonzero.o \
-	obj/fe_neg.o \
-	obj/fe_frombytes.o \
-	obj/fe_invert.o \
-	obj/fe_sub.o \
-	obj/fe_add.o \
-	obj/fe_1.o \
-	obj/fe_mul.o \
-	obj/fe_tobytes.o \
-	obj/fe_0.o \
-	obj/fe_sq2.o \
-	obj/fp_pair.o \
-	obj/ge_scalarmult_base.o \
-	obj/ge_p3_tobytes.o \
-	obj/ge_frombytes.o \
-	obj/ge_double_scalarmult.o \
-	obj/ge_tobytes.o \
-	obj/ge_p3_to_cached.o \
-	obj/ge_p3_to_p2.o \
-	obj/ge_p3_dbl.o \
-	obj/ge_p3_0.o \
-	obj/ge_p1p1_to_p2.o \
-	obj/ge_p1p1_to_p3.o \
-	obj/ge_add.o \
-	obj/ge_p2_0.o \
-	obj/ge_p2_dbl.o \
-	obj/ge_madd.o \
-	obj/ge_msub.o \
-	obj/ge_sub.o \
-	obj/ge_precomp_0.o \
-	obj/geoip.o \
-	obj/hibernate.o \
-	obj/hs_cache.o \
-	obj/hs_circuitmap.o \
-	obj/hs_common.o \
-	obj/hs_descriptor.o \
-	obj/hs_intropoint.o \
-	obj/hs_service.o \
-	obj/keyconv.o \
-	obj/keypair.o \
-	obj/keypin.o \
-	obj/keccak-tiny-unrolled.o \
-	obj/link_handshake.o \
-	obj/log.o \
-	obj/tormain.o \
-	obj/memarea.o \
-	obj/microdesc.o \
-	obj/networkstatus.o \
-	obj/nodelist.o \
-	obj/ntmain.o \
-	obj/onion.o \
-	obj/onion_fast.o \
-	obj/onion_ntor.o \
-	obj/onion_tap.o \
-	obj/open.o \
-	obj/parsecommon.o \
-	obj/periodic.o \
-	obj/policies.o \
-	obj/procmon.o \
-	obj/protover.o \
-	obj/pwbox.o \
-	obj/reasons.o \
-	obj/readpassphrase.o \
-	obj/relay.o \
-	obj/rendcache.o \
-	obj/rendclient.o \
-	obj/rendcommon.o \
-	obj/rendmid.o \
-	obj/rendservice.o \
-	obj/rephist.o \
-	obj/replaycache.o \
-	obj/router.o \
-	obj/routerkeys.o \
-	obj/routerlist.o \
-	obj/routerparse.o \
-	obj/routerset.o \
-	obj/sandbox.o \
-	obj/sc_reduce.o \
-	obj/sc_muladd.o \
-	obj/scheduler.o \
-	obj/shared_random.o \
-	obj/shared_random_state.o \
-	obj/sign.o \
-	obj/statefile.o \
-	obj/status.o \
-	obj/torcert.o \
-	obj/torcompat.o \
-	obj/tor_main.o \
-	obj/torgzip.o \
-	obj/tortls.o \
-	obj/torutil.o \
-	obj/transports.o \
-	obj/trunnel.o \
-	obj/util_bug.o \
-	obj/util_format.o \
-	obj/util_process.o \
-	obj/workqueue.o \
-    obj/echo.o \
-    obj/jh.o \
-    obj/keccak.o \
-    obj/alert.o \
-    obj/version.o \
-    obj/checkpoints.o \
-    obj/netbase.o \
-    obj/addrman.o \
-    obj/crypter.o \
-    obj/key.o \
-    obj/hash.o \
-    obj/base58.o \
-    obj/db.o \
-    obj/init.o \
-    obj/keystore.o \
-    obj/miner.o \
-    obj/main.o \
-    obj/net.o \
-    obj/core.o \
-    obj/protocol.o \
-    obj/innovarpc.o \
-    obj/rpcdump.o \
-    obj/rpcnet.o \
-    obj/rpcmining.o \
-    obj/rpcwallet.o \
-    obj/rpcblockchain.o \
-    obj/pod.o \
-    obj/rpcrawtransaction.o \
-	obj/rpchyperfile.o \
-    obj/rpcshielded.o \
-    obj/nullsend.o \
-    obj/shielded.o \
-    obj/privacy_vnext_ffi.o \
-    obj/privacy_vnext_store.o \
-    obj/privacy_vnext_builder.o \
-    obj/zkproof.o \
-    obj/verifycache.o \
-    obj/lelantus.o \
-    obj/curvetree.o \
-    obj/ipa.o \
-    obj/ed25519_zk.o \
-    obj/nullstake.o \
-    obj/poseidon2.o \
-    obj/bulletproof_ac.o \
-    obj/silentpayments.o \
-    obj/dandelion.o \
-    obj/finality.o \
-    obj/subsidy.o \
-    obj/finality_note.o \
-    obj/finality_schedule.o \
-    obj/dag.o \
-    obj/mstimestamp.o \
-    obj/blockprofile.o \
-    obj/rpcsmessage.o \
-    obj/rpcnyx.o \
-    obj/script.o \
-    obj/sync.o \
-    obj/util.o \
-    obj/wallet.o \
-    obj/walletdb.o \
-    obj/noui.o \
-    obj/kernel.o \
-    obj/pbkdf2.o \
-    obj/scrypt.o \
-    obj/smessage.o \
-    obj/stealth.o \
-    obj/activecollateralnode.o \
-    obj/collateralnodeconfig.o \
-    obj/collateralnode.o \
-    obj/rpccollateral.o \
-    obj/spork.o \
-    obj/collateral.o \
-    obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/bloom.o \
-    obj/state.o \
-	obj/idns.o \
-	obj/idnsdescriptor.o \
-	obj/namecoin.o \
-	obj/utiltime.o \
-    obj/stun.o \
-    obj/bootstrap.o \
-    obj/minizip/ioapi.o \
-    obj/minizip/unzip.o
-else
-OBJS= \
-    obj/echo.o \
-    obj/jh.o \
-    obj/keccak.o \
-    obj/alert.o \
-    obj/version.o \
-    obj/checkpoints.o \
-    obj/netbase.o \
-    obj/addrman.o \
-    obj/crypter.o \
-    obj/key.o \
-    obj/hash.o \
-    obj/base58.o \
-    obj/db.o \
-    obj/init.o \
-    obj/keystore.o \
-    obj/miner.o \
-    obj/main.o \
-    obj/net.o \
-    obj/core.o \
-    obj/protocol.o \
-    obj/innovarpc.o \
-    obj/rpcdump.o \
-    obj/rpcnet.o \
-    obj/rpcmining.o \
-    obj/rpcwallet.o \
-    obj/rpcblockchain.o \
-    obj/pod.o \
-    obj/rpcrawtransaction.o \
-    obj/rpcsmessage.o \
-    obj/rpcnyx.o \
-	obj/rpchyperfile.o \
-    obj/rpcshielded.o \
-    obj/nullsend.o \
-    obj/shielded.o \
-    obj/privacy_vnext_ffi.o \
-    obj/privacy_vnext_store.o \
-    obj/privacy_vnext_builder.o \
-    obj/zkproof.o \
-    obj/verifycache.o \
-    obj/lelantus.o \
-    obj/curvetree.o \
-    obj/ipa.o \
-    obj/ed25519_zk.o \
-    obj/nullstake.o \
-    obj/poseidon2.o \
-    obj/bulletproof_ac.o \
-    obj/silentpayments.o \
-    obj/dandelion.o \
-    obj/finality.o \
-    obj/subsidy.o \
-    obj/finality_note.o \
-    obj/finality_schedule.o \
-    obj/dag.o \
-    obj/mstimestamp.o \
-    obj/blockprofile.o \
-    obj/script.o \
-    obj/sync.o \
-    obj/util.o \
-    obj/wallet.o \
-    obj/walletdb.o \
-    obj/noui.o \
-    obj/kernel.o \
-    obj/pbkdf2.o \
-    obj/scrypt.o \
-    obj/smessage.o \
-    obj/stealth.o \
-    obj/activecollateralnode.o \
-    obj/collateralnodeconfig.o \
-    obj/collateralnode.o \
-    obj/rpccollateral.o \
-    obj/spork.o \
-    obj/collateral.o \
-    obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/bloom.o \
-    obj/state.o \
-	obj/idns.o \
-	obj/idnsdescriptor.o \
-	obj/namecoin.o \
-	obj/utiltime.o \
-    obj/stun.o \
-    obj/bootstrap.o \
-    obj/minizip/ioapi.o \
-    obj/minizip/unzip.o
+include tor/tor_sources.mk
 endif
+
+OBJS= \
+    obj/echo.o \
+    obj/jh.o \
+    obj/keccak.o \
+    obj/alert.o \
+    obj/version.o \
+    obj/checkpoints.o \
+    obj/netbase.o \
+    obj/addrman.o \
+    obj/crypter.o \
+    obj/key.o \
+    obj/hash.o \
+    obj/base58.o \
+    obj/db.o \
+    obj/init.o \
+    obj/keystore.o \
+    obj/miner.o \
+    obj/main.o \
+    obj/net.o \
+    obj/core.o \
+    obj/protocol.o \
+    obj/innovarpc.o \
+    obj/rpcdump.o \
+    obj/rpcnet.o \
+    obj/rpcmining.o \
+    obj/rpcwallet.o \
+    obj/rpcblockchain.o \
+    obj/pod.o \
+    obj/rpcrawtransaction.o \
+    obj/rpcsmessage.o \
+    obj/rpcnyx.o \
+	obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
+    obj/privacy_vnext_store.o \
+    obj/privacy_vnext_builder.o \
+    obj/zkproof.o \
+    obj/verifycache.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
+    obj/finality.o \
+    obj/subsidy.o \
+    obj/finality_note.o \
+    obj/finality_schedule.o \
+    obj/dag.o \
+    obj/mstimestamp.o \
+    obj/blockprofile.o \
+    obj/script.o \
+    obj/sync.o \
+    obj/util.o \
+    obj/wallet.o \
+    obj/walletdb.o \
+    obj/noui.o \
+    obj/kernel.o \
+    obj/pbkdf2.o \
+    obj/scrypt.o \
+    obj/smessage.o \
+    obj/stealth.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
+    obj/spork.o \
+    obj/collateral.o \
+    obj/eccryptoverify.o \
+    obj/ringsig.o \
+    obj/bloom.o \
+    obj/state.o \
+	obj/idns.o \
+	obj/idnsdescriptor.o \
+	obj/namecoin.o \
+	obj/utiltime.o \
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
+
+OBJS += $(TOR_OBJS)
 
 # IPFS objects
 ifeq (${USE_IPFS}, 1)
@@ -948,6 +730,29 @@ obj/scrypt-x86_64.o: scrypt-x86_64.S
 obj/scrypt-arm.o: scrypt-arm.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
 
+# Listed before the generic obj/%.o: %.c rule on purpose. GNU make 3.81,
+# which macOS still ships, picks the first matching pattern rule rather than
+# the shortest stem, and would otherwise build tor with none of its flags.
+ifeq (${USE_NATIVETOR}, 1)
+# Objects mirror tor's own directory tree under obj/tor so upstream basenames
+# (main.c, version.c) cannot collide with Innova's own objects.
+obj/tor/%.o: tor/%.c
+	@mkdir -p $(@D)
+	$(CC) -c $(TOR_CPPFLAGS) $(xCFLAGS) $(TOR_WARNFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/tor/anonymize.o: tor/anonymize.cpp
+	@mkdir -p $(@D)
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+endif
+
 obj/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
@@ -979,21 +784,6 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
-ifeq (${USE_NATIVETOR}, 1)
-obj/%.o: tor/%.c
-	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-	rm -f $(@:%.o=%.d)
-
-obj/anonymize.o: tor/anonymize.cpp
-	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-	rm -f $(@:%.o=%.d)
-endif
 
 ifeq (${USE_IPFS}, 1)
 obj/%.o: %.cc
@@ -1048,8 +838,7 @@ clean:
 	rm -f obj/test/*.d
 	rm -rf obj/fuzz
 	rm -f obj/build.h
-	rm -f obj/tor/*.o
-	rm -f obj/tor/*.P
+	rm -rf obj/tor
 	rm -f obj/ipfs/*.o
 	rm -f obj/ipfs/*.P
 	rm -rf obj/minizip

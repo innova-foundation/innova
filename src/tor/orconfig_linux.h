@@ -4,23 +4,73 @@
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */
 
+/* All assert failures are fatal */
+/* #undef ALL_BUGS_ARE_FATAL */
+
+/* # for 0.4.8.25 Approximate date when this software was released. (Updated
+   when the version changes.) */
+#define APPROX_RELEASE_DATE "2026-05-07"
+
 /* tor's build directory */
-#define BUILDDIR "/home/jbg/dev/tor-tor-0.3.0.9"
+#define BUILDDIR "."
+
+/* Compiler name */
+#define COMPILER "GCC"
+
+/* Compiler vendor */
+#define COMPILER_VENDOR "gnu"
+
+/* Compiler version */
+#define COMPILER_VERSION "13.3.0"
 
 /* tor's configuration directory */
 #define CONFDIR "/usr/local/etc/tor"
 
+/* Flags passed to configure */
+#define CONFIG_FLAGS "--disable-module-relay --disable-module-dirauth --disable-module-pow --disable-unittests --disable-asciidoc --disable-manpage --disable-html-manual --disable-system-torrc --disable-systemd --disable-seccomp --disable-libscrypt --disable-lzma --disable-zstd"
+
+/* Enable smartlist debugging */
+/* #undef DEBUG_SMARTLIST */
+
+/* Defined if we're turning off memory safety code to look for bugs */
+/* #undef DISABLE_MEMORY_SENTINELS */
+
 /* Defined if we're not going to look for a torrc in SYSCONF */
-/* #undef DISABLE_SYSTEM_TORRC */
+#define DISABLE_SYSTEM_TORRC 1
 
 /* Define to 1 iff memset(0) sets doubles to 0.0 */
 #define DOUBLE_0_REP_IS_ZERO_BYTES 1
 
+/* Defined if coverage support is enabled for the unit tests */
+/* #undef ENABLE_COVERAGE */
+
+/* Defined if we're building with additional, fragile and expensive compiler
+   hardening */
+/* #undef ENABLE_FRAGILE_HARDENING */
+
+/* Defined if tor is building in GPL-licensed mode. */
+/* #undef ENABLE_GPL */
+
 /* Defined if we default to host local appdata paths on Windows */
 /* #undef ENABLE_LOCAL_APPDATA */
 
+/* Defined if we're building with NSS. */
+/* #undef ENABLE_NSS */
+
+/* Defined if we're building with OpenSSL or LibreSSL */
+#define ENABLE_OPENSSL 1
+
+/* Defined if we're building with support for in-process restart debugging. */
+/* #undef ENABLE_RESTART_DEBUGGING */
+
+/* Defined if we're going to try to use zstd's "static-only" APIs. */
+#define ENABLE_ZSTD_ADVANCED_APIS 1
+
 /* Define if enum is always signed */
 /* #undef ENUM_VALS_ARE_SIGNED */
+
+/* We statically link with EquiX */
+#define EQUIX_STATIC 1
 
 /* Define to nothing if C supports flexible array members, and to 1 if it does
    not. That way, with a declaration like `struct s { int n; double
@@ -31,14 +81,23 @@
    MSVC and with C++ compilers. */
 #define FLEXIBLE_ARRAY_MEMBER /**/
 
+/* Output size in bytes for the internal customization of HashX */
+#define HASHX_SIZE 8
+
+/* We statically link with HashX */
+#define HASHX_STATIC 1
+
 /* Define to 1 if you have the `accept4' function. */
 #define HAVE_ACCEPT4 1
 
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #define HAVE_ARPA_INET_H 1
 
-/* Define to 1 if you have the <assert.h> header file. */
-#define HAVE_ASSERT_H 1
+/* defined if we have the fallthrough attribute. */
+#define HAVE_ATTR_FALLTHROUGH 1
+
+/* defined if we have the nonstring attribute. */
+#define HAVE_ATTR_NONSTRING 1
 
 /* Define to 1 if you have the `backtrace' function. */
 #define HAVE_BACKTRACE 1
@@ -47,12 +106,16 @@
 #define HAVE_BACKTRACE_SYMBOLS_FD 1
 
 /* Define to 1 if you have the `cap_set_proc' function. */
+/* #undef HAVE_CAP_SET_PROC */
 
 /* True if we have -Wnull-dereference */
 #define HAVE_CFLAG_WNULL_DEREFERENCE 1
 
 /* True if we have -Woverlength-strings */
 #define HAVE_CFLAG_WOVERLENGTH_STRINGS 1
+
+/* True if we have -Wunused-const-variable */
+/* #undef HAVE_CFLAG_WUNUSED_CONST_VARIABLE */
 
 /* Define to 1 if you have the `clock_gettime' function. */
 #define HAVE_CLOCK_GETTIME 1
@@ -67,10 +130,6 @@
 /* Define to 1 if you have the <cygwin/signal.h> header file. */
 /* #undef HAVE_CYGWIN_SIGNAL_H */
 
-/* Define to 1 if you have the declaration of `getpagesize', and to 0 if you
-   don't. */
-#define HAVE_DECL_GETPAGESIZE 1
-
 /* Define to 1 if you have the declaration of `mlockall', and to 0 if you
    don't. */
 #define HAVE_DECL_MLOCKALL 1
@@ -83,17 +142,14 @@
    don't. */
 /* #undef HAVE_DECL__GETWCH */
 
-/* Define to 1 if you have the <dmalloc.h> header file. */
-/* #undef HAVE_DMALLOC_H */
-
-/* Define to 1 if you have the `dmalloc_strdup' function. */
-/* #undef HAVE_DMALLOC_STRDUP */
-
-/* Define to 1 if you have the `dmalloc_strndup' function. */
-/* #undef HAVE_DMALLOC_STRNDUP */
-
 /* Define to 1 if you have the <errno.h> header file. */
 #define HAVE_ERRNO_H 1
+
+/* Define to 1 if you have the `ERR_load_KDF_strings' function. */
+#define HAVE_ERR_LOAD_KDF_STRINGS 1
+
+/* Define to 1 if you have the `evdns_base_get_nameserver_addr' function. */
+#define HAVE_EVDNS_BASE_GET_NAMESERVER_ADDR 1
 
 /* Define to 1 if you have the <event2/bufferevent_ssl.h> header file. */
 #define HAVE_EVENT2_BUFFEREVENT_SSL_H 1
@@ -132,11 +188,17 @@
 /* Define to 1 if you have the `flock' function. */
 #define HAVE_FLOCK 1
 
+/* Define to 1 if you have the `fsync' function. */
+#define HAVE_FSYNC 1
+
 /* Define to 1 if you have the `ftime' function. */
 #define HAVE_FTIME 1
 
 /* Define to 1 if you have the `getaddrinfo' function. */
 #define HAVE_GETADDRINFO 1
+
+/* Define to 1 if you have the `getdelim' function. */
+#define HAVE_GETDELIM 1
 
 /* Define to 1 if you have the `getentropy' function. */
 #define HAVE_GETENTROPY 1
@@ -156,8 +218,8 @@
 /* Define to 1 if you have the `getifaddrs' function. */
 #define HAVE_GETIFADDRS 1
 
-/* Define to 1 if you have the `getpass' function. */
-#define HAVE_GETPASS 1
+/* Define to 1 if you have the `getline' function. */
+#define HAVE_GETLINE 1
 
 /* Define to 1 if you have the `getresgid' function. */
 #define HAVE_GETRESGID 1
@@ -171,14 +233,26 @@
 /* Define to 1 if you have the `gettimeofday' function. */
 #define HAVE_GETTIMEOFDAY 1
 
+/* Define to 1 if you have the `get_current_dir_name' function. */
+#define HAVE_GET_CURRENT_DIR_NAME 1
+
+/* Define to 1 if you have the `glob' function. */
+#define HAVE_GLOB 1
+
+/* Define to 1 if you have the <glob.h> header file. */
+#define HAVE_GLOB_H 1
+
 /* Define to 1 if you have the `gmtime_r' function. */
 #define HAVE_GMTIME_R 1
 
+/* Define to 1 if you have the `gnu_get_libc_version' function. */
+#define HAVE_GNU_GET_LIBC_VERSION 1
+
+/* Define to 1 if you have the <gnu/libc-version.h> header file. */
+#define HAVE_GNU_LIBC_VERSION_H 1
+
 /* Define to 1 if you have the <grp.h> header file. */
 #define HAVE_GRP_H 1
-
-/* Define to 1 if you have the `htonll' function. */
-/* #undef HAVE_HTONLL */
 
 /* Define to 1 if you have the <ifaddrs.h> header file. */
 #define HAVE_IFADDRS_H 1
@@ -195,8 +269,11 @@
 /* Define to 1 if you have the `issetugid' function. */
 /* #undef HAVE_ISSETUGID */
 
+/* Defined if KIST scheduler is supported on this system */
+#define HAVE_KIST_SUPPORT 1
+
 /* Define to 1 if you have the `cap' library (-lcap). */
-#define HAVE_LIBCAP 0
+/* #undef HAVE_LIBCAP */
 
 /* Define to 1 if you have the <libscrypt.h> header file. */
 /* #undef HAVE_LIBSCRYPT_H */
@@ -229,8 +306,20 @@
 /* Define to 1 if you have the `lround' function. */
 /* #undef HAVE_LROUND */
 
+/* Define to 1 if you have the <lttng/tracepoint.h> header file. */
+/* #undef HAVE_LTTNG_TRACEPOINT_H */
+
+/* Have LZMA */
+/* #undef HAVE_LZMA */
+
 /* Define to 1 if you have the <machine/limits.h> header file. */
 /* #undef HAVE_MACHINE_LIMITS_H */
+
+/* Define to 1 if you have the `mach_approximate_time' function. */
+/* #undef HAVE_MACH_APPROXIMATE_TIME */
+
+/* Define to 1 if you have the <mach/vm_inherit.h> header file. */
+/* #undef HAVE_MACH_VM_INHERIT_H */
 
 /* Defined if the compiler supports __FUNCTION__ */
 #define HAVE_MACRO__FUNCTION__ 1
@@ -241,17 +330,11 @@
 /* Defined if the compiler supports __func__ */
 #define HAVE_MACRO__func__ 1
 
-/* Define to 1 if you have the `mallinfo' function. */
-#define HAVE_MALLINFO 1
+/* Define to 1 if you have the `madvise' function. */
+#define HAVE_MADVISE 1
 
 /* Define to 1 if you have the <malloc.h> header file. */
 #define HAVE_MALLOC_H 1
-
-/* Define to 1 if you have the <malloc/malloc.h> header file. */
-/* #undef HAVE_MALLOC_MALLOC_H */
-
-/* Define to 1 if you have the <malloc_np.h> header file. */
-/* #undef HAVE_MALLOC_NP_H */
 
 /* Define to 1 if you have the `memmem' function. */
 #define HAVE_MEMMEM 1
@@ -262,8 +345,26 @@
 /* Define to 1 if you have the `memset_s' function. */
 /* #undef HAVE_MEMSET_S */
 
+/* Define to 1 if you have the `minherit' function. */
+/* #undef HAVE_MINHERIT */
+
 /* Define to 1 if you have the `mlockall' function. */
 #define HAVE_MLOCKALL 1
+
+/* Define to 1 if you have the `mmap' function. */
+#define HAVE_MMAP 1
+
+/* Compile with Directory Authority feature support */
+/* #undef HAVE_MODULE_DIRAUTH */
+
+/* Compile with directory cache support */
+/* #undef HAVE_MODULE_DIRCACHE */
+
+/* Compile with proof-of-work support */
+/* #undef HAVE_MODULE_POW */
+
+/* Compile with Relay feature support */
+/* #undef HAVE_MODULE_RELAY */
 
 /* Define to 1 if you have the <nacl/crypto_scalarmult_curve25519.h> header
    file. */
@@ -324,6 +425,7 @@
 #define HAVE_SA_FAMILY_T 1
 
 /* Define to 1 if you have the <seccomp.h> header file. */
+/* #undef HAVE_SECCOMP_H */
 
 /* Define to 1 if you have the `SecureZeroMemory' function. */
 /* #undef HAVE_SECUREZEROMEMORY */
@@ -334,6 +436,9 @@
 /* Define to 1 if you have the <signal.h> header file. */
 #define HAVE_SIGNAL_H 1
 
+/* Define to 1 if you have the `snprintf' function. */
+#define HAVE_SNPRINTF 1
+
 /* Define to 1 if you have the `socketpair' function. */
 #define HAVE_SOCKETPAIR 1
 
@@ -343,17 +448,26 @@
 /* Define to 1 if you have the `SSL_CIPHER_find' function. */
 #define HAVE_SSL_CIPHER_FIND 1
 
+/* Define to 1 if you have the `SSL_CTX_set1_groups_list' function. */
+/* #undef HAVE_SSL_CTX_SET1_GROUPS_LIST */
+
+/* Define to 1 if you have the `SSL_CTX_set_security_level' function. */
+#define HAVE_SSL_CTX_SET_SECURITY_LEVEL 1
+
 /* Define to 1 if you have the `SSL_get_client_ciphers' function. */
-/* #define HAVE_SSL_GET_CLIENT_CIPHERS 0 */
+#define HAVE_SSL_GET_CLIENT_CIPHERS 1
 
 /* Define to 1 if you have the `SSL_get_client_random' function. */
-/* #define HAVE_SSL_GET_CLIENT_RANDOM 0 */
+#define HAVE_SSL_GET_CLIENT_RANDOM 1
 
 /* Define to 1 if you have the `SSL_get_server_random' function. */
-/* #define HAVE_SSL_GET_SERVER_RANDOM 0 */
+#define HAVE_SSL_GET_SERVER_RANDOM 1
 
 /* Define to 1 if you have the `SSL_SESSION_get_master_key' function. */
-/* #define HAVE_SSL_SESSION_GET_MASTER_KEY 0 */
+#define HAVE_SSL_SESSION_GET_MASTER_KEY 1
+
+/* Define to 1 if you have the `SSL_set_ciphersuites' function. */
+#define HAVE_SSL_SET_CIPHERSUITES 1
 
 /* Define to 1 if `state' is a member of `SSL'. */
 /* #undef HAVE_SSL_STATE */
@@ -361,11 +475,17 @@
 /* Define to 1 if you have the `statvfs' function. */
 #define HAVE_STATVFS 1
 
+/* Define to 1 if you have the <stdatomic.h> header file. */
+#define HAVE_STDATOMIC_H 1
+
 /* Define to 1 if you have the <stdint.h> header file. */
 #define HAVE_STDINT_H 1
 
 /* Define to 1 if you have the <stdlib.h> header file. */
 #define HAVE_STDLIB_H 1
+
+/* Define to 1 if you have the `strcasecmp' function. */
+#define HAVE_STRCASECMP 1
 
 /* Define to 1 if you have the <strings.h> header file. */
 #define HAVE_STRINGS_H 1
@@ -374,10 +494,13 @@
 #define HAVE_STRING_H 1
 
 /* Define to 1 if you have the `strlcat' function. */
-/* #undef HAVE_STRLCAT */
+#define HAVE_STRLCAT 1
 
 /* Define to 1 if you have the `strlcpy' function. */
-/* #undef HAVE_STRLCPY */
+#define HAVE_STRLCPY 1
+
+/* Define to 1 if you have the `strncasecmp' function. */
+#define HAVE_STRNCASECMP 1
 
 /* Define to 1 if you have the `strnlen' function. */
 #define HAVE_STRNLEN 1
@@ -413,6 +536,12 @@
    */
 /* #undef HAVE_STRUCT_SSL_METHOD_ST_GET_CIPHER_BY_CHAR */
 
+/* Define to 1 if `tcpi_snd_mss' is a member of `struct tcp_info'. */
+#define HAVE_STRUCT_TCP_INFO_TCPI_SND_MSS 1
+
+/* Define to 1 if `tcpi_unacked' is a member of `struct tcp_info'. */
+#define HAVE_STRUCT_TCP_INFO_TCPI_UNACKED 1
+
 /* Define to 1 if `tv_sec' is a member of `struct timeval'. */
 #define HAVE_STRUCT_TIMEVAL_TV_SEC 1
 
@@ -420,18 +549,19 @@
 #define HAVE_SYSCONF 1
 
 /* Define to 1 if you have the `sysctl' function. */
-#define HAVE_SYSCTL 1
+/* #undef HAVE_SYSCTL */
 
 /* Define to 1 if you have the <syslog.h> header file. */
 #define HAVE_SYSLOG_H 1
 
 /* Have systemd */
-/* #define HAVE_SYSTEMD 1 */
+/* #undef HAVE_SYSTEMD */
 
-/* Have systemd v209 or more */
-/* #define HAVE_SYSTEMD_209 1 */
+/* Have systemd v209 or greater */
+/* #undef HAVE_SYSTEMD_209 */
 
 /* Define to 1 if you have the <sys/capability.h> header file. */
+/* #undef HAVE_SYS_CAPABILITY_H */
 
 /* Define to 1 if you have the <sys/eventfd.h> header file. */
 #define HAVE_SYS_EVENTFD_H 1
@@ -463,6 +593,9 @@
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #define HAVE_SYS_RESOURCE_H 1
 
+/* Define to 1 if you have the <sys/sdt.h> header file. */
+/* #undef HAVE_SYS_SDT_H */
+
 /* Define to 1 if you have the <sys/select.h> header file. */
 #define HAVE_SYS_SELECT_H 1
 
@@ -479,10 +612,7 @@
 #define HAVE_SYS_SYSCALL_H 1
 
 /* Define to 1 if you have the <sys/sysctl.h> header file. */
-#define HAVE_SYS_SYSCTL_H 1
-
-/* Define to 1 if you have the <sys/syslimits.h> header file. */
-/* #undef HAVE_SYS_SYSLIMITS_H */
+/* #undef HAVE_SYS_SYSCTL_H */
 
 /* Define to 1 if you have the <sys/time.h> header file. */
 #define HAVE_SYS_TIME_H 1
@@ -502,6 +632,9 @@
 /* Define to 1 if you have the <sys/wait.h> header file. */
 #define HAVE_SYS_WAIT_H 1
 
+/* Define to 1 if you have the `timegm' function. */
+#define HAVE_TIMEGM 1
+
 /* Define to 1 if you have the <time.h> header file. */
 #define HAVE_TIME_H 1
 
@@ -509,7 +642,10 @@
 /* #undef HAVE_TIMINGSAFE_MEMCMP */
 
 /* Define to 1 if you have the `TLS_method' function. */
-/* #define HAVE_TLS_METHOD 1 */
+#define HAVE_TLS_METHOD 1
+
+/* Compiled with tracing support */
+/* #undef HAVE_TRACING */
 
 /* Define to 1 if you have the `truncate' function. */
 #define HAVE_TRUNCATE 1
@@ -538,6 +674,18 @@
 /* Define to 1 if you have the `vasprintf' function. */
 #define HAVE_VASPRINTF 1
 
+/* Define to 1 if you have the `vsnprintf' function. */
+#define HAVE_VSNPRINTF 1
+
+/* Have Zstd */
+/* #undef HAVE_ZSTD */
+
+/* Define to 1 if you have the `ZSTD_estimateCStreamSize' function. */
+/* #undef HAVE_ZSTD_ESTIMATECSTREAMSIZE */
+
+/* Define to 1 if you have the `ZSTD_estimateDCtxSize' function. */
+/* #undef HAVE_ZSTD_ESTIMATEDCTXSIZE */
+
 /* Define to 1 if you have the `_NSGetEnviron' function. */
 /* #undef HAVE__NSGETENVIRON */
 
@@ -553,6 +701,9 @@
 /* Define to 1 iff memset(0) sets pointers to NULL */
 #define NULL_REP_IS_ZERO_BYTES 1
 
+/* disable openssl deprecated-function warnings */
+#define OPENSSL_SUPPRESS_DEPRECATED 1
+
 /* Name of package */
 #define PACKAGE "tor"
 
@@ -563,7 +714,7 @@
 #define PACKAGE_NAME "tor"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "tor 0.3.0.9"
+#define PACKAGE_STRING "tor 0.4.8.25"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "tor"
@@ -572,7 +723,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "0.3.0.9"
+#define PACKAGE_VERSION "0.4.8.25"
 
 /* How to access the PC from a struct ucontext */
 #define PC_FROM_UCONTEXT uc_mcontext.gregs[REG_RIP]
@@ -589,21 +740,6 @@
 /* The size of `int', as computed by sizeof. */
 #define SIZEOF_INT 4
 
-/* The size of `int16_t', as computed by sizeof. */
-#define SIZEOF_INT16_T 2
-
-/* The size of `int32_t', as computed by sizeof. */
-#define SIZEOF_INT32_T 4
-
-/* The size of `int64_t', as computed by sizeof. */
-#define SIZEOF_INT64_T 8
-
-/* The size of `int8_t', as computed by sizeof. */
-#define SIZEOF_INT8_T 1
-
-/* The size of `intptr_t', as computed by sizeof. */
-#define SIZEOF_INTPTR_T 8
-
 /* The size of `long', as computed by sizeof. */
 #define SIZEOF_LONG 8
 
@@ -612,6 +748,9 @@
 
 /* The size of `pid_t', as computed by sizeof. */
 #define SIZEOF_PID_T 4
+
+/* The size of `SHA_CTX', as computed by sizeof. */
+#define SIZEOF_SHA_CTX 96
 
 /* The size of `short', as computed by sizeof. */
 #define SIZEOF_SHORT 2
@@ -625,20 +764,8 @@
 /* The size of `time_t', as computed by sizeof. */
 #define SIZEOF_TIME_T 8
 
-/* The size of `uint16_t', as computed by sizeof. */
-#define SIZEOF_UINT16_T 2
-
-/* The size of `uint32_t', as computed by sizeof. */
-#define SIZEOF_UINT32_T 4
-
-/* The size of `uint64_t', as computed by sizeof. */
-#define SIZEOF_UINT64_T 8
-
-/* The size of `uint8_t', as computed by sizeof. */
-#define SIZEOF_UINT8_T 1
-
-/* The size of `uintptr_t', as computed by sizeof. */
-#define SIZEOF_UINTPTR_T 8
+/* The size of `unsigned int', as computed by sizeof. */
+#define SIZEOF_UNSIGNED_INT 4
 
 /* The size of `void *', as computed by sizeof. */
 #define SIZEOF_VOID_P 8
@@ -646,18 +773,24 @@
 /* The size of `__int64', as computed by sizeof. */
 #define SIZEOF___INT64 0
 
+/* tor's sourcedir directory */
+#define SRCDIR "."
+
+/* Set to 1 if we can compile a simple stdatomic example. */
+#define STDATOMIC_WORKS 1
+
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
+
+/* Compile with Android specific features enabled */
+/* #undef USE_ANDROID */
 
 /* Defined if we should use an internal curve25519_donna{,_c64} implementation
    */
 #define USE_CURVE25519_DONNA 1
 
 /* Defined if we should use a curve25519 from nacl */
-/* #define USE_CURVE25519_NACL 1 */
-
-/* Debug memory allocation library */
-/* #undef USE_DMALLOC */
+/* #undef USE_CURVE25519_NACL */
 
 /* Enable extensions on AIX 3, Interix.  */
 #ifndef _ALL_SOURCE
@@ -681,6 +814,15 @@
 #endif
 
 
+/* Tracepoints to log debug */
+/* #undef USE_TRACING_INSTRUMENTATION_LOG_DEBUG */
+
+/* Using LTTng instrumentation */
+/* #undef USE_TRACING_INSTRUMENTATION_LTTNG */
+
+/* Using USDT instrumentation */
+/* #undef USE_TRACING_INSTRUMENTATION_USDT */
+
 /* "Define to enable transparent proxy support" */
 #define USE_TRANSPARENT 1
 
@@ -688,7 +830,7 @@
 #define USING_TWOS_COMPLEMENT 1
 
 /* Version number of package */
-#define VERSION "0.3.0.9"
+#define VERSION "0.4.8.25"
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */
@@ -728,38 +870,19 @@
 
 
 #ifdef _WIN32
-/* Defined to access windows functions and definitions for >=WinXP */
+/* Defined to access windows functions and definitions for >=WinVista */
 # ifndef WINVER
-#  define WINVER 0x0501
+#  define WINVER 0x0600
 # endif
 
-/* Defined to access _other_ windows functions and definitions for >=WinXP */
+/* Defined to access _other_ windows functions and definitions for >=WinVista */
 # ifndef _WIN32_WINNT
-#  define _WIN32_WINNT 0x0501
+#  define _WIN32_WINNT 0x0600
 # endif
 
 /* Defined to avoid including some windows headers as part of Windows.h */
 # ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN 1
 # endif
-
-/* OpenSSL 1.1.0 provides these; the values probed above were generated against
-   the 1.0.x API, where the accessors did not exist and SSL_SESSION was public. */
-#include <openssl/opensslv.h>
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-#ifndef HAVE_SSL_GET_CLIENT_CIPHERS
-#define HAVE_SSL_GET_CLIENT_CIPHERS 1
-#endif
-#ifndef HAVE_SSL_SESSION_GET_MASTER_KEY
-#define HAVE_SSL_SESSION_GET_MASTER_KEY 1
-#endif
-#ifndef HAVE_SSL_GET_CLIENT_RANDOM
-#define HAVE_SSL_GET_CLIENT_RANDOM 1
-#endif
-#ifndef HAVE_SSL_GET_SERVER_RANDOM
-#define HAVE_SSL_GET_SERVER_RANDOM 1
-#endif
-#endif
-
 #endif
 

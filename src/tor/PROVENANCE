@@ -1,0 +1,163 @@
+Vendored Tor
+============
+
+Upstream version : tor-0.4.8.25
+Source tarball   : https://dist.torproject.org/tor-0.4.8.25.tar.gz
+Tarball size     : 10863534 bytes
+Tarball sha256   : 371cd22178fa4b35e64b03933403890795ce3e304c5850a5b59adcc68820a799
+
+The sha256 above matches the published tor-0.4.8.25.tar.gz.sha256sum on
+dist.torproject.org, verified independently on both build hosts before use.
+
+Licence: 3-clause BSD. Upstream text is kept verbatim in src/tor/LICENSE.
+
+Layout
+------
+src/tor/ mirrors the upstream tarball root, so upstream's src/<x> is vendored at
+src/tor/src/<x>. The doubled "src" is deliberate: upstream puts both its root
+and its src/ on the include path, and while most sources use includes qualified
+from src/ ("core/or/or.h"), a few qualify from the root instead
+("src/core/or/conflux_util.h"). Keeping the tarball shape lets both resolve, so
+no vendored source is edited. Upstream basenames also cannot collide with
+Innova's own headers, since every tor include is path-qualified.
+
+Compile surface
+---------------
+  -DHAVE_CONFIG_H
+  -Isrc/tor -Isrc/tor/src -Isrc/tor/src/ext -Isrc/tor/src/ext/trunnel
+  -Isrc/tor/src/trunnel
+
+HAVE_CONFIG_H is what makes tor's sources include orconfig.h, so it must be on
+the command line. SHARE_DATADIR/LOCALSTATEDIR/BINDIR are defined in orconfig.h
+rather than per-build-system, which keeps makefile.unix and innova-qt.pro from
+having to agree on string quoting. They are inert: the data directory and
+hidden-service paths are passed explicitly on the tor_main argv.
+
+Link deps are libz, libevent, libssl, libcrypto -- all already innovad
+dependencies. Vendoring tor adds no new external dependency.
+
+Generated files
+---------------
+Only these are build output rather than shipped source:
+
+  orconfig_linux.h  - upstream configure output, Linux x86-64, OpenSSL 3.0.13
+  orconfig_apple.h  - upstream configure output, macOS arm64, Homebrew OpenSSL 3
+  micro-revision.i  - git-revision stamp; upstream emits "" for a tarball build
+
+orconfig.h is an Innova-authored dispatch header selecting between the two.
+BUILDDIR/SRCDIR/CONFIG_FLAGS in the generated headers were rewritten to
+path-free values: they are referenced only by upstream's test suite, which is
+not vendored.
+
+Regenerating orconfig_<platform>.h
+---------------------------------
+Extract the verified tarball and run, once per platform:
+
+  ./configure --disable-module-relay --disable-module-dirauth \
+              --disable-module-pow --disable-unittests --disable-asciidoc \
+              --disable-manpage --disable-html-manual --disable-system-torrc \
+              --disable-systemd --disable-seccomp --disable-libscrypt \
+              --disable-lzma --disable-zstd
+
+then copy the resulting orconfig.h and blank BUILDDIR/SRCDIR/CONFIG_FLAGS.
+No autotools run is needed at build time, ever.
+
+Subset and exclusions
+---------------------
+This is a client-only vendoring: enough tor to perform a v3 onion rendezvous
+and to run an onion service for inbound P2P, and nothing else.
+
+891 files, 290k lines on disk; 369 of them compile. The set is derived
+empirically rather than by hand. The upstream build links the tor binary as
+tor_main.o plus libtor.a, so the compiled set is exactly the members of
+libtor.a, less two files:
+
+  src/app/main/tor_main.c   defines main(), which would collide with innovad
+  src/core/proto/proto_ext_or.c
+                            parses the extended ORPort protocol, which only a
+                            bridge or relay speaks. Its implementation is in
+                            feature/relay/ext_orport.c, part of the excluded
+                            relay module. Upstream never notices because it
+                            links from an archive and the member is simply never
+                            pulled; Innova links the objects directly, which
+                            would force it in and leave ext_or_cmd_new
+                            undefined. Confirmed against a linker map: of 369
+                            archive members, 363 are pulled, and this is the
+                            only unpulled one that cannot also link standalone.
+
+The on-disk set is the header/source closure of those objects, taken from the
+build's own .deps/*.Po files on Linux and macOS and unioned. The macOS closure
+is a strict subset of the Linux one; the single source that differs is
+src/ext/readpassphrase.c, which macOS does not compile and which self-guards on
+HAVE_READPASSPHRASE, so one source list serves both platforms.
+
+Two upstream sources share the basename conflux.c (core/or and trunnel), which
+is why objects are built into a mirrored tree under obj/tor rather than a flat
+directory.
+
+Excluded, with reasons:
+
+  relay module        --disable-module-relay; Innova is not a tor relay.
+                      Compiles as small stubs, which are included.
+  dirauth module      --disable-module-dirauth; Innova is not a directory
+                      authority.
+  pow module          --disable-module-pow. This is the only reason the GPL
+                      src/ext/equix and src/ext/hashx trees are not vendored,
+                      which keeps this MIT tree free of GPL code. Cost: a
+                      client cannot answer a proof-of-work challenge from an
+                      onion service under DoS pressure, so such a fetch
+                      degrades rather than succeeding.
+  lzma, zstd          Directory-compression backends. zlib alone is sufficient
+                      and avoids two external dependencies.
+  libscrypt, seccomp,
+  systemd             Not used by an embedded client.
+  unit tests, tools   src/test and src/tools are not vendored.
+  NSS backend         OpenSSL is the TLS backend; the NSS sources are not
+                      vendored.
+
+Windows: the pre-existing orconfig_win32.h / orconfig_win64.h were generated
+against tor-0.3.0.9 and are not valid for 0.4.8.25. Regenerating them needs a
+mingw configure run, which was out of scope for this upgrade, so orconfig.h
+fails loudly on Windows rather than building something incorrect.
+
+Known gaps
+----------
+A v3 onion address is 56 base32 characters and does not fit CNetAddr's OnionCat
+encoding, which carries 10 bytes and is v2-only. init.cpp therefore cannot
+AddLocal the address the bundled tor mints, and logs a warning instead. Onion
+addresses are not gossiped to peers until the address type is widened
+(addrv2-style). IDNS is unaffected: it dials by hostname over SOCKS5 and never
+builds a CNetAddr.
+
+With --disable-module-pow a client cannot answer a proof-of-work challenge from
+an onion service under DoS pressure, so such a fetch degrades rather than
+succeeding. This is forced: the PoW implementation is the GPL equix/hashx code.
+
+anonymize_tor_data_directory() and anonymize_service_directory() are derived
+from GetDefaultDataDir(), not GetDataDir(), so -datadir does not move the tor
+or onion directories. That matches the behaviour of the copy this replaces.
+
+Innova-authored files in this directory
+---------------------------------------
+  anonymize.cpp / anonymize.h   data-directory helpers used by init.cpp
+  orconfig.h                    the platform dispatch header above
+  VERSION                       this file
+
+Everything else is upstream tor, unmodified.
+
+Files retired in this upgrade
+-----------------------------
+  torcompat.c  A copy of upstream compat.c whose only divergence from upstream
+               was five include lines (compat.h->torcompat.h, util.h->torutil.h,
+               <sys/sysctl.h>-><linux/sysctl.h>, plus one added crypto.h). That
+               rename scheme existed because the old flat vendoring put tor
+               basenames next to Innova's own util.h/compat.h. 0.4.8 uses
+               path-qualified includes, so the collision it worked around no
+               longer exists and the file carried no Innova behaviour.
+
+  blinding.c   Byte-identical to tor-0.3.0.9's src/ext/ed25519/ref10/blinding.c,
+               i.e. stale vendored upstream rather than an Innova file. It is
+               replaced by the 0.4.8.25 version, which is required: upstream
+               moved the sha512 derivation of the blinding parameter out to the
+               caller, so pairing the 0.3.0.9 file with current hs_common.c
+               would hash the parameter twice and derive wrong blinded keys.

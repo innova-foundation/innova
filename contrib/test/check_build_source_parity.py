@@ -5,6 +5,7 @@ is what dropped the v5 privacy layer out of the GUI link."""
 
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -66,10 +67,35 @@ def check_pro_entries_exist(pro_text, failures):
             failures.append("innova-qt.pro lists %s, which does not exist" % name)
 
 
+def check_tor_sources(problems):
+    """The vendored tor is listed once, in src/tor/tor_sources.txt, and both
+    build systems consume generated fragments. Verify the fragments are current
+    and that both build systems actually include them, so the tor lists cannot
+    drift the way the core lists once did."""
+    gen = os.path.join(ROOT, "contrib", "gen_tor_sources.py")
+    if not os.path.exists(gen):
+        problems.append("contrib/gen_tor_sources.py is missing")
+        return
+    result = subprocess.run([sys.executable, gen, "--check"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        problems.append("tor source fragments are stale: %s"
+                        % result.stdout.decode().strip().replace("\n", "; "))
+
+    consumers = (("src/makefile.unix", "include tor/tor_sources.mk"),
+                 ("innova-qt.pro", "include(src/tor/tor_sources.pri)"))
+    for name, needle in consumers:
+        with open(os.path.join(ROOT, name)) as handle:
+            if needle not in handle.read():
+                problems.append("%s no longer includes the generated tor source "
+                                "list (%s)" % (name, needle))
+
+
 def main():
     pro_path = os.path.join(ROOT, "innova-qt.pro")
     pro = pro_core_sources(pro_path)
     problems = []
+    check_tor_sources(problems)
     with open(pro_path) as handle:
         check_pro_entries_exist(handle.read(), problems)
     for name in ("makefile.unix", "makefile.osx"):
