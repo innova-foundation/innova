@@ -1945,11 +1945,10 @@ bool AppInit2()
                    NATIVETOR_HOSTNAME_TIMEOUT_SECS);
         } else {
             printf("Native tor: onion service is %s\n", automatic_onion.c_str());
-            // A v3 address is 56 base32 characters and does not fit CNetAddr's
-            // OnionCat encoding, which is v2-only, so this AddLocal fails for
-            // v3 until the address type is widened. IDNS is unaffected: it
-            // dials by hostname over SOCKS5 and never builds a CNetAddr.
-            CService onionService(automatic_onion, GetListenPort(), fNameLookup);
+            // CNetAddr's OnionCat encoding is v2-only, so AddLocal fails for a v3 address.
+            // IDNS dials by hostname over SOCKS5 and is unaffected.
+            // Lookup is off so the onion hostname never reaches the system resolver.
+            CService onionService(automatic_onion, GetListenPort(), false);
             if (onionService.IsValid()) {
                 AddLocal(onionService, LOCAL_MANUAL);
             } else {
