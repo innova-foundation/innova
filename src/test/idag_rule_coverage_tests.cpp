@@ -10,6 +10,7 @@
 #include "../dag.h"
 #include "../finality.h"
 #include "../main.h"
+#include "../mstimestamp.h"
 
 #include <string>
 #include <vector>
@@ -127,6 +128,16 @@ CBlock CandidateBlock(const CBlockIndex* pindexPrev,
     coinbase.vout[0].nValue = 0;
     if (!vParents.empty())
         coinbase.vout[0].scriptPubKey = BuildDAGParentScript(vParents);
+    // From FORK_HEIGHT_MS_TIMESTAMP a coinbase must also carry a millisecond
+    // commitment, and AcceptBlock checks it ahead of the parent set. The
+    // candidate carries a valid one so a rejection here is the parent rule's.
+    if (nHeight >= FORK_HEIGHT_MS_TIMESTAMP)
+    {
+        CTxOut msOut;
+        msOut.nValue = 0;
+        msOut.scriptPubKey = BuildMsTimestampScript(0);
+        coinbase.vout.push_back(msOut);
+    }
 
     CBlock block;
     block.nVersion = CBlock::CURRENT_VERSION;

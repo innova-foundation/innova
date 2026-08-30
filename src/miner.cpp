@@ -9,6 +9,7 @@
 #include "kernel.h"
 #include "collateralnode.h"
 #include "dag.h"
+#include "mstimestamp.h"
 #include "finality.h"
 #include "subsidy.h"
 #include "namecoin.h"
@@ -236,6 +237,46 @@ static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)
     return pBest;
 }
 
+// Millisecond offset for a template whose header time is already fixed. pblock->nTime is
+// clamped (median, newest tx, PoS kernel time), so the difference is clamped to 0..999.
+static uint16_t MsTimestampOffsetForTemplate(unsigned int nBlockTime)
+{
+    const int64_t nAdjustMs = (GetAdjustedTime() - GetTime()) * 1000;
+    int64_t nOffset = GetTimeMillis() + nAdjustMs - (int64_t)nBlockTime * 1000;
+    if (nOffset < 0)
+        nOffset = 0;
+    if (nOffset > (int64_t)MS_TIMESTAMP_MAX)
+        nOffset = (int64_t)MS_TIMESTAMP_MAX;
+    return (uint16_t)nOffset;
+}
+
+// Rewrite the template's commitment once the header time is final. The
+// encoding is fixed length, so the placeholder the coinbase already carries
+// keeps the reward's block-size accounting correct whatever the value is.
+void StampMsTimestampCommitment(CBlock* pblock, int nHeight)
+{
+    if (nHeight < FORK_HEIGHT_MS_TIMESTAMP || pblock->vtx.empty())
+        return;
+    const CScript scriptMs =
+        BuildMsTimestampScript(MsTimestampOffsetForTemplate(pblock->nTime));
+    for (unsigned int i = 0; i < pblock->vtx[0].vout.size(); i++)
+    {
+        uint16_t nExisting = 0;
+        std::string strError;
+        if (DecodeCanonicalMsTimestampScript(pblock->vtx[0].vout[i].scriptPubKey,
+                                             nExisting, strError) !=
+            MS_TIMESTAMP_NOT_FOUND)
+        {
+            pblock->vtx[0].vout[i].scriptPubKey = scriptMs;
+            return;
+        }
+    }
+    CTxOut msOut;
+    msOut.nValue = 0;
+    msOut.scriptPubKey = scriptMs;
+    pblock->vtx[0].vout.push_back(msOut);
+}
+
 // CreateNewBlock: create new block (without proof-of-work/proof-of-stake)
 CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 {
@@ -388,6 +429,17 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 txNew.vout.push_back(dagOut);
             }
         }
+    }
+
+    // Placeholder millisecond commitment, re-stamped below once the header
+    // time is final. It is carried from here so the coinbase reaching the
+    // reward's block-size accounting is the one that ships.
+    if (nHeight >= FORK_HEIGHT_MS_TIMESTAMP)
+    {
+        CTxOut msOut;
+        msOut.nValue = 0;
+        msOut.scriptPubKey = BuildMsTimestampScript(0);
+        txNew.vout.push_back(msOut);
     }
 
     // Add our coinbase tx as first transaction
@@ -1310,6 +1362,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if (!fProofOfStake)
             pblock->UpdateTime(pindexPrev);
         pblock->nNonce         = 0;
+        StampMsTimestampCommitment(pblock.get(), nHeight);
     }
 
     return pblock.release();

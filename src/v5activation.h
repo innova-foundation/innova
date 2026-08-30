@@ -16,8 +16,8 @@
 //
 // Set against tip 7,917,298 (2026-08-16 02:15 UTC), established by a
 // self-verifying getheaders walk from the hardcoded 7,750,000 checkpoint and
-// cross-checked against two further peers. First gate 7,980,000 leads that tip
-// by 62,702 blocks: ~10.6 days at the measured 14.6-second spacing, ~10.9 days
+// cross-checked against two further peers. First gate 8,070,000 leads that tip
+// by 152,702 blocks: ~25.8 days at the measured 14.6-second spacing, ~26.5 days
 // at 15 seconds. Gates after the DAG gate (base 7,950,000) arrive at 1-second
 // spacing, so the whole tail lands within ~14 hours of DAG activation rather
 // than months later: DAGKNIGHT at base 8,000,000 is the last rung, 50,000
@@ -26,9 +26,10 @@
 //
 // Recheck before tagging: the tip advances ~5,900 blocks a day, so this lead
 // decays by a day for every day it sits unreleased. The release policy enforces
-// a 50,000-block floor, which this clears by only ~2.2 days -- that short tag
-// window is inherent to a 50,000-75,000 block lead, not an oversight. Re-run
-// the preflight at tag time and step the shift by one granule if it has decayed.
+// a 50,000-block floor, which the recorded lead clears by 102,702 blocks (~17
+// days). Re-run the preflight at tag time and step the shift by one granule if
+// it has decayed; the figures above are arithmetic on the recorded tip, not a
+// fresh measurement.
 //
 // SHIFT is constrained three ways, and only multiples of 30,000 satisfy all of
 // them:

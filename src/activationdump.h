@@ -156,6 +156,9 @@ inline std::string GetActivationLadderJSON()
       &GetForkHeightChaumianCJ, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_SERIAL_V2", "GetForkHeightSerialV2", "src/lelantus.h",
       &GetForkHeightSerialV2, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+    { "FORK_HEIGHT_MS_TIMESTAMP", "GetForkHeightMsTimestamp", "src/main.h",
+      &GetForkHeightMsTimestamp, true, NULL, NULL, NULL, false, "-regtestmstimestamp",
+      "activates_at", NULL, NULL },
     { "FORK_HEIGHT_POEM", "GetForkHeightPoem", "src/main.h",
       &GetForkHeightPoem, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_FINALITY", "GetForkHeightFinality", "src/main.h",
@@ -333,6 +336,7 @@ inline std::string GetActivationLadderJSON()
     ss << "    \"nRegtestColdStakingHeight\": " << nRegtestColdStakingHeight << ",\n";
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
+    ss << "    \"nRegtestMsTimestampHeight\": " << nRegtestMsTimestampHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";
     ss << "    \"fRegtestHoldPrivacyVNextLeafIndex\": " << ActivationJsonBool(fRegtestHoldPrivacyVNextLeafIndex) << ",\n";
     ss << "    \"nTargetSpacing\": " << nTargetSpacing << "\n";

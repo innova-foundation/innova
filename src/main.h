@@ -13,6 +13,7 @@
 #include "sync.h"
 #include "net.h"
 #include "script.h"
+#include "mstimestamp.h"
 #include "scrypt.h"
 #include "hashblock.h"
 #include "shielded.h"
@@ -346,6 +347,34 @@ inline int GetForkHeightChaumianCJ()
     return (fRegTest || fTestNet) ? 8 : ShiftMainnetV5Activation(7840000);
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
+
+// Coinbase millisecond-offset commitment (IMTS, 0..999): exactly one from this height,
+// none below; unused in v5. -regtestmstimestamp overrides on regtest.
+extern int nRegtestMsTimestampHeight;
+
+inline int GetForkHeightMsTimestamp()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return nRegtestMsTimestampHeight;
+    if (fTestNet) return 30;    // pre-gate window, then a 30-block soak before DAG at 60
+    return ShiftMainnetV5Activation(7920000);
+}
+#define FORK_HEIGHT_MS_TIMESTAMP (GetForkHeightMsTimestamp())
+
+// Lowest height at which the below-gate absence rule is enforced: the v5 first
+// gate on mainnet, so resync never applies it to history; 1 elsewhere.
+inline int GetMsTimestampAbsenceFloor()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest || fTestNet) return 1;
+    return ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE);
+}
+
+/** Rewrite or append the coinbase millisecond commitment for a final header time.
+ *  Called by both producer paths; no-op below the gate. Defined in miner.cpp. */
+void StampMsTimestampCommitment(CBlock* pblock, int nHeight);
 
 // POEM entropy weighting
 inline int GetForkHeightPoem()
@@ -2502,6 +2531,10 @@ public:
     unsigned int nBits;
     unsigned int nNonce;
     unsigned int nSize;   // serialized block size (for adaptive block sizing)
+    // Millisecond offset past nTime, cached from the coinbase IMTS commitment
+    // so a walk over the index need not re-read coinbases. Always 0 below
+    // FORK_HEIGHT_MS_TIMESTAMP, where no commitment may exist.
+    uint16_t nTimeMs;
 
     CBlockIndex()
     {
@@ -2521,6 +2554,7 @@ public:
         prevoutStake.SetNull();
         nStakeTime = 0;
         nSize = 0;
+        nTimeMs = 0;
         nFinalizedHeight = 0;
 
         nVersion       = 0;
@@ -2572,6 +2606,9 @@ public:
         nBits          = block.nBits;
         nNonce         = block.nNonce;
         nSize          = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+        // Set by AddToBlockIndex, which is the first point that knows nHeight
+        // and so whether a commitment is required at all.
+        nTimeMs        = 0;
     }
 
     CBlock GetBlockHeader() const
@@ -2595,6 +2632,13 @@ public:
     int64_t GetBlockTime() const
     {
         return (int64_t)nTime;
+    }
+
+    // Full-precision block time. Below FORK_HEIGHT_MS_TIMESTAMP nTimeMs is 0,
+    // so this is GetBlockTime() scaled and orders identically there.
+    int64_t GetBlockTimeMs() const
+    {
+        return MsTimestampCombine(nTime, nTimeMs);
     }
 
     CBigNum GetBlockWork() const
@@ -2781,6 +2825,14 @@ public:
             READWRITE(nSize);
         else
             const_cast<CDiskBlockIndex*>(this)->nSize = 0;
+        // nTimeMs is a second optional trailing field after nSize. An older record
+        // reads 0 and is not backfilled (nothing reads it in v5).
+        if (!fRead)
+            READWRITE(nTimeMs);
+        else if (SerBytesRemaining(s) >= sizeof(nTimeMs))
+            READWRITE(nTimeMs);
+        else
+            const_cast<CDiskBlockIndex*>(this)->nTimeMs = 0;
     )
 
     uint256 GetBlockHash() const
@@ -2838,6 +2890,7 @@ inline void ApplyDiskBlockIndexFields(const CDiskBlockIndex& diskindex, CBlockIn
     pindexNew->nBits          = diskindex.nBits;
     pindexNew->nNonce         = diskindex.nNonce;
     pindexNew->nSize          = diskindex.nSize;
+    pindexNew->nTimeMs        = diskindex.nTimeMs;
 }
 
 /** How far below FORK_HEIGHT_DAG an adaptive-block-size window can reach. */

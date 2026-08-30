@@ -260,6 +260,9 @@ int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIDNSResetHeight = 0;
+// Regtest millisecond-timestamp gate (-regtestmstimestamp). Defaults to the
+// POEM rung so the regtest ladder exercises the rule without an override.
+int nRegtestMsTimestampHeight = 9;
 int nRegtestCNPaymentsHeight = 0;
 int nRegtestColdStakingHeight = 0;
 bool fRegtestShieldedVNextRehearsal = false;
@@ -12106,6 +12109,24 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         delete pindexNew;
     };
 
+    // Cache the millisecond offset AcceptBlock validated through the same reader; below
+    // the gate it stays 0.
+    if (pindexNew->nHeight >= FORK_HEIGHT_MS_TIMESTAMP)
+    {
+        std::vector<CScript> vMsScripts;
+        for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
+             it != vtx[0].vout.end(); ++it)
+            vMsScripts.push_back(it->scriptPubKey);
+        uint16_t nMs = 0;
+        std::string strMsError;
+        if (!ExtractCanonicalMsTimestampCommitment(vMsScripts, nMs, strMsError))
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : %s", strMsError.c_str());
+        }
+        pindexNew->nTimeMs = nMs;
+    }
+
     // Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
@@ -12764,6 +12785,30 @@ bool CBlock::AcceptBlock()
                               HexStr(expect).c_str(),
                               HexStr(vtx[0].vin[0].scriptSig).c_str()));
 
+    // Validate the millisecond-timestamp commitment in the coinbase OP_RETURN.
+    // Presence, uniqueness and range only: nothing downstream consumes the
+    // offset, and no second-resolution rule is relaxed by it.
+    {
+        std::vector<CScript> vMsScripts;
+        for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
+             it != vtx[0].vout.end(); ++it)
+            vMsScripts.push_back(it->scriptPubKey);
+
+        if (nHeight >= FORK_HEIGHT_MS_TIMESTAMP)
+        {
+            uint16_t nMs = 0;
+            std::string strMsError;
+            if (!ExtractCanonicalMsTimestampCommitment(vMsScripts, nMs, strMsError))
+                return DoS(100, error("AcceptBlock() : %s", strMsError.c_str()));
+        }
+        else if (nHeight >= GetMsTimestampAbsenceFloor() &&
+                 MsTimestampCommitmentPresent(vMsScripts))
+        {
+            return DoS(100, error("AcceptBlock() : IMTS commitment at height %d, below the millisecond-timestamp fork height %d",
+                                  nHeight, FORK_HEIGHT_MS_TIMESTAMP));
+        }
+    }
+
     // Validate DAG parent commitment in coinbase OP_RETURN
     if (nHeight >= FORK_HEIGHT_DAG)
     {
@@ -13213,6 +13258,9 @@ bool CBlock::SignBlock(CWallet& wallet, int64_t nFees)
                     if (it->nTime > nTime) { it = vtx.erase(it); } else { ++it; }
 
                 vtx.insert(vtx.begin() + 1, txCoinStake);
+                // The kernel moved nTime after the template was assembled, so
+                // re-derive the offset before the merkle root is rebuilt.
+                StampMsTimestampCommitment(this, pindexBest->nHeight + 1);
                 hashMerkleRoot = BuildMerkleTree();
 
                 // append a signature to our block

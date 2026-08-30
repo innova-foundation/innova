@@ -65,6 +65,7 @@ HEADERS += build/build.h \
            src/crypter.h \
            src/curvetree.h \
            src/dag.h \
+           src/mstimestamp.h \
            src/dandelion.h \
            src/db.h \
            src/eccryptoverify.h \
@@ -581,6 +582,7 @@ SOURCES += qrc_bitcoin.cpp \
            src/crypter.cpp \
            src/curvetree.cpp \
            src/dag.cpp \
+           src/mstimestamp.cpp \
            src/dandelion.cpp \
            src/db.cpp \
            src/eccryptoverify.cpp \
