@@ -730,6 +730,29 @@ obj/scrypt-x86_64.o: scrypt-x86_64.S
 obj/scrypt-arm.o: scrypt-arm.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
 
+# Listed before the generic obj/%.o: %.c rule on purpose. GNU make 3.81,
+# which macOS still ships, picks the first matching pattern rule rather than
+# the shortest stem, and would otherwise build tor with none of its flags.
+ifeq (${USE_NATIVETOR}, 1)
+# Objects mirror tor's own directory tree under obj/tor so upstream basenames
+# (main.c, version.c) cannot collide with Innova's own objects.
+obj/tor/%.o: tor/%.c
+	@mkdir -p $(@D)
+	$(CC) -c $(TOR_CPPFLAGS) $(xCFLAGS) $(TOR_WARNFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/tor/anonymize.o: tor/anonymize.cpp
+	@mkdir -p $(@D)
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+endif
+
 obj/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
@@ -761,25 +784,6 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
-ifeq (${USE_NATIVETOR}, 1)
-# Objects mirror tor's own directory tree under obj/tor so upstream basenames
-# (main.c, version.c) cannot collide with Innova's own objects.
-obj/tor/%.o: tor/%.c
-	@mkdir -p $(@D)
-	$(CC) -c $(TOR_CPPFLAGS) $(xCFLAGS) $(TOR_WARNFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-	rm -f $(@:%.o=%.d)
-
-obj/tor/anonymize.o: tor/anonymize.cpp
-	@mkdir -p $(@D)
-	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-	rm -f $(@:%.o=%.d)
-endif
 
 ifeq (${USE_IPFS}, 1)
 obj/%.o: %.cc
