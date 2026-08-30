@@ -215,6 +215,20 @@ were constructed, so it cannot pass by not executing. Run both: the static check
 alone cannot tell a live widget from a dead one, and the probe alone never
 constructs a widget nothing instantiates.
 
+## Qt shutdown
+
+```bash
+contrib/test/qt_shutdown_probe.sh ./Innova /tmp/qt-shutdown
+```
+
+A first run on a fresh datadir opens the terms-of-use dialog, whose nested modal
+event loop used to swallow both SIGTERM and the stop RPC, so an unattended
+restart hung. The probe drives three cases -- agreed datadir + SIGTERM, fresh
+datadir + SIGTERM, fresh datadir + stop RPC -- and rejects the fresh cases unless
+the wallet logged both that the dialog opened and that the shutdown closed it,
+so a wallet that never showed the dialog cannot pass by exiting promptly.
+`produce_qt6_release_evidence.sh` runs it.
+
 ## Native Tor and -datadir
 
 ```bash

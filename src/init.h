@@ -9,6 +9,10 @@
 
 extern CWallet* pwalletMain;
 void StartShutdown();
+/** True once a shutdown has been asked for by any route: SIGTERM/SIGINT, the
+ *  stop RPC, or a UI quit. One flag for all of them, so a UI event loop can ask
+ *  the same question the core loops already ask. */
+bool ShutdownRequested();
 void Shutdown(void* parg);
 bool AppInit2();
 std::string HelpMessage();

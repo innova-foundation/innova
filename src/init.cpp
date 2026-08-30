@@ -103,6 +103,9 @@ void ExitTimeout(void* parg)
 
 void StartShutdown()
 {
+    // Set before signalling either way: under QT_GUI a nested modal loop never delivers the
+    // queued quit, so the UI and bitcoin.cpp poll this flag.
+    fRequestShutdown = true;
 #ifdef QT_GUI
     // ensure we leave the Qt main loop for a clean GUI exit (Shutdown() is called in bitcoin.cpp afterwards)
     uiInterface.QueueShutdown();
@@ -110,6 +113,11 @@ void StartShutdown()
     // Without UI, Shutdown() can simply be started in a new thread
     NewThread(Shutdown, NULL);
 #endif
+}
+
+bool ShutdownRequested()
+{
+    return fRequestShutdown || fShutdown;
 }
 
 void Shutdown(void* parg)
