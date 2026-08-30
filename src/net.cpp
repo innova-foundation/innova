@@ -2812,11 +2812,13 @@ static void run_tor() {
       args.push_back("--HiddenServiceDir");  args.push_back(onionDir);
       args.push_back("--HiddenServicePort"); args.push_back(hsPort);
 
-      // Bridges are a passthrough now. The previous build shipped three
-      // hardcoded 2017 bridge lines and set UseBridges=1 whenever obfs4proxy
-      // was present on the host; once those relays went off the air that
-      // stopped tor bootstrapping at all rather than helping it.
-      const std::vector<std::string>& bridges = mapMultiArgs["-torbridge"];
+      // Bridges are passthrough only; none are hardcoded.
+      // find(), not operator[]: this runs on the onion thread and must not insert.
+      static const std::vector<std::string> noBridges;
+      std::map<std::string, std::vector<std::string> >::const_iterator itBridges =
+          mapMultiArgs.find("-torbridge");
+      const std::vector<std::string>& bridges =
+          (itBridges == mapMultiArgs.end()) ? noBridges : itBridges->second;
       if (!bridges.empty()) {
           struct stat sb;
           std::string clientTransportPlugin;
