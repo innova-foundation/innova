@@ -876,15 +876,11 @@ fn first_spend_pays_lazy_generator_setup() {
     let address = Address::new(&mut rng);
 
     // Build both payloads before timing anything, so proving is not counted.
-    let shield = build(&mut rng, &Spec::shield(vec![make_note(&mut rng, &address, 0, 500)], 5));
-    let spend = build(
-        &mut rng,
-        &Spec::transfer(
-            vec![make_note(&mut rng, &address, 1, 1_000)],
-            vec![make_note(&mut rng, &address, 2, 990)],
-            10,
-        ),
-    );
+    let shield_outputs = vec![make_note(&mut rng, &address, 0, 500)];
+    let shield = build(&mut rng, &Spec::shield(shield_outputs, 5));
+    let inputs = vec![make_note(&mut rng, &address, 1, 1_000)];
+    let outputs = vec![make_note(&mut rng, &address, 2, 990)];
+    let spend = build(&mut rng, &Spec::transfer(inputs, outputs, 10));
 
     // Proving warmed the generators, so these are warm numbers; re-measure cold with the
     // replay tool in src/test/fuzz.
@@ -2176,29 +2172,33 @@ fn declared_tree_size_is_checked_by_the_caller_not_the_validator() {
     );
 }
 
-/// The authorization byte is range-checked but never verified.
-///
-/// Every value the envelope admits is accepted for a 2008 value transfer, and all four
-/// produce the same owner-authorized FCMP proof. Nothing downstream reads the field: it is
-/// absent from the effects frame the caller receives. So a payload may claim to be
-/// authorized by a hidden M-of-N committee while carrying an ordinary single-owner spend
-/// proof, and no layer contradicts it.
-///
-/// Unlike every neighbouring field -- an unknown operation, a nonzero finality object -- this
-/// one does not fail closed.
+/// The authorization byte is narrowed to owner on 2008; 2006 still admits the two M-of-N
+/// values. No verifier dispatches on it, so the envelope table is the enforcement.
 #[test]
-fn the_authorization_byte_is_range_checked_but_unverified() {
+fn the_authorization_byte_is_narrowed_to_owner_on_this_envelope() {
     let mut rng = ChaCha20Rng::from_seed([0xf3; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
     let outputs = vec![make_note(&mut rng, &address, 0, 990)];
 
     let mut accepted = Vec::new();
-    for authorization in 0_u8..4 {
+    for authorization in 0_u8..=4 {
         let mut spec = Spec::transfer(inputs.clone(), outputs.clone(), 10);
         spec.declared_authorization = authorization;
         let mut case_rng = ChaCha20Rng::from_seed([0xf4; 32]);
         let built = build(&mut case_rng, &spec);
+        // Control: the declared mode reached the byte the validator parses, so a rejection
+        // below is the field and not a payload that never carried the value.
+        let region = built
+            .regions
+            .iter()
+            .find(|region| region.name == "authorization")
+            .expect("authorization region is mapped");
+        assert_eq!(
+            built.request[built.payload_at + region.start],
+            authorization,
+            "the declared mode must reach the parsed byte: {authorization}"
+        );
         if validate(&built.request).is_ok() {
             accepted.push(authorization);
         }
@@ -2206,19 +2206,42 @@ fn the_authorization_byte_is_range_checked_but_unverified() {
     println!("authorization values accepted for a 2008 transfer: {accepted:?}");
     assert_eq!(
         accepted,
-        vec![0_u8, 1, 2, 3],
-        "all four authorization values are accepted with the same owner proof"
+        vec![crate::AUTH_OWNER],
+        "only owner authorization is accepted on 2008"
     );
 
-    // Out of range still fails closed, which is the whole of the field's enforcement.
-    let mut spec = Spec::transfer(inputs, outputs, 10);
-    spec.declared_authorization = 4;
-    let mut case_rng = ChaCha20Rng::from_seed([0xf4; 32]);
-    let built = build(&mut case_rng, &spec);
-    assert!(
-        validate(&built.request).is_err(),
-        "an authorization value outside the envelope must be refused"
-    );
+    // The envelope table says the same thing on its own, which is what makes the rejections
+    // above the field rather than an incidental proof failure.
+    for authorization in 0_u8..=4 {
+        assert_eq!(
+            crate::envelope_allows(
+                WIRE_VERSION,
+                NOTE_TRANSFER,
+                crate::FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7,
+            ),
+            authorization == crate::AUTH_OWNER,
+            "2008 admits owner alone: {authorization}"
+        );
+    }
+    for authorization in [
+        crate::AUTH_M_OF_N_PUBLIC_SIGNERS,
+        crate::AUTH_M_OF_N_HIDDEN_SIGNERS,
+    ] {
+        assert!(
+            crate::envelope_allows(
+                2006,
+                crate::NOTE_M_OF_N_MINT,
+                crate::FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7,
+            ),
+            "2006 still admits the M-of-N modes it means: {authorization}"
+        );
+    }
 }
 
 /// Only attestation operations are bound to a shape. The three value operations are
