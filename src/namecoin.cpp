@@ -1839,6 +1839,13 @@ Value name_new(const Array& params, bool fHelp)
     return ret.hex.GetHex();
 }
 
+// Allocation for name operations without an explicit destination. fAllowReuse is false,
+// so it never falls back to the wallet's default key (a shared holding address).
+bool GetNameDestinationKey(CPubKey& pubkeyOut)
+{
+    return pwalletMain->GetKeyFromPool(pubkeyOut, false);
+}
+
 NameTxReturn name_new(const vector<unsigned char> &vchName,
               const vector<unsigned char> &vchValue,
               const int nRentalDays, string strAddress)
@@ -1906,7 +1913,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
             scriptPubKey = GetScriptForDestination(address.Get());
         } else {
             CPubKey vchPubKey;
-            if(!pwalletMain->GetKeyFromPool(vchPubKey))
+            if(!GetNameDestinationKey(vchPubKey))
             {
                 ret.err_msg = "failed to get key from pool";
                 return ret;
@@ -2123,7 +2130,7 @@ NameTxReturn name_update(const vector<unsigned char> &vchName,
         else
         {
             CPubKey vchPubKey;
-            if(!pwalletMain->GetKeyFromPool(vchPubKey, true))
+            if(!GetNameDestinationKey(vchPubKey))
             {
                 ret.err_msg = "failed to get key from pool";
                 return ret;
@@ -2262,7 +2269,7 @@ NameTxReturn name_delete(const vector<unsigned char> &vchName)
 
     //form script and send
         CPubKey vchPubKey;
-        if(!pwalletMain->GetKeyFromPool(vchPubKey, true))
+        if(!GetNameDestinationKey(vchPubKey))
         {
             ret.err_msg = "failed to get key from pool";
             return ret;

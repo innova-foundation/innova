@@ -300,11 +300,11 @@ BOOST_AUTO_TEST_CASE(two_registrations_link_only_through_a_reused_destination)
                                            0x1d005105)),
                          vchShared));
 
-    // The registration path takes its destination from GetKeyFromPool with reuse
-    // refused (name_new), so two default registrations share nothing.
+    // Registration takes its destination from GetNameDestinationKey (key pool, reuse refused),
+    // so two default registrations share nothing. This calls name_new's own allocator.
     CPubKey pubkeyOne, pubkeyTwo;
-    BOOST_REQUIRE(pwalletMain->GetKeyFromPool(pubkeyOne, false));
-    BOOST_REQUIRE(pwalletMain->GetKeyFromPool(pubkeyTwo, false));
+    BOOST_REQUIRE(GetNameDestinationKey(pubkeyOne));
+    BOOST_REQUIRE(GetNameDestinationKey(pubkeyTwo));
     BOOST_REQUIRE(pubkeyOne.Raw() != pubkeyTwo.Raw());
 
     const uint160 hashOne = pubkeyOne.GetID();
@@ -323,17 +323,11 @@ BOOST_AUTO_TEST_CASE(two_registrations_link_only_through_a_reused_destination)
     BOOST_CHECK(!Contains(vchFreshOne, vchTwo));
     BOOST_CHECK(!Contains(vchFreshTwo, vchOne));
 
-    // name_update and name_delete ask the same allocator with reuse allowed,
-    // which would fall back to the wallet's single default key if the pool were
-    // ever empty. It never is on a wallet that can reach these paths at all:
-    // ReserveKeyFromKeyPool tops the pool up to at least one key before it reads
-    // it, and a locked wallet -- the one state where the top-up is skipped -- is
-    // refused by IsWalletLocked before either operation asks for a key. So an
-    // update rotates the holding key too, and the fallback is unreachable from a
-    // name operation rather than merely unlikely.
+    // name_update and name_delete use the same helper, so they rotate the key too; the wallet
+    // default key is unreachable from any name path.
     CPubKey rotateOne, rotateTwo;
-    BOOST_REQUIRE(pwalletMain->GetKeyFromPool(rotateOne, true));
-    BOOST_REQUIRE(pwalletMain->GetKeyFromPool(rotateTwo, true));
+    BOOST_REQUIRE(GetNameDestinationKey(rotateOne));
+    BOOST_REQUIRE(GetNameDestinationKey(rotateTwo));
     BOOST_CHECK(rotateOne.Raw() != rotateTwo.Raw());
     BOOST_CHECK(rotateOne.Raw() != pubkeyOne.Raw());
     BOOST_CHECK(rotateTwo.Raw() != pubkeyTwo.Raw());
