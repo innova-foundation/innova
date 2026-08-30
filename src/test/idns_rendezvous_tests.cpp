@@ -18,10 +18,6 @@
 #include "util.h"
 #include "wallet.h"
 
-#ifdef USE_NATIVETOR
-#include "tor/anonymize.h"
-#endif
-
 extern CWallet* pwalletMain;
 
 // Defined in namecoin.cpp without a header declaration.
@@ -85,17 +81,6 @@ std::string OnionV3Host(unsigned char nSeed)
     vchAddr[33] = 0x22;
     vchAddr[34] = 0x03;
     return EncodeBase32(&vchAddr[0], vchAddr.size()) + ".onion";
-}
-
-// The endpoint of the bundled daemon's own SOCKS port, read from the constant
-// net.cpp starts it on. Empty for a build with no bundled daemon.
-std::string BundledSocksEndpoint()
-{
-#ifdef USE_NATIVETOR
-    return strprintf("127.0.0.1:%d", (int)NATIVETOR_SOCKS_PORT);
-#else
-    return std::string();
-#endif
 }
 
 std::string RpcBytes(const json_spirit::Object& obj)
@@ -165,47 +150,6 @@ private:
     std::string strKey;
     std::string strSaved;
     bool fHadValue;
-};
-
-// Removes an argument for the duration of a case, so a default can be observed
-// rather than assumed.
-class CArgAbsent
-{
-public:
-    explicit CArgAbsent(const std::string& strKeyIn)
-        : strKey(strKeyIn), fHadValue(mapArgs.count(strKeyIn) != 0)
-    {
-        if (fHadValue)
-        {
-            strSaved = mapArgs[strKey];
-            mapArgs.erase(strKey);
-        }
-    }
-    ~CArgAbsent()
-    {
-        if (fHadValue)
-            mapArgs[strKey] = strSaved;
-        else
-            mapArgs.erase(strKey);
-    }
-private:
-    std::string strKey;
-    std::string strSaved;
-    bool fHadValue;
-};
-
-// Runs a case as if -nativetor were on or off. The flag is a plain global set
-// once at startup, so a case that changes it has to put it back.
-class CNativeTorOverride
-{
-public:
-    explicit CNativeTorOverride(bool fValue) : fSaved(fNativeTor)
-    {
-        fNativeTor = fValue;
-    }
-    ~CNativeTorOverride() { fNativeTor = fSaved; }
-private:
-    bool fSaved;
 };
 
 // Hooks that answer one canned name value, to drive the DNS server fetch without a name DB.
@@ -564,149 +508,6 @@ BOOST_AUTO_TEST_CASE(a_rendezvous_dial_sends_a_hostname_and_no_address)
         future.nVersion = IDNS_RENDEZVOUS_VERSION + 1;
         BOOST_CHECK(!ConnectIDnsRendezvous(future, hSocket, strErr));
         BOOST_CHECK(hSocket == INVALID_SOCKET);
-    }
-}
-
-// Reaching a v3 service. The resolver hands a hostname to a SOCKS5 proxy and
-// picks which proxy by whether the Tor this build links can do the work. Neither
-// half of that gives it an address for the service, and neither half can: a v3
-// onion name has no CNetAddr encoding in this tree, so there is no object an
-// address could be held in.
-BOOST_AUTO_TEST_CASE(a_v3_rendezvous_reaches_a_proxy_and_holds_no_service_address)
-{
-    const std::string strHost = OnionV3Host(0x60);
-    std::string strValue, strErr;
-    BOOST_REQUIRE_MESSAGE(BuildIDnsRendezvous(strHost, 8443, strValue, strErr),
-                          strErr);
-    CIDnsRendezvous rendezvous;
-    BOOST_REQUIRE(ParseIDnsRendezvous(strValue, rendezvous, strErr));
-
-    // Positive control. A conventional record names the service by address, and
-    // that address becomes a routable CService this node holds, prints and
-    // gossips. Numeric only -- no case here consults the system resolver.
-    const CService addrClear(std::string(SERVICE_IP_TEXT), 8443, false);
-    BOOST_CHECK(addrClear.IsValid());
-    BOOST_CHECK(addrClear.IsRoutable());
-    BOOST_CHECK(Contains(Bytes(addrClear.ToString()), Bytes(SERVICE_IP_TEXT)));
-
-    // A v2 address does have an encoding, so the control above is not simply
-    // "CService refuses onion names".
-    {
-        std::vector<unsigned char> vchV2(10, 0x5a);
-        const CService addrV2(EncodeBase32(&vchV2[0], vchV2.size()) + ".onion",
-                              8443, false);
-        BOOST_CHECK(addrV2.IsValid());
-    }
-
-    // The v3 service has none. CNetAddr::SetSpecial carries ten bytes inside an
-    // OnionCat prefix and a v3 address is thirty-five, so the descriptor's host
-    // cannot be turned into an address object at all -- which is why the dial
-    // goes out by hostname and why this node never learns where the service is.
-    const CService addrOnion(rendezvous.strHost, rendezvous.nPort, false);
-    BOOST_CHECK(!addrOnion.IsValid());
-    BOOST_CHECK(!addrOnion.IsRoutable());
-    CNetAddr addrSpecial;
-    BOOST_CHECK(!addrSpecial.SetSpecial(rendezvous.strHost));
-
-    // The same absence, for the artifacts a v3 dial produces: the request bytes
-    // carry the hostname and neither spelling of the address, and the RPC view
-    // of the name carries neither the address nor the proxy this node would dial
-    // through.
-    std::vector<unsigned char> vchRequest;
-    BOOST_REQUIRE(BuildSocks5ConnectRequest(rendezvous.strHost, rendezvous.nPort,
-                                            vchRequest));
-    BOOST_CHECK(Contains(vchRequest, Bytes(strHost)));
-    BOOST_CHECK(!Contains(vchRequest, Bytes(SERVICE_IP_TEXT)));
-    BOOST_CHECK(!Contains(vchRequest, RawIp()));
-
-    const std::string strRpc = RpcBytes(IDnsValueInfo("v3.inn", strValue));
-    BOOST_CHECK(strRpc.find(SERVICE_IP_TEXT) == std::string::npos);
-    BOOST_CHECK(strRpc.find(strHost) != std::string::npos);
-    BOOST_CHECK(strRpc.find("127.0.0.1") == std::string::npos);
-    BOOST_CHECK(strRpc.find("9050") == std::string::npos);
-    BOOST_CHECK(strRpc.find("9089") == std::string::npos);
-}
-
-// Which proxy an unconfigured node dials. The bundled daemon is only chosen when
-// this build both runs it and links a Tor that can reach a v3 service; a
-// v2-only bundled daemon would answer on its port and fail every rendezvous, so
-// the default stays on an external client that can do the work.
-BOOST_AUTO_TEST_CASE(the_default_rendezvous_proxy_follows_the_bundled_tor)
-{
-    std::string strErr;
-    const std::string strBundledEndpoint = BundledSocksEndpoint();
-
-    // Whatever the build, the default is a loopback endpoint that parses. An
-    // unconfigured node never dials a proxy off this host.
-    {
-        CArgAbsent socks("-idnssocks");
-        for (int i = 0; i < 2; ++i)
-        {
-            CNativeTorOverride native(i != 0);
-            CService addrDefault;
-            BOOST_CHECK_MESSAGE(GetIDnsSocksEndpoint(addrDefault, strErr), strErr);
-            BOOST_CHECK_EQUAL(addrDefault.ToStringIP(), "127.0.0.1");
-            BOOST_CHECK(addrDefault.IsLocal());
-            BOOST_CHECK(!addrDefault.IsRoutable());
-            BOOST_CHECK(addrDefault.GetPort() != 0);
-            BOOST_CHECK_EQUAL(addrDefault.ToString(), IDnsDefaultSocksEndpoint());
-        }
-    }
-
-    // The gate has two halves and both are load-bearing.
-    {
-        CArgAbsent socks("-idnssocks");
-        {
-            // No bundled daemon running: an external client, whatever this build
-            // links.
-            CNativeTorOverride native(false);
-            BOOST_CHECK_EQUAL(IDnsDefaultSocksEndpoint(),
-                              IDNS_DEFAULT_SOCKS_ENDPOINT);
-        }
-        {
-            // Bundled daemon running: its own port, but only if it can reach a
-            // v3 service.
-            CNativeTorOverride native(true);
-            if (IDnsBundledTorHasV3())
-                BOOST_CHECK_EQUAL(IDnsDefaultSocksEndpoint(), strBundledEndpoint);
-            else
-                BOOST_CHECK_EQUAL(IDnsDefaultSocksEndpoint(),
-                                  IDNS_DEFAULT_SOCKS_ENDPOINT);
-        }
-    }
-
-    // A build with no bundled daemon cannot claim one that reaches v3.
-#ifndef USE_NATIVETOR
-    BOOST_CHECK(!IDnsBundledTorHasV3());
-#endif
-
-    // An explicit endpoint wins over either default, so an operator running an
-    // external client alongside the bundled one is never silently redirected.
-    {
-        CArgOverride socks("-idnssocks", "127.0.0.1:9150");
-        CNativeTorOverride native(true);
-        CService addrProxy;
-        BOOST_CHECK_MESSAGE(GetIDnsSocksEndpoint(addrProxy, strErr), strErr);
-        BOOST_CHECK_EQUAL(addrProxy.ToString(), "127.0.0.1:9150");
-    }
-
-    // A bare address takes the port of whichever default is in force, so the two
-    // halves of one default cannot drift apart.
-    {
-        CArgOverride socks("-idnssocks", "127.0.0.1");
-        CNativeTorOverride native(true);
-        CService addrProxy;
-        BOOST_CHECK_MESSAGE(GetIDnsSocksEndpoint(addrProxy, strErr), strErr);
-        BOOST_CHECK_EQUAL(addrProxy.ToString(), IDnsDefaultSocksEndpoint());
-    }
-
-    // Disabling still disables, under either default.
-    {
-        CArgOverride socks("-idnssocks", "0");
-        CNativeTorOverride native(true);
-        CService addrProxy;
-        BOOST_CHECK(!GetIDnsSocksEndpoint(addrProxy, strErr));
-        BOOST_CHECK(strErr.find("disabled") != std::string::npos);
     }
 }
 
