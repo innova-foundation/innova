@@ -124,17 +124,26 @@ jobs:
           path: ${{ runner.temp }}/release-evidence
           if-no-files-found: warn
 
-      - name: Build Qt wallet
+      # The release wallet, through the producer, so the Qt6 leg leaves a document
+      # behind. USE_NATIVETOR=1, unlike the build this replaced: the bundled Tor
+      # is what ships, and no other leg builds it against Qt6. The producer works
+      # on a copy of the tree, so the patched .pro and the generated makefiles
+      # stay out of the checkout the later steps measure.
+      - name: Qt6 release evidence (qt6_release_sha256)
         if: matrix.qt == 6
-        run: |
-          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-          qmake_bin=/usr/lib/qt6/bin/qmake
-          "$qmake_bin" -o Makefile.qt-tests innova-qt-test.pro
-          make -f Makefile.qt-tests -j$(nproc)
-          ./test_innova_qt
-          "$qmake_bin" -o Makefile.qt-app \
-            USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- STRICT_WARNINGS=1 innova-qt.pro
-          make -f Makefile.qt-app -j$(nproc)
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+          V5_EVIDENCE_WORK: ${{ runner.temp }}/release-evidence-work
+          V5_QT6_QMAKE: /usr/lib/qt6/bin/qmake
+        run: contrib/test/produce_qt6_release_evidence.sh
+
+      - name: Upload verification evidence
+        if: matrix.qt == 6 && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-linux-qt6
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: warn
 
       # Last, not first: it reports every verification document it cannot find,
       # and on this leg the producers above are what put them there.
