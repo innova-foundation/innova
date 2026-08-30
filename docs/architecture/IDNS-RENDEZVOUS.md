@@ -202,13 +202,19 @@ single default key.
 
 1. **The bundled Tor cannot rendezvous.** Upgrading vendored Tor from 0.3.0.9 to
    a release with a v3 client (0.4.8.x) or replacing it with arti is a separate,
-   scoped item. Seven vendored-Tor defects had to be fixed just to make 0.3.0.9
-   compile on both platforms, which prices that work honestly.
+   scoped item: see `docs/architecture/TOR-VENDORED-UPGRADE-SCOPE.md`, which
+   prices it against the seven defects four commits had to fix just to make
+   0.3.0.9 compile on both platforms.
 2. **No v3 checksum validation**, for want of SHA3-256 (section 2).
 3. **No live rendezvous has been demonstrated** from this tree. The codec, the
    classification, the DNS refusal and the request encoding are covered by unit
-   tests; an end-to-end connect through a real tor to a real onion service has
-   not been run here.
+   tests, and the registration path was driven end to end on a private regtest
+   chain: `name_rendezvous_encode` -> `name_new` -> `name_show` returns the
+   descriptor byte for byte and `name_rendezvous` classifies it, while the
+   service address appears in none of `name_show`, `name_rendezvous`,
+   `name_list`, `name_history` or `name_filter` for that name and does appear for
+   an A-record control. What has *not* been run here is the last hop: an actual
+   SOCKS5 connect through a real tor to a real onion service.
 4. **No GUI surface.** `name_rendezvous_encode` builds a descriptor and
    `name_rendezvous <name> true` tests one, but neither is exposed in the Qt
    client.
