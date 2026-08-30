@@ -1,0 +1,118 @@
+Vendored Tor
+============
+
+Upstream version : tor-0.4.8.25
+Source tarball   : https://dist.torproject.org/tor-0.4.8.25.tar.gz
+Tarball size     : 10863534 bytes
+Tarball sha256   : 371cd22178fa4b35e64b03933403890795ce3e304c5850a5b59adcc68820a799
+
+The sha256 above matches the published tor-0.4.8.25.tar.gz.sha256sum on
+dist.torproject.org, verified independently on both build hosts before use.
+
+Licence: 3-clause BSD. Upstream text is kept verbatim in src/tor/LICENSE.
+
+Layout
+------
+Upstream src/<x> is vendored at src/tor/<x>; the two generated top-level files
+sit at src/tor/. Upstream's own path-qualified includes ("core/or/or.h") are
+used unchanged, so no source file is edited and upstream basenames cannot
+collide with Innova's own headers.
+
+Compile surface
+---------------
+  -DHAVE_CONFIG_H -DSHARE_DATADIR=... -DLOCALSTATEDIR=... -DBINDIR=...
+  -Isrc/tor -Isrc/tor/ext -Isrc/tor/ext/trunnel -Isrc/tor/trunnel
+
+SHARE_DATADIR/LOCALSTATEDIR/BINDIR must be defined but are inert: the data
+directory and hidden-service paths are passed explicitly on the tor_main argv.
+
+Link deps are libz, libevent, libssl, libcrypto -- all already innovad
+dependencies. Vendoring tor adds no new external dependency.
+
+Generated files
+---------------
+Only two files here are configure output rather than shipped source:
+
+  orconfig_linux.h  - upstream configure output, Linux x86-64, OpenSSL 3.0.13
+  orconfig_apple.h  - upstream configure output, macOS arm64, Homebrew OpenSSL 3
+  micro-revision.i  - git-revision stamp; upstream emits "" for a tarball build
+
+orconfig.h is an Innova-authored dispatch header selecting between the two.
+BUILDDIR/SRCDIR/CONFIG_FLAGS in the generated headers were rewritten to
+path-free values: they are referenced only by upstream's test suite, which is
+not vendored.
+
+Regenerating orconfig_<platform>.h
+---------------------------------
+Extract the verified tarball and run, once per platform:
+
+  ./configure --disable-module-relay --disable-module-dirauth \
+              --disable-module-pow --disable-unittests --disable-asciidoc \
+              --disable-manpage --disable-html-manual --disable-system-torrc \
+              --disable-systemd --disable-seccomp --disable-libscrypt \
+              --disable-lzma --disable-zstd
+
+then copy the resulting orconfig.h and blank BUILDDIR/SRCDIR/CONFIG_FLAGS.
+No autotools run is needed at build time, ever.
+
+Subset and exclusions
+---------------------
+This is a client-only vendoring: enough tor to perform a v3 onion rendezvous
+and to run an onion service for inbound P2P, and nothing else.
+
+The compiled set is 370 objects, derived empirically rather than by hand: the
+upstream build links the tor binary as tor_main.o plus libtor.a, so the object
+set is exactly the members of libtor.a. src/app/main/tor_main.c is excluded
+because it defines main(), which would collide with innovad. The on-disk set is
+the exact header/source closure of those objects, taken from the build's own
+.deps/*.Po files on both platforms and unioned.
+
+Excluded, with reasons:
+
+  relay module        --disable-module-relay; Innova is not a tor relay.
+                      Compiles as small stubs, which are included.
+  dirauth module      --disable-module-dirauth; Innova is not a directory
+                      authority.
+  pow module          --disable-module-pow. This is the only reason the GPL
+                      src/ext/equix and src/ext/hashx trees are not vendored,
+                      which keeps this MIT tree free of GPL code. Cost: a
+                      client cannot answer a proof-of-work challenge from an
+                      onion service under DoS pressure, so such a fetch
+                      degrades rather than succeeding.
+  lzma, zstd          Directory-compression backends. zlib alone is sufficient
+                      and avoids two external dependencies.
+  libscrypt, seccomp,
+  systemd             Not used by an embedded client.
+  unit tests, tools   src/test and src/tools are not vendored.
+  NSS backend         OpenSSL is the TLS backend; the NSS sources are not
+                      vendored.
+
+Windows: the pre-existing orconfig_win32.h / orconfig_win64.h were generated
+against tor-0.3.0.9 and are not valid for 0.4.8.25. Regenerating them needs a
+mingw configure run, which was out of scope for this upgrade, so orconfig.h
+fails loudly on Windows rather than building something incorrect.
+
+Innova-authored files in this directory
+---------------------------------------
+  anonymize.cpp / anonymize.h   data-directory helpers used by init.cpp
+  orconfig.h                    the platform dispatch header above
+  VERSION                       this file
+
+Everything else is upstream tor, unmodified.
+
+Files retired in this upgrade
+-----------------------------
+  torcompat.c  A copy of upstream compat.c whose only divergence from upstream
+               was five include lines (compat.h->torcompat.h, util.h->torutil.h,
+               <sys/sysctl.h>-><linux/sysctl.h>, plus one added crypto.h). That
+               rename scheme existed because the old flat vendoring put tor
+               basenames next to Innova's own util.h/compat.h. 0.4.8 uses
+               path-qualified includes, so the collision it worked around no
+               longer exists and the file carried no Innova behaviour.
+
+  blinding.c   Byte-identical to tor-0.3.0.9's src/ext/ed25519/ref10/blinding.c,
+               i.e. stale vendored upstream rather than an Innova file. It is
+               replaced by the 0.4.8.25 version, which is required: upstream
+               moved the sha512 derivation of the blinding parameter out to the
+               caller, so pairing the 0.3.0.9 file with current hs_common.c
+               would hash the parameter twice and derive wrong blinded keys.
