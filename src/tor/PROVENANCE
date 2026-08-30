@@ -120,6 +120,23 @@ against tor-0.3.0.9 and are not valid for 0.4.8.25. Regenerating them needs a
 mingw configure run, which was out of scope for this upgrade, so orconfig.h
 fails loudly on Windows rather than building something incorrect.
 
+Known gaps
+----------
+A v3 onion address is 56 base32 characters and does not fit CNetAddr's OnionCat
+encoding, which carries 10 bytes and is v2-only. init.cpp therefore cannot
+AddLocal the address the bundled tor mints, and logs a warning instead. Onion
+addresses are not gossiped to peers until the address type is widened
+(addrv2-style). IDNS is unaffected: it dials by hostname over SOCKS5 and never
+builds a CNetAddr.
+
+With --disable-module-pow a client cannot answer a proof-of-work challenge from
+an onion service under DoS pressure, so such a fetch degrades rather than
+succeeding. This is forced: the PoW implementation is the GPL equix/hashx code.
+
+anonymize_tor_data_directory() and anonymize_service_directory() are derived
+from GetDefaultDataDir(), not GetDataDir(), so -datadir does not move the tor
+or onion directories. That matches the behaviour of the copy this replaces.
+
 Innova-authored files in this directory
 ---------------------------------------
   anonymize.cpp / anonymize.h   data-directory helpers used by init.cpp
