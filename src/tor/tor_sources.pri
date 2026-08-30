@@ -69,7 +69,6 @@ SOURCES += \
 	src/tor/src/core/or/versions.c \
 	src/tor/src/core/proto/proto_cell.c \
 	src/tor/src/core/proto/proto_control0.c \
-	src/tor/src/core/proto/proto_ext_or.c \
 	src/tor/src/core/proto/proto_haproxy.c \
 	src/tor/src/core/proto/proto_http.c \
 	src/tor/src/core/proto/proto_socks.c \

@@ -69,7 +69,6 @@ TOR_OBJS= \
 	obj/tor/src/core/or/versions.o \
 	obj/tor/src/core/proto/proto_cell.o \
 	obj/tor/src/core/proto/proto_control0.o \
-	obj/tor/src/core/proto/proto_ext_or.o \
 	obj/tor/src/core/proto/proto_haproxy.o \
 	obj/tor/src/core/proto/proto_http.o \
 	obj/tor/src/core/proto/proto_socks.o \
