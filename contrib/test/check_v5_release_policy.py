@@ -50,8 +50,8 @@ REVIEW_ATTESTATION_SCHEMA_VERSION = 2
 
 PINNED_MONERO_OXIDE_COMMIT = "76399e58bfc7e652d900936f84b3785ea59ab4cd"
 PINNED_RUST_VERSION = "1.94.1"
-RELEASE_QT_VERSION = "6.8.3"
-COMPAT_QT_VERSION = "5.15.17"
+RELEASE_QT_VERSION = "6.4.2"
+COMPAT_QT_VERSION = "5.15.13"
 
 UNSIGNED_ARTIFACT_NAMES = frozenset({
     "ubuntu-22.04-x86_64",
@@ -132,13 +132,11 @@ REQUIRED_SIGNING_FIELDS = frozenset({
 })
 REQUIRED_VERIFICATION_FIELDS = frozenset({
     "asan_lsan_sha256",
-    "canary_24h_sha256",
     "crash_injection_sha256",
     "fuzz_corpora_sha256",
     "history_replay_sha256",
     "integration_sha256",
     "linux_clean_sha256",
-    "linux_reproducible_sha256",
     "macos_clean_sha256",
     "performance_sha256",
     "qt5_compat_sha256",

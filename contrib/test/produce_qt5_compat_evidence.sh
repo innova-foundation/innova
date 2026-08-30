@@ -37,6 +37,14 @@ evidence_run "configure the wallet" \
     "$QMAKE -o Makefile.qt-app USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- STRICT_WARNINGS=1 innova-qt.pro"
 evidence_run "build the wallet" "make -f Makefile.qt-app -j$JOBS"
 
+# The policy compares the manifest's declared Qt version, not the one this
+# build actually used. Refuse to record evidence for a different toolchain,
+# so a manifest cannot claim a version it was not built against.
+PINNED_QT=$(sed -n 's/^COMPAT_QT_VERSION = "\(.*\)"/\1/p' \
+    "$(dirname "$0")/check_v5_release_policy.py")
+evidence_run "the toolchain matches the pinned Qt version" \
+    "test \"$QT_VERSION\" = \"$PINNED_QT\""
+
 evidence_observe qt_version "$QT_VERSION"
 evidence_observe qmake "$QMAKE"
 evidence_observe compiler_warnings "$(evidence_log_count 'warning:')"

@@ -61,6 +61,13 @@ evidence_run "the wallet carries the bundled Tor" \
 evidence_run "build the widget tree and resolve every connection" \
     "contrib/test/qt_connect_probe.sh ./Innova \"\$PWD/qt-connect-probe\" \"\$PWD/qt-connect-probe.stderr.log\""
 
+# The policy checks the manifest's declared Qt version, so refuse evidence from
+# any other toolchain version.
+PINNED_QT=$(sed -n 's/^RELEASE_QT_VERSION = "\(.*\)"/\1/p' \
+    "$(dirname "$0")/check_v5_release_policy.py")
+evidence_run "the toolchain matches the pinned Qt version" \
+    "test \"$QT_VERSION\" = \"$PINNED_QT\""
+
 evidence_observe qt_version "$QT_VERSION"
 evidence_observe qmake "$QMAKE"
 evidence_observe native_tor "1"
