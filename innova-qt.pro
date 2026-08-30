@@ -190,6 +190,11 @@ contains(USE_NATIVETOR, -) {
     QMAKE_CFLAGS += -DTRUNNEL_LOCAL_H \
         -DED25519_CUSTOMRANDOM -DED25519_CUSTOMHASH -DED25519_SUFFIX=_donna
 
+    # tor is GNU C: tor_free() and friends use typeof, which strict -std=c99
+    # rejects. The linux block above already relaxes this; the vendored tor needs
+    # it on every platform, and a later -std wins on the command line.
+    QMAKE_CFLAGS += -std=gnu99
+
     # Upstream tor is warning-clean under its own flag set, not under ours.
     QMAKE_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers \
         -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-but-set-variable
