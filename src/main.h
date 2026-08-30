@@ -611,14 +611,21 @@ inline int GetForkHeightIV5FeeNote()
 // Transparent votes stay permanently valid on both sides of this height: they are the
 // liveness floor a stalled committee falls back to.
 //
-// The pool must exist before a note can be voted, so this is scheduled after Boundary B
-// and stays unset on public networks until the FCMP++ candidate is reviewed.
+// The pool must exist before a note can be voted, so this is scheduled after
+// Boundary B: mainnet 8,225,000, which is 4,700 blocks past it.
 extern int nRegtestIV5NoteVoteHeight;
 
 inline int GetForkHeightIV5NoteVote()
 {
     extern bool fRegTest;
-    return fRegTest ? nRegtestIV5NoteVoteHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
+    extern bool fTestNet;
+    if (fRegTest)
+        return nRegtestIV5NoteVoteHeight;
+    // 5,000 blocks past Boundary B, so the pool exists and has been transacted
+    // against before a note carries a vote.
+    if (fTestNet)
+        return 1700;
+    return ShiftMainnetV5Activation(7955000);
 }
 #define FORK_HEIGHT_IV5_NOTE_VOTE (GetForkHeightIV5NoteVote())
 

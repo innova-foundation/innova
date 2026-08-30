@@ -118,13 +118,14 @@ BOOST_AUTO_TEST_CASE(private_cert_paths_cannot_predate_their_committee)
     BOOST_CHECK_EQUAL(FORK_HEIGHT_TALLY_GOVERNANCE, FORK_HEIGHT_DAG);
 
     // The note tally -- the live private path, and the one whose authorization
-    // IS its committee signer set -- is not scheduled on mainnet, so the
-    // day-one path is transparent-only by construction.
-    BOOST_CHECK(!IsIV5NoteVoteConfigured());
+    // IS its committee signer set -- is scheduled after Boundary B, so the
+    // day-one path is still transparent-only.
+    BOOST_CHECK(IsIV5NoteVoteConfigured());
+    BOOST_CHECK(FORK_HEIGHT_IV5_NOTE_VOTE > FORK_HEIGHT_BOUNDARY_B);
     BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(FORK_HEIGHT_DAG));
 
-    // With the note fork unset the transparent minimum-weight floor is also
-    // inactive, so day-one voters are not gated on holding 100 INN.
+    // The floor is a plain constant rather than a fork-gated one, so it reads
+    // the same on both sides of the note height.
     BOOST_CHECK_EQUAL(FINALITY_MIN_VOTE_WEIGHT, 100 * COIN);
 }
 
