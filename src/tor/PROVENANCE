@@ -38,7 +38,7 @@ dependencies. Vendoring tor adds no new external dependency.
 
 Generated files
 ---------------
-Only two files here are configure output rather than shipped source:
+Only these are build output rather than shipped source:
 
   orconfig_linux.h  - upstream configure output, Linux x86-64, OpenSSL 3.0.13
   orconfig_apple.h  - upstream configure output, macOS arm64, Homebrew OpenSSL 3
