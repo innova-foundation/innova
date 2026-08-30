@@ -48,6 +48,11 @@ LIBS += \
 ifndef USE_NATIVETOR
   override USE_NATIVETOR = -
 endif
+
+ifneq ($(USE_NATIVETOR),-)
+  $(error This makefile is not wired for the vendored Tor source tree; build with makefile.unix for a Tor-enabled daemon)
+endif
+
 ifneq (${USE_NATIVETOR}, -)
   DEFS += $(addprefix -I,$(CURDIR)/tor) -DUSE_NATIVETOR=$(USE_NATIVETOR)
 endif
@@ -174,7 +179,6 @@ OBJS= \
     obj/dns.o \
     obj/dnsserv.o \
     obj/ed25519_cert.o \
-    obj/ed25519_tor.o \
     obj/entrynodes.o \
     obj/ext_orport.o \
     obj/fe_copy.o \
@@ -226,7 +230,6 @@ OBJS= \
     obj/keccak-tiny-unrolled.o \
     obj/link_handshake.o \
     obj/log.o \
-    obj/tormain.o \
     obj/memarea.o \
     obj/microdesc.o \
     obj/networkstatus.o \
@@ -267,8 +270,6 @@ OBJS= \
     obj/sign.o \
     obj/statefile.o \
     obj/status.o \
-    obj/torcert.o \
-    obj/torcompat.o \
     obj/tor_main.o \
     obj/torgzip.o \
     obj/tortls.o \
