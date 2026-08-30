@@ -876,15 +876,11 @@ fn first_spend_pays_lazy_generator_setup() {
     let address = Address::new(&mut rng);
 
     // Build both payloads before timing anything, so proving is not counted.
-    let shield = build(&mut rng, &Spec::shield(vec![make_note(&mut rng, &address, 0, 500)], 5));
-    let spend = build(
-        &mut rng,
-        &Spec::transfer(
-            vec![make_note(&mut rng, &address, 1, 1_000)],
-            vec![make_note(&mut rng, &address, 2, 990)],
-            10,
-        ),
-    );
+    let shield_outputs = vec![make_note(&mut rng, &address, 0, 500)];
+    let shield = build(&mut rng, &Spec::shield(shield_outputs, 5));
+    let inputs = vec![make_note(&mut rng, &address, 1, 1_000)];
+    let outputs = vec![make_note(&mut rng, &address, 2, 990)];
+    let spend = build(&mut rng, &Spec::transfer(inputs, outputs, 10));
 
     // Proving warmed the generators, so these are warm numbers; re-measure cold with the
     // replay tool in src/test/fuzz.
