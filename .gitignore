@@ -50,9 +50,9 @@ __pycache__/
 *.pyc
 # local testnet metrics / scratch
 testnet_metrics/
-BUGSMASHERS.md
-# transient per-node patch scripts
-patch_node1*.py
+# local scratch and working notes
+*.local.md
+scratch/
 
 # Private fleet inventories may contain operational host metadata. A future
 # reviewed example must use the explicit non-private filename below.
@@ -73,4 +73,5 @@ datasets/
 src/privacy_vnext/rust/vendor/
 src/privacy_vnext/rust/target/
 src/privacy_vnext/rust/upstream/target/
+
 
