@@ -227,7 +227,6 @@ Nine of those fields are produced here, one producer each:
 | `ubsan_sha256` | `produce_ubsan_evidence.sh` | Linux |
 | `linux_clean_sha256` | `produce_linux_clean_evidence.sh` | Linux |
 | `macos_clean_sha256` | `produce_macos_clean_evidence.sh` | macOS |
-| `qt5_compat_sha256` | `produce_qt5_compat_evidence.sh` | any, Qt5 qmake |
 | `qt6_release_sha256` | `produce_qt6_release_evidence.sh` | Linux, Qt6 qmake |
 | `fuzz_corpora_sha256` | `produce_fuzz_corpora_evidence.sh` | Linux, clang |
 | `integration_sha256` | `produce_integration_evidence.sh` | any, built `innovad` |

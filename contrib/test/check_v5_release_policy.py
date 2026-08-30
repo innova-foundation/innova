@@ -51,7 +51,6 @@ REVIEW_ATTESTATION_SCHEMA_VERSION = 2
 PINNED_MONERO_OXIDE_COMMIT = "76399e58bfc7e652d900936f84b3785ea59ab4cd"
 PINNED_RUST_VERSION = "1.94.1"
 RELEASE_QT_VERSION = "6.4.2"
-COMPAT_QT_VERSION = "5.15.13"
 
 UNSIGNED_ARTIFACT_NAMES = frozenset({
     "ubuntu-22.04-x86_64",
@@ -111,7 +110,7 @@ REQUIRED_PRIVACY_VNEXT_FIELDS = frozenset({
     "upstream_gbp_risk_disclosed",
     "vendored_source_sha256",
 })
-REQUIRED_QT_FIELDS = frozenset({"compatibility_version", "release_version"})
+REQUIRED_QT_FIELDS = frozenset({"release_version"})
 REQUIRED_MAINNET_FIELDS = frozenset({
     "activation_shift",
     "boundary_b_slot",
@@ -139,7 +138,6 @@ REQUIRED_VERIFICATION_FIELDS = frozenset({
     "linux_clean_sha256",
     "macos_clean_sha256",
     "performance_sha256",
-    "qt5_compat_sha256",
     "qt6_release_sha256",
     "rust_audit_sha256",
     "ubsan_sha256",
@@ -557,9 +555,9 @@ def validate_release_metadata(container: Mapping[str, Any], field_prefix: str) -
     qt = container.get("qt")
     if not isinstance(qt, dict) or set(qt) != REQUIRED_QT_FIELDS:
         raise PolicyError("%s.qt fields do not match schema" % field_prefix)
-    if qt.get("release_version") != RELEASE_QT_VERSION or qt.get("compatibility_version") != COMPAT_QT_VERSION:
-        raise PolicyError("%s Qt versions must be release=%s compatibility=%s" %
-                          (field_prefix, RELEASE_QT_VERSION, COMPAT_QT_VERSION))
+    if qt.get("release_version") != RELEASE_QT_VERSION:
+        raise PolicyError("%s Qt version must be release=%s" %
+                          (field_prefix, RELEASE_QT_VERSION))
 
     mainnet = container.get("mainnet")
     if not isinstance(mainnet, dict) or set(mainnet) != REQUIRED_MAINNET_FIELDS:
@@ -1646,7 +1644,6 @@ def selftest() -> int:
             },
             "qt": {
                 "release_version": RELEASE_QT_VERSION,
-                "compatibility_version": COMPAT_QT_VERSION,
             },
             "mainnet": {
                 "trusted_tip_height": 7_700_000,

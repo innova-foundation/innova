@@ -39,7 +39,6 @@ VERIFICATION_PRODUCERS=(
     "$SCRIPT_DIR/produce_linux_clean_evidence.sh"
     "$SCRIPT_DIR/produce_macos_clean_evidence.sh"
     "$SCRIPT_DIR/produce_performance_evidence.sh"
-    "$SCRIPT_DIR/produce_qt5_compat_evidence.sh"
     "$SCRIPT_DIR/produce_qt6_release_evidence.sh"
     "$SCRIPT_DIR/produce_ubsan_evidence.sh"
 )

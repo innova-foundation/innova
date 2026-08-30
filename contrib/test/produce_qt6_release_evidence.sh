@@ -1,16 +1,6 @@
 #!/bin/bash
-# Produces qt6_release_sha256: the release wallet configures, compiles, links and
-# builds its widget tree against Qt6, with the bundled Tor enabled.
-#
-# It differs from produce_qt5_compat_evidence.sh in three ways that matter:
-#   - it rejects a qmake that answers Qt5, so a document titled qt6 cannot be
-#     produced by the compatibility toolchain;
-#   - it builds USE_NATIVETOR=1, the configuration that ships and the one every
-#     CI Qt6 leg skips;
-#   - it checks behaviour, not just exit status. A signal Qt6 removed still
-#     compiles and links through SIGNAL() and connectSlotsByName, so the linked
-#     binary is run under the offscreen platform and any connection Qt could not
-#     resolve fails the run.
+# Produces qt6_release_sha256: a Qt6 USE_NATIVETOR=1 release build, rejecting a Qt5 qmake,
+# run offscreen so an unresolved SIGNAL()/connectSlotsByName connection fails the run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
