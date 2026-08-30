@@ -213,6 +213,7 @@ OBJS= \
     obj/bloom.o \
     obj/state.o \
     obj/idns.o \
+    obj/idnsdescriptor.o \
     obj/namecoin.o \
     obj/utiltime.o \
     obj/stun.o \
@@ -293,6 +294,7 @@ TEST_OBJS= \
     obj/test/name_index_recovery_tests.o \
     obj/test/name_rental_tests.o \
     obj/test/idns_privacy_tests.o \
+    obj/test/idns_rendezvous_tests.o \
     obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
@@ -338,7 +340,7 @@ FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-po
 FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
 FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
 
-.PHONY: all innova-build audit-test-dependencies check-build-source-parity fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-cn-selection check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-privacy-vnext-mask-pinning check-privacy-vnext-change-rotation check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input check-nullstake-reclaim-gate check-reorg-finality-anchor check-idag-connect-rule check-iv5-privacy-coverage check-nullstake-generation-gate check-drift-fork-rule check-settlement-headroom-clamp check-block-inv-response check-block-spacing-floor check-idns-privacy check-collateralnode-privacy
+.PHONY: all innova-build audit-test-dependencies check-build-source-parity fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-cn-selection check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-privacy-vnext-mask-pinning check-privacy-vnext-change-rotation check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input check-nullstake-reclaim-gate check-reorg-finality-anchor check-idag-connect-rule check-iv5-privacy-coverage check-nullstake-generation-gate check-drift-fork-rule check-settlement-headroom-clamp check-block-inv-response check-block-spacing-floor check-idns-privacy check-idns-rendezvous check-collateralnode-privacy
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -516,6 +518,9 @@ check-name-rental: test_innova
 check-idns-privacy: test_innova
 	./test_innova --run_test=idns_privacy_tests
 
+check-idns-rendezvous: test_innova
+	./test_innova --run_test=idns_rendezvous_tests
+
 check-collateralnode-privacy: test_innova
 	./test_innova --run_test=collateralnode_privacy_tests
 
@@ -548,7 +553,7 @@ check-block-inv-response: test_innova
 check-block-spacing-floor: test_innova
 	./test_innova --run_test=block_spacing_floor_tests
 
-release-check: audit-test-dependencies check-build-source-parity innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-cn-selection check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-privacy-vnext-mask-pinning check-privacy-vnext-change-rotation check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input check-nullstake-reclaim-gate check-reorg-finality-anchor check-idag-connect-rule check-iv5-privacy-coverage check-nullstake-generation-gate check-drift-fork-rule check-settlement-headroom-clamp check-block-inv-response check-block-spacing-floor check-idns-privacy check-collateralnode-privacy check-dagknight-anchor-cache check-nullstake-finality-only check-retarget
+release-check: audit-test-dependencies check-build-source-parity innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-dag-parent-commitment check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-cn-payment-verdict check-coldstake-cn-payee check-cn-pow-payment check-cn-selection check-blockindex-nsize check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-privacy-vnext-mask-pinning check-privacy-vnext-change-rotation check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness check-cn-rescan check-finality-vote-lane check-idag-rule-coverage check-dag-index-extractor check-nullifier-binding-consensus check-shielded-pool-reorg check-shielded-coinstake-input check-nullstake-reclaim-gate check-reorg-finality-anchor check-idag-connect-rule check-iv5-privacy-coverage check-nullstake-generation-gate check-drift-fork-rule check-settlement-headroom-clamp check-block-inv-response check-block-spacing-floor check-idns-privacy check-idns-rendezvous check-collateralnode-privacy check-dagknight-anchor-cache check-nullstake-finality-only check-retarget
 
 #
 # LevelDB support

@@ -76,6 +76,7 @@ HEADERS += build/build.h \
            src/hashblock.h \
            src/hooks.h \
            src/idns.h \
+           src/idnsdescriptor.h \
            src/init.h \
            src/innova_spinner_frames.h \
            src/innovarpc.h \
@@ -591,6 +592,7 @@ SOURCES += qrc_bitcoin.cpp \
            src/finality_note.cpp \
            src/hash.cpp \
            src/idns.cpp \
+           src/idnsdescriptor.cpp \
            src/init.cpp \
            src/innovarpc.cpp \
            src/ipa.cpp \

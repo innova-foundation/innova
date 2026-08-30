@@ -461,6 +461,8 @@ static const CRPCCommand vRPCCommands[] =
     { "name_history",           &name_history,           false,  false },
     { "name_filter",            &name_filter,            false,  false },
     { "name_show",              &name_show,              false,  false },
+    { "name_rendezvous",        &name_rendezvous,        false,  false },
+    { "name_rendezvous_encode", &name_rendezvous_encode, false,  false },
     { "name_debug",             &name_debug,             false,  false },
     { "name_count",             &name_count,             false,  false },
 
@@ -1746,6 +1748,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "name_filter"            && n > 2) ConvertTo<boost::int64_t>(params[2]);
     if (strMethod == "name_filter"            && n > 3) ConvertTo<boost::int64_t>(params[3]);
     if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "name_rendezvous"        && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "name_rendezvous_encode" && n > 1) ConvertTo<boost::int64_t>(params[1]);
 
     return params;
 }

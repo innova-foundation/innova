@@ -38,6 +38,7 @@
 #include "namecoin.h"
 #include "util.h"
 #include "idns.h"
+#include "idnsdescriptor.h"
 #include "hooks.h"
 
 /*---------------------------------------------------*/
@@ -745,8 +746,10 @@ int IDns::Search(uint8_t *key) {
   if(m_verbose > 1)
     printf("IDns::Search(%s)\n", key);
 
+  // GetIDnsRecordValue refuses the rendezvous descriptor family: a descriptor
+  // names an onion service, and plain DNS has no address to answer with.
   string value;
-  if (!hooks->getNameValue(string("dns:") + (const char *)key, value))
+  if (!GetIDnsRecordValue(string("dns:") + (const char *)key, value))
     return 0;
 
   snprintf(m_value, VAL_SIZE, "%s", value.c_str());
@@ -768,6 +771,10 @@ int IDns::LocalSearch(const uint8_t *key, uint8_t pos, uint8_t step) {
     } while(m_ht_offset[pos] > 0 || strcmp((const char *)key, m_local_base - m_ht_offset[pos]) != 0);
 
   const char *src = strchr(m_local_base - m_ht_offset[pos], 0) + 1;
+  // Same rule as the chain path: a local override carrying a descriptor is not
+  // answerable over plain DNS either.
+  if (IsIDnsRendezvousFamily(string(src)))
+    return 0;
   snprintf(m_value, VAL_SIZE, "%s", src);
 
   return 1;
