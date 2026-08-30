@@ -93,12 +93,19 @@ endif
 # These must precede $(xCFLAGS) on the command line: src/ carries a stale copy of
 # tor's ed25519 tree that nothing compiles, and -Isrc would otherwise satisfy
 # tor's own "ed25519/donna/..." includes from it.
+# ED25519_* are read only under tor/src/ext/ed25519/donna, whose sole compiled
+# file is ed25519_tor.c, and TRUNNEL_LOCAL_H only by ext/trunnel/trunnel-impl.h,
+# which only the trunnel sources include. Upstream scopes them per file; setting
+# them for every tor object has the same effect and keeps the two build systems
+# free of per-file flag machinery.
 TOR_CPPFLAGS = -DHAVE_CONFIG_H \
     -I$(CURDIR)/tor \
     -I$(CURDIR)/tor/src \
     -I$(CURDIR)/tor/src/ext \
     -I$(CURDIR)/tor/src/ext/trunnel \
-    -I$(CURDIR)/tor/src/trunnel
+    -I$(CURDIR)/tor/src/trunnel \
+    -DTRUNNEL_LOCAL_H \
+    -DED25519_CUSTOMRANDOM -DED25519_CUSTOMHASH -DED25519_SUFFIX=_donna
 
 # Upstream tor is warning-clean under its own flag set, not under Innova's.
 # Quieten the third-party noise rather than editing vendored sources.

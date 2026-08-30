@@ -184,6 +184,12 @@ contains(USE_NATIVETOR, -) {
     QMAKE_CFLAGS += -Isrc/tor -Isrc/tor/src -Isrc/tor/src/ext \
         -Isrc/tor/src/ext/trunnel -Isrc/tor/src/trunnel
 
+    # ED25519_* are read only under src/tor/src/ext/ed25519/donna, whose sole
+    # compiled file is ed25519_tor.c, and TRUNNEL_LOCAL_H only by
+    # ext/trunnel/trunnel-impl.h, which only the trunnel sources include.
+    QMAKE_CFLAGS += -DTRUNNEL_LOCAL_H \
+        -DED25519_CUSTOMRANDOM -DED25519_CUSTOMHASH -DED25519_SUFFIX=_donna
+
     # Upstream tor is warning-clean under its own flag set, not under ours.
     QMAKE_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers \
         -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-but-set-variable
