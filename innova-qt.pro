@@ -194,8 +194,10 @@ contains(USE_NATIVETOR, -) {
     QMAKE_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers \
         -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-but-set-variable
 
-    # anonymize.cpp is the one C++ file here and needs src/tor on its path.
-    INCLUDEPATH += src/tor
+    # Deliberately no INCLUDEPATH entry for src/tor. anonymize.cpp reaches
+    # anonymize.h from its own directory and init.cpp uses "tor/anonymize.h", so
+    # nothing needs it, and putting a vendored directory on the C++ include path
+    # is how a stray file there ends up answering a system include.
 
     # Objects mirror tor's directory tree so upstream basenames (main.c,
     # version.c) cannot collide with Innova's own objects.
