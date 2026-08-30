@@ -84,7 +84,7 @@ private slots:
     void on_copyValueButton_clicked();
     void on_copyNameButton_clicked();
 
-    void on_txTypeSelector_currentIndexChanged(const QString &txType);
+    void on_txTypeSelector_currentTextChanged(const QString &txType);
     void on_cbMyNames_stateChanged(int arg1);
     void on_cbOtherNames_stateChanged(int arg1);
     void on_cbExpired_stateChanged(int arg1);

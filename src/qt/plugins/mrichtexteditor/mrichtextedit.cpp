@@ -143,7 +143,7 @@ MRichTextEdit::MRichTextEdit(QWidget *parent) : QWidget(parent) {
     foreach(int size, db.standardSizes())
         f_fontsize->addItem(QString::number(size));
 
-    connect(f_fontsize, SIGNAL(activated(QString)),
+    connect(f_fontsize, SIGNAL(textActivated(QString)),
             this, SLOT(textSize(QString)));
     f_fontsize->setCurrentIndex(f_fontsize->findText(QString::number(QApplication::font()
                                                                    .pointSize())));
