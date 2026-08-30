@@ -13,18 +13,25 @@ Licence: 3-clause BSD. Upstream text is kept verbatim in src/tor/LICENSE.
 
 Layout
 ------
-Upstream src/<x> is vendored at src/tor/<x>; the two generated top-level files
-sit at src/tor/. Upstream's own path-qualified includes ("core/or/or.h") are
-used unchanged, so no source file is edited and upstream basenames cannot
-collide with Innova's own headers.
+src/tor/ mirrors the upstream tarball root, so upstream's src/<x> is vendored at
+src/tor/src/<x>. The doubled "src" is deliberate: upstream puts both its root
+and its src/ on the include path, and while most sources use includes qualified
+from src/ ("core/or/or.h"), a few qualify from the root instead
+("src/core/or/conflux_util.h"). Keeping the tarball shape lets both resolve, so
+no vendored source is edited. Upstream basenames also cannot collide with
+Innova's own headers, since every tor include is path-qualified.
 
 Compile surface
 ---------------
-  -DHAVE_CONFIG_H -DSHARE_DATADIR=... -DLOCALSTATEDIR=... -DBINDIR=...
-  -Isrc/tor -Isrc/tor/ext -Isrc/tor/ext/trunnel -Isrc/tor/trunnel
+  -DHAVE_CONFIG_H
+  -Isrc/tor -Isrc/tor/src -Isrc/tor/src/ext -Isrc/tor/src/ext/trunnel
+  -Isrc/tor/src/trunnel
 
-SHARE_DATADIR/LOCALSTATEDIR/BINDIR must be defined but are inert: the data
-directory and hidden-service paths are passed explicitly on the tor_main argv.
+HAVE_CONFIG_H is what makes tor's sources include orconfig.h, so it must be on
+the command line. SHARE_DATADIR/LOCALSTATEDIR/BINDIR are defined in orconfig.h
+rather than per-build-system, which keeps makefile.unix and innova-qt.pro from
+having to agree on string quoting. They are inert: the data directory and
+hidden-service paths are passed explicitly on the tor_main argv.
 
 Link deps are libz, libevent, libssl, libcrypto -- all already innovad
 dependencies. Vendoring tor adds no new external dependency.

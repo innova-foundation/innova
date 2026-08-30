@@ -92,9 +92,10 @@ endif
 # makes tor's sources pull in orconfig.h; the path macros live in orconfig.h.
 TOR_CPPFLAGS = -DHAVE_CONFIG_H \
     -I$(CURDIR)/tor \
-    -I$(CURDIR)/tor/ext \
-    -I$(CURDIR)/tor/ext/trunnel \
-    -I$(CURDIR)/tor/trunnel
+    -I$(CURDIR)/tor/src \
+    -I$(CURDIR)/tor/src/ext \
+    -I$(CURDIR)/tor/src/ext/trunnel \
+    -I$(CURDIR)/tor/src/trunnel
 
 # Upstream tor is warning-clean under its own flag set, not under Innova's.
 # Quieten the third-party noise rather than editing vendored sources.

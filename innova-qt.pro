@@ -174,7 +174,7 @@ contains(USE_NATIVETOR, -) {
         USE_NATIVETOR=1
     }
     DEFINES += USE_NATIVETOR=$$USE_NATIVETOR
-    INCLUDEPATH += src/tor src/tor/ext src/tor/ext/trunnel src/tor/trunnel
+    INCLUDEPATH += src/tor src/tor/src src/tor/src/ext src/tor/src/ext/trunnel src/tor/src/trunnel
     DEFINES += HAVE_CONFIG_H
 
     # Upstream tor is warning-clean under its own flag set, not under ours.
