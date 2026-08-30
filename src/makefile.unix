@@ -90,6 +90,9 @@ endif
 # Include and define surface for the vendored tor sources only; it is kept off
 # the global DEFS so tor's headers cannot shadow Innova's. HAVE_CONFIG_H is what
 # makes tor's sources pull in orconfig.h; the path macros live in orconfig.h.
+# These must precede $(xCFLAGS) on the command line: src/ carries a stale copy of
+# tor's ed25519 tree that nothing compiles, and -Isrc would otherwise satisfy
+# tor's own "ed25519/donna/..." includes from it.
 TOR_CPPFLAGS = -DHAVE_CONFIG_H \
     -I$(CURDIR)/tor \
     -I$(CURDIR)/tor/src \
@@ -756,7 +759,7 @@ ifeq (${USE_NATIVETOR}, 1)
 # (main.c, version.c) cannot collide with Innova's own objects.
 obj/tor/%.o: tor/%.c
 	@mkdir -p $(@D)
-	$(CC) -c $(xCFLAGS) $(TOR_CPPFLAGS) $(TOR_WARNFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(TOR_CPPFLAGS) $(xCFLAGS) $(TOR_WARNFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \

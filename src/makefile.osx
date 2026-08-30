@@ -103,12 +103,14 @@ endif
 
 LDFLAGS = -stdlib=libc++ -pie $(LIBPATHS)
 
-# Native Tor support (disabled by default for OpenSSL 3)
+# This makefile has never carried a tor object list, so enabling native tor here
+# would compile the USE_NATIVETOR branches of init.cpp and net.cpp and then fail
+# to link tor_main. Build macOS with makefile.unix, which does vendor tor.
 ifndef USE_NATIVETOR
   override USE_NATIVETOR = -
 endif
 ifneq (${USE_NATIVETOR}, -)
-  DEFS += $(addprefix -I,$(CURDIR)/tor) -DUSE_NATIVETOR=$(USE_NATIVETOR)
+  $(error USE_NATIVETOR is not supported by makefile.osx; use makefile.unix)
 endif
 
 # IPFS support

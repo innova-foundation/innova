@@ -174,12 +174,22 @@ contains(USE_NATIVETOR, -) {
         USE_NATIVETOR=1
     }
     DEFINES += USE_NATIVETOR=$$USE_NATIVETOR
-    INCLUDEPATH += src/tor src/tor/src src/tor/src/ext src/tor/src/ext/trunnel src/tor/src/trunnel
     DEFINES += HAVE_CONFIG_H
+
+    # Passed as QMAKE_CFLAGS rather than INCLUDEPATH on purpose. qmake emits
+    # CFLAGS before INCPATH, and only for C sources, which is exactly the scope
+    # the vendored tor needs: src/ carries a stale copy of tor's ed25519 tree
+    # that nothing compiles, and INCLUDEPATH's -Isrc would otherwise satisfy
+    # tor's own "ed25519/donna/..." includes from it.
+    QMAKE_CFLAGS += -Isrc/tor -Isrc/tor/src -Isrc/tor/src/ext \
+        -Isrc/tor/src/ext/trunnel -Isrc/tor/src/trunnel
 
     # Upstream tor is warning-clean under its own flag set, not under ours.
     QMAKE_CFLAGS += -Wno-unused-parameter -Wno-missing-field-initializers \
         -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-but-set-variable
+
+    # anonymize.cpp is the one C++ file here and needs src/tor on its path.
+    INCLUDEPATH += src/tor
 
     # Objects mirror tor's directory tree so upstream basenames (main.c,
     # version.c) cannot collide with Innova's own objects.
