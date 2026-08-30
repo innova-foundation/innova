@@ -632,7 +632,7 @@ void ManageNamesPage::exportClicked()
     }
 }
 
-void ManageNamesPage::on_txTypeSelector_currentIndexChanged(const QString &txType)
+void ManageNamesPage::on_txTypeSelector_currentTextChanged(const QString &txType)
 {
     if (txType == "name_new")
     {

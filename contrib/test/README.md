@@ -196,11 +196,30 @@ rm -rf "$TEST_DIR"         # the datadir the harness printed, not /tmp/innova_*
 
 ---
 
+## Qt5/Qt6 connections
+
+A signal Qt6 removed still compiles and links: `SIGNAL()`, Designer's
+`connectSlotsByName` and `.ui` `<connections>` all resolve by name at runtime.
+The connection then never fires, and no build of either lane says so. Two checks
+cover that, and they cover different halves:
+
+```bash
+python3 contrib/test/check_qt6_removed_signals.py .        # static, whole tree
+contrib/test/qt_connect_probe.sh ./Innova /tmp/probe-dd    # runtime, what is built
+```
+
+The static check names the file and line and sees code no run reaches. The probe
+builds the widget tree under the offscreen platform and reports what Qt could not
+resolve; it fails if the wallet never reaches the marker that proves the widgets
+were constructed, so it cannot pass by not executing. Run both: the static check
+alone cannot tell a live widget from a dead one, and the probe alone never
+constructs a widget nothing instantiates.
+
 ## Release verification evidence
 
 `check_v5_release_policy.py` requires a SHA-256 for every field of
 `REQUIRED_VERIFICATION_FIELDS` in the release manifest's `verification` block.
-Eight of those fields are produced here, one producer each:
+Nine of those fields are produced here, one producer each:
 
 | Field | Producer | Host |
 |-------|----------|------|
@@ -209,6 +228,7 @@ Eight of those fields are produced here, one producer each:
 | `linux_clean_sha256` | `produce_linux_clean_evidence.sh` | Linux |
 | `macos_clean_sha256` | `produce_macos_clean_evidence.sh` | macOS |
 | `qt5_compat_sha256` | `produce_qt5_compat_evidence.sh` | any, Qt5 qmake |
+| `qt6_release_sha256` | `produce_qt6_release_evidence.sh` | Linux, Qt6 qmake |
 | `fuzz_corpora_sha256` | `produce_fuzz_corpora_evidence.sh` | Linux, clang |
 | `integration_sha256` | `produce_integration_evidence.sh` | any, built `innovad` |
 | `performance_sha256` | `produce_performance_evidence.sh` | any, built `innovad` |
