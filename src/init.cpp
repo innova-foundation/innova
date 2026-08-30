@@ -2078,7 +2078,7 @@ bool AppInit2()
                 "DAG active-set persistence validation/recovery failed: %s. "
                 "Do not infer the historical plan from the current DAG. If the "
                 "message reports an ambiguous legacy transaction, preserve "
-                "wallet.dat and restart with -reindex or resync the chain database."),
+                "wallet.dat and resync the chain database."),
                 strDAGActiveSetError.c_str()));
     }
 
@@ -2091,7 +2091,7 @@ bool AppInit2()
             return InitError(strprintf(_(
                 "IV5 index persistence validation failed: %s. "
                 "The chain database is incomplete or inconsistent; preserve "
-                "wallet.dat and restart with -reindex or resync."),
+                "wallet.dat and resync."),
                 strPrivacyVNextError.c_str()));
     }
 
@@ -2109,7 +2109,7 @@ bool AppInit2()
             return InitError(strprintf(_(
                 "Shielded genesis commitment index validation failed: %s. "
                 "The chain database is incomplete or conflicting; restart with "
-                "-reindex or preserve wallet.dat and resync."),
+                "preserve wallet.dat and resync."),
                 strShieldedGenesisError.c_str()));
 
         int nEpochSchema = 0;
@@ -2122,7 +2122,7 @@ bool AppInit2()
                 return InitError(strprintf(_(
                     "Shielded schema-V3 persistence validation failed: %s. "
                     "The reverse index/tree snapshot is incomplete or "
-                    "conflicting; restart with -reindex or preserve wallet.dat "
+                    "conflicting; preserve wallet.dat "
                     "and resync."), strShieldedV3Error.c_str()));
 
             CIncrementalMerkleTree currentShieldedTree;
@@ -2138,7 +2138,7 @@ bool AppInit2()
                 nCurrentAnchorHeight > pindexBest->nHeight)
                 return InitError(_(
                     "Shielded schema-V3 current tree/anchor pair is missing "
-                    "or corrupt; restart with -reindex or preserve wallet.dat "
+                    "or corrupt; preserve wallet.dat "
                     "and resync."));
         }
     }
@@ -2152,7 +2152,7 @@ bool AppInit2()
         CTxDB txdbFinality("r+");
         if (!g_finalityTracker.PurgeUnresolvableTallyShares(txdbFinality))
             return InitError(_("Failed to purge stale finality tally shares; "
-                               "restart with -reindex/resync."));
+                               "resync the chain database."));
     }
 
     //Create Innova Name index - this must happen before ReacceptWalletTransactions()
@@ -2197,13 +2197,13 @@ bool AppInit2()
                 return InitError(_(
                     "Failed to rebuild innovanamesindex.dat from the canonical "
                     "chain. Block/index data may be missing or corrupt; restart "
-                    "with -reindex or preserve wallet.dat and resync."));
+                    "with preserve wallet.dat and resync."));
 
             strNameIndexError.clear();
             if (!ValidateNameIndexTip(pindexBest, strNameIndexError))
                 return InitError(strprintf(_(
                     "Name index rebuild completed without an exact canonical-tip "
-                    "recovery cursor (%s). Restart with -reindex or preserve "
+                    "recovery cursor (%s). Preserve "
                     "wallet.dat and resync."), strNameIndexError.c_str()));
         }
     }
@@ -2341,7 +2341,7 @@ bool AppInit2()
             return InitError(strprintf(
                 "Shielded wallet recovery failed: %s. Preserve both wallet.dat "
                 "and txleveldb and retry after restoring the missing block/index "
-                "data. Do not use -reindex or delete txleveldb while this marker "
+                "data. Do not delete txleveldb while this marker "
                 "is pending; doing so can destroy the abandoned-branch cleanup "
                 "plan.",
                 strShieldedRecoveryError.c_str()));
@@ -2365,7 +2365,7 @@ bool AppInit2()
     RegisterWallet(pwalletMain);
 
     if (!pindexBest || !pindexGenesisBlock)
-        return InitError("Wallet recovery requires a loaded canonical chain; restart with -reindex/resync.");
+        return InitError("Wallet recovery requires a loaded canonical chain; resync the chain database.");
 
     CBlockIndex *pindexRescan = pindexBest;
     bool fRepairWalletLocator = false;
@@ -2825,7 +2825,7 @@ bool AppInit2()
             return InitError(strprintf(_(
                 "Epoch-state schema %d is required at height %d, but the chain database has "
                 "schema marker %d and %d loaded epoch records (%s). This indicates an old or torn "
-                "epoch-state database; continuing could split consensus. Restart with -reindex "
+                "epoch-state database; continuing could split consensus. Resync "
                 "or remove the chain database (preserve wallet.dat) and resync."),
                 nExpectedEpochSchema, pindexBest->nHeight, nEpochSchema,
                 (int)g_dagManager.GetLoadedEpochStateCount(), strEpochTipError.c_str()));
