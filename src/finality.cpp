@@ -9442,6 +9442,9 @@ static boost::mutex g_mutexFinalityVoteWake;
 static boost::condition_variable g_condFinalityVoteWake;
 // Edge-triggered and consumed by the waiter; a level would spin for the rest of the epoch.
 static bool g_fFinalityVoteWakePending = false;
+// Sticky, set once by the shutdown path under the same mutex. Unlike fShutdown
+// it is read under that mutex, so a waiter cannot miss it and re-enter the wait.
+static bool g_fFinalityVoteStop = false;
 
 CFinalityVoteSchedule& GetFinalityVoteSchedule()
 {
@@ -9474,7 +9477,9 @@ void NotifyFinalityTipChanged(int nHeight)
 void WaitForFinalityVoteWork(int64_t nTimeoutMs)
 {
     boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
-    if (g_fFinalityVoteWakePending)
+    // Never wait once shutdown is latched: the static condition variable would be destroyed
+    // under the waiter and boost aborts.
+    if (g_fFinalityVoteStop || g_fFinalityVoteWakePending)
     {
         g_fFinalityVoteWakePending = false;
         return;
@@ -9482,6 +9487,36 @@ void WaitForFinalityVoteWork(int64_t nTimeoutMs)
     g_condFinalityVoteWake.timed_wait(lock,
         boost::posix_time::milliseconds(nTimeoutMs));
     g_fFinalityVoteWakePending = false;
+}
+
+bool FinalityVoterShouldStop()
+{
+    boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+    return g_fFinalityVoteStop;
+}
+
+void StopFinalityVoter()
+{
+    {
+        boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+        g_fFinalityVoteStop = true;
+    }
+    // Both waiters on this variable: the voter loop, and post-DAG the staking loop.
+    g_condFinalityVoteWake.notify_all();
+
+    // Called before Finalise() takes cs_main, so a pass already inside cs_main
+    // can finish and reach the stop check at the top of its loop.
+    int64_t nStart = GetTimeMillis();
+    while (vnThreadsRunning[THREAD_FINALITY_VOTER] > 0)
+    {
+        if (GetTimeMillis() - nStart > FINALITY_VOTER_STOP_TIMEOUT_MS)
+        {
+            printf("StopFinalityVoter : ThreadFinalityVoter still running after "
+                   "%d ms\n", (int)FINALITY_VOTER_STOP_TIMEOUT_MS);
+            return;
+        }
+        MilliSleep(20);
+    }
 }
 
 FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut)
@@ -9550,10 +9585,8 @@ static void ProcessDeferredNoteVotes(int nCurrentHeight)
     }
 }
 
-void ThreadFinalityVoter(void* parg)
+static void FinalityVoterLoop()
 {
-    printf("ThreadFinalityVoter started\n");
-
     if (GetBoolArg("-nofinalityvoting", false))
     {
         printf("ThreadFinalityVoter: voting disabled\n");
@@ -9563,13 +9596,13 @@ void ThreadFinalityVoter(void* parg)
     int64_t nPollMs = FINALITY_VOTER_POLL_MS_PRE_DAG;
     int64_t nLastTallyPassMs = 0;
 
-    while (!fShutdown)
+    while (!fShutdown && !FinalityVoterShouldStop())
     {
         // Woken by the tip hook. The timeout only bounds the tally pass and shutdown check; the
         // latch decides whether this node owes a vote.
         WaitForFinalityVoteWork(nPollMs);
 
-        if (fShutdown)
+        if (fShutdown || FinalityVoterShouldStop())
             break;
 
         if (IsInitialBlockDownload())
@@ -9615,8 +9648,29 @@ void ThreadFinalityVoter(void* parg)
         if (fProduced)
             g_finalityTracker.PruneOldEpochs(nClaimedEpoch);
     }
+}
 
-    printf("ThreadFinalityVoter stopped\n");
+void ThreadFinalityVoter(void* parg)
+{
+    printf("ThreadFinalityVoter started\n");
+    // Accounted so StopFinalityVoter can prove the waiter is gone before the
+    // static condition variable it sleeps on is destroyed.
+    try
+    {
+        vnThreadsRunning[THREAD_FINALITY_VOTER]++;
+        FinalityVoterLoop();
+        // Logged before the count drops, so a debug.log that reports the voter
+        // stopped is proof it was gone before shutdown continued.
+        printf("ThreadFinalityVoter stopped\n");
+        vnThreadsRunning[THREAD_FINALITY_VOTER]--;
+    }
+    catch (std::exception& e) {
+        vnThreadsRunning[THREAD_FINALITY_VOTER]--;
+        PrintException(&e, "ThreadFinalityVoter()");
+    } catch (...) {
+        vnThreadsRunning[THREAD_FINALITY_VOTER]--;
+        PrintException(NULL, "ThreadFinalityVoter()");
+    }
 }
 
 static std::string GetFinalityVoteModeArg()

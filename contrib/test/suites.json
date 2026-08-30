@@ -28,6 +28,7 @@
     {"name": "check_iv5_protocol_contract.py", "kind": "static", "nodes": 0, "minutes": 1},
 
     {"name": "quick_test.sh", "kind": "suite", "nodes": 1, "minutes": 3},
+    {"name": "shutdown_clean_exit_test.sh", "kind": "suite", "nodes": 1, "minutes": 3},
     {"name": "regtest_test.sh", "kind": "suite", "nodes": 2, "minutes": 5},
     {"name": "nyx_rpc_test.sh", "kind": "suite", "nodes": 1, "minutes": 4},
     {"name": "pod_regtest_test.sh", "kind": "suite", "nodes": 2, "minutes": 6},
