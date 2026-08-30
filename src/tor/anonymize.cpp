@@ -4,15 +4,11 @@
 /* Copyright (c) 2014, BritCoin Developers */
 /* See LICENSE for licensing information */
 
-#include <memory>
 #include "anonymize.h"
 #include "util.h"
 
 #include <boost/filesystem.hpp>
-#include <boost/thread/thread.hpp>
-#include <boost/thread/mutex.hpp>
 #include <string>
-#include <cstring>
 
 char const* anonymize_tor_data_directory(
 ) {
@@ -34,19 +30,4 @@ char const* anonymize_service_directory(
     );
     return retrieved.c_str(
     );
-}
-
-int check_interrupted() {
-    return boost::this_thread::interruption_requested() ? 1 : 0;
-}
-
-static boost::mutex initializing;
-static std::unique_ptr<boost::unique_lock<boost::mutex> > uninitialized(new boost::unique_lock<boost::mutex>(initializing));
-
-void set_initialized() {
-    uninitialized.reset();
-}
-
-void wait_initialized() {
-    boost::unique_lock<boost::mutex> checking(initializing);
 }

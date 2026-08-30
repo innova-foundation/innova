@@ -276,7 +276,12 @@ bool GetIDnsRecordValue(const std::string& strDnsName, std::string& strValueOut)
 bool GetIDnsSocksEndpoint(CService& addrOut, std::string& strErr)
 {
     strErr.clear();
-    const std::string strArg = GetArg("-idnssocks", IDNS_DEFAULT_SOCKS_ENDPOINT);
+    // With the bundled tor running, dial its SocksPort rather than assuming a
+    // separately installed tor on 9050. -idnssocks still overrides both.
+    const std::string strDefault = fNativeTor
+        ? strprintf("127.0.0.1:%u", NATIVETOR_SOCKS_PORT)
+        : std::string(IDNS_DEFAULT_SOCKS_ENDPOINT);
+    const std::string strArg = GetArg("-idnssocks", strDefault);
     if (strArg.empty() || strArg == "0")
     {
         strErr = "rendezvous dialing is disabled (-idnssocks=0)";

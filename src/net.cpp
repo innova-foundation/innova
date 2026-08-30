@@ -13,6 +13,10 @@
 #include "collateralnode.h"
 #include "dandelion.h"
 #include "shielded.h"
+#ifdef USE_NATIVETOR
+#include "idnsdescriptor.h"     // NATIVETOR_SOCKS_PORT
+#include "tor/anonymize.h"
+#endif
 #include <sys/stat.h>
 #include <algorithm>
 
@@ -2788,48 +2792,64 @@ static void run_tor() {
   {
       printf("Tor Onion Thread Started!\n");
 
-      std::string logDecl = "notice file " + GetDataDir().string() + "/tor/tor.log";
-      char *argvLogDecl = (char*) logDecl.c_str();
-      std::string rc = GetDataDir().string() + "/tor/torrc";
-      char *rc_c = (char*) rc.c_str();
+      // The vendored tor is stock upstream; the DataDirectory and hidden service are
+      // passed on argv instead of patched in.
+      const std::string torDataDir = anonymize_tor_data_directory();
+      const std::string onionDir = anonymize_service_directory();
+      const std::string logDecl = "notice file " + torDataDir + "/tor.log";
+      const std::string torrc = torDataDir + "/torrc";
+      const std::string socksPort = strprintf("%d", NATIVETOR_SOCKS_PORT);
 
-      char * clientTransportPlugin = NULL;
+      // Forward the onion's virtual port to the port innovad actually listens on.
+      const std::string hsPort = strprintf("%u 127.0.0.1:%u",
+                                           GetListenPort(), GetListenPort());
 
-      struct stat sb;
+      std::vector<std::string> args;
+      args.push_back("tor");
+      args.push_back("--Log");               args.push_back(logDecl);
+      args.push_back("--SocksPort");         args.push_back(socksPort);
+      args.push_back("--DataDirectory");     args.push_back(torDataDir);
+      args.push_back("--HiddenServiceDir");  args.push_back(onionDir);
+      args.push_back("--HiddenServicePort"); args.push_back(hsPort);
 
-      if ((stat("obfs4proxy", &sb) == 0 && sb.st_mode & S_IXUSR) || !std::system("which obfs4proxy")) {
-          clientTransportPlugin = "obfs4 exec /usr/bin/obfs4proxy";
-      } else if (stat("obfs4proxy.exe", &sb) == 0 && sb.st_mode & S_IXUSR) {
-          clientTransportPlugin = "obfs4 exec obfs4proxy.exe";
+      // Bridges are a passthrough now. The previous build shipped three
+      // hardcoded 2017 bridge lines and set UseBridges=1 whenever obfs4proxy
+      // was present on the host; once those relays went off the air that
+      // stopped tor bootstrapping at all rather than helping it.
+      const std::vector<std::string>& bridges = mapMultiArgs["-torbridge"];
+      if (!bridges.empty()) {
+          struct stat sb;
+          std::string clientTransportPlugin;
+          if ((stat("obfs4proxy", &sb) == 0 && (sb.st_mode & S_IXUSR)) ||
+              !std::system("which obfs4proxy > /dev/null 2>&1")) {
+              clientTransportPlugin = "obfs4 exec /usr/bin/obfs4proxy";
+          } else if (stat("obfs4proxy.exe", &sb) == 0 && (sb.st_mode & S_IXUSR)) {
+              clientTransportPlugin = "obfs4 exec obfs4proxy.exe";
+          }
+          if (!clientTransportPlugin.empty()) {
+              printf("Using OBFS4.\n");
+              args.push_back("--ClientTransportPlugin");
+              args.push_back(clientTransportPlugin);
+          }
+          args.push_back("--UseBridges");
+          args.push_back("1");
+          for (std::vector<std::string>::const_iterator it = bridges.begin();
+               it != bridges.end(); ++it) {
+              args.push_back("--Bridge");
+              args.push_back(*it);
+          }
       }
 
-      if (clientTransportPlugin != NULL) {
-          printf("Using OBFS4.\n");
-          char* argv[] = {
-            "tor",
-            "--Log", argvLogDecl,
-            "--SocksPort", "9089",
-            "--ClientTransportPlugin", clientTransportPlugin,
-            "--UseBridges", "1",
-            "--Bridge", "38.229.33.135:443 8CF38F8AC7CA1ACF6051CACE5C84F3E5B3832CD1",
-            "--Bridge", "obfs4 94.242.249.2:44939 E53EEA7DE6E170328F0A2C4338EE4E4DC2398218 cert=VpistQqdnS5zgkARR3he8rt03OrKhk2oobUUhLmFWAWK27pYMvjrBi6zAn1ebIcPH2xbcQ iat-mode=0",
-            "--Bridge", "178.63.238.40:456 8E9B0C1B87837FF6CA730CDFB2A59DAB2D85DF08",
-            "--ignore-missing-torrc",
-            "-f", rc_c,
-          };
-          tor_main(16, argv);
-      }
-      else {
-          printf("No OBFS4 found, not using it.\n");
-          char* argv[] = {
-            "tor",
-            "--Log", argvLogDecl,
-            "--SocksPort", "9089",
-            "--ignore-missing-torrc",
-            "-f", rc_c,
-          };
-          tor_main(6, argv);
-      }
+      args.push_back("--ignore-missing-torrc");
+      args.push_back("-f");                  args.push_back(torrc);
+
+      // argv points into args, which outlives the call: tor_main blocks.
+      std::vector<char*> argv;
+      argv.reserve(args.size());
+      for (size_t i = 0; i < args.size(); ++i)
+          argv.push_back(const_cast<char*>(args[i].c_str()));
+
+      tor_main(static_cast<int>(argv.size()), &argv[0]);
   }
 }
 

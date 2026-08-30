@@ -36,12 +36,19 @@ static const size_t IDNS_RENDEZVOUS_MAX_VALUE = 96;
 static const size_t IDNS_ONION_V3_BASE32_LEN = 56;
 static const unsigned char IDNS_ONION_V3_VERSION_BYTE = 0x03;
 
-// Default SOCKS5 endpoint for the rendezvous dial. This is the standard port of
-// an external tor client, NOT the bundled daemon's 9089: the vendored tor is
-// 0.3.0.9, whose onion-service code is v2-only and which ships no v3 client, so
-// it cannot rendezvous on today's network.
+// Default SOCKS5 endpoint for the rendezvous dial (external tor). -nativetor=1 prefers
+// NATIVETOR_SOCKS_PORT; -idnssocks overrides both.
 extern const char* IDNS_DEFAULT_SOCKS_ENDPOINT; // "127.0.0.1:9050"
 static const unsigned short IDNS_DEFAULT_SOCKS_PORT = 9050;
+
+// SocksPort the bundled tor is started on; see run_tor() in net.cpp. The IDNS
+// resolver and the tor daemon must agree on this, so it is defined once.
+static const unsigned short NATIVETOR_SOCKS_PORT = 9089;
+
+// How long init waits for tor to publish the onion descriptor and write the
+// hostname file. Bootstrap plus descriptor upload is a few seconds on a warm
+// network and slower on a cold one; failing to get one is not fatal.
+static const int NATIVETOR_HOSTNAME_TIMEOUT_SECS = 120;
 
 enum IDnsValueKind
 {

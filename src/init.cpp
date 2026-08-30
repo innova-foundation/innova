@@ -34,6 +34,7 @@
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
+#include "idnsdescriptor.h" // NATIVETOR_HOSTNAME_TIMEOUT_SECS
 #endif
 
 #include <boost/filesystem.hpp>
@@ -570,8 +571,9 @@ std::string HelpMessage()
         "  -bind=<addr>           " + _("Bind to given address. Use [host]:port notation for IPv6") + "\n" +
         "  -dnsseed               " + _("Find peers using DNS lookup (default: 1)") + "\n" +
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
-        "  -idnssocks=<ip:port>   " + _("SOCKS5 endpoint used to reach an IDNS rendezvous descriptor's onion service; 0 disables rendezvous dialing (default: 127.0.0.1:9050)") + "\n" +
-        "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
+        "  -idnssocks=<ip:port>   " + _("SOCKS5 endpoint used to reach an IDNS rendezvous descriptor's onion service; 0 disables rendezvous dialing (default: the bundled tor on 127.0.0.1:9089 with -nativetor=1, otherwise 127.0.0.1:9050)") + "\n" +
+        "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") + "\n" +
+        "  -torbridge=<line>      " + _("Reach the tor network through this bridge, e.g. \"obfs4 <ip:port> <fingerprint> cert=... iat-mode=0\"; may be given more than once (default: connect directly)") + "\n" +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -stakingmode=<mode>    " + _("Staking mode: transparent or cold; legacy nullstake/coldprivate are regtest-only pending privacy vNext (default: transparent)") + "\n" +
         "  -finalityvotemode=<m>  " + _("Post-DAG finality voting lane, one per node: transparent (identity vote, the only lane the deterministic tally counts) or note (anonymous note vote only, needs transparent voters elsewhere); auto selects transparent; legacy nullstake modes are regtest-only pending privacy vNext (default: auto)") + "\n" +
@@ -1924,18 +1926,38 @@ bool AppInit2()
               if (!NewThread(StartTor, NULL))
                       return InitError(_("Error: Could Not Start Tor Onion Node"));
         }
-        wait_initialized();
-
+        // Poll for the hostname file with a bound. No onion address is not fatal.
         string automatic_onion;
         fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
 
-        if (!fs::exists(hostname_path)) {
-            return InitError(_("No external address found."));
+        for (int i = 0; i < NATIVETOR_HOSTNAME_TIMEOUT_SECS && !fShutdown; i++) {
+            if (fs::exists(hostname_path)) {
+                ifstream file(hostname_path.string().c_str());
+                file >> automatic_onion;
+                if (!automatic_onion.empty())
+                    break;
+            }
+            MilliSleep(1000);
         }
 
-        ifstream file(hostname_path.string().c_str());
-        file >> automatic_onion;
-        AddLocal(CService(automatic_onion, GetListenPort(), fNameLookup), LOCAL_MANUAL);
+        if (automatic_onion.empty()) {
+            printf("Native tor: no onion hostname after %ds; continuing without one\n",
+                   NATIVETOR_HOSTNAME_TIMEOUT_SECS);
+        } else {
+            printf("Native tor: onion service is %s\n", automatic_onion.c_str());
+            // A v3 address is 56 base32 characters and does not fit CNetAddr's
+            // OnionCat encoding, which is v2-only, so this AddLocal fails for
+            // v3 until the address type is widened. IDNS is unaffected: it
+            // dials by hostname over SOCKS5 and never builds a CNetAddr.
+            CService onionService(automatic_onion, GetListenPort(), fNameLookup);
+            if (onionService.IsValid()) {
+                AddLocal(onionService, LOCAL_MANUAL);
+            } else {
+                printf("Native tor: cannot advertise %s to peers; onion addresses "
+                       "of this form are not representable as a CNetAddr\n",
+                       automatic_onion.c_str());
+            }
+        }
     };
 #endif
 
