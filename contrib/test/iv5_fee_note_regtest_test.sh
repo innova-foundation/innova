@@ -106,6 +106,75 @@ coinbase_raw_len() {
 
 pool_value() { jget "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_pool_value; }
 
+# The millisecond offset a block's coinbase commits to. The IMTS commitment is a
+# fixed-length OP_RETURN: 6a 06 "IMTS" then the offset little-endian.
+coinbase_ms_offset() {
+    local cb; cb="$(coinbase_txid "$1")"
+    [ ${#cb} -eq 64 ] || return 1
+    rpc getrawtransaction "$cb" 1 2>/dev/null | python3 -c '
+import json, sys
+try:
+    tx = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for o in tx.get("vout", []):
+    h = o.get("scriptPubKey", {}).get("hex", "")
+    if len(h) == 16 and h.startswith("6a06494d5453"):
+        print(int(h[12:14], 16) | (int(h[14:16], 16) << 8))
+        break
+'
+}
+
+# The block time of a block.
+block_time() {
+    local bh; bh="$(block_hash "$1")"
+    [ ${#bh} -eq 64 ] || return 1
+    rpc getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["time"])
+except Exception: pass
+'
+}
+
+# The producer stamps wall clock minus header time, clamped at zero, so burst mining
+# never exercises the coinbase rewrite. Wait until the clock passes the tip, landing
+# inside the second.
+wait_for_clock() {
+    local t now
+    t="$(block_time "$(height)")"
+    is_int "$t" || return 0
+    for _ in $(seq 1 240); do
+        now="$(date +%s)"
+        is_int "$now" || return 0
+        [ "$now" -gt "$t" ] && break
+        sleep 1
+    done
+    sleep 0.4
+}
+
+# One block, with a bounded wait. mine_to_exact is built for long burst runs; a
+# producer that cannot connect its own block has to be detected quickly here.
+mine_one() {
+    local target; target=$(( $(height) + 1 ))
+    rpc setgenerate true 1 >/dev/null 2>&1
+    for _ in $(seq 1 60); do
+        [ "$(height)" -ge "$target" ] && { rpc setgenerate false >/dev/null 2>&1; return 0; }
+        sleep 1
+    done
+    rpc setgenerate false >/dev/null 2>&1
+    return 1
+}
+
+# Every rejection of a coinbase payload for its transparent binding. The
+# producer's own block failing this is the halt.
+binding_rejections() {
+    local n
+    n="$(grep -c "does not bind this transaction's transparent side" \
+        "$NODE_DIR/regtest/debug.log" 2>/dev/null | tr -d '[:space:]')"
+    is_int "$n" || n=0
+    echo "$n"
+}
+
 block_tx_count() {
     local bh; bh="$(block_hash "$1")"
     [ ${#bh} -eq 64 ] || return 1
@@ -294,6 +363,10 @@ else
     exit 1
 fi
 
+# The fork block is the first one that carries a note, so it is the first one
+# whose coinbase is rewritten twice. Give the clock time to pass the tip, or the
+# offset clamps to zero and the rewrite writes back the same bytes.
+wait_for_clock
 mine_to_exact "$FEE_NOTE" || { fail "could not mine the fork block"; exit 1; }
 
 FORK_TXS="$(block_tx_count "$FEE_NOTE")"
@@ -324,6 +397,16 @@ else
     else
         fail "the fork coinbase pays $FORK_CB, below the $PLAIN_CB baseline; the baseline block carried fees a plain block should not have"
     fi
+fi
+
+# The offset the producer stamped over the placeholder. A zero here means the
+# rewrite was a no-op and everything below about the note is untested against
+# the ordering the coinbase is written in.
+FORK_MS="$(coinbase_ms_offset "$FEE_NOTE")"
+if is_int "$FORK_MS" && [ "$FORK_MS" -ne 0 ]; then
+    success "the fork coinbase commits to millisecond offset $FORK_MS, so the note binds a rewritten output vector"
+else
+    fail "the fork coinbase millisecond offset is '$FORK_MS'; the coinbase rewrite this block should exercise did not happen"
 fi
 
 FORK_LEN="$(coinbase_raw_len "$FEE_NOTE")"
@@ -384,12 +467,14 @@ SHA_TXID="$(jstr "$SHA" txid)"
 if [ ${#SHA_TXID} -ne 64 ]; then
     warn "no transparent value left to shield; the consecutive-note case is skipped"
 else
+    wait_for_clock
     mine_to_exact "$NOTE_A" || { fail "could not mine the first note block"; exit 1; }
     SHB="$(rpc z_shieldall 2>&1)"
     SHB_TXID="$(jstr "$SHB" txid)"
     if [ ${#SHB_TXID} -ne 64 ]; then
         warn "no second shield available; the consecutive-note case is skipped"
     else
+        wait_for_clock
         mine_to_exact "$NOTE_B" || { fail "could not mine the second note block"; exit 1; }
         VA="$(coinbase_version "$NOTE_A")"
         VB="$(coinbase_version "$NOTE_B")"
@@ -397,6 +482,13 @@ else
             success "two consecutive blocks each connected with their own fee note"
         else
             fail "consecutive note blocks did not both connect (versions $VA, $VB)"
+        fi
+        MSA="$(coinbase_ms_offset "$NOTE_A")"
+        MSB="$(coinbase_ms_offset "$NOTE_B")"
+        if is_int "$MSA" && is_int "$MSB" && [ "$MSA" -ne 0 ] && [ "$MSB" -ne 0 ]; then
+            success "both note coinbases commit to a stamped offset ($MSA, $MSB)"
+        else
+            fail "a note coinbase stamped a zero offset ($MSA, $MSB); the rewrite was a no-op"
         fi
         # A repeated owner is a consensus reject, not a silent collision, so its
         # absence from the log is what says the second note carried a fresh one.
@@ -492,7 +584,68 @@ else
 fi
 
 # ============================================================
-header "9. The node logged no pool or reward complaint"
+header "10. Consecutive paced note blocks: the producer connects its own"
+# ============================================================
+
+# Stamp plus fee note in one block: the fee note binds the output vector and the
+# millisecond commitment is an output, so write order decides validity. Each round
+# waits for a real offset, then mines one block.
+
+PACED_ROUNDS=5
+PACED_NOTES=0
+PACED_ZERO_MS=0
+PACED_STALLED=0
+PACED_BEFORE="$(binding_rejections)"
+PACED_START="$(height)"
+
+for i in $(seq 1 $PACED_ROUNDS); do
+    SHP="$(rpc z_shieldall 2>&1)"
+    SHP_TXID="$(jstr "$SHP" txid)"
+    if [ ${#SHP_TXID} -ne 64 ]; then
+        warn "round $i: no transparent value left to shield, stopping the paced run"
+        break
+    fi
+    wait_for_clock
+    PACED_H=$(( $(height) + 1 ))
+    if ! mine_one; then
+        PACED_STALLED=1
+        fail "round $i: the producer did not connect a block at height $PACED_H with an IV5 fee in the mempool"
+        break
+    fi
+    PACED_V="$(coinbase_version "$PACED_H")"
+    PACED_MS="$(coinbase_ms_offset "$PACED_H")"
+    if [ "$PACED_V" = "2008" ]; then
+        PACED_NOTES=$(( PACED_NOTES + 1 ))
+        if ! is_int "$PACED_MS" || [ "$PACED_MS" -eq 0 ]; then
+            PACED_ZERO_MS=$(( PACED_ZERO_MS + 1 ))
+        fi
+    fi
+done
+
+if [ "$PACED_STALLED" = "0" ] && [ "$PACED_NOTES" -ge 3 ]; then
+    success "$PACED_NOTES paced fee-note blocks connected, tip $PACED_START to $(height)"
+else
+    fail "only $PACED_NOTES paced fee-note blocks connected (tip $PACED_START to $(height))"
+fi
+
+# Without this the count above proves nothing: a run whose offsets all clamped to
+# zero connects on the broken order too.
+if [ "$PACED_NOTES" -gt 0 ] && [ "$PACED_ZERO_MS" -eq 0 ]; then
+    success "every paced note block stamped a nonzero millisecond offset"
+else
+    fail "$PACED_ZERO_MS of $PACED_NOTES paced note blocks stamped a zero offset"
+fi
+
+PACED_AFTER="$(binding_rejections)"
+if [ "$PACED_AFTER" = "$PACED_BEFORE" ]; then
+    success "no coinbase was refused for its transparent binding ($PACED_AFTER total)"
+else
+    fail "the node refused $(( PACED_AFTER - PACED_BEFORE )) coinbases for their transparent binding during the paced run"
+    grep "does not bind this transaction's transparent side" "$NODE_DIR/regtest/debug.log" | tail -3
+fi
+
+# ============================================================
+header "11. The node logged no pool or reward complaint"
 # ============================================================
 
 if grep -qiE "coinbase reward exceeded|block mints value|IV5 pool balance|coinbase IV5|IV5 fee sum" \
@@ -502,6 +655,16 @@ if grep -qiE "coinbase reward exceeded|block mints value|IV5 pool balance|coinba
         "$NODE_DIR/regtest/debug.log" | tail -5
 else
     success "no reward or IV5 pool complaint in the node log"
+fi
+
+# The producer refusing its own coinbase is silent everywhere else: the block is
+# simply never announced, so the only surface is this line.
+TOTAL_BINDING="$(binding_rejections)"
+if [ "$TOTAL_BINDING" = "0" ]; then
+    success "no coinbase payload was refused for its transparent binding in the whole run"
+else
+    fail "$TOTAL_BINDING coinbase payloads were refused for their transparent binding"
+    grep "does not bind this transaction's transparent side" "$NODE_DIR/regtest/debug.log" | tail -3
 fi
 
 ERRORS="$(jstr "$(rpc getinfo 2>/dev/null)" errors)"

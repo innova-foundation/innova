@@ -13258,9 +13258,13 @@ bool CBlock::SignBlock(CWallet& wallet, int64_t nFees)
                     if (it->nTime > nTime) { it = vtx.erase(it); } else { ++it; }
 
                 vtx.insert(vtx.begin() + 1, txCoinStake);
-                // The kernel moved nTime after the template was assembled, so
-                // re-derive the offset before the merkle root is rebuilt.
-                StampMsTimestampCommitment(this, pindexBest->nHeight + 1);
+                // The kernel moved nTime after assembly; re-derive the offset before the merkle root.
+                // Skipped for an IV5 coinbase, whose payload binds that output.
+                if (vtx[0].IsPrivacyVNext())
+                    printf("SignBlock: keeping the template millisecond offset; "
+                           "the coinbase carries an IV5 payload\n");
+                else
+                    StampMsTimestampCommitment(this, pindexBest->nHeight + 1);
                 hashMerkleRoot = BuildMerkleTree();
 
                 // append a signature to our block

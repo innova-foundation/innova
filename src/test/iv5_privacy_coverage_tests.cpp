@@ -27,6 +27,7 @@
 #include "../init.h"
 #include "../main.h"
 #include "../miner.h"
+#include "../mstimestamp.h"
 #include "../nullsend.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
@@ -641,6 +642,20 @@ std::string FundedTransparentAddress(int64_t nAtLeast)
         return addr.ToString();
     }
     return std::string();
+}
+
+// The millisecond commitment the coinbase carries, decoded the way AcceptBlock
+// decodes it.
+uint16_t StampedMsOffset(const CBlock& block)
+{
+    std::vector<CScript> vScripts;
+    for (unsigned int i = 0; i < block.vtx[0].vout.size(); ++i)
+        vScripts.push_back(block.vtx[0].vout[i].scriptPubKey);
+    uint16_t nMs = 0;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(
+        ExtractCanonicalMsTimestampCommitment(vScripts, nMs, strError), strError);
+    return nMs;
 }
 
 // The IV5 fee this block's transactions declare, read out of their payloads the
@@ -1899,6 +1914,130 @@ BOOST_AUTO_TEST_CASE(a_coinbase_iv5_note_is_worth_exactly_the_block_iv5_fee_sum)
                           "a coinbase note below the fee-note fork");
         nRegtestIV5FeeNoteHeight = nHeight;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The producer's coinbase binds its payload with a nonzero millisecond offset stamped first.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(a_fee_note_block_binds_the_millisecond_commitment_it_ships)
+{
+    LadderGuard guard;
+    guard.SelectRegtest();
+    WalletIV5SeedGuard seedGuard;
+    NameHooksGuard hooksGuard;
+
+    const int nHeight = BestIndex()->nHeight + 1;
+    nRegtestBoundaryBHeight = nHeight;
+    nRegtestIV5FeeNoteHeight = nHeight;
+    fRegtestShieldedVNextRehearsal = true;
+    BOOST_REQUIRE(IsShieldedVNextConsensusReady());
+    BOOST_REQUIRE(IsIV5FeeNoteActiveAtHeight(nHeight));
+    // The other half of the combination: regtest carries the millisecond gate
+    // from height 9, so it is live at the block under test.
+    BOOST_REQUIRE_GE(nHeight, FORK_HEIGHT_MS_TIMESTAMP);
+
+    // A shield paying a real IV5 fee, so the producer has something to collect.
+    const std::string strFrom = FundedTransparentAddress(2 * MIN_TX_FEE_SHIELDED);
+    BOOST_REQUIRE_MESSAGE(!strFrom.empty(),
+                          "the wallet holds no spendable transparent output");
+    CWalletTx wtxShield;
+    int64_t nShielded = 0;
+    size_t nInputsUsed = 0;
+    std::string strError;
+    std::string strShieldLog;
+    bool fShield = false;
+    {
+        LogCapture capture;
+        fShield = pwalletMain->CreatePrivacyVNextShield(strFrom, 1, true, wtxShield,
+                                                        nShielded, nInputsUsed,
+                                                        strError);
+        strShieldLog = capture.Release();
+    }
+    BOOST_REQUIRE_MESSAGE(fShield,
+        "could not build the shield that pays this block's IV5 fee: " + strError +
+        "; captured: " + Excerpt(strShieldLog));
+
+    // Templates until one stamps a nonzero offset. The wait is for the wall clock
+    // to reach the second the template's header names; nothing mines meanwhile, so
+    // the chain cannot run further ahead while this loop runs.
+    std::unique_ptr<CBlock> pblock;
+    uint16_t nStamped = 0;
+    unsigned int nAttempts = 0;
+    // A connected block's time can never exceed FutureDrift, so the tip leads the
+    // clock by at most that much and the wait is bounded well inside this.
+    const int64_t nGiveUpMs = GetTimeMillis() + 240000;
+    while (GetTimeMillis() < nGiveUpMs)
+    {
+        ++nAttempts;
+        pblock.reset(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        nStamped = StampedMsOffset(*pblock);
+        if (nStamped != 0)
+            break;
+        const int64_t nWakeMs = (int64_t)pblock->nTime * 1000 + 400;
+        const int64_t nNowMs = GetTimeMillis();
+        MilliSleep(nWakeMs > nNowMs ? (int)(nWakeMs - nNowMs) : 50);
+    }
+    BOOST_REQUIRE_MESSAGE(nStamped != 0,
+        strprintf("no template stamped a nonzero millisecond offset in %u tries, "
+                  "so the coinbase rewrite this case is about never happened",
+                  nAttempts));
+
+    // Positive controls before the assertion: the note is on the coinbase and it
+    // is worth something, so the binding under test was actually computed.
+    BOOST_REQUIRE_MESSAGE(pblock->vtx[0].IsPrivacyVNext(),
+        "the producer attached no coinbase IV5 note");
+    BOOST_REQUIRE_EQUAL(pblock->vtx[0].nVersion, SHIELDED_TX_VERSION_DSP);
+    BOOST_REQUIRE_GT(DeclaredIV5FeeSum(*pblock), 0);
+    BOOST_REQUIRE_EQUAL((int)pblock->vtx[0].privacyVNext.vchPayload.empty(), 0);
+
+    // The check ConnectBlock runs, against the template the producer emitted.
+    {
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(pblock->vtx[0].nVersion),
+                pblock->vtx[0].privacyVNext.vchPayload, effects);
+        BOOST_REQUIRE_MESSAGE(validation.IsValid(), validation.strError);
+        std::string strBindingError;
+        BOOST_CHECK_MESSAGE(
+            CheckPrivacyVNextTransparentBinding(pblock->vtx[0], effects,
+                                                strBindingError),
+            strprintf("the producer's own coinbase fails its transparent binding "
+                      "at millisecond offset %u: ", (unsigned)nStamped) +
+            strBindingError);
+    }
+
+    // And the block connects. Nothing above stands in for ConnectBlock, which is
+    // where the halt was observed.
+    CBlockIndex* pindexPrev = BestIndex();
+    unsigned int nExtraNonce = 0;
+    IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
+    BOOST_REQUIRE(SolveBlock(pblock.get()));
+    const uint256 hash = pblock->GetHash();
+    bool fAccepted = false;
+    std::string strConnectLog;
+    {
+        LogCapture capture;
+        fAccepted = ProcessBlock(NULL, pblock.get());
+        strConnectLog = capture.Release();
+    }
+    BOOST_CHECK_MESSAGE(fAccepted,
+        strprintf("the producer's own fee-note block at millisecond offset %u was "
+                  "refused; captured: ", (unsigned)nStamped) +
+        Excerpt(strConnectLog));
+    BOOST_CHECK_MESSAGE(
+        strConnectLog.find("does not bind this transaction's transparent side") ==
+            std::string::npos,
+        "the producer's own block was rejected for its transparent binding; "
+        "captured: " + Excerpt(strConnectLog));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(mapBlockIndex.count(hash) != 0);
+    }
+    BOOST_CHECK_EQUAL(BestIndex()->nHeight, nHeight);
+    BOOST_CHECK_EQUAL(BestIndex()->GetBlockHash().ToString(), hash.ToString());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

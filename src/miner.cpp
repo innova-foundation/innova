@@ -1326,32 +1326,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             pblock->vtx[0].vout[0].nValue = blockValue;
         }
 
-        // The payload binds the output vector, which only settles here. Rebuild it
-        // against the final coinbase; anything that changes its size invalidates the
-        // penalty already applied above, so drop the note rather than publish a claim
-        // computed over a block that no longer exists.
-        if (fFeeNote)
-        {
-            std::vector<unsigned char> vchFinal;
-            std::string strNoteError;
-            if (!pwallet->BuildPrivacyVNextFeeNote(nIV5FeeSum, pblock->vtx[0],
-                                                   vchFinal, strNoteError) ||
-                vchFinal.size() != nFeeNoteBytes)
-            {
-                printf("CreateNewBlock: dropping the IV5 fee note; %" PRId64
-                       " of IV5 fees are burned: %s\n", nIV5FeeSum,
-                       strNoteError.empty() ? "payload size is not stable"
-                                            : strNoteError.c_str());
-                pblock->vtx[0].privacyVNext.SetNull();
-                pblock->vtx[0].nVersion = CTransaction::CURRENT_VERSION;
-                fFeeNote = false;
-            }
-            else
-            {
-                pblock->vtx[0].privacyVNext.vchPayload.swap(vchFinal);
-            }
-        }
-
         if (pFees)
             *pFees = nFees;
 
@@ -1362,7 +1336,74 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if (!fProofOfStake)
             pblock->UpdateTime(pindexPrev);
         pblock->nNonce         = 0;
+        // Rewrites a coinbase output, so it has to run before the note below binds
+        // the output vector. Stamping afterwards leaves the producer's own block
+        // failing its own binding check on every node that receives it.
         StampMsTimestampCommitment(pblock.get(), nHeight);
+
+        // The payload binds the output vector, which only settles above. Rebuild it
+        // against the final coinbase; anything that changes its size invalidates the
+        // penalty already applied, so drop the note rather than publish a claim
+        // computed over a block that no longer exists.
+        //
+        // Last thing here that may touch vout. IncrementExtraNonce runs after this
+        // and edits vin[0].scriptSig only, which the binding excludes.
+        if (fFeeNote)
+        {
+            std::string strDrop;
+            std::vector<unsigned char> vchFinal;
+            std::string strNoteError;
+            if (!pwallet->BuildPrivacyVNextFeeNote(nIV5FeeSum, pblock->vtx[0],
+                                                   vchFinal, strNoteError) ||
+                vchFinal.size() != nFeeNoteBytes)
+            {
+                strDrop = strNoteError.empty() ? "payload size is not stable"
+                                               : strNoteError;
+            }
+            else
+            {
+                pblock->vtx[0].privacyVNext.vchPayload.swap(vchFinal);
+            }
+            if (!strDrop.empty())
+            {
+                printf("CreateNewBlock: dropping the IV5 fee note; %" PRId64
+                       " of IV5 fees are burned: %s\n", nIV5FeeSum, strDrop.c_str());
+                pblock->vtx[0].privacyVNext.SetNull();
+                pblock->vtx[0].nVersion = CTransaction::CURRENT_VERSION;
+                fFeeNote = false;
+            }
+        }
+    }
+
+    // ConnectBlock's two checks, after everything that may write to the coinbase.
+    // A rewrite between the note's build and here ships a block this node refuses
+    // itself; dropping the note burns the fees and leaves the block valid.
+    if (!pblock->vtx.empty() && pblock->vtx[0].IsPrivacyVNext())
+    {
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(pblock->vtx[0].nVersion),
+                pblock->vtx[0].privacyVNext.vchPayload, effects);
+        std::string strDrop;
+        if (!validation.IsValid())
+        {
+            strDrop = validation.strError;
+        }
+        else
+        {
+            std::string strBindingError;
+            if (!CheckPrivacyVNextTransparentBinding(pblock->vtx[0], effects,
+                                                     strBindingError))
+                strDrop = strBindingError;
+        }
+        if (!strDrop.empty())
+        {
+            printf("CreateNewBlock: dropping the IV5 fee note, its fees are burned: "
+                   "%s\n", strDrop.c_str());
+            pblock->vtx[0].privacyVNext.SetNull();
+            pblock->vtx[0].nVersion = CTransaction::CURRENT_VERSION;
+        }
     }
 
     return pblock.release();
