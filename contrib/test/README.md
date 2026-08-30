@@ -215,6 +215,20 @@ were constructed, so it cannot pass by not executing. Run both: the static check
 alone cannot tell a live widget from a dead one, and the probe alone never
 constructs a widget nothing instantiates.
 
+## Native Tor and -datadir
+
+```bash
+contrib/test/nativetor_datadir_regtest_test.sh
+```
+
+`-nativetor=1` derives the tor DataDirectory and the hidden service directory
+from the configured datadir. The harness asserts tor ran with that path
+(positive control), that the onion hostname is under it, that nothing appeared
+under the default datadir (the assertion the old behaviour fails), and that
+`getinfo` reports the same address the file holds. The bundled tor's SOCKS port
+is the compile-time `NATIVETOR_SOCKS_PORT`, so only one nativetor node runs per
+host and the suite is marked `fixed_ports`.
+
 ## Release verification evidence
 
 `check_v5_release_policy.py` requires a SHA-256 for every field of

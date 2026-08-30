@@ -1942,7 +1942,7 @@ bool AppInit2()
         }
         // Poll for the hostname file with a bound. No onion address is not fatal.
         string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+        fs::path const hostname_path = GetOnionHostnameFile();
 
         for (int i = 0; i < NATIVETOR_HOSTNAME_TIMEOUT_SECS && !fShutdown; i++) {
             if (fs::exists(hostname_path)) {

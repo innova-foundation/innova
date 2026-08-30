@@ -893,7 +893,7 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/tor").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
 
         string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+        fs::path const hostname_path = GetOnionHostnameFile();
         if (!fs::exists(hostname_path)) {
             printf("No external address found.");
         }
