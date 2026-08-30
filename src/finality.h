@@ -59,6 +59,8 @@ static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs b
 // the window, and the last quarter of the window is left for signing and relay.
 static const int64_t FINALITY_VOTER_POLL_MS_PRE_DAG = 5000;
 static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
+/** Bound on how long shutdown waits for ThreadFinalityVoter to leave the wait. */
+static const int64_t FINALITY_VOTER_STOP_TIMEOUT_MS = 20000;
 // Bounded retries per epoch so a node with no eligible stake does not rescan
 // its wallet on every poll of the window.
 static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
@@ -1772,6 +1774,14 @@ void NotifyFinalityTipChanged(int nHeight);
  *  nTimeoutMs elapses. The timeout is a backstop only -- correctness comes from
  *  the latch, which holds for the whole epoch, not from the poll period. */
 void WaitForFinalityVoteWork(int64_t nTimeoutMs);
+
+/** Producer: has shutdown latched the wait closed? Read under the wake mutex. */
+bool FinalityVoterShouldStop();
+
+/** Shutdown: latch the wait closed, wake every waiter, and wait for
+ *  ThreadFinalityVoter to leave it. Must run before the process exits: the wake
+ *  condition variable is static and its destructor asserts on a live waiter. */
+void StopFinalityVoter();
 
 /** Producer: take an attempt at the outstanding epoch at nTipHeight. */
 FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut);

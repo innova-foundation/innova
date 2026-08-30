@@ -135,6 +135,10 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
+        // Before any teardown: a waiter left on the static vote condition variable aborts the
+        // process at exit. Not in Finalise(), so a pass holding cs_main can finish.
+        StopFinalityVoter();
+
         CZKContext::Shutdown();
 
         if (fHybridSPV && pwalletMain)

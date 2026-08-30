@@ -1641,6 +1641,8 @@ void StakeMiner(CWallet *pwallet)
                 ReleaseFinalityVote(nClaimedEpoch, fProduced);
             }
             WaitForFinalityVoteWork(FINALITY_VOTER_POLL_MS_POST_DAG);
+            if (FinalityVoterShouldStop())
+                return;
             continue;
         }
 
