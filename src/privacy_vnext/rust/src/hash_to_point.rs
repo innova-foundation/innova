@@ -155,6 +155,7 @@ mod tests {
     fn no_hashing_domain_is_a_prefix_of_another() {
         const LIB: &str = include_str!("lib.rs");
         const SOURCES: &[&str] = &[
+            include_str!("differential.rs"),
             include_str!("disclosure.rs"),
             include_str!("fcmp.rs"),
             include_str!("hash_to_point.rs"),
