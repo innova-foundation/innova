@@ -46,15 +46,6 @@ ifneq ($(BDB_BREW_PREFIX),)
     LIBS += -L$(BDB_BREW_PREFIX)/lib
 endif
 
-OPENSSL_VERSION := $(shell pkg-config --modversion openssl 2>/dev/null)
-ifneq ($(OPENSSL_VERSION),)
-ifeq ($(origin USE_NATIVETOR), file)
-ifneq ($(filter 3.%,$(OPENSSL_VERSION)),)
-    USE_NATIVETOR := -
-endif
-endif
-endif
-
 LMODE = dynamic
 LMODE2 = dynamic
 ifdef STATIC
@@ -97,17 +88,13 @@ ifneq (${USE_NATIVETOR}, -)
 endif
 
 # Include and define surface for the vendored tor sources only; it is kept off
-# the global DEFS so tor's headers cannot shadow Innova's. The three path macros
-# must be defined but are inert: the data directory and hidden-service paths are
-# passed explicitly on the tor_main argv.
+# the global DEFS so tor's headers cannot shadow Innova's. HAVE_CONFIG_H is what
+# makes tor's sources pull in orconfig.h; the path macros live in orconfig.h.
 TOR_CPPFLAGS = -DHAVE_CONFIG_H \
     -I$(CURDIR)/tor \
     -I$(CURDIR)/tor/ext \
     -I$(CURDIR)/tor/ext/trunnel \
-    -I$(CURDIR)/tor/trunnel \
-    -DSHARE_DATADIR='"/usr/local/share"' \
-    -DLOCALSTATEDIR='"/usr/local/var"' \
-    -DBINDIR='"/usr/local/bin"'
+    -I$(CURDIR)/tor/trunnel
 
 # Upstream tor is warning-clean under its own flag set, not under Innova's.
 # Quieten the third-party noise rather than editing vendored sources.
