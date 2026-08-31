@@ -2143,11 +2143,11 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("epoch_state_latest_completed_epoch", nCompletedEpoch));
     result.push_back(Pair("epoch_state_digest", fHaveCompletedEpochState
                           ? completedEpochState.GetDigest().GetHex() : uint256(0).GetHex()));
-    result.push_back(Pair("epoch_curve_root", fHaveCompletedEpochState
+    result.push_back(Pair("epoch_state_curve_root", fHaveCompletedEpochState
                           ? completedEpochState.hashCurveRoot.GetHex() : uint256(0).GetHex()));
-    result.push_back(Pair("epoch_nullifier_root", fHaveCompletedEpochState
+    result.push_back(Pair("epoch_state_nullifier_root", fHaveCompletedEpochState
                           ? completedEpochState.hashNullifierRoot.GetHex() : uint256(0).GetHex()));
-    result.push_back(Pair("epoch_vote_set_root", fHaveCompletedEpochState
+    result.push_back(Pair("epoch_state_vote_set_root", fHaveCompletedEpochState
                           ? completedEpochState.hashVoteSetRoot.GetHex() : uint256(0).GetHex()));
     result.push_back(Pair("deterministic_finalized_height_available",
                           fHaveDeterministicFinalizedHeight));

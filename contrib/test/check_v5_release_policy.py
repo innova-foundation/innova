@@ -1088,15 +1088,15 @@ def validate_evidence(evidence: Dict[str, Any], manifest: Dict[str, Any],
         reject_obvious_placeholder_sha256(node.get("committee_set_hash", ""), "preflight nodes[%d].committee_set_hash" % index)
 
     digest_health = {
-        (str(node.get("epoch_state_digest", "")), str(node.get("epoch_curve_root", "")),
-         str(node.get("epoch_nullifier_root", "")), str(node.get("epoch_vote_set_root", "")))
+        (str(node.get("epoch_state_digest", "")), str(node.get("epoch_state_curve_root", "")),
+         str(node.get("epoch_state_nullifier_root", "")), str(node.get("epoch_state_vote_set_root", "")))
         for node in nodes
     }
     if len(digest_health) != 1 or any(
             not is_hex(value, (64,)) for values in digest_health for value in values):
         raise PolicyError("four-node epoch/root digests are missing or differ")
     for index, node in enumerate(nodes):
-        for field in ("epoch_state_digest", "epoch_curve_root", "epoch_nullifier_root", "epoch_vote_set_root"):
+        for field in ("epoch_state_digest", "epoch_state_curve_root", "epoch_state_nullifier_root", "epoch_state_vote_set_root"):
             reject_obvious_placeholder_sha256(node.get(field, ""), "preflight nodes[%d].%s" % (index, field))
 
     expected_serializer = str(evidence.get("expected_serializer_schema", ""))
@@ -1536,9 +1536,9 @@ def selftest() -> int:
                     "deterministic_finalized_height_available": True,
                     "committee_set_hash": fixture_sha256("committee-set"),
                     "epoch_state_digest": fixture_sha256("epoch-state"),
-                    "epoch_curve_root": fixture_sha256("epoch-curve-root"),
-                    "epoch_nullifier_root": fixture_sha256("epoch-nullifier-root"),
-                    "epoch_vote_set_root": fixture_sha256("epoch-vote-set-root"),
+                    "epoch_state_curve_root": fixture_sha256("epoch-curve-root"),
+                    "epoch_state_nullifier_root": fixture_sha256("epoch-nullifier-root"),
+                    "epoch_state_vote_set_root": fixture_sha256("epoch-vote-set-root"),
                     "boundary_a_activation_height": 1260,
                     "boundary_a_configured": True,
                     "boundary_a_active": False,
@@ -2031,7 +2031,7 @@ def selftest() -> int:
 
         placeholder_root = json.loads(json.dumps(payload))
         for node in placeholder_root["nodes"]:
-            node["epoch_curve_root"] = "7" * 64
+            node["epoch_state_curve_root"] = "7" * 64
         evidence.write_text(json.dumps(placeholder_root), encoding="utf-8")
         placeholder_root_manifest = dict(manifest_payload)
         placeholder_root_manifest["evidence_bundle_sha256"] = file_digest(evidence)

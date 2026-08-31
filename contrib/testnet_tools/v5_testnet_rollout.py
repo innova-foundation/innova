@@ -477,9 +477,9 @@ def collect_node(client: RpcClient, ssh_options: Sequence[str], timeout: int,
         "legacy_anon_status": finality.get("legacy_anon_status", "missing"),
         "privacy_protocol_status": finality.get("privacy_protocol_status", "missing"),
         "epoch_state_digest": finality.get("epoch_state_digest", ""),
-        "epoch_curve_root": finality.get("epoch_curve_root", ""),
-        "epoch_nullifier_root": finality.get("epoch_nullifier_root", ""),
-        "epoch_vote_set_root": finality.get("epoch_vote_set_root", ""),
+        "epoch_state_curve_root": finality.get("epoch_state_curve_root", ""),
+        "epoch_state_nullifier_root": finality.get("epoch_state_nullifier_root", ""),
+        "epoch_state_vote_set_root": finality.get("epoch_state_vote_set_root", ""),
         "shielded_pool_value": shielded.get("shielded_pool_value"),
         "unspent_notes": shielded.get("unspent_notes"),
         "shielded_state_healthy": bool_field(shielded.get("shielded_state_healthy")),
@@ -606,8 +606,8 @@ def run_preflight(args: argparse.Namespace) -> Dict[str, Any]:
         for node in results
     }
     digest_health = {
-        (str(node["epoch_state_digest"]), str(node["epoch_curve_root"]),
-         str(node["epoch_nullifier_root"]), str(node["epoch_vote_set_root"]))
+        (str(node["epoch_state_digest"]), str(node["epoch_state_curve_root"]),
+         str(node["epoch_state_nullifier_root"]), str(node["epoch_state_vote_set_root"]))
         for node in results
     }
     checks = {
