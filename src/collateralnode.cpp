@@ -131,7 +131,9 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         }
 
         isLocal = addr.IsRFC1918() || addr.IsLocal();
-        //if(Params().MineBlocksOnDemand()) isLocal = false;
+        // Regtest fleets announce loopback endpoints; keep the relay path
+        // reachable there. Mainnet and testnet still refuse to gossip them.
+        if (fRegTest) isLocal = false;
 
         std::string vchPubKey(pubkey.begin(), pubkey.end());
         std::string vchPubKey2(pubkey2.begin(), pubkey2.end());
