@@ -1301,13 +1301,18 @@ void CCollateralNode::Check(bool forceCheck)
 
 uint256 GetCollateralnodeRegistrationContext(const CPubKey& pubkey2,
                                              const CService& addr,
-                                             const std::string& strPoolPayout)
+                                             const std::string& strPoolPayout,
+                                             const CPubKey& pubkeyPayee)
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/IV5/CollateralnodeRegistrationContext/v1");
+    // v2 binds the announce key. Everything else here is public in the isee, so
+    // leaving the paid key out let anyone re-announce someone else's attested
+    // note with their own payee and collect the reward.
+    ss << std::string("Innova/IV5/CollateralnodeRegistrationContext/v2");
     ss << pubkey2.Raw();
     ss << addr.ToString();
     ss << strPoolPayout;
+    ss << pubkeyPayee.Raw();
     return ss.GetHash();
 }
 
@@ -1347,7 +1352,7 @@ bool CheckCollateralnodeCollateral(const CCollateralNode& mn,
     // attestation committed to, or a relay could rewrite either of them.
     if (attested.contextDigest !=
         GetCollateralnodeRegistrationContext(mn.pubkey2, mn.addr,
-                                             mn.strPoolPayout))
+                                             mn.strPoolPayout, mn.pubkey))
     {
         errorMessage = "announcement does not match the attested registration context";
         return false;

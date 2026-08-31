@@ -188,6 +188,9 @@ struct NodeContext
 {
     CKey keyCollateralnode;
     CPubKey pubkey2;
+    // The announce key: what signs the isee and where a winner is paid.
+    CKey keyAnnounce;
+    CPubKey pubkey;
     CService addr;
     std::string strPoolPayout;
     uint256 digest;
@@ -198,8 +201,10 @@ struct NodeContext
     {
         keyCollateralnode.MakeNewKey(true);
         pubkey2 = keyCollateralnode.GetPubKey();
+        keyAnnounce.MakeNewKey(true);
+        pubkey = keyAnnounce.GetPubKey();
         digest = GetCollateralnodeRegistrationContext(pubkey2, addr,
-                                                      strPoolPayout);
+                                                      strPoolPayout, pubkey);
     }
 };
 
@@ -286,10 +291,19 @@ BOOST_AUTO_TEST_CASE(the_chain_carries_only_the_registration_digest)
     // still match the registration.
     BOOST_CHECK(GetCollateralnodeRegistrationContext(
                     node.pubkey2, CService("198.51.100.9", 15539),
-                    node.strPoolPayout) != node.digest);
+                    node.strPoolPayout, node.pubkey) != node.digest);
     BOOST_CHECK(GetCollateralnodeRegistrationContext(
-                    node.pubkey2, node.addr, node.strPoolPayout + "x") !=
-                node.digest);
+                    node.pubkey2, node.addr, node.strPoolPayout + "x",
+                    node.pubkey) != node.digest);
+
+    // The payee is bound too: an attested note re-announced with someone else's
+    // announce key no longer hashes to its registration, which is what stops the
+    // reward being redirected by anyone who can read the original broadcast.
+    CKey keyOther;
+    keyOther.MakeNewKey(true);
+    BOOST_CHECK(GetCollateralnodeRegistrationContext(
+                    node.pubkey2, node.addr, node.strPoolPayout,
+                    keyOther.GetPubKey()) != node.digest);
 }
 
 // The announcement publishes the key image and nothing that identifies the pool note.

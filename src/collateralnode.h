@@ -73,16 +73,12 @@ int CountCollateralnodesAboveProtocol(int protocolVersion);
 void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
 bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);
 
-// What an IV5 collateral attestation commits to on chain.
-//
-// The announcement carries the node's identity key, its endpoint and its pool payout
-// address; the attestation carries only this digest of them, inside the region its
-// spend-authorization proof signs. Recomputing it here is what stops an announcement being
-// relayed with any of the three replaced, and what stops one node's attestation being
-// claimed by another.
+/** Digest of the announcement fields (identity key, endpoint, payee) an IV5 collateral
+ *  attestation commits to; binds them so none can be replaced on relay. */
 uint256 GetCollateralnodeRegistrationContext(const CPubKey& pubkey2,
                                              const CService& addr,
-                                             const std::string& strPoolPayout);
+                                             const std::string& strPoolPayout,
+                                             const CPubKey& pubkeyPayee);
 
 // Whether a node's collateral is live: a transparent outpoint, or a private attestation
 // whose key image is watched and unspent. No deadline on either form.

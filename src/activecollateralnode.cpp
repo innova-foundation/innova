@@ -169,7 +169,9 @@ bool CActiveCollateralnode::RegisterFromPrivateCollateral(std::string& errorMess
         // The bound tuple can never change for this key image, so a drifted config
         // would only produce announcements every peer rejects.
         const CService recordService(record.strAddr);
-        if(attested.contextDigest != GetCollateralnodeRegistrationContext(pubKeyCollateralnode, recordService, record.strPoolPayout)) {
+        CPubKey pubkeyAnnounceCheck;
+        pwalletMain->GetPubKey(CKeyID(record.announceKeyId), pubkeyAnnounceCheck);
+        if(attested.contextDigest != GetCollateralnodeRegistrationContext(pubKeyCollateralnode, recordService, record.strPoolPayout, pubkeyAnnounceCheck)) {
             errorMessage = "the current configuration no longer hashes to the attested registration context";
             printf("CActiveCollateralnode::RegisterFromPrivateCollateral() - %s\n", errorMessage.c_str());
             continue;

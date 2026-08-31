@@ -843,14 +843,13 @@ Value collateralnode(const Array& params, bool fHelp)
             pChosen = &vCandidates[0];
         }
 
-        const uint256 hashContext =
-            GetCollateralnodeRegistrationContext(pubkey2, service, strPoolPayout);
-
+        // The context digest binds the announce key, so it cannot be computed until
+        // that key exists -- which is on the confirm path below. A dry run therefore
+        // reports the inputs rather than a digest it could not reproduce.
         Object obj;
         obj.push_back(Pair("endpoint", service.ToString()));
         obj.push_back(Pair("collateralnode_pubkey", HexStr(pubkey2.Raw())));
         obj.push_back(Pair("pool_payout", strPoolPayout));
-        obj.push_back(Pair("context_digest", hashContext.ToString()));
         obj.push_back(Pair("chosen_note", PrivacyVNextCandidateObject(*pChosen)));
         obj.push_back(Pair("override_syntax",
                            "pass <txhash>:<index> to name a different note"));
@@ -891,6 +890,13 @@ Value collateralnode(const Array& params, bool fHelp)
         CKey keyAnnounce;
         if (!pwalletMain->GetKey(pubkeyAnnounce.GetID(), keyAnnounce))
             throw runtime_error("could not read the announce key back from the wallet");
+
+        // Bind the key a winner is paid at, so this attestation cannot be re-announced
+        // with someone else's payee.
+        const uint256 hashContext = GetCollateralnodeRegistrationContext(
+            pubkey2, service, strPoolPayout, pubkeyAnnounce);
+        obj.push_back(Pair("context_digest", hashContext.ToString()));
+        obj.push_back(Pair("announce_pubkey", HexStr(pubkeyAnnounce.Raw())));
 
         CWalletTx wtx;
         uint256 keyImage = 0;
@@ -1324,10 +1330,13 @@ Value collateralnode(const Array& params, bool fHelp)
 
             CKey keyCollateralnode;
             const CPubKey pubkey2 = RequireCollateralnodeKey(keyCollateralnode);
+            CPubKey pubkeyBoundPayee;
+            pwalletMain->GetPubKey(record.announceKeyId, pubkeyBoundPayee);
             if (attested.contextDigest !=
                 GetCollateralnodeRegistrationContext(pubkey2,
                                                      CService(record.strAddr),
-                                                     record.strPoolPayout))
+                                                     record.strPoolPayout,
+                                                     pubkeyBoundPayee))
             {
                 one.push_back(Pair("status",
                                    "the current configuration no longer hashes to the "
@@ -1462,8 +1471,11 @@ Value collateralnode(const Array& params, bool fHelp)
                 if (colLateralSigner.SetKey(strCollateralNodePrivKey, strKeyError,
                                             keyCollateralnode, pubkey2))
                 {
+                    CPubKey pubkeyAnnounce;
+                    pwalletMain->GetPubKey(record.announceKeyId, pubkeyAnnounce);
                     const uint256 hashNow = GetCollateralnodeRegistrationContext(
-                        pubkey2, CService(record.strAddr), record.strPoolPayout);
+                        pubkey2, CService(record.strAddr), record.strPoolPayout,
+                        pubkeyAnnounce);
                     bound.push_back(Pair("current_config_digest",
                                          hashNow.ToString()));
                     bound.push_back(Pair("config_matches",
