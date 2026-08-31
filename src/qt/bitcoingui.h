@@ -40,6 +40,7 @@ class QModelIndex;
 class QProgressBar;
 class QStackedWidget;
 class QUrl;
+class QDialog;
 QT_END_NAMESPACE
 
 class ActiveLabel : public QLabel
@@ -170,6 +171,11 @@ private:
     QAction *openPeerAction;
     QAction *openConfEditorAction;
     QAction *openMNConfEditorAction;
+
+    /** The modal dialog currently running its own event loop, if any. A queued
+     *  application quit does not survive such a loop, so the shutdown poll
+     *  rejects this first. Borrowed, never owned. */
+    QDialog *blockingDialog;
 
     QSystemTrayIcon *trayIcon;
     Notificator *notificator;
@@ -326,6 +332,9 @@ private slots:
 
     void updateWeight();
     void updateStakingIcon();
+    /** Leave any modal dialog and quit once a shutdown has been asked for.
+     *  SIGTERM only sets a flag, so without this poll the GUI never sees it. */
+    void pollShutdown();
 };
 
 #endif

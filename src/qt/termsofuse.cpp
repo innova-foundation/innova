@@ -42,6 +42,8 @@ void TermsOfUse::clickAgree()
 
 void TermsOfUse::clickCancel()
 {
-    Shutdown(NULL); //Needs updating
-    close();
+    // Request shutdown only; bitcoin.cpp checks the flag before entering the
+    // event loop. Calling Shutdown() here would leave the GUI on a stopped node.
+    StartShutdown();
+    reject();
 }

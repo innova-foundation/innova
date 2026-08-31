@@ -185,7 +185,7 @@ Value getinfo(const Array& params, bool fHelp)
     if(fNativeTor)
     {
         string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+        fs::path const hostname_path = GetOnionHostnameFile();
 
         if (!fs::exists(hostname_path)) {
             printf("No external address found.");

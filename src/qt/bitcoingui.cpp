@@ -43,6 +43,7 @@
 #include "privacypage.h"
 #include "chatwidget.h"
 #include "managenamespage.h"
+#include "init.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -143,6 +144,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     unlockWalletAction(0),
     lockWalletAction(0),
     aboutQtAction(0),
+    blockingDialog(0),
     trayIcon(0),
     notificator(0),
     rpcConsole(0),
@@ -324,7 +326,29 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     connect(addressBookPage, SIGNAL(verifyMessage(QString)), this, SLOT(gotoVerifyMessageTab(QString)));
     connect(receiveCoinsPage, SIGNAL(signMessage(QString)), this, SLOT(gotoSignMessageTab(QString)));
 
+    // A shutdown reaches the GUI only as a quit queued on the application
+    // object, and a nested modal dialog loop does not deliver it, so the window
+    // polls the flag instead of waiting to be told.
+    QTimer *timerShutdown = new QTimer(this);
+    connect(timerShutdown, SIGNAL(timeout()), this, SLOT(pollShutdown()));
+    timerShutdown->start(200);
+
     gotoOverviewPage();
+}
+
+void BitcoinGUI::pollShutdown()
+{
+    if (!ShutdownRequested())
+        return;
+    // Leave the modal loop first. Its own exec() is what has to return; quitting
+    // the application does not end it, which is why a stop issued during the
+    // terms dialog left the process running.
+    if (blockingDialog)
+    {
+        printf("Shutdown requested: closing the terms-of-use dialog\n");
+        blockingDialog->reject();
+    }
+    qApp->quit();
 }
 
 BitcoinGUI::~BitcoinGUI()
@@ -701,9 +725,13 @@ void BitcoinGUI::checkTOU()
         agreed_to_tou = true;
     }
 
-    if(!agreed_to_tou){
+    // A stop that arrives before the dialog opens must not open it.
+    if(!agreed_to_tou && !ShutdownRequested()){
+        printf("First run: showing the terms-of-use dialog\n");
         TermsOfUse dlg(this);
+        blockingDialog = &dlg;
         dlg.exec();
+        blockingDialog = 0;
     }
 }
 
@@ -893,7 +921,7 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/tor").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
 
         string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+        fs::path const hostname_path = GetOnionHostnameFile();
         if (!fs::exists(hostname_path)) {
             printf("No external address found.");
         }

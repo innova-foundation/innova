@@ -1370,6 +1370,21 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     return path;
 }
 
+boost::filesystem::path GetTorDataDir()
+{
+    return GetDataDir(false) / "tor";
+}
+
+boost::filesystem::path GetOnionServiceDir()
+{
+    return GetDataDir(false) / "onion";
+}
+
+boost::filesystem::path GetOnionHostnameFile()
+{
+    return GetOnionServiceDir() / "hostname";
+}
+
 boost::filesystem::path GetConfigFile()
 {
     boost::filesystem::path pathConfigFile(GetArg("-conf", "innova.conf"));

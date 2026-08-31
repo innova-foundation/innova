@@ -50,6 +50,10 @@ evidence_run "the wallet carries the bundled Tor" \
     "test \"\$(nm -C ./Innova | grep -c -E ' (T|t) (tor_main|tor_tls_)')\" -gt 0"
 evidence_run "build the widget tree and resolve every connection" \
     "contrib/test/qt_connect_probe.sh ./Innova \"\$PWD/qt-connect-probe\" \"\$PWD/qt-connect-probe.stderr.log\""
+# A fresh datadir opens the terms dialog; its nested modal loop must not swallow
+# SIGTERM or the stop RPC.
+evidence_run "stop the wallet on SIGTERM and on the stop RPC, dialog or no dialog" \
+    "contrib/test/qt_shutdown_probe.sh ./Innova \"\$PWD/qt-shutdown-probe\""
 
 # The policy checks the manifest's declared Qt version, so refuse evidence from
 # any other toolchain version.

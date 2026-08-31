@@ -301,7 +301,11 @@ int main(int argc, char *argv[])
                 // Place this here as guiref has to be defined if we don't want to lose URIs
                 ipcInit(argc, argv);
 
-                app.exec();
+                // A quit queued while the terms dialog held its own event loop
+                // is dropped when exec() starts, so entering the main loop here
+                // would ignore the stop and run on. Fall through to Shutdown.
+                if (!ShutdownRequested())
+                    app.exec();
 
                 window.hide();
                 window.setClientModel(0);

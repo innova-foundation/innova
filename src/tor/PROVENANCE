@@ -133,9 +133,10 @@ With --disable-module-pow a client cannot answer a proof-of-work challenge from
 an onion service under DoS pressure, so such a fetch degrades rather than
 succeeding. This is forced: the PoW implementation is the GPL equix/hashx code.
 
-anonymize_tor_data_directory() and anonymize_service_directory() are derived
-from GetDefaultDataDir(), not GetDataDir(), so -datadir does not move the tor
-or onion directories. That matches the behaviour of the copy this replaces.
+anonymize_tor_data_directory() and anonymize_service_directory() derive from
+GetTorDataDir()/GetOnionServiceDir(), which honour -datadir. Both stay at the
+datadir root rather than under the network subdirectory, so the layout is
+unchanged for a node started without -datadir.
 
 Innova-authored files in this directory
 ---------------------------------------

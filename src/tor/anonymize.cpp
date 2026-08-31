@@ -10,11 +10,11 @@
 #include <boost/filesystem.hpp>
 #include <string>
 
+// Cached: tor's argv keeps the pointer. First called on the onion thread, after
+// -datadir is parsed.
 char const* anonymize_tor_data_directory(
 ) {
-    static std::string const retrieved = (
-        GetDefaultDataDir(
-        ) / "tor"
+    static std::string const retrieved = GetTorDataDir(
     ).string(
     );
     return retrieved.c_str(
@@ -23,9 +23,7 @@ char const* anonymize_tor_data_directory(
 
 char const* anonymize_service_directory(
 ) {
-    static std::string const retrieved = (
-        GetDefaultDataDir(
-        ) / "onion"
+    static std::string const retrieved = GetOnionServiceDir(
     ).string(
     );
     return retrieved.c_str(

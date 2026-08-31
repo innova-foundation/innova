@@ -1908,6 +1908,108 @@ else
 fi
 
 # ============================================================
+header "14a. An operator can read the counted note-vote set over RPC"
+# ============================================================
+
+# Everything above reads the note lane out of debug.log and out of coinbase
+# scripts. An operator has neither. The counted set is what the tally acts on,
+# so it is the number that says the private lane is working -- and it is the one
+# number no status call reported: transparent_votes/private_votes count
+# CFinalityVote carriers, which this run never produces, so a healthy note lane
+# reads as zero on every other field.
+#
+# Both surfaces are checked because they answer different questions:
+# getfinalityinfo answers "is the lane live right now", getepochinfo answers
+# "what did epoch E count", and only the second is addressable after the fact.
+NV_RPC_OK=1
+NV_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    [ "$(jget2 "$FI" note_votes configured)" = "true" ] || {
+        NV_RPC_OK=0; NV_WHY="node$n reports the note-vote fork unconfigured"; }
+    [ "$(jget2 "$FI" note_votes active)" = "true" ] || {
+        NV_RPC_OK=0; NV_WHY="node$n reports the note-vote fork inactive at the tip"; }
+    [ "$(jget2 "$FI" note_votes activation_height)" = "$NOTE_VOTE_HEIGHT" ] || {
+        NV_RPC_OK=0
+        NV_WHY="node$n reports activation_height $(jget2 "$FI" note_votes activation_height), not $NOTE_VOTE_HEIGHT"; }
+done
+if [ "$NV_RPC_OK" -eq 1 ]; then
+    success "every node reports the note-vote fork as configured and active at height $NOTE_VOTE_HEIGHT"
+else
+    fail "the note-vote lane is not reported as live: $NV_WHY"
+fi
+
+# The counted set for the epoch the tally certified, from the epoch-addressable
+# call. node0's own number has to be real before agreement means anything: three
+# nodes all reporting zero agree just as well as three reporting one.
+TALLY_EI_NV="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+NV_COUNTED="$(jget "$TALLY_EI_NV" note_votes_counted)"
+NV_EQUIV="$(jget "$TALLY_EI_NV" note_votes_equivocated)"
+NV_TAGS="$(jlen "$TALLY_EI_NV" note_vote_tags)"
+is_int "$NV_COUNTED" || NV_COUNTED=0
+is_int "$NV_EQUIV" || NV_EQUIV=0
+is_int "$NV_TAGS" || NV_TAGS=0
+if [ "$NV_COUNTED" -ge 1 ] && [ "$NV_TAGS" = "$NV_COUNTED" ] && [ "$NV_EQUIV" = "0" ]; then
+    success "getepochinfo $TALLY_EPOCH reports $NV_COUNTED counted note vote(s), $NV_TAGS tag(s), 0 equivocated"
+else
+    fail "getepochinfo $TALLY_EPOCH reports counted=$NV_COUNTED tags=$NV_TAGS equivocated=$NV_EQUIV"
+fi
+
+# First element of a JSON array field.
+jfirst() {
+    FIELD="$2" python3 -c '
+import json, os, sys
+try:
+    v = json.load(sys.stdin).get(os.environ["FIELD"]) or []
+except Exception:
+    v = []
+print(v[0] if isinstance(v, list) and v else "")
+' <<< "$1" 2>/dev/null
+}
+
+# The tag the RPC publishes must be the tag the producer cast. Anything else
+# would be a number that moves with the lane without being of it. The producer
+# logs a 10-character prefix, so the comparison is on that prefix.
+NV_RPC_TAG="$(jfirst "$TALLY_EI_NV" note_vote_tags)"
+PROD_TAG="$(producer_tag "$TALLY_EPOCH")"
+if [ ${#PROD_TAG} -ge 10 ] && [ -n "$NV_RPC_TAG" ] && \
+   [ "${NV_RPC_TAG:0:${#PROD_TAG}}" = "$PROD_TAG" ]; then
+    success "the tag getepochinfo publishes is the one node0 cast (${NV_RPC_TAG:0:16})"
+else
+    fail "getepochinfo tag '$NV_RPC_TAG' does not start with the cast tag '$PROD_TAG'"
+fi
+
+NV_AGREE=1
+for ((n=1; n<NUM_NODES; n++)); do
+    PEER_EI="$(rpc "$n" getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+    [ "$(jget "$PEER_EI" note_votes_counted)" = "$NV_COUNTED" ] || NV_AGREE=0
+    [ "$(jfirst "$PEER_EI" note_vote_tags)" = "$NV_RPC_TAG" ] || NV_AGREE=0
+done
+if [ "$NV_AGREE" -eq 1 ]; then
+    success "every node reports the same counted note-vote set for epoch $TALLY_EPOCH"
+else
+    fail "nodes disagree on epoch $TALLY_EPOCH's counted note-vote set"
+fi
+
+# The point of the surface: the lane worked while every pre-existing vote
+# counter read zero. If transparent/private vote counts are ever non-zero here
+# this assertion is measuring the wrong thing and must be revisited, so it fails
+# rather than being relaxed.
+BLIND_OK=1
+BLIND_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    PV="$(jget "$FI" private_votes)"
+    is_int "$PV" || PV=-1
+    [ "$PV" = "0" ] || { BLIND_OK=0; BLIND_WHY="node$n reports private_votes=$PV"; }
+done
+if [ "$BLIND_OK" -eq 1 ]; then
+    success "private_votes reads 0 on every node while the note lane carried epoch $TALLY_EPOCH -- which is why note_votes had to exist"
+else
+    fail "a transparent-carrier private vote appeared, so this run no longer isolates the note lane: $BLIND_WHY"
+fi
+
+# ============================================================
 header "15. A reorg that releases a seated member does not move the committee"
 # ============================================================
 

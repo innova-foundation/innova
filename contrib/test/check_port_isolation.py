@@ -34,6 +34,14 @@ EXEMPT = {
     "check_port_isolation.sh",
 }
 
+# Ports fixed by a compile-time constant in the binary, per harness. The suite must be
+# marked fixed_ports in suites.json so the sweep serialises it; the literal is
+# asserted against the constant.
+COMPILE_TIME_PORTS = {
+    # src/idnsdescriptor.h NATIVETOR_SOCKS_PORT: the bundled tor's SOCKS port.
+    "nativetor_datadir_regtest_test.sh": {"NATIVETOR_SOCKS_PORT": 9089},
+}
+
 ASSIGN = re.compile(
     r'^[ \t]*(?P<name>[A-Za-z_][A-Za-z_0-9]*)='
     r'(?P<rhs>.*)$'
@@ -128,6 +136,23 @@ def main():
             continue
         checked += 1
         rel = path.name
+
+        # Compile-time ports are excluded from the base checks: they are not the
+        # harness's to allocate. The declared literal must still be the one the
+        # harness uses, so a constant that moves is not silently tolerated.
+        fixed = COMPILE_TIME_PORTS.get(rel, {})
+        for name, want in fixed.items():
+            rhs = next((r for n, r, _ in assignments if n == name), None)
+            if rhs is None:
+                failures.append(
+                    f"{rel}: {name} is declared compile-time but the harness no "
+                    f"longer assigns it")
+            elif rhs.strip('"') != str(want):
+                failures.append(
+                    f"{rel}: {name}={rhs} but it is declared compile-time as {want}")
+        assignments = [a for a in assignments if a[0] not in fixed]
+        if not assignments:
+            continue
 
         # 1. sources the library
         if "lib/testports.sh" not in text:
