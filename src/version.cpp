@@ -62,5 +62,15 @@ const std::string CLIENT_NAME("Innovai");
 #    endif
 #endif
 
+#ifndef BUILD_COMMIT
+#    define BUILD_COMMIT "unknown"
+#endif
+
+#ifndef BUILD_DIRTY
+#    define BUILD_DIRTY 0
+#endif
+
 const std::string CLIENT_BUILD(BUILD_DESC CLIENT_VERSION_SUFFIX);
 const std::string CLIENT_DATE(BUILD_DATE);
+const std::string CLIENT_BUILD_COMMIT(BUILD_COMMIT);
+const bool CLIENT_BUILD_DIRTY = BUILD_DIRTY != 0;
