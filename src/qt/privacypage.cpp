@@ -12,6 +12,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -19,8 +20,25 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QTabWidget>
 #include <QVBoxLayout>
+
+namespace {
+
+// Each tab holds a tall form, and a QTabWidget will otherwise squeeze its page
+// down with the window instead of letting it scroll -- the same treatment the
+// staking tabs already get.
+QWidget* ScrollableTab(QWidget* content)
+{
+    QScrollArea* scroll = new QScrollArea();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(content);
+    return scroll;
+}
+
+} // namespace
 
 PrivacyPage::PrivacyPage(QWidget *parent) :
     QWidget(parent),
@@ -74,15 +92,15 @@ void PrivacyPage::setupUI()
     connect(refreshButton, SIGNAL(clicked()), this, SLOT(onRefreshClicked()));
 
     QTabWidget *tabs = new QTabWidget();
-    tabs->addTab(buildSendTab(), tr("Send"));
-    tabs->addTab(buildMigrateTab(), tr("Migrate"));
-    tabs->addTab(buildAddressTab(), tr("Addresses"));
+    tabs->addTab(ScrollableTab(buildSendTab()), tr("Send"));
+    tabs->addTab(ScrollableTab(buildMigrateTab()), tr("Migrate"));
+    tabs->addTab(ScrollableTab(buildAddressTab()), tr("Addresses"));
 
     collateralWidget = new PrivateCollateralWidget();
-    tabs->addTab(collateralWidget, tr("Collateralnode"));
+    tabs->addTab(ScrollableTab(collateralWidget), tr("Collateralnode"));
 
     finalityWidget = new FinalityStatusWidget();
-    tabs->addTab(finalityWidget, tr("Finality"));
+    tabs->addTab(ScrollableTab(finalityWidget), tr("Finality"));
 
     mainLayout->addWidget(tabs, 1);
 
