@@ -6,6 +6,7 @@
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QRadioButton;
 class QPushButton;
 class QTabWidget;
 class DisclosureMaskWidget;
@@ -27,6 +28,8 @@ public:
 private slots:
     void onSendClicked();
     void onMigrateClicked();
+    void onMigrateAllClicked();
+    void onMigrateModeChanged();
     void onNewAddressClicked();
     void onCopyAddressClicked();
     void onRefreshClicked();
@@ -54,6 +57,11 @@ private:
     QPushButton *sendButton;
 
     QLabel *migrateNoticeLabel;
+    QRadioButton *migrateSimpleRadio;
+    QRadioButton *migrateAdvancedRadio;
+    QWidget *migrateAdvancedBox;
+    QPushButton *migrateAllButton;
+    QLabel *migrateAllSummary;
     QLineEdit *migrateFromEdit;
     QLineEdit *migrateMaxInputsEdit;
     QPushButton *migrateButton;

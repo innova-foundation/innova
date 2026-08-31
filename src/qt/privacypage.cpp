@@ -20,6 +20,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QScrollArea>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -149,13 +150,30 @@ QWidget* PrivacyPage::buildMigrateTab()
     QVBoxLayout *layout = new QVBoxLayout(tab);
 
     QLabel *desc = new QLabel(tr(
-        "Moves transparent coins into the pool. One transparent address per call, so "
-        "a single transaction never publicly groups addresses the chain has not "
-        "already grouped, and the whole selected value moves with no transparent "
-        "change left behind."));
+        "Migration is one-way and it is required. Transparent coins have to move into "
+        "the pool to stay spendable; this wallet offers no way to move value back out, "
+        "and there is no plan to add one.\n\n"
+        "Each address is swept by its own transaction, so migrating never publicly "
+        "groups addresses the chain has not already grouped, and the whole value of an "
+        "address moves with no transparent change left behind."));
     desc->setWordWrap(true);
     desc->setStyleSheet("color: #888;");
     layout->addWidget(desc);
+
+    QGroupBox *modeGroup = new QGroupBox(tr("Mode"));
+    QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
+    migrateSimpleRadio = new QRadioButton(tr("Simple -- migrate everything"));
+    migrateSimpleRadio->setToolTip(tr(
+        "Sweeps every transparent address into the pool, one transaction each, until "
+        "nothing transparent is left."));
+    migrateAdvancedRadio = new QRadioButton(tr("Advanced -- choose an address"));
+    migrateAdvancedRadio->setToolTip(tr(
+        "Sweep one address at a time and cap how many outputs each transaction spends."));
+    migrateSimpleRadio->setChecked(true);
+    modeLayout->addWidget(migrateSimpleRadio);
+    modeLayout->addWidget(migrateAdvancedRadio);
+    layout->addWidget(modeGroup);
+    connect(migrateSimpleRadio, SIGNAL(toggled(bool)), this, SLOT(onMigrateModeChanged()));
 
     // The way back out is a consensus height, not a build switch, so the state is
     // read from the node rather than asserted here.
@@ -164,7 +182,23 @@ QWidget* PrivacyPage::buildMigrateTab()
     migrateNoticeLabel->setStyleSheet("color: #d98c00; font-weight: bold;");
     layout->addWidget(migrateNoticeLabel);
 
-    QGroupBox *group = new QGroupBox(tr("Migrate to the pool"));
+    QGroupBox *simpleGroup = new QGroupBox(tr("Migrate everything"));
+    QVBoxLayout *simpleLayout = new QVBoxLayout(simpleGroup);
+    migrateAllSummary = new QLabel(tr("Reads the transparent balance when you start."));
+    migrateAllSummary->setWordWrap(true);
+    migrateAllSummary->setStyleSheet("color: #888;");
+    simpleLayout->addWidget(migrateAllSummary);
+    migrateAllButton = new QPushButton(tr("Migrate all transparent coins"));
+    migrateAllButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; "
+                                    "padding: 8px 16px; font-weight: bold; }");
+    simpleLayout->addWidget(migrateAllButton);
+    layout->addWidget(simpleGroup);
+    connect(migrateAllButton, SIGNAL(clicked()), this, SLOT(onMigrateAllClicked()));
+
+    migrateAdvancedBox = new QWidget();
+    QVBoxLayout *advancedOuter = new QVBoxLayout(migrateAdvancedBox);
+    advancedOuter->setContentsMargins(0, 0, 0, 0);
+    QGroupBox *group = new QGroupBox(tr("Migrate one address"));
     QFormLayout *form = new QFormLayout(group);
     migrateFromEdit = new QLineEdit();
     migrateFromEdit->setPlaceholderText(tr("Transparent address (blank sweeps the largest)"));
@@ -176,10 +210,12 @@ QWidget* PrivacyPage::buildMigrateTab()
     migrateButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; "
                                  "padding: 8px 16px; font-weight: bold; }");
     form->addRow(QString(), migrateButton);
-    layout->addWidget(group);
+    advancedOuter->addWidget(group);
+    layout->addWidget(migrateAdvancedBox);
     layout->addStretch();
 
     connect(migrateButton, SIGNAL(clicked()), this, SLOT(onMigrateClicked()));
+    onMigrateModeChanged();
     return tab;
 }
 
@@ -354,6 +390,118 @@ void PrivacyPage::onSendClicked()
     sendAmountEdit->clear();
     refreshBalances();
     QMessageBox::information(this, tr("Send"), result);
+}
+
+void PrivacyPage::onMigrateModeChanged()
+{
+    const bool fSimple = migrateSimpleRadio && migrateSimpleRadio->isChecked();
+    if (migrateAdvancedBox)
+        migrateAdvancedBox->setVisible(!fSimple);
+}
+
+void PrivacyPage::onMigrateAllClicked()
+{
+    if (model == 0)
+        return;
+
+    const qint64 nStart = model->getBalance();
+    if (nStart <= 0)
+    {
+        QMessageBox::information(this, tr("Migrate everything"),
+            tr("There is no transparent balance left to migrate."));
+        return;
+    }
+
+    const int unit = model->getOptionsModel()
+                         ? model->getOptionsModel()->getDisplayUnit()
+                         : 0;
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this, tr("Migrate everything"),
+        tr("This moves %1 into the pool, sweeping each transparent address with its own "
+           "transaction so the chain is never told which addresses share an owner.\n\n"
+           "Migration is one-way and required: this wallet offers no way to move value "
+           "back out.\n\n"
+           "It runs the sweeps back to back. That publishes this wallet's whole "
+           "transparent address set inside a short window, so someone watching the "
+           "network can still infer that the addresses belong together. Migrating a few "
+           "addresses at a time, spread out, gives that away less.\n\nContinue?")
+            .arg(BitcoinUnits::formatWithUnit(unit, nStart)),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+        return;
+
+    // z_migratetopool sweeps one address per transaction and skips addresses below the
+    // fee; its bound is per call, so keep calling while it reports more work.
+    migrateAllButton->setEnabled(false);
+    migrateSimpleRadio->setEnabled(false);
+    migrateAdvancedRadio->setEnabled(false);
+
+    const int nMaxCalls = 100;
+    double dShielded = 0.0;
+    int nSent = 0;
+    bool fComplete = false;
+    QString error;
+
+    for (int nCall = 0; nCall < nMaxCalls; ++nCall)
+    {
+        statusLabel->setText(tr("Migrating, %1 sent so far...").arg(nSent));
+        QApplication::processEvents();
+
+        QString result;
+        if (!Iv5Rpc::Call("z_migratetopool", QStringList(), result, error))
+            break;
+
+        QString field;
+        if (Iv5Rpc::ReadField(result, "shielded", field))
+            dShielded += field.toDouble();
+        if (Iv5Rpc::ReadField(result, "sent", field))
+            nSent += field.toInt();
+        if (Iv5Rpc::ReadField(result, "complete", field) && field == "true")
+            fComplete = true;
+
+        migrateAllSummary->setText(tr("Sent %1 transaction(s), %2 moved.")
+                                       .arg(nSent).arg(dShielded, 0, 'f', 8));
+
+        QString more;
+        if (!Iv5Rpc::ReadField(result, "more", more) || more != "true")
+            break;
+    }
+
+    migrateAllButton->setEnabled(true);
+    migrateSimpleRadio->setEnabled(true);
+    migrateAdvancedRadio->setEnabled(true);
+    refreshBalances();
+
+    const QString moved = tr("Moved %1 into the pool across %2 transaction(s).")
+                              .arg(dShielded, 0, 'f', 8).arg(nSent);
+    migrateAllSummary->setText(moved);
+
+    if (!error.isEmpty())
+    {
+        statusLabel->setText(nSent > 0 ? tr("Migration stopped") : tr("Migration refused"));
+        QMessageBox::warning(this, tr("Migrate everything"),
+                             tr("%1\n\nThen it stopped: %2").arg(moved).arg(error));
+        return;
+    }
+
+    statusLabel->setText(fComplete ? tr("Migrated") : tr("Migration incomplete"));
+    if (fComplete)
+    {
+        QMessageBox::information(this, tr("Migrate everything"),
+            tr("%1\n\nNothing transparent is left.").arg(moved));
+    }
+    else
+    {
+        QMessageBox::information(this, tr("Migrate everything"),
+            tr("%1\n\nSome value could not be moved. An address whose value does not "
+               "cover the shield fee cannot be swept at all; run 'z_migratetopool' in "
+               "the debug console to see which addresses were skipped and why.")
+                .arg(moved));
+    }
 }
 
 void PrivacyPage::onMigrateClicked()

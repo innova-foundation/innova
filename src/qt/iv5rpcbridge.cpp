@@ -20,6 +20,7 @@ namespace
 const char* kAllowedMethods[] = {
     "z_iv5transfer",
     "z_shieldall",
+    "z_migratetopool",
     "z_getnewiv5address",
     "z_getshieldedinfo",
     "z_rescaniv5",
