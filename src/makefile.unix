@@ -323,7 +323,9 @@ TEST_OBJS= \
     obj/test/sigopcount_tests.o \
     obj/test/block_request_order_tests.o \
     obj/test/orphan_stake_marker_tests.o \
+    obj/test/Checkpoints_tests.o \
     obj/test/bulletproof_ac_tests.o \
+    obj/test/cblocklocator_tests.o \
     obj/test/finality_tally_tests.o \
     obj/test/finality_note_tests.o \
     obj/test/finality_note_carrier_tests.o \

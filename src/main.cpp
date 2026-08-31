@@ -3988,7 +3988,106 @@ bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash)
 //     return true;
 // }
 
+bool RebuildMainChainForwardLinks()
+{
+    for (PAIRTYPE(const uint256, CBlockIndex*)& item : mapBlockIndex)
+        item.second->pnext = NULL;
+
+    if (pindexBest == NULL)
+        return pindexGenesisBlock == NULL;
+
+    CBlockIndex* pindex = pindexBest;
+    int nLinks = 0;
+    while (pindex->pprev)
+    {
+        if (pindex->pprev->nHeight >= pindex->nHeight)
+            return error("RebuildMainChainForwardLinks() : invalid height link %d -> %d at %s; "
+                         "the block index is inconsistent, restart with -reindex",
+                         pindex->pprev->nHeight, pindex->nHeight,
+                         pindex->GetBlockHash().ToString().substr(0, 20).c_str());
+        pindex->pprev->pnext = pindex;
+        pindex = pindex->pprev;
+        ++nLinks;
+    }
+
+    // Every pnext was cleared above, so a node cannot usefully continue from
+    // here: say which height the walk stopped at and how to recover.
+    if (pindex != pindexGenesisBlock)
+        return error("RebuildMainChainForwardLinks() : best chain stops at height %d (%s) "
+                     "instead of genesis after %d links; restart with -reindex",
+                     pindex->nHeight,
+                     pindex->GetBlockHash().ToString().substr(0, 20).c_str(), nLinks);
+
+    printf("Rebuilt %d main-chain forward links\n", nLinks);
+    return true;
+}
+
 static CBlockIndex* pblockindexFBBHLast;
+
+namespace {
+
+static int InvertLowestOne(int n)
+{
+    return n & (n - 1);
+}
+
+static int GetSkipHeight(int height)
+{
+    if (height < 2)
+        return 0;
+    return (height & 1)
+        ? InvertLowestOne(InvertLowestOne(height - 1)) + 1
+        : InvertLowestOne(height);
+}
+
+} // namespace
+
+void CBlockIndex::BuildSkip()
+{
+    if (pprev)
+        pskip = pprev->GetAncestor(GetSkipHeight(nHeight));
+    else
+        pskip = NULL;
+}
+
+const CBlockIndex* CBlockIndex::GetAncestor(int nHeightTarget) const
+{
+    if (nHeightTarget > nHeight || nHeightTarget < 0)
+        return NULL;
+
+    const CBlockIndex* pindexWalk = this;
+    int nHeightWalk = nHeight;
+    while (nHeightWalk > nHeightTarget)
+    {
+        int nHeightSkip = GetSkipHeight(nHeightWalk);
+        int nHeightSkipPrev = GetSkipHeight(nHeightWalk - 1);
+        if (pindexWalk->pskip &&
+            (nHeightSkip == nHeightTarget ||
+             (nHeightSkip > nHeightTarget &&
+              !(nHeightSkipPrev < nHeightSkip - 2 &&
+                nHeightSkipPrev >= nHeightTarget))))
+        {
+            pindexWalk = pindexWalk->pskip;
+            nHeightWalk = nHeightSkip;
+        }
+        else
+        {
+            // A holed index can end a chain early. The old locator walk stopped
+            // on a null pprev; keep that rather than dereferencing it below.
+            if (!pindexWalk->pprev)
+                return pindexWalk;
+            pindexWalk = pindexWalk->pprev;
+            --nHeightWalk;
+        }
+    }
+    return pindexWalk;
+}
+
+CBlockIndex* CBlockIndex::GetAncestor(int nHeightTarget)
+{
+    return const_cast<CBlockIndex*>(static_cast<const CBlockIndex*>(this)->GetAncestor(nHeightTarget));
+}
+
 CBlockIndex* FindBlockByHeight(int nHeight)
 {
     CBlockIndex *pblockindex;
@@ -12120,6 +12219,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (pindexNew->IsProofOfStake())
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
+    pindexNew->BuildSkip();
 
     // Persistence waits for DAG init and score selection, so the index commits with its DAG
     // records (here for a side block, in SetBestChain's batch for a best-block candidate).
@@ -14795,6 +14895,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 pindexNew->nNonce = header.nNonce;
                 pindexNew->nFile = 0;
                 pindexNew->nBlockPos = 0;
+                // Locators walk this index by skip pointer. Without one here the
+                // header chain falls back to a per-block pprev walk.
+                pindexNew->BuildSkip();
 
                 pindexNew->nChainTrust = pindexPrev->nChainTrust + pindexNew->GetBlockTrust();
 
