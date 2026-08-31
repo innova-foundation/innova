@@ -492,7 +492,9 @@ void BitcoinGUI::createActions()
     // Privacy page removed — entire chain is private; address generation integrated into Receive page
     privacyAction = new QAction(QIcon(":/icons/lock_closed"), tr("&Privacy"), this);
     privacyAction->setCheckable(true);
-    privacyAction->setVisible(false); // Hidden — not needed as separate page
+    privacyAction->setToolTip(tr("Private transactions, addresses and collateralnode"));
+    privacyAction->setStatusTip(tr("IV5 privacy: masks, migration, private collateralnode, finality"));
+    tabGroup->addAction(privacyAction);
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
@@ -679,6 +681,9 @@ void BitcoinGUI::createToolBars()
 
     mainToolbar->addAction(overviewAction);
   mainToolbar->addAction(sendCoinsAction);
+  // Sits beside Send: transparent coins keep their own form through the
+  // migration, and this is where a private send picks its disclosure mask.
+  mainToolbar->addAction(privacyAction);
   mainToolbar->addAction(receiveCoinsAction);
   mainToolbar->addAction(historyAction);
   mainToolbar->addAction(addressBookAction);

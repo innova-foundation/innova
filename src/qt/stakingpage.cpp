@@ -405,7 +405,9 @@ void StakingPage::onStakingModeChanged(int index)
     if (StakingUiPolicy::IsLegacyPrivateTab(index) &&
         !legacyPrivateModesEnabled)
     {
-        stakingTabs->setCurrentIndex(0);
+        // Viewable so the tab can say which gate holds it, but selecting it
+        // must not switch the node's staking mode or persist the choice.
+        updateModeDescription(index);
         return;
     }
 
@@ -440,28 +442,46 @@ void StakingPage::applyPrivacyPolicy()
             fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false);
     legacyPrivateModesEnabled = decision.legacyControlsEnabled;
 
-    stakingTabs->setTabEnabled(1, legacyPrivateModesEnabled);
-    stakingTabs->setTabEnabled(3, legacyPrivateModesEnabled);
-    if (legacyPrivateModesEnabled)
+    // The tabs stay reachable so both modes remain discoverable and can say why
+    // they are unavailable. Only the controls that would move coins are held
+    // back, so a disabled mode explains itself instead of vanishing.
+    stakingTabs->setTabEnabled(1, true);
+    stakingTabs->setTabEnabled(3, true);
+    if (btnShieldCoins)
+        btnShieldCoins->setEnabled(legacyPrivateModesEnabled);
+    if (btnNullColdDelegate)
+        btnNullColdDelegate->setEnabled(legacyPrivateModesEnabled);
+    if (editNullColdStakerAddr)
+        editNullColdStakerAddr->setEnabled(legacyPrivateModesEnabled);
+    if (editNullColdAmount)
+        editNullColdAmount->setEnabled(legacyPrivateModesEnabled);
+
+    QString notice;
+    switch (decision.state)
     {
-        const QString notice = tr(
-            "Legacy private staking is enabled for regtest historical testing only.");
-        labelPrivateModeStatus->setText(notice);
-        stakingTabs->setTabToolTip(1, notice);
-        stakingTabs->setTabToolTip(3, notice);
+    case PrivacyUiPolicy::State::LegacyRegtestOnly:
+        notice = tr("Legacy private staking is enabled for regtest historical testing only.");
+        break;
+    case PrivacyUiPolicy::State::VNextScreenRequired:
+        notice = tr("Boundary B is active at block %1 and the chain is at block %2, so the "
+                    "legacy NullStake format is permanently quarantined. Private staking "
+                    "moves to the Privacy tab.")
+                     .arg(FORK_HEIGHT_BOUNDARY_B)
+                     .arg(currentHeight);
+        break;
+    case PrivacyUiPolicy::State::LegacyQuarantinedPendingVNext:
+    default:
+        notice = tr("Private staking is not available on this network yet. NullStake V3 "
+                    "activates at block %1 and Boundary B at block %2; the chain is at "
+                    "block %3. The controls unlock once those gates pass.")
+                     .arg(FORK_HEIGHT_NULLSTAKE_V3)
+                     .arg(FORK_HEIGHT_BOUNDARY_B)
+                     .arg(currentHeight);
+        break;
     }
-    else
-    {
-        const QString notice = tr(
-            "The unsafe legacy NullStake format is quarantined. NullStake V1/V2/V3 "
-            "remain mandatory as post-DAG private finality modes, but privacy vNext "
-            "staking is not yet available in this build.");
-        labelPrivateModeStatus->setText(notice);
-        stakingTabs->setTabToolTip(1, notice);
-        stakingTabs->setTabToolTip(3, notice);
-        if (StakingUiPolicy::IsLegacyPrivateTab(stakingTabs->currentIndex()))
-            stakingTabs->setCurrentIndex(0);
-    }
+    labelPrivateModeStatus->setText(notice);
+    stakingTabs->setTabToolTip(1, notice);
+    stakingTabs->setTabToolTip(3, notice);
 }
 
 void StakingPage::updateStakingStatus()
