@@ -661,6 +661,7 @@ std::string HelpMessage()
         "  -salvagewallet         " + _("Attempt to recover private keys from a corrupt wallet.dat") + "\n" +
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
+        "  -rebuildforwardlinks   " + _("Rebuild main-chain forward links from the best block at startup (default: 0)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
         "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (requires -replayexpectedheight/-replayexpectedhash), then exit") + "\n" +
         "  -replayexpectedheight=<n> " + _("Required trusted terminal height for -replayblocks") + "\n" +
