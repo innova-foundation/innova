@@ -3990,35 +3990,43 @@ bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash)
 
 bool RebuildMainChainForwardLinks()
 {
-    for (PAIRTYPE(const uint256, CBlockIndex*)& item : mapBlockIndex)
-        item.second->pnext = NULL;
-
     if (pindexBest == NULL)
         return pindexGenesisBlock == NULL;
 
+    // Collect the walk before touching anything. The old order cleared every
+    // pnext first, so a walk that failed left the index worse than it found it
+    // and the node had nothing to fall back on.
+    std::vector<CBlockIndex*> vChain;
     CBlockIndex* pindex = pindexBest;
-    int nLinks = 0;
     while (pindex->pprev)
     {
         if (pindex->pprev->nHeight >= pindex->nHeight)
-            return error("RebuildMainChainForwardLinks() : invalid height link %d -> %d at %s; "
-                         "the block index is inconsistent, restart with -reindex",
-                         pindex->pprev->nHeight, pindex->nHeight,
-                         pindex->GetBlockHash().ToString().substr(0, 20).c_str());
-        pindex->pprev->pnext = pindex;
+        {
+            printf("RebuildMainChainForwardLinks() : invalid height link %d -> %d at %s; "
+                   "keeping the stored forward links\n",
+                   pindex->pprev->nHeight, pindex->nHeight,
+                   pindex->GetBlockHash().ToString().substr(0, 20).c_str());
+            return true;
+        }
+        vChain.push_back(pindex);
         pindex = pindex->pprev;
-        ++nLinks;
     }
 
-    // Every pnext was cleared above, so a node cannot usefully continue from
-    // here: say which height the walk stopped at and how to recover.
     if (pindex != pindexGenesisBlock)
-        return error("RebuildMainChainForwardLinks() : best chain stops at height %d (%s) "
-                     "instead of genesis after %d links; restart with -reindex",
-                     pindex->nHeight,
-                     pindex->GetBlockHash().ToString().substr(0, 20).c_str(), nLinks);
+    {
+        printf("RebuildMainChainForwardLinks() : best chain stops at height %d (%s) instead of "
+               "genesis after %d links; keeping the stored forward links\n",
+               pindex->nHeight, pindex->GetBlockHash().ToString().substr(0, 20).c_str(),
+               (int)vChain.size());
+        return true;
+    }
 
-    printf("Rebuilt %d main-chain forward links\n", nLinks);
+    for (PAIRTYPE(const uint256, CBlockIndex*)& item : mapBlockIndex)
+        item.second->pnext = NULL;
+    for (size_t i = 0; i < vChain.size(); ++i)
+        vChain[i]->pprev->pnext = vChain[i];
+
+    printf("Rebuilt %d main-chain forward links\n", (int)vChain.size());
     return true;
 }
 
