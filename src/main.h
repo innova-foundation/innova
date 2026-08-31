@@ -931,8 +931,18 @@ extern CCriticalSection cs_setpwalletRegistered;
 extern std::set<CWallet*> setpwalletRegistered;
 extern unsigned char pchMessageStart[4];
 extern std::map<uint256, CBlock*> mapOrphanBlocks;
+extern std::multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 extern std::map<uint256, NodeId> mapOrphanBlocksByNode;
 extern std::map<NodeId, int> mapOrphanCountByNode;
+extern std::set<std::pair<COutPoint, unsigned int> > setStakeSeenOrphan;
+
+// Release an orphan PoS kernel marker only when no stored orphan still references
+// it, so an evicted orphan cannot leave a stale marker that rejects re-deliveries.
+void EraseStakeSeenOrphanIfUnreferenced(const std::pair<COutPoint, unsigned int>& stake);
+
+// Randomly evict one orphan (plus any selected descendants) once the orphan
+// table exceeds -maxorphanblocks.
+void PruneOrphanBlocks();
 extern std::map<int64_t, CAnonOutputCount> mapAnonOutputStats;
 
 extern int nLastFinalizedHeight;
