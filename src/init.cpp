@@ -1454,6 +1454,22 @@ bool AppInit2()
         SoftSetBoolArg("-listen", true);
     }
 
+    // Rate and per-netgroup caps are waived for -whitelist peers; loopback is always trusted.
+    {
+        CSubNet loopback4("127.0.0.0/8");
+        if (loopback4.IsValid())
+            CNode::AddWhitelistedRange(loopback4);
+        CSubNet loopback6("::1/128");
+        if (loopback6.IsValid())
+            CNode::AddWhitelistedRange(loopback6);
+        for (const std::string& strNet : mapMultiArgs["-whitelist"]) {
+            CSubNet subnet(strNet);
+            if (!subnet.IsValid())
+                return InitError(strprintf(_("Invalid netmask specified in -whitelist: '%s'"), strNet.c_str()));
+            CNode::AddWhitelistedRange(subnet);
+        }
+    }
+
     if (mapArgs.count("-connect") && mapMultiArgs["-connect"].size() > 0)
     {
         // when only connecting to trusted nodes, do not seed via DNS, or listen by default
@@ -1572,6 +1588,18 @@ bool AppInit2()
             SoftSetArg("-maxmempool", "10");
         if (!mapArgs.count("-maxorphantx"))
             SoftSetArg("-maxorphantx", "10");
+    }
+
+    // -maxconnections below the outbound reserve leaves no inbound slots at all,
+    // which otherwise shows up only as peers being dropped as "full". Read this
+    // after the SPV blocks, which soft-set -maxconnections themselves.
+    {
+        int nConn = GetArg("-maxconnections", 125);
+        int nOut = min((int)GetArg("-maxoutbound", MAX_OUTBOUND_CONNECTIONS), nConn);
+        if (nConn - nOut <= 0)
+            InitWarning(strprintf(_("-maxconnections=%d leaves no inbound slots after "
+                                    "reserving %d for outbound; this node will accept no "
+                                    "incoming connections."), nConn, nOut));
     }
 
     // Secure messaging is opt-in (-smsg); -nosmsg still forces it off. Resolved after the SPV

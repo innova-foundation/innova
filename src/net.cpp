@@ -45,7 +45,6 @@ extern "C" {
 // Dump data of peers.dat and banlist.dat every 15 minutes (900s)
 #define DUMP_DATA_INTERVAL 900
 
-static const int MAX_OUTBOUND_CONNECTIONS = 16;
 
 static const int CONNECTION_RATE_LIMIT_WINDOW = 60;      // Window size in seconds
 static const int CONNECTION_RATE_LIMIT_MAX = 5;          // Max connections per IP per window
@@ -1216,7 +1215,9 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     CAddress addr;
     int nInbound = 0;
     // Reserve outbound slots to prevent eclipse attacks
-    int nMaxOutbound = GetArg("-maxoutbound", 8);
+    // Reserve no more than the outbound opener actually uses, so the two agree.
+    int nMaxOutbound = min((int)GetArg("-maxoutbound", MAX_OUTBOUND_CONNECTIONS),
+                           (int)GetArg("-maxconnections", 125));
     int nMaxInbound = GetArg("-maxconnections", 125) - nMaxOutbound;
 
     if (hSocket != INVALID_SOCKET)
@@ -1289,13 +1290,8 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     }
 
     if (nInbound >= nMaxInbound) {
-        printf("connection from %s dropped (full)\n", addr.ToString().c_str());
-        CloseSocket(hSocket);
-        return;
-    }
-
-    if (nInbound >= GetArg("-maxconnections", 125) - MAX_OUTBOUND_CONNECTIONS) {
-        printf("connection from %s dropped (full)\n", addr.ToString().c_str());
+        printf("connection from %s dropped (inbound full: %d/%d, %d reserved for outbound)\n",
+               addr.ToString().c_str(), nInbound, nMaxInbound, nMaxOutbound);
         CloseSocket(hSocket);
         return;
     }
@@ -2899,7 +2895,8 @@ void StartNode(void* parg)
 
     if (semOutbound == NULL) {
         // initialize semaphore
-        int nMaxOutbound = min(MAX_OUTBOUND_CONNECTIONS, (int)GetArg("-maxconnections", 125));
+        int nMaxOutbound = min((int)GetArg("-maxoutbound", MAX_OUTBOUND_CONNECTIONS),
+                               (int)GetArg("-maxconnections", 125));
         semOutbound = new CSemaphore(nMaxOutbound);
     }
 
