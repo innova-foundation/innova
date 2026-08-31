@@ -621,7 +621,7 @@ inline int GetForkHeightIV5NoteVote()
     extern bool fTestNet;
     if (fRegTest)
         return nRegtestIV5NoteVoteHeight;
-    // 5,000 blocks past Boundary B, so the pool exists and has been transacted
+    // 4,700 blocks past Boundary B, so the pool exists and has been transacted
     // against before a note carries a vote.
     if (fTestNet)
         return 1700;

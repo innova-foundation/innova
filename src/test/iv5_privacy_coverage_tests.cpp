@@ -1927,6 +1927,11 @@ BOOST_AUTO_TEST_CASE(a_fee_note_block_binds_the_millisecond_commitment_it_ships)
     WalletIV5SeedGuard seedGuard;
     NameHooksGuard hooksGuard;
 
+    // Mine to the regtest millisecond gate rather than inheriting a chain an
+    // earlier case built, so this runs on its own under --run_test.
+    if (BestIndex()->nHeight + 1 < FORK_HEIGHT_MS_TIMESTAMP)
+        MineTo(FORK_HEIGHT_MS_TIMESTAMP);
+
     const int nHeight = BestIndex()->nHeight + 1;
     nRegtestBoundaryBHeight = nHeight;
     nRegtestIV5FeeNoteHeight = nHeight;

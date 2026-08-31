@@ -42,6 +42,8 @@ evidence_run "configure the wallet with the bundled Tor" \
 # qmake answered.
 evidence_run "refuse a Qt5 reference in the generated makefile" \
     "! grep -q 'Qt5' Makefile.qt-app"
+evidence_run "build the daemon the shutdown probe drives" \
+    "make -C src -f makefile.unix -j$JOBS innovad && cp src/innovad ."
 evidence_run "build the wallet" "make -f Makefile.qt-app -j$JOBS"
 evidence_run "the wallet links Qt6 and no Qt5" \
     "ldd ./Innova | grep -q libQt6Core && ! ldd ./Innova | grep -q libQt5"
