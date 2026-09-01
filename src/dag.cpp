@@ -3485,6 +3485,23 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
         return false;
     }
+
+    // Past the finalized epoch, take the newest epoch already deep enough to anchor on
+    // its own, so notes stay spendable when finality stalls. Validator and wallet both use
+    // this function; it depends only on the height and the recorded epoch states.
+    for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch; --nEpoch)
+    {
+        CEpochState deeper;
+        if (!txdb.ReadEpochState(nEpoch, deeper) || deeper.nEpoch != nEpoch)
+            continue;
+        if (deeper.nHeightEnd <= 0 ||
+            nBlockHeight - deeper.nHeightEnd <
+                EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH)
+            continue;
+        state = deeper;
+        break;
+    }
+
     stateOut = state;
     return true;
 }

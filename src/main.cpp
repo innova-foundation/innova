@@ -2150,9 +2150,16 @@ static bool ValidatePrivacyVNextFinalizedContext(
     {
         // Whether the anchor epoch is finalized is chain state; the digest widths are
         // already enforced by the record decoder, so failing them means local damage.
-        if (!finalizedState.fFinalized)
+        // The resolver returns either a finalized epoch or one deep enough to stand
+        // without finality, so accept both here or it would reject its own choice.
+        if (!finalizedState.fFinalized &&
+            (finalizedState.nHeightEnd <= 0 ||
+             nContextHeight - finalizedState.nHeightEnd <
+                 EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH))
         {
-            strError = "the anchor epoch is not finalized";
+            strError = strprintf(
+                "the anchor epoch is neither finalized nor %d blocks deep",
+                EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH);
             return false;
         }
         if (finalizedState.vchVNextRoot.size() !=
@@ -2206,7 +2213,13 @@ static bool ValidatePrivacyVNextFinalizedContext(
             if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nContextHeight,
                                                          nBack, olderState))
                 break;
-            if (!olderState.fFinalized ||
+            // An older anchor is deeper than the one resolved above, so the same
+            // finalized-or-deep rule applies and never admits anything shallower.
+            const bool fOlderDeepEnough =
+                olderState.nHeightEnd > 0 &&
+                nContextHeight - olderState.nHeightEnd >=
+                    EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH;
+            if ((!olderState.fFinalized && !fOlderDeepEnough) ||
                 olderState.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
                 olderState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
                 olderState.vchVNextParameterDigest.size() !=
