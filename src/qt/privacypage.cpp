@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
@@ -138,9 +139,33 @@ QWidget* PrivacyPage::buildSendTab()
     buttons->addWidget(sendButton);
     buttons->addStretch();
     layout->addLayout(buttons);
+
+    // Several payments, each as its own ordinary transfer. Batching them into one
+    // transaction would give it more outputs than every other IV5 transaction and
+    // so announce both that it is a transfer and how many people it paid.
+    QGroupBox *manyGroup = new QGroupBox(tr("Pay several recipients"));
+    QVBoxLayout *manyLayout = new QVBoxLayout(manyGroup);
+    QLabel *manyHelp = new QLabel(tr(
+        "One line per payment, as <address> <amount>. Each is sent as its own "
+        "transaction with the mask chosen above, so none of them looks different "
+        "from an ordinary payment.\n\n"
+        "Each payment needs its own spendable note: a note is spendable once the "
+        "epoch it arrived in has closed, so change from one payment cannot fund the "
+        "next one in the same epoch."));
+    manyHelp->setWordWrap(true);
+    manyHelp->setStyleSheet("color: #888;");
+    manyLayout->addWidget(manyHelp);
+    sendManyEdit = new QPlainTextEdit();
+    sendManyEdit->setPlaceholderText(tr("iv5addr...  12.5\niv5addr...  3.0"));
+    sendManyEdit->setMaximumHeight(110);
+    manyLayout->addWidget(sendManyEdit);
+    sendManyButton = new QPushButton(tr("Send all"));
+    manyLayout->addWidget(sendManyButton);
+    layout->addWidget(manyGroup);
     layout->addStretch();
 
     connect(sendButton, SIGNAL(clicked()), this, SLOT(onSendClicked()));
+    connect(sendManyButton, SIGNAL(clicked()), this, SLOT(onSendManyClicked()));
     return tab;
 }
 
@@ -390,6 +415,130 @@ void PrivacyPage::onSendClicked()
     sendAmountEdit->clear();
     refreshBalances();
     QMessageBox::information(this, tr("Send"), result);
+}
+
+void PrivacyPage::onSendManyClicked()
+{
+    if (model == 0)
+        return;
+
+    // Parse first: nothing is sent until every line is understood, so a typo on
+    // line 4 cannot leave three payments already broadcast.
+    const QStringList lines = sendManyEdit->toPlainText().split(QChar('\n'),
+                                                                Qt::SkipEmptyParts);
+    QStringList vAddresses;
+    QStringList vAmounts;
+    for (int i = 0; i < lines.size(); ++i)
+    {
+        const QString line = lines.at(i).trimmed();
+        if (line.isEmpty())
+            continue;
+        const QStringList parts = line.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
+        if (parts.size() != 2)
+        {
+            QMessageBox::warning(this, tr("Pay several recipients"),
+                tr("Line %1 is not '<address> <amount>':\n%2").arg(i + 1).arg(line));
+            return;
+        }
+        bool fOk = false;
+        const double dAmount = parts.at(1).toDouble(&fOk);
+        if (!fOk || dAmount <= 0.0)
+        {
+            QMessageBox::warning(this, tr("Pay several recipients"),
+                tr("Line %1 has no usable amount: %2").arg(i + 1).arg(parts.at(1)));
+            return;
+        }
+        vAddresses << parts.at(0);
+        vAmounts << parts.at(1);
+    }
+    if (vAddresses.isEmpty())
+    {
+        QMessageBox::information(this, tr("Pay several recipients"),
+                                 tr("Nothing to send."));
+        return;
+    }
+
+    // Each payment needs its own already-anchored note, so say up front how many
+    // are available rather than letting the run stop halfway.
+    Iv5Rpc::PoolSnapshot pool;
+    QString poolError;
+    if (Iv5Rpc::FetchPool(pool, poolError) && pool.nNoteCount >= 0 &&
+        pool.nNoteCount < vAddresses.size())
+    {
+        const QMessageBox::StandardButton go = QMessageBox::question(
+            this, tr("Pay several recipients"),
+            tr("You asked for %1 payments but hold %2 note(s). A payment needs its "
+               "own spendable note, and change from one cannot fund the next until "
+               "its epoch closes, so the run is likely to stop early.\n\n"
+               "Send anyway?").arg(vAddresses.size()).arg(pool.nNoteCount),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (go != QMessageBox::Yes)
+            return;
+    }
+
+    const int nMask = maskWidget ? maskWidget->mask() : -1;
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this, tr("Pay several recipients"),
+        tr("Send %1 separate payments, each with the mask chosen above?\n\n"
+           "They go out one at a time rather than together, because a burst of "
+           "payments from one wallet is linkable by timing even though each "
+           "transaction on its own is not.").arg(vAddresses.size()),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+        return;
+
+    sendManyButton->setEnabled(false);
+    sendButton->setEnabled(false);
+
+    int nSent = 0;
+    QString error;
+    QStringList vTxids;
+    for (int i = 0; i < vAddresses.size(); ++i)
+    {
+        statusLabel->setText(tr("Sending payment %1 of %2...")
+                                 .arg(i + 1).arg(vAddresses.size()));
+        QApplication::processEvents();
+
+        QStringList params;
+        params << vAddresses.at(i) << vAmounts.at(i);
+        if (nMask >= 0)
+            params << QString::number(nMask);
+
+        QString result;
+        if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))
+        {
+            error = tr("payment %1 to %2 was refused: %3")
+                        .arg(i + 1).arg(vAddresses.at(i)).arg(error);
+            break;
+        }
+        QString txid;
+        if (Iv5Rpc::ReadField(result, "txid", txid))
+            vTxids << txid.left(16);
+        ++nSent;
+    }
+
+    sendManyButton->setEnabled(true);
+    sendButton->setEnabled(true);
+    refreshBalances();
+
+    if (error.isEmpty())
+    {
+        statusLabel->setText(tr("Sent"));
+        sendManyEdit->clear();
+        QMessageBox::information(this, tr("Pay several recipients"),
+            tr("Sent %1 payment(s).\n\n%2").arg(nSent).arg(vTxids.join("\n")));
+    }
+    else
+    {
+        statusLabel->setText(tr("Stopped after %1").arg(nSent));
+        QMessageBox::warning(this, tr("Pay several recipients"),
+            tr("Sent %1 of %2, then stopped.\n\n%3\n\n%4")
+                .arg(nSent).arg(vAddresses.size()).arg(error).arg(vTxids.join("\n")));
+    }
 }
 
 void PrivacyPage::onMigrateModeChanged()
