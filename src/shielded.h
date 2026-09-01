@@ -55,19 +55,16 @@ static const int SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM = 2007;
 static const int SHIELDED_TX_VERSION_DSP = 2008;
 static const size_t SHIELDED_VNEXT_MAX_PAYLOAD_SIZE = 256 * 1024;
 
-// Boundary B must not be inferred merely from a configured height. This stays
-// false until the distinct v2008 wire format, tree, verifier, wallet state and
-// reviewed ABI are all linked into consensus.
-// Regtest-only rehearsal switch (-regtestiv5rehearsal). It exercises the
-// Boundary-B state transition and migration bookkeeping only: the Rust IV5
-// verifier is not wired into consensus yet (CONSENSUS_CAPABILITIES == 0), so a
-// rehearsal proves nothing about proof validity. Never settable off regtest.
+// Regtest rehearsal switch (-regtestiv5rehearsal), kept for the regtest-only
+// bookkeeping it drives. Never settable off regtest.
 extern bool fRegtestShieldedVNextRehearsal;
 
+// The v2008 implementation is linked and CONSENSUS_CAPABILITIES == IMPLEMENTED_CAPABILITIES
+// (checked by the FFI handshake at startup). This does not open the pool: every consensus
+// site also requires IsBoundaryBActiveAtHeight.
 inline bool IsShieldedVNextConsensusReady()
 {
-    extern bool fRegTest;
-    return fRegTest && fRegtestShieldedVNextRehearsal;
+    return true;
 }
 
 // Regtest-only hold on wallet leaf-index assignment (-regtestiv5holdleafindex), to reach

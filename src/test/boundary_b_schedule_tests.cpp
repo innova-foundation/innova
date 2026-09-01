@@ -175,8 +175,9 @@ BOOST_AUTO_TEST_CASE(boundary_b_regtest_override_is_unchanged)
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());
 }
 
-// A scheduled height turns on the pool's state machinery, not the verifier. If
-// this ever fails, a release shipped mainnet privacy consensus by moving a gate.
+// The verifier is linked in, so what decides whether the pool is open is the
+// height alone. If this ever fails, a release opened mainnet privacy below the
+// boundary it was scheduled at.
 BOOST_AUTO_TEST_CASE(scheduling_boundary_b_does_not_activate_privacy)
 {
     NetFlagGuard guard;
@@ -185,7 +186,10 @@ BOOST_AUTO_TEST_CASE(scheduling_boundary_b_does_not_activate_privacy)
     {
         if (nNet == 0) SetMainnet(); else SetTestnet();
 
-        BOOST_CHECK(!IsShieldedVNextConsensusReady());
+        // Readiness says the implementation is present, not that the pool is open.
+        BOOST_CHECK(IsShieldedVNextConsensusReady());
+        BOOST_CHECK(!IsBoundaryBActiveAtHeight(GetForkHeightBoundaryB() - 1));
+        BOOST_CHECK(!IsBoundaryBActiveAtHeight(0));
 
         const std::vector<int> vHeights = ProbeHeights(GetForkHeightBoundaryB());
         for (size_t i = 0; i < vHeights.size(); ++i)

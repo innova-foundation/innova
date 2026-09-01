@@ -46,7 +46,7 @@ uint32_t ReadLE32(const uint8_t* in)
 
 BOOST_AUTO_TEST_SUITE(privacy_vnext_abi_tests)
 
-BOOST_AUTO_TEST_CASE(linked_contract_is_exact_and_consensus_disabled)
+BOOST_AUTO_TEST_CASE(linked_contract_is_exact_and_consensus_active)
 {
     PrivacyVNextAbiInfo info;
     BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextAbiInfo(info), info.strError);
@@ -57,8 +57,13 @@ BOOST_AUTO_TEST_CASE(linked_contract_is_exact_and_consensus_disabled)
     BOOST_CHECK_EQUAL(info.nPayloadSchema, 1U);
     BOOST_CHECK_EQUAL(info.nImplementedCapabilities,
                       INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES);
-    BOOST_CHECK_EQUAL(info.nConsensusCapabilities, 0U);
-    BOOST_CHECK_EQUAL(info.nConsensusActive, 0U);
+    // Consensus relies on the verifier the archive implements, and the two must
+    // agree: the FFI contract check refuses a consensus set that is not a subset
+    // of the implemented set, and refuses an active flag that disagrees with it.
+    BOOST_CHECK_EQUAL(info.nConsensusCapabilities,
+                      INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES);
+    BOOST_CHECK_EQUAL(info.nConsensusActive, 1U);
+    BOOST_CHECK_EQUAL(info.nConsensusCapabilities & ~info.nImplementedCapabilities, 0U);
     BOOST_CHECK_EQUAL(info.strParameterDigest,
                       iv5::PROTOCOL_CONTRACT_SHA256);
     BOOST_CHECK_EQUAL(info.strAbiSha256.size(), 64U);

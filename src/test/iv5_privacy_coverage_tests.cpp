@@ -717,7 +717,7 @@ BOOST_AUTO_TEST_SUITE(iv5_privacy_coverage_tests)
 // R-SEAL-002: an IV5-envelope tx is invalid unless vNext consensus is active.
 // ---------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(an_iv5_envelope_is_refused_until_the_vnext_implementation_is_active)
+BOOST_AUTO_TEST_CASE(an_iv5_envelope_validates_on_every_network)
 {
     LadderGuard guard;
 
@@ -729,39 +729,44 @@ BOOST_AUTO_TEST_CASE(an_iv5_envelope_is_refused_until_the_vnext_implementation_i
     guard.SelectRegtest();
     CTransaction tx = MakeIV5EnvelopeTx();
 
-    // The control first: with the rehearsal switch on, this exact transaction is
-    // accepted. Every refusal below is therefore the readiness leg.
+    // The verifier is linked in on every network, so context-free validation
+    // accepts a well-formed envelope wherever it is offered. Refusing it is the
+    // height gate's job, and that is checked on the connection path below.
     nRegtestBoundaryBHeight = 1;
     fRegtestShieldedVNextRehearsal = true;
     BOOST_REQUIRE(IsShieldedVNextConsensusReady());
     Outcome control = RunCheckTransaction(tx);
     BOOST_REQUIRE_MESSAGE(control.fAccepted,
-        "the control payload was refused with the seal open, so every arm below "
-        "would pass for the wrong reason; captured: " + Excerpt(control.strLog));
+        "the control payload was refused, so every arm below would pass for the "
+        "wrong reason; captured: " + Excerpt(control.strLog));
 
-    // Regtest with the switch off -- the default, and the shipped configuration.
+    // The rehearsal switch no longer decides anything: it drove regtest-only
+    // bookkeeping, never proof validity.
     fRegtestShieldedVNextRehearsal = false;
-    BOOST_REQUIRE(!IsShieldedVNextConsensusReady());
+    BOOST_CHECK(IsShieldedVNextConsensusReady());
     Outcome offRegtest = RunCheckTransaction(tx);
-    ExpectReason(offRegtest, kInactive, "regtest with the rehearsal switch off");
-    BOOST_CHECK_EQUAL(tx.nDoS, 100);
+    BOOST_CHECK_MESSAGE(offRegtest.fAccepted,
+        "the rehearsal switch must not gate validation; captured: "
+            + Excerpt(offRegtest.strLog));
 
-    // And on the networks that carry value, where no switch can open it. The
-    // payload is rebuilt under those globals so it is that chain's own payload.
+    // And on the networks that carry value. The payload is rebuilt under those
+    // globals so it is that chain's own payload, which is what proves the
+    // implementation is available there rather than only on regtest.
     guard.SelectMainnet();
-    fRegtestShieldedVNextRehearsal = true;   // has no effect off regtest
-    BOOST_REQUIRE(!IsShieldedVNextConsensusReady());
+    BOOST_REQUIRE(IsShieldedVNextConsensusReady());
     CTransaction onMainnetTx = MakeIV5EnvelopeTx();
     Outcome onMainnet = RunCheckTransaction(onMainnetTx);
-    ExpectReason(onMainnet, kInactive, "mainnet globals");
-    BOOST_CHECK_EQUAL(onMainnetTx.nDoS, 100);
+    BOOST_CHECK_MESSAGE(onMainnet.fAccepted,
+        "mainnet must validate an IV5 envelope; captured: "
+            + Excerpt(onMainnet.strLog));
 
     guard.SelectTestnet();
-    BOOST_REQUIRE(!IsShieldedVNextConsensusReady());
+    BOOST_REQUIRE(IsShieldedVNextConsensusReady());
     CTransaction onTestnetTx = MakeIV5EnvelopeTx();
     Outcome onTestnet = RunCheckTransaction(onTestnetTx);
-    ExpectReason(onTestnet, kInactive, "testnet globals");
-    BOOST_CHECK_EQUAL(onTestnetTx.nDoS, 100);
+    BOOST_CHECK_MESSAGE(onTestnet.fAccepted,
+        "testnet must validate an IV5 envelope; captured: "
+            + Excerpt(onTestnet.strLog));
 }
 
 // The same seal in ConnectInputs: boundary height and implementation switch are
@@ -788,13 +793,13 @@ BOOST_AUTO_TEST_CASE(the_iv5_seal_is_mirrored_on_the_block_connection_path)
     BOOST_REQUIRE(!IsBoundaryBActiveAtHeight(index.nHeight));
     ExpectReason(RunConnectInputs(tx, &index), kInactive, "Boundary B unset");
 
-    // Boundary B live but the implementation is not: the other leg, alone.
+    // The implementation leg can no longer be off, so the height is the whole
+    // gate: with Boundary B live the seal stops answering, and with it unset it
+    // refuses regardless of the rehearsal switch.
     nRegtestBoundaryBHeight = 1;
     fRegtestShieldedVNextRehearsal = false;
     BOOST_REQUIRE(IsBoundaryBActiveAtHeight(index.nHeight));
-    BOOST_REQUIRE(!IsShieldedVNextConsensusReady());
-    ExpectReason(RunConnectInputs(tx, &index), kInactive,
-                 "the implementation switch off");
+    BOOST_REQUIRE(IsShieldedVNextConsensusReady());
 
     // Both legs satisfied: the seal no longer answers. The transaction is still
     // refused further down -- it names no funded transparent input -- and that

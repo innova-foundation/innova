@@ -117,7 +117,10 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_VOTE_SIGMA
     | CAP_ED25519_COMBINE
     | CAP_RANGE_PROOF;
-const CONSENSUS_CAPABILITIES: u32 = 0;
+// Consensus relies on the verifier the crate implements. The FFI refuses a
+// contract whose consensus set is not a subset of the implemented set, so this
+// cannot silently outrun what is actually linked in.
+const CONSENSUS_CAPABILITIES: u32 = IMPLEMENTED_CAPABILITIES;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
 pub const NOTE_TRANSFER: u8 = 2;
@@ -350,7 +353,7 @@ const CONTRACT_METADATA: ContractMetadata = ContractMetadata {
     struct_size: CONTRACT_METADATA_SIZE_U32,
     abi_version: ABI_VERSION,
     transaction_version: TRANSACTION_VERSION,
-    consensus_active: 0,
+    consensus_active: 1,
     tree_layers: TREE_LAYERS,
     max_inputs: MAX_INPUTS,
     max_outputs: MAX_OUTPUTS,
@@ -1858,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_fixes_the_complete_inactive_product_contract() {
+    fn metadata_fixes_the_complete_active_product_contract() {
         let mut metadata = ContractMetadata {
             struct_size: 0,
             abi_version: 0,
@@ -1891,13 +1894,13 @@ mod tests {
         assert_eq!(metadata, CONTRACT_METADATA);
         assert_eq!(metadata.struct_size, 104);
         assert_eq!(metadata.transaction_version, 2008);
-        assert_eq!(metadata.consensus_active, 0);
+        assert_eq!(metadata.consensus_active, 1);
         assert_eq!(metadata.tree_layers, 8);
         assert_eq!((metadata.max_inputs, metadata.max_outputs), (16, 16));
         assert_eq!(metadata.max_payload_bytes, 256 * 1024);
         assert_eq!(metadata.payload_schema, 1);
         assert_eq!(metadata.implemented_capabilities, IMPLEMENTED_CAPABILITIES);
-        assert_eq!(metadata.consensus_capabilities, 0);
+        assert_eq!(metadata.consensus_capabilities, IMPLEMENTED_CAPABILITIES);
         assert_eq!(
             (metadata.disclosure_mode_min, metadata.disclosure_mode_max),
             (0, 7)

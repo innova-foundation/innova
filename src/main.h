@@ -519,31 +519,9 @@ inline int GetForkHeightBoundaryA()
 }
 #define FORK_HEIGHT_BOUNDARY_A (GetForkHeightBoundaryA())
 
-// Boundary B restores the modes Boundary A quarantines, and ships on the same
-// flag day: one release, one boundary. It is an alias of Boundary A rather than
-// a second literal, so a re-base of the ladder moves both or neither and the
-// pair cannot drift apart. Equality is what BoundaryOrderingHolds() already
-// permits (B >= A) and leaves no height where a restored encoding runs outside
-// the quarantine.
-//
-// A height is not an activation. The v2008 verifier stays fail-closed behind
-// IsShieldedVNextConsensusReady(), which is regtest-only, and the Rust
-// CONSENSUS_CAPABILITIES word is still zero, so scheduling B turns on the pool's
-// state machinery (schema-V4 epoch records, pool accounting, tree store) and
-// nothing that validates a proof. That pair is what the FCMP++ candidate's
-// independent review gates and is the last thing to move: the height moves here,
-// the verifier does not move until that review lands.
-//
-// Placement is bounded below only. B >= A is what BoundaryOrderingHolds()
-// states; nothing bounds it above any more, because the 8,060,000 rung that used
-// to supply a ceiling held the three M-of-N cold-staking gates and those are
-// retired from the public ladder below.
-//
-// Two earlier requirements went with the two-release plan that assumed them: B
-// strictly after A, and a post-DAG block rate measured on a live network before
-// tagging. One release carries both boundaries, so the DAG is not live until
-// this same tag ships. Anything needing post-DAG spacing derives it from
-// POST_DAG_TARGET_SPACING.
+// Boundary B restores the modes Boundary A quarantines. Alias of Boundary A, so a
+// ladder re-base moves both; BoundaryOrderingHolds() requires B >= A.
+// The height decides when the pool opens; proofs are always verified.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb); defaults to
 // the sentinel.
