@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,24 @@ from provenance_common import (
     sha256_file,
     tree_sha256,
 )
+
+
+def linked_consensus_active() -> bool:
+    """Whether the linked archive declares itself the consensus decoder.
+
+    Read from CONTRACT_METADATA rather than restated here. This block used to be three
+    hardcoded `False`s, so the manifest and the checks that assert it agreed with each
+    other and with nothing else: the archive became the consensus decoder and the release
+    artifact went on describing it as a non-consensus proof ABI.
+    """
+    source = (ROOT / "src" / "lib.rs").read_text()
+    body = source.split("const CONTRACT_METADATA: ContractMetadata = ContractMetadata {", 1)
+    if len(body) != 2:
+        raise SystemExit("CONTRACT_METADATA literal not found in src/lib.rs")
+    match = re.search(r"consensus_active:\s*(\d+)\s*,", body[1].split("};", 1)[0])
+    if match is None:
+        raise SystemExit("consensus_active not found in CONTRACT_METADATA")
+    return int(match.group(1)) != 0
 
 
 UPSTREAM_COMMIT = "76399e58bfc7e652d900936f84b3785ea59ab4cd"
@@ -95,10 +114,14 @@ def build_manifest() -> dict[str, Any]:
     protocol_contract = ROOT.parent / "contract" / "iv5_protocol_v1.json"
     return {
         "schema_version": 2,
-        "status": "non_consensus_contract_and_fcmp_proof_abi",
+        "status": (
+            "consensus_decoder_and_fcmp_proof_abi"
+            if linked_consensus_active()
+            else "non_consensus_contract_and_fcmp_proof_abi"
+        ),
         "wrapper": wrapper_record(),
-        "consensus_enabled": False,
-        "transaction_version_2008_enabled": False,
+        "consensus_enabled": linked_consensus_active(),
+        "transaction_version_2008_enabled": linked_consensus_active(),
         "upstream": {
             "repository": "https://github.com/monero-oxide/monero-oxide.git",
             "commit": UPSTREAM_COMMIT,
@@ -165,7 +188,7 @@ def build_manifest() -> dict[str, Any]:
             ),
         },
         "product_contract": {
-            "consensus_active": False,
+            "consensus_active": linked_consensus_active(),
             "transaction_version": 2008,
             "upstream_revision": UPSTREAM_COMMIT,
             "tree_layers": 8,

@@ -18,6 +18,7 @@ from generate_provenance import (
     UPSTREAM_LOCK_SHA256,
     VENDOR,
     build_manifest,
+    linked_consensus_active,
 )
 from generate_sbom import build_sbom
 from provenance_common import canonical_json, sha256_file
@@ -165,14 +166,21 @@ def verify_generated_files() -> None:
     )
     require(actual_provenance == build_manifest(), "provenance.json is stale")
     require(actual_provenance["upstream"]["commit"] == UPSTREAM_COMMIT, "wrong commit")
-    require(actual_provenance["consensus_enabled"] is False, "consensus must stay off")
+    # Was `is False`. The manifest and this check both hardcoded it, so the pair agreed
+    # with each other while the archive became the consensus decoder underneath them.
+    # Compare against the linked source instead, which is what the claim is about.
+    linked_active = linked_consensus_active()
+    require(
+        actual_provenance["consensus_enabled"] == linked_active,
+        "consensus_enabled disagrees with the linked contract metadata",
+    )
     require(
         actual_provenance["parameter_digest"]["available"] is True,
         "fixed product contract digest must be available",
     )
     require(
-        actual_provenance["product_contract"]["consensus_active"] is False,
-        "product metadata must not activate consensus",
+        actual_provenance["product_contract"]["consensus_active"] == linked_active,
+        "product metadata disagrees with the linked contract metadata",
     )
     require(
         actual_provenance["product_contract"]["prove_implemented"] is True
@@ -211,7 +219,10 @@ def main() -> int:
     except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError, VerificationError) as error:
         print(f"privacy-vNext provenance: ERROR: {error}", file=sys.stderr)
         return 1
-    print("privacy-vNext provenance: exact, vendored, offline, consensus disabled")
+    print(
+        "privacy-vNext provenance: exact, vendored, offline, consensus %s"
+        % ("active" if linked_consensus_active() else "disabled")
+    )
     return 0
 
 
