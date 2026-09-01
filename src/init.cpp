@@ -2520,7 +2520,20 @@ bool AppInit2()
     // that unshield is retired.
     {
         const int nScanGap = pwalletMain->GetPrivacyVNextScanGapHeight();
-        if (nScanGap >= 0)
+        if (nScanGap >= 0 && pwalletMain->IsLocked())
+        {
+            // An encrypted wallet starts locked and the rescan needs the seed, so
+            // this is the ordinary state rather than damage. Failing startup here
+            // would also strand the operator: the repair is z_rescaniv5, which
+            // needs a node that came up. Keep the gap recorded and say so.
+            printf("Wallet has an IV5 scan gap at height %d but is locked; leaving it "
+                   "recorded\n", nScanGap);
+            InitWarning(strprintf(_("Shielded payloads from height %d have not been "
+                "reprocessed because the wallet is locked. Notes paid to this wallet "
+                "in those blocks stay undetected until you unlock the wallet and run "
+                "z_rescaniv5."), nScanGap));
+        }
+        else if (nScanGap >= 0)
         {
             uiInterface.InitMessage(_("Reprocessing shielded payloads..."));
             printf("Wallet has an IV5 scan gap at height %d; reprocessing from there\n",
