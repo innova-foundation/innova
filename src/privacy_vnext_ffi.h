@@ -600,6 +600,11 @@ struct PrivacyVNextVoteMembership
     PrivacyVNextDigest cTilde;
     PrivacyVNextDigest rerandomizedY;
     PrivacyVNextDigest maskDelta;
+    // r_i and r_r_i in the sign the key-image relation uses, L = x*I~ - (x*r_i)*U. A vote
+    // that proves anything about its own key image needs r_i, and R = r_i*V + r_r_i*T is
+    // what pins r_i to this instance rather than to a value the prover picked.
+    PrivacyVNextDigest iBlind;
+    PrivacyVNextDigest iBlindBlind;
     std::vector<unsigned char> vchRequest;
 
     PrivacyVNextVoteMembership();

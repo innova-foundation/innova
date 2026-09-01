@@ -2304,6 +2304,8 @@ PrivacyVNextVoteMembership::PrivacyVNextVoteMembership()
     cTilde.fill(0);
     rerandomizedY.fill(0);
     maskDelta.fill(0);
+    iBlind.fill(0);
+    iBlindBlind.fill(0);
 }
 
 PrivacyVNextCombineTerm::PrivacyVNextCombineTerm()
@@ -2389,7 +2391,7 @@ bool ProvePrivacyVNextVoteMembership(
         error = "IV5 vote membership proof returned an unexpected header";
         return false;
     }
-    const size_t nSecrets = 4 + 128;
+    const size_t nSecrets = 4 + 192;
     const uint32_t nRequestLen = ReadLE32(&response[nSecrets]);
     if (nRequestLen == 0 || response.size() != nSecrets + 4 + nRequestLen)
     {
@@ -2401,6 +2403,8 @@ bool ProvePrivacyVNextVoteMembership(
     std::memcpy(membershipOut.cTilde.data(), &response[36], 32);
     std::memcpy(membershipOut.rerandomizedY.data(), &response[68], 32);
     std::memcpy(membershipOut.maskDelta.data(), &response[100], 32);
+    std::memcpy(membershipOut.iBlind.data(), &response[132], 32);
+    std::memcpy(membershipOut.iBlindBlind.data(), &response[164], 32);
     membershipOut.vchRequest.assign(response.begin() + nSecrets + 4, response.end());
     OPENSSL_cleanse(&response[0], response.size());
     return true;

@@ -184,7 +184,7 @@ impl SigmaStatement {
 pub(crate) fn membership_prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let (verification, secrets) = fcmp::prove_membership_with_secrets(request)?;
     let count = u8::try_from(secrets.len()).map_err(|_| ResultCode::ResourceLimit)?;
-    let mut response = Vec::with_capacity(8 + secrets.len() * 128 + verification.len());
+    let mut response = Vec::with_capacity(8 + secrets.len() * 192 + verification.len());
     response.extend_from_slice(&crate::PAYLOAD_SCHEMA_U16.to_le_bytes());
     response.push(count);
     response.push(0);
@@ -193,6 +193,8 @@ pub(crate) fn membership_prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         response.extend_from_slice(&secret.c_tilde);
         response.extend_from_slice(&secret.rerandomized_y);
         response.extend_from_slice(&secret.mask_delta);
+        response.extend_from_slice(&secret.i_blind);
+        response.extend_from_slice(&secret.i_blind_blind);
     }
     response.extend_from_slice(
         &u32::try_from(verification.len())

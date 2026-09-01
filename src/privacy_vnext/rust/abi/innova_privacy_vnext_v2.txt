@@ -326,10 +326,15 @@ amount-equality-request:
 vote-membership-prove-request:
   fields: identical to the membership proving request the vote path shares with the spend path
 vote-membership-prove-response:
-  fields: schema-u16-le, input-count-u8, reserved-zero-u8, per-input-secret-128, request-length-u32-le, canonical-membership-verify-request
-  per-input-secret: o-tilde-32, c-tilde-32, rerandomized-y-32, mask-delta-32
+  fields: schema-u16-le, input-count-u8, reserved-zero-u8, per-input-secret-192, request-length-u32-le, canonical-membership-verify-request
+  per-input-secret: o-tilde-32, c-tilde-32, rerandomized-y-32, mask-delta-32, i-blind-32, i-blind-blind-32
   rerandomized-y: the T-component witness of O-tilde; the sigma's second witness
   mask-delta: the shift C-tilde's mask took, so the caller adds it to the note mask to open C-tilde
+  i-blind: r_i in the sign the key image relation uses, L = x*I~ - (x*r_i)*U. This is the
+    negation of what RerandomizedOutput::i_blind reports, which is stated in terms of the
+    blind a proof adds back rather than the one that relation subtracts.
+  i-blind-blind: r_r_i, unnegated, so the caller can open R = r_i*V + r_r_i*T and pin r_i to
+    this instance rather than to a value a prover chose
   secret-output-policy: both scalars are caller-secret and must be zeroized once the vote and its shares exist
   behavior: prove and self-verify exactly as the membership-only entry does
 vote-membership-verify-request:

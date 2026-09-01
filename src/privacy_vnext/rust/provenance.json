@@ -3,10 +3,10 @@
     "ownership": "caller_owned_outputs_only",
     "panic_strategy": "unwind_and_catch_unwind",
     "schema_path": "abi/innova_privacy_vnext_v2.txt",
-    "schema_sha256": "fbf1256f88401af62977cfd6a7d6ed118f57520dc844bcf563e18109332d8967",
+    "schema_sha256": "8b924b68b905ae0dd3c4e7b488c008df62ba36036f27f4110c9c2bb348f24629",
     "version": 2
   },
-  "consensus_enabled": false,
+  "consensus_enabled": true,
   "dependency_lock": {
     "expected_upstream_sha256": "ed36d0720d8f9edd9ebc479ad84adb0763b24d739ecce3271d35bc2ca59a0747",
     "upstream_package_count": 184,
@@ -59,7 +59,7 @@
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
     "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
-    "contract_sha256": "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280",
+    "contract_sha256": "1319b908108c7a4ba82bbf215487c35cdac57b1eb7ab927c56506923309052d4",
     "scope": "normative inactive IV5 protocol contract; not activation"
   },
   "product_contract": {
@@ -69,7 +69,7 @@
       "m_of_n_public_signers",
       "m_of_n_hidden_signers"
     ],
-    "consensus_active": false,
+    "consensus_active": true,
     "disclosure_modes": [
       0,
       1,
@@ -135,8 +135,8 @@
     "sha256": "a4bd71a8f25e54ec6a96b3ef929d1580f83ed1789938e930adcc84b5b9599fbc"
   },
   "schema_version": 2,
-  "status": "non_consensus_contract_and_fcmp_proof_abi",
-  "transaction_version_2008_enabled": false,
+  "status": "consensus_decoder_and_fcmp_proof_abi",
+  "transaction_version_2008_enabled": true,
   "upstream": {
     "commit": "76399e58bfc7e652d900936f84b3785ea59ab4cd",
     "commit_timestamp_utc": "2026-07-09T09:05:47Z",
@@ -189,7 +189,7 @@
       },
       "abi": {
         "file_count": 2,
-        "sha256_tree": "568d77212870d939ebdb49726b95b6d266911c3388dfcefbacfc7b6e4323055d"
+        "sha256_tree": "2a416467a6d9d953df34d6733a27e0125fce61300104847b395a956037283541"
       },
       "contract": {
         "file_count": 1,
@@ -200,14 +200,14 @@
         "sha256_tree": "c7e01c3ec96edfeceafb7d59010c6fd48cfdada542e6e73edb283072f991a24d"
       },
       "src": {
-        "file_count": 10,
-        "sha256_tree": "a8250ea4c00e93021c5efff252e5f7049f144d61e579a93cb3f557d2a1225aaf"
+        "file_count": 12,
+        "sha256_tree": "59ca44e016b11e6e914b268d04cdcc8abd9b2842bf230b18206da8e414be3c44"
       },
       "tests": {
         "file_count": 1,
         "sha256_tree": "5dd938056fd45ee368ce328fcb21eb9c395fb980ec4235ade3c664c6daffd6c7"
       }
     },
-    "file_count": 16
+    "file_count": 18
   }
 }

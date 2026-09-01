@@ -1011,6 +1011,12 @@ pub(crate) struct MembershipSecrets {
     pub c_tilde: [u8; 32],
     pub rerandomized_y: [u8; 32],
     pub mask_delta: [u8; 32],
+    /// r_i in the key image relation's sign (L = x*I~ - (x*r_i)*U). `i_blind` reports -r_i,
+    /// so this is its negation.
+    pub i_blind: [u8; 32],
+    /// r_r_i, which `i_blind_blind` already reports unnegated. Needed to open R alongside
+    /// r_i, since R = r_i*V + r_r_i*T is what pins r_i to the instance.
+    pub i_blind_blind: [u8; 32],
 }
 
 /// Produce a membership-only instance. The result is a canonical verification request: there is
@@ -1071,6 +1077,8 @@ pub(crate) fn prove_membership_with_secrets(
             c_tilde: input.C_tilde(),
             rerandomized_y: (witness.y - rerandomized.o_blind()).to_repr(),
             mask_delta: (-rerandomized.c_blind()).to_repr(),
+            i_blind: (-rerandomized.i_blind()).to_repr(),
+            i_blind_blind: rerandomized.i_blind_blind().to_repr(),
         });
         output_blinds.push(OutputBlinds::new(
             OBlind::new(t_generator, o_decomposition),
@@ -1887,6 +1895,34 @@ mod tests {
         instance[MEMBERSHIP_HEADER_LEN..][..MEMBERSHIP_INPUT_LEN]
             .try_into()
             .expect("an input tuple is a fixed width")
+    }
+
+    // `i_blind` reports -r_i; the exported r_i must have the sign used in
+    // L = x*I~ - (x*r_i)*U. Checked against a key image computed independently.
+    #[test]
+    fn exported_i_blind_reconstructs_the_true_key_image() {
+        let (root_bytes, record) = synthetic_witness(
+            [0x24; 32],
+            EdScalar::from(MEMBERSHIP_X),
+            EdScalar::from(MEMBERSHIP_Y),
+        );
+        let request = membership_proving_request(root_bytes, &[&record]);
+        let (instance, secrets) =
+            prove_membership_with_secrets(&request).expect("membership instance is produced");
+        assert_eq!(secrets.len(), 1);
+
+        let tuple = instance_tuple(&instance);
+        let i_tilde = decode_group::<Ed25519>(tuple[32..64].try_into().expect("I~ is 32 bytes"))
+            .expect("I~ is canonical");
+        let r_i = decode_scalar::<Ed25519>(secrets[0].i_blind).expect("r_i is canonical");
+        let x = EdScalar::from(MEMBERSHIP_X);
+        let u = EdwardsPoint((*FCMP_PLUS_PLUS_U).into());
+
+        // synthetic_witness builds the leaf with I = G*13.
+        let key_image = <Ed25519 as Ciphersuite>::generator() * (x * EdScalar::from(13_u64));
+        assert_eq!((i_tilde * x) - (u * (x * r_i)), key_image);
+        // The opposite sign does not, which is what makes the export load-bearing.
+        assert_ne!((i_tilde * x) + (u * (x * r_i)), key_image);
     }
 
     fn instance_proof(instance: &[u8]) -> &[u8] {

@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280";
+    "1319b908108c7a4ba82bbf215487c35cdac57b1eb7ab927c56506923309052d4";
 // Contract texts this build's lineage has published, besides the current one.
 //
 // Provenance only. No consensus rule may branch on this list: a payload is judged against
@@ -20,13 +20,17 @@ static const char PROTOCOL_CONTRACT_SHA256[] =
 // same list -- LoadPrivacyVNextAbiInfo refuses a build whose C++ and Rust lists disagree.
 //
 // e65eaaa6: operation 8 was written into the contract text and operation 9 was added.
+// 4313419b: the vote membership prover began reporting r_i and r_r_i, widening its FFI
+// response record. That record is prover-side construction material, never a consensus
+// payload, so no rule moved and no payload's verdict changes.
 // f0259ccc: the parameter-digest acceptance rule was written down as the chain's own, and
 // the text still declared all four authorization modes on 2005 and 2008 after the decoders
 // were narrowed to owner. The digest selects no rule, so a payload carrying it is judged by
 // the narrowed table like any other.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
     "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
-    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b"
+    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b",
+    "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280"
 };
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
@@ -35,7 +39,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "c8b32ed8046429ee7a9825670b8d4b313c56721e95622fe5469463371db6b526";
+    "47fa2ccb5ae2a2c8187844e3dc313251ee56e929c2bcb775e80a2d10031284a1";
 // The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
 // payload is judged against below that epoch.
 //
