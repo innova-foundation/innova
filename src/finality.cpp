@@ -61,7 +61,8 @@ bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
 // fRequireCurveRoot: an IV5-root caller must not skip epochs with an empty legacy curve root.
 static FinalityResult ResolveFinalityAnchorForContext(
     CTxDB& txdb, int nContextHeight, int nLiveFinalizedHeight,
-    CEpochState& stateOut, bool fRequireCurveRoot = true)
+    CEpochState& stateOut, bool fRequireCurveRoot = true,
+    bool fAllowDeepUnfinalizedAnchor = false)
 {
     int nFinalizedHeight = 0;
     if (nContextHeight >= 0)
@@ -84,9 +85,22 @@ static FinalityResult ResolveFinalityAnchorForContext(
                       txdb, nContextHeight, stateOut)
                 : g_dagManager.GetFinalizedEpochStateAsOf(
                       nContextHeight, stateOut);
-        if (!fHaveState ||
-            stateOut.nEpoch != GetEpochForHeight(nFinalizedHeight) ||
-            stateOut.nFinalizedHeightAsOf < nFinalizedHeight)
+        if (!fHaveState)
+            return FINALITY_RESULT_LOCAL_STATE;
+        if (stateOut.nEpoch == GetEpochForHeight(nFinalizedHeight))
+        {
+            if (stateOut.nFinalizedHeightAsOf < nFinalizedHeight)
+                return FINALITY_RESULT_LOCAL_STATE;
+            return FINALITY_RESULT_OK;
+        }
+        // Newer than the finalized epoch: GetFinalizedEpochStateAsOf also accepts an
+        // epoch deep enough to stand without finality, so this is the answer, not a
+        // mismatch. Pinning to the finalized epoch would stall voting while finality lags.
+        if (!fAllowDeepUnfinalizedAnchor ||
+            stateOut.nEpoch < GetEpochForHeight(nFinalizedHeight) ||
+            stateOut.nHeightEnd <= 0 ||
+            nContextHeight - stateOut.nHeightEnd <
+                EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH)
             return FINALITY_RESULT_LOCAL_STATE;
         return FINALITY_RESULT_OK;
     }
@@ -7048,7 +7062,8 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
     // legacy shielded history -- which is every IV5 chain.
     const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
         txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState,
-        false /* fRequireCurveRoot */);
+        false /* fRequireCurveRoot */,
+        true /* fAllowDeepUnfinalizedAnchor */);
     if (anchorResult == FINALITY_RESULT_INVALID)
         return reject("note vote requires an already-finalized epoch");
     if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
@@ -10212,7 +10227,9 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
     // nodes and invalid on others, which is a chain split.
     CEpochState anchorState;
     const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
-        txdb, nIncludingHeight, g_finalityTracker.GetFinalizedHeight(), anchorState);
+        txdb, nIncludingHeight, g_finalityTracker.GetFinalizedHeight(), anchorState,
+        true /* fRequireCurveRoot */,
+        true /* fAllowDeepUnfinalizedAnchor */);
     if (anchorResult != FINALITY_RESULT_OK)
     {
         if (fDebug)
