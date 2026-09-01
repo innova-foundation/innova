@@ -4,9 +4,11 @@
 #include <QStringList>
 #include <QWidget>
 
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QTimer;
 class WalletModel;
 
 /** The private collateralnode and finality-member registration path.
@@ -23,6 +25,8 @@ public:
     void setModel(WalletModel *model);
 
 private slots:
+    void onCarveNote();
+    void onRefreshProgress();
     void onListNotes();
     void onNodePreview();
     void onNodeRegister();
@@ -43,6 +47,11 @@ private:
     void report(const QString& heading, const QString& body);
 
     WalletModel *model;
+
+    QLabel *guidedStatusLabel;
+    QPushButton *carveNoteButton;
+    QTimer *progressTimer;
+    int nLastAttestableNotes;
 
     QLineEdit *nodeEndpointEdit;
     QLineEdit *nodePayoutEdit;

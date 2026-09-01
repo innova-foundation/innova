@@ -4,7 +4,9 @@
 
 #include <QDateTime>
 #include <QFormLayout>
+#include <QApplication>
 #include <QGroupBox>
+#include <QTimer>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -29,6 +31,26 @@ PrivateCollateralWidget::PrivateCollateralWidget(QWidget *parent) :
     notice->setWordWrap(true);
     notice->setStyleSheet("color: #d98c00; font-weight: bold;");
     layout->addWidget(notice);
+
+    // --- guided setup ---
+    QGroupBox *guidedGroup = new QGroupBox(tr("Guided setup"));
+    QVBoxLayout *guidedLayout = new QVBoxLayout(guidedGroup);
+    guidedStatusLabel = new QLabel(tr("Checking..."));
+    guidedStatusLabel->setWordWrap(true);
+    guidedLayout->addWidget(guidedStatusLabel);
+    carveNoteButton = new QPushButton(tr("Carve a 25,000 INN note"));
+    carveNoteButton->setToolTip(tr(
+        "Sends 25,000 INN from the pool to one of your own IV5 addresses. That "
+        "self-transfer is what produces a note of exactly the attestable size, and "
+        "it discloses nothing."));
+    guidedLayout->addWidget(carveNoteButton);
+    layout->addWidget(guidedGroup);
+    connect(carveNoteButton, SIGNAL(clicked()), this, SLOT(onCarveNote()));
+
+    nLastAttestableNotes = -1;
+    progressTimer = new QTimer(this);
+    connect(progressTimer, SIGNAL(timeout()), this, SLOT(onRefreshProgress()));
+    progressTimer->start(15000);
 
     // --- collateral notes ---
     QGroupBox *notesGroup = new QGroupBox(tr("Attestable notes"));
@@ -187,6 +209,123 @@ void PrivateCollateralWidget::run(const QStringList& args, bool fNeedsUnlock)
         report(tr("collateralnode %1 failed").arg(args.at(0)), error);
     else
         report(tr("collateralnode %1").arg(args.at(0)), result);
+}
+
+void PrivateCollateralWidget::onCarveNote()
+{
+    if (model == 0)
+    {
+        report(tr("Carve a note"), tr("no wallet is loaded"));
+        return;
+    }
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this, tr("Carve a 25,000 INN note"),
+        tr("This sends 25,000 INN from the pool to one of your own IV5 addresses.\n\n"
+           "The result is a note of exactly the attestable size. The transfer itself "
+           "discloses nothing, and a note made this way is the best provenance a "
+           "registration can have -- better than shielding 25,000 transparent coins, "
+           "which links the node to those coins permanently.\n\nContinue?"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+    {
+        report(tr("Carve a note"), tr("the wallet stayed locked; nothing was sent"));
+        return;
+    }
+
+    carveNoteButton->setEnabled(false);
+    guidedStatusLabel->setText(tr("Getting a destination address..."));
+    QApplication::processEvents();
+
+    QString result;
+    QString error;
+    if (!Iv5Rpc::Call("z_getnewiv5address", QStringList(), result, error))
+    {
+        carveNoteButton->setEnabled(true);
+        report(tr("Carve a note failed"), error);
+        return;
+    }
+    QString address;
+    if (!Iv5Rpc::ReadField(result, "address", address) || address.isEmpty())
+    {
+        carveNoteButton->setEnabled(true);
+        report(tr("Carve a note failed"), tr("no address came back"));
+        return;
+    }
+
+    guidedStatusLabel->setText(tr("Sending 25,000 INN to %1...").arg(address));
+    QApplication::processEvents();
+
+    QStringList params;
+    params << address << "25000";
+    if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))
+    {
+        carveNoteButton->setEnabled(true);
+        guidedStatusLabel->setText(tr("The carve was refused."));
+        report(tr("Carve a note failed"), error);
+        return;
+    }
+
+    carveNoteButton->setEnabled(true);
+    QString txid;
+    Iv5Rpc::ReadField(result, "txid", txid);
+    guidedStatusLabel->setText(
+        tr("Carve sent (%1). Waiting for it to confirm and become attestable.")
+            .arg(txid.left(16)));
+    onRefreshProgress();
+    report(tr("Carve a note"), result);
+}
+
+void PrivateCollateralWidget::onRefreshProgress()
+{
+    // Reads the two things that decide where the operator is: whether a note of the
+    // attestable size exists yet, and whether an attestation has aged enough to be
+    // accepted. Both come off the chain rather than from anything held locally.
+    QString result;
+    QString error;
+
+    if (Iv5Rpc::Call("collateralnode", QStringList() << "statusprivate", result, error))
+    {
+        QString confirms, registered;
+        const bool fHaveConfirms = Iv5Rpc::ReadField(result, "confirmations", confirms);
+        Iv5Rpc::ReadField(result, "registered", registered);
+        if (registered == "true" || fHaveConfirms)
+        {
+            const int nConf = confirms.toInt();
+            if (nConf >= 15)
+                guidedStatusLabel->setText(
+                    tr("Registered and aged past %1 confirmations. Announce it to the "
+                       "network if you have not already.").arg(15));
+            else
+                guidedStatusLabel->setText(
+                    tr("Registered. %1 of %2 confirmations before peers will accept the "
+                       "announcement.").arg(nConf).arg(15));
+            return;
+        }
+    }
+
+    if (!Iv5Rpc::Call("collateralnode", QStringList() << "collateral-notes", result, error))
+    {
+        guidedStatusLabel->setText(tr("Could not read the node: %1").arg(error));
+        return;
+    }
+
+    // The reply lists candidates; an empty list is the "carve one first" state.
+    const int nNotes = result.count("\"txhash\"");
+    nLastAttestableNotes = nNotes;
+    if (nNotes > 0)
+        guidedStatusLabel->setText(
+            tr("%1 attestable note(s) of 25,000 INN. Register the node below; it "
+               "becomes announceable %2 confirmations after the attestation.")
+                .arg(nNotes).arg(15));
+    else
+        guidedStatusLabel->setText(
+            tr("No note of exactly 25,000 INN yet. Carve one below -- it needs 25,000 "
+               "INN already in the pool, so migrate transparent coins first if the "
+               "pool is short."));
 }
 
 void PrivateCollateralWidget::onListNotes()
