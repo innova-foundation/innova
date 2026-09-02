@@ -42,6 +42,9 @@ struct TestingSetup {
         fTestNet = false;
 
         fPrintToDebugger = true; // don't want to write to debug.log file
+        // Errors are otherwise invisible in a test run; opt in to see them on stdout.
+        if (getenv("INNOVA_TEST_CONSOLE"))
+            fPrintToConsole = true;
         noui_connect();
         bitdb.MakeMock();
         if (!LoadBlockIndex(true))
