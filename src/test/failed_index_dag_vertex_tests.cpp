@@ -207,6 +207,15 @@ BOOST_AUTO_TEST_CASE(reconsider_refuses_a_flagged_block_without_a_vertex_and_cha
     CDAGManager scratch;
     BOOST_CHECK_MESSAGE(scratch.LoadDAGLinks(txdbRead),
                         "the loader refuses a flagged, vertex-less index");
+
+    // Flagged, vertex-less and unreadable: the flag keeps it out of every selection and
+    // reconsider refuses to unflag it, so the loader leaves it flagged and starts.
+    const unsigned int nSavedFile = pindex->nFile;
+    pindex->nFile = 9999;
+    CDAGManager scratchUnreadable;
+    BOOST_CHECK_MESSAGE(scratchUnreadable.LoadDAGLinks(txdbRead),
+                        "the loader refuses a flagged index it cannot rebuild");
+    pindex->nFile = nSavedFile;
 }
 
 // A valid index with no vertex: the loader rebuilds and persists the vertex from the

@@ -113,6 +113,8 @@ log "tip $TIP_H ($TIP_HASH); invalidating $TARGET ($TARGET_HASH)"
 # ---- 1. flag persists with the vertex; reconsider reports and restores; restart-stable
 rpc invalidateblock "$TARGET_HASH" >/dev/null 2>&1
 [ "$(height)" -eq $(( TARGET - 1 )) ] && success "invalidateblock rolled the tip back to $((TARGET - 1))" || fail "tip after invalidateblock is $(height), expected $((TARGET - 1))"
+GB="$(rpc getblock "$TARGET_HASH")"
+[ "$(jval "$GB" failedheight)" = "$TARGET" ] && echo "$GB" | grep -q '"failreason" : "invalidateblock"' && success "getblock shows why the block is flagged (invalidateblock at $TARGET)" || fail "getblock carries no fail reason: $(echo "$GB" | grep -c failreason) reason fields"
 stop_node || fail "stop 1"
 FATAL_BASE="$(count_log 'LoadDAGLinks: FATAL')"
 start_node || fail "restart 1"
@@ -123,6 +125,7 @@ R="$(rpc reconsiderblock "$TARGET_HASH")"
 [ "$(jval "$R" flags_cleared)" = "true" ] && success "reconsiderblock reports flags_cleared" || fail "reconsiderblock result: $R"
 [ "$(jval "$R" tip_moved)" = "true" ] && success "reconsiderblock reports tip_moved" || fail "reconsiderblock result: $R"
 [ "$(besthash)" = "$TIP_HASH" ] && success "the tip is back at $TIP_H" || fail "tip after reconsider is $(height) $(besthash)"
+rpc getblock "$TARGET_HASH" | grep -q failreason && fail "reconsiderblock left the fail reason behind" || success "reconsiderblock erased the fail reason"
 stop_node || fail "stop 2"
 start_node || fail "restart 2"
 assert_clean_start "restart after reconsider" && [ "$(besthash)" = "$TIP_HASH" ] && success "the restored tip survived a restart" || fail "tip after restart 2 is $(height)"
@@ -159,6 +162,31 @@ start_node || fail "restart 5"
 assert_clean_start "restart after the rebuild" >/dev/null
 [ "$(count_log 'rebuilt DAG vertex')" -eq "$REBUILT_AFTER" ] && success "the following start had nothing to rebuild" || fail "the vertex was rebuilt again on restart 5"
 mine_to $(( TIP_H + 5 )) && success "the node mines on the rebuilt state ($(height))" || fail "the node could not mine after the rebuild"
+
+# ---- 4. a start that stops between the rebuild and its write-back leaves nothing behind
+TIP2_H="$(height)"; TIP2_HASH="$(besthash)"
+MID2=$(( TIP2_H - 8 ))
+MID2_HASH="$(rpc getblockhash "$MID2" | tr -d '"[:space:]')"
+rpc erasedagvertex "$MID2_HASH" >/dev/null 2>&1
+REBUILT_BASE="$(count_log 'rebuilt DAG vertex')"; PERSIST_BASE="$(count_log 'IDAG: persisted')"
+stop_node || fail "stop 6"
+# The block index (and the loader's rebuild) load before this key is validated, and the
+# order rebuild and its write-back come after it, so an invalid key stops the start in
+# exactly the window between the two.
+"$INNOVAD" -datadir="$D" -regtest -daemon -collateralnodeprivkey=notakey >/dev/null 2>&1
+for i in $(seq 1 60); do daemon_pids >/dev/null 2>&1 || break; sleep 1; done
+daemon_pids >/dev/null 2>&1 && { fail "the deliberately broken start did not exit"; stop_node; } || success "the interrupted start exited after loading the block index"
+[ "$(count_log 'rebuilt DAG vertex')" -gt "$REBUILT_BASE" ] && success "the interrupted start had rebuilt the vertex in memory" || fail "the interrupted start did not reach the loader rebuild"
+[ "$(count_log 'IDAG: persisted')" -eq "$PERSIST_BASE" ] && success "and persisted nothing" || fail "the interrupted start persisted before the order rebuild"
+REBUILT_MID="$(count_log 'rebuilt DAG vertex')"
+start_node || { fail "restart 6 after the interrupted start"; exit 1; }
+assert_clean_start "restart after an interrupted start" && success "restart after the interrupted start loads"
+[ "$(count_log 'rebuilt DAG vertex')" -gt "$REBUILT_MID" ] && success "the next start rebuilt the vertex again" || fail "the next start trusted a vertex the interrupted start never wrote back"
+[ "$(count_log 'IDAG: persisted')" -gt "$PERSIST_BASE" ] && success "and persisted it after the order rebuild" || fail "no write-back after the second rebuild"
+[ "$(besthash)" = "$TIP2_HASH" ] && success "the tip is unchanged at $TIP2_H" || fail "tip after the interrupted-start cycle is $(height)"
+REBUILT_END="$(count_log 'rebuilt DAG vertex')"
+stop_node || fail "stop 7"; start_node || fail "restart 7"
+[ "$(count_log 'rebuilt DAG vertex')" -eq "$REBUILT_END" ] && [ "$(count_log 'LoadDAGLinks: FATAL')" -eq "${FATAL_BASE:-0}" ] && success "the start after that had nothing to rebuild" || fail "the vertex was rebuilt again, or the loader refused, after the write-back"
 
 echo
 echo "passed=$PASSED failed=$FAILED"

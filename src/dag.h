@@ -533,6 +533,9 @@ public:
     std::vector<uint256> GetRebuiltVertices() const;
     int GetMinRebuiltVertexHeight() const;
 
+    /** Every vertex whose block index is above nHeight. */
+    std::vector<uint256> GetVerticesAbove(int nHeight) const;
+
     /** Check if a block has DAG data. */
     bool HasDAGData(const uint256& hash) const;
 

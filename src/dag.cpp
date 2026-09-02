@@ -492,8 +492,18 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     for (const uint256& hashParent : vParents)
         setDAGTips.erase(hashParent);
 
+    // A flagged block keeps its vertex and stays a tip, but it is never selected or
+    // merged, so it does not count towards a flood: otherwise 65 rejected blocks would
+    // trigger this rebuild once a minute for the life of the datadir.
+    int nLiveTips = 0;
+    for (const uint256& hashTip : setDAGTips)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator miTip = mapBlockIndex.find(hashTip);
+        if (miTip != mapBlockIndex.end() && miTip->second && !miTip->second->IsInvalid())
+            nLiveTips++;
+    }
     static int64_t nLastRebuildTime = 0;
-    if ((int)setDAGTips.size() > 64)
+    if (nLiveTips > 64)
     {
         int64_t nNow = GetTimeMillis();
         if (nNow - nLastRebuildTime > 60000)
@@ -1470,6 +1480,15 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
         {
             if (pindex->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
                 continue;
+            // A flagged index is never selected or merged and cannot be reconsidered without a vertex,
+            // so an unrebuildable one is only a warning.
+            if (pindex->IsInvalid())
+            {
+                printf("LoadDAGLinks: flagged V3 block index %s at height %d has no DAG vertex "
+                       "and cannot be rebuilt (%s); left flagged\n",
+                       it->first.ToString().substr(0,20).c_str(), pindex->nHeight, strWhy.c_str());
+                continue;
+            }
             printf("LoadDAGLinks: FATAL retained V3 block index %s at height %d has no DAG "
                    "vertex and it cannot be rebuilt (%s); resync required\n",
                    it->first.ToString().substr(0,20).c_str(), pindex->nHeight, strWhy.c_str());
@@ -2335,7 +2354,16 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
                                  hashBlock.ToString().substr(0, 20).c_str());
             return false;
         }
-        std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(block, mi->second);
+        bool fSkipSetIncomplete = false;
+        std::set<uint256> setDAGSkippedTxs =
+            GetDAGSkippedTxsForBlock(block, mi->second, &fSkipSetIncomplete);
+        if (fSkipSetIncomplete)
+        {
+            strError = strprintf("V2 epoch %d: DAG sibling set of block %s is incomplete on this "
+                                 "node; resync required", nEpoch,
+                                 hashBlock.ToString().substr(0, 20).c_str());
+            return false;
+        }
         CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
         for (const CTransaction& tx : activeBlock.vtx)
@@ -3546,7 +3574,10 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
 }
 
 // A miss is the chain's answer and reads the same on every node; anything else -- an
-// I/O error, or bytes that will not decode -- is this node's own problem.
+// I/O error, or bytes that will not decode -- is this node's own problem. A record the
+// staging invariant says should exist but is absent is deliberately still the chain's
+// answer: no code path deletes a record at runtime, and classing it local would turn the
+// mainnet pre-first-finalization miss into a transient loop.
 static bool EpochStateReadIsLocalFailure(CTxDB& txdb, int nEpoch)
 {
     return txdb.ProbeEpochState(nEpoch) != TXDB_READ_NOT_FOUND;
@@ -3783,6 +3814,20 @@ std::vector<uint256> CDAGManager::GetRebuiltVertices() const
 {
     LOCK(cs_dag);
     return vRebuiltVertices;
+}
+
+std::vector<uint256> CDAGManager::GetVerticesAbove(int nHeight) const
+{
+    LOCK(cs_dag);
+    std::vector<uint256> vOut;
+    for (std::map<uint256, CBlockDAGData>::const_iterator it = mapDAGData.begin();
+         it != mapDAGData.end(); ++it)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(it->first);
+        if (mi != mapBlockIndex.end() && mi->second && mi->second->nHeight > nHeight)
+            vOut.push_back(it->first);
+    }
+    return vOut;
 }
 
 int CDAGManager::GetMinRebuiltVertexHeight() const

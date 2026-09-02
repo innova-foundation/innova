@@ -2835,20 +2835,23 @@ bool AppInit2()
             printf("IDAG: No clean height found, full DAG rebuild\n");
             g_dagManager.RebuildDAGOrder();
         }
-        // The rebuilt vertices now carry order fields; the next start trusts records at
-        // or below its clean height as persisted, so write them back.
+        // The lowered floor recoloured every vertex above it, not only the rebuilt ones;
+        // the next start trusts records at or below its own clean height as persisted, so
+        // the whole window is written back, or a restart would disagree with this start.
         if (!vRebuilt.empty())
         {
+            const std::vector<uint256> vWindow = g_dagManager.GetVerticesAbove(nDAGCleanHeight);
             CTxDB txdbRebuilt;
             bool fOK = txdbRebuilt.TxnBegin();
-            for (size_t i = 0; fOK && i < vRebuilt.size(); i++)
-                fOK = g_dagManager.WriteDAGLinks(txdbRebuilt, vRebuilt[i]);
+            for (size_t i = 0; fOK && i < vWindow.size(); i++)
+                fOK = g_dagManager.WriteDAGLinks(txdbRebuilt, vWindow[i]);
             if (fOK)
                 fOK = txdbRebuilt.TxnCommit();
             else
                 txdbRebuilt.TxnAbort();
-            printf("IDAG: persisted %d rebuilt DAG vertices%s\n",
-                   (int)vRebuilt.size(), fOK ? "" : " FAILED; they will be rebuilt at the next start");
+            printf("IDAG: persisted %d rebuilt DAG vertices and the %d recoloured above height %d%s\n",
+                   (int)vRebuilt.size(), (int)vWindow.size(), nDAGCleanHeight,
+                   fOK ? "" : " FAILED; they will be rebuilt at the next start");
         }
 
         std::vector<uint256> vTips = g_dagManager.GetDAGTips();
