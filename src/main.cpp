@@ -7159,9 +7159,11 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                           nValueIn, GetValueOut(), nShieldedAbsorbed));
             }
 
-            // use DoS(100) to ban peers sending shielded tx when ZK unavailable
+            // Node-local: in block context this is a transient refusal (no score, so
+            // ConnectBlock does not persist it); a relayed tx still costs the peer.
             if (!CZKContext::IsInitialized())
-                return DoS(100, error("ConnectInputs() : ZK context not initialized, cannot validate shielded tx"));
+                return fBlock ? error("ConnectInputs() : ZK context not initialized, cannot validate shielded tx")
+                              : DoS(100, error("ConnectInputs() : ZK context not initialized, cannot validate shielded tx"));
 
             {
                 uint256 sighash = GetBindingSigHash();
