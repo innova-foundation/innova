@@ -387,6 +387,21 @@ void CAddrMan::Attempt_(const CService &addr, int64_t nTime)
     info.nAttempts++;
 }
 
+// Selection probes random slots until one passes; on sparse tables that is thousands of
+// draws per call, so a fast generator seeded once replaces the OpenSSL DRBG here.
+static int SelectRand(int nMax)
+{
+    static bool fSeeded = false;
+    if (!fSeeded)
+    {
+        seed_insecure_rand();
+        fSeeded = true;
+    }
+    if (nMax <= 1)
+        return 0;
+    return (int)(insecure_rand() % (uint32_t)nMax);
+}
+
 CAddress CAddrMan::Select_(int nUnkBias)
 {
     if (size() == 0)
@@ -394,19 +409,19 @@ CAddress CAddrMan::Select_(int nUnkBias)
 
     double nCorTried = sqrt(nTried) * (100.0 - nUnkBias);
     double nCorNew = sqrt(nNew) * nUnkBias;
-    if ((nCorTried + nCorNew)*GetRandInt(1<<30)/(1<<30) < nCorTried)
+    if ((nCorTried + nCorNew)*SelectRand(1<<30)/(1<<30) < nCorTried)
     {
         // use a tried node
         double fChanceFactor = 1.0;
         while(1)
         {
-            int nKBucket = GetRandInt(vvTried.size());
+            int nKBucket = SelectRand(vvTried.size());
             std::vector<int> &vTried = vvTried[nKBucket];
             if (vTried.size() == 0) continue;
-            int nPos = GetRandInt(vTried.size());
+            int nPos = SelectRand(vTried.size());
             assert(mapInfo.count(vTried[nPos]) == 1);
             CAddrInfo &info = mapInfo[vTried[nPos]];
-            if (GetRandInt(1<<30) < fChanceFactor*info.GetChance()*(1<<30))
+            if (SelectRand(1<<30) < fChanceFactor*info.GetChance()*(1<<30))
                 return info;
             fChanceFactor *= 1.2;
         };
@@ -415,16 +430,16 @@ CAddress CAddrMan::Select_(int nUnkBias)
         double fChanceFactor = 1.0;
         while(1)
         {
-            int nUBucket = GetRandInt(vvNew.size());
+            int nUBucket = SelectRand(vvNew.size());
             std::set<int> &vNew = vvNew[nUBucket];
             if (vNew.size() == 0) continue;
-            int nPos = GetRandInt(vNew.size());
+            int nPos = SelectRand(vNew.size());
             std::set<int>::iterator it = vNew.begin();
             while (nPos--)
                 it++;
             assert(mapInfo.count(*it) == 1);
             CAddrInfo &info = mapInfo[*it];
-            if (GetRandInt(1<<30) < fChanceFactor*info.GetChance()*(1<<30))
+            if (SelectRand(1<<30) < fChanceFactor*info.GetChance()*(1<<30))
                 return info;
             fChanceFactor *= 1.2;
         };
