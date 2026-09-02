@@ -1043,8 +1043,9 @@ void ThreadCheckCollaTeralPool(void* parg)
 
         int mnRefresh = 30;
 
-        //try to sync the collateralnode list and payment list every 30 seconds from at least 2 nodes until we have them all
-        if(vNodes.size() > 1 && c % mnRefresh == 0 && (mnCount == 0 || vecCollateralnodes.size() < mnCount)) {
+        // Refresh the collateralnode list from every peer, each at most once per 120 s,
+        // regardless of peer count or whether the local count matches the announced one.
+        if(!vNodes.empty() && c % mnRefresh == 0) {
             bool fIsInitialDownload = IsInitialBlockDownload();
             if(!fIsInitialDownload) {
                 LOCK(cs_vNodes);
