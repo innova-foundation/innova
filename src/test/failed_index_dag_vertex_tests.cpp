@@ -252,9 +252,25 @@ BOOST_AUTO_TEST_CASE(the_loader_rebuilds_a_missing_vertex_from_the_block_on_disk
     BOOST_CHECK(rebuilt.vDAGParents == vExpected);
     BOOST_CHECK(scratch.GetMinRebuiltVertexHeight() >= FORK_HEIGHT_DAG);
     BOOST_CHECK(scratch.GetMinRebuiltVertexHeight() <= pindex->nHeight);
+    // Nothing is written at load: the record would carry no order fields, and a start
+    // that stopped before the write-back would leave it that way for good. init
+    // persists it after the order rebuild.
     CBlockDAGData persisted;
-    BOOST_CHECK_MESSAGE(txdbRead.ReadDAGLinks(hash, persisted), "the rebuilt vertex was not persisted");
-    BOOST_CHECK(persisted.vDAGParents == vExpected);
+    BOOST_CHECK_MESSAGE(!txdbRead.ReadDAGLinks(hash, persisted),
+                        "the loader persisted a vertex before it was coloured");
+
+    // A record that did get written without order fields is picked up for recolouring
+    // on the next load, as if rebuilt, instead of being trusted as stored.
+    CBlockDAGData bare;
+    bare.vDAGParents = vExpected;
+    BOOST_REQUIRE(txdb.WriteDAGLinks(hash, bare));
+    CDAGManager scratchBare;
+    BOOST_REQUIRE(scratchBare.LoadDAGLinks(txdbRead));
+    const std::vector<uint256> vRebuilt = scratchBare.GetRebuiltVertices();
+    BOOST_CHECK_MESSAGE(std::find(vRebuilt.begin(), vRebuilt.end(), hash) != vRebuilt.end(),
+                        "a score-less record was trusted as stored");
+    BOOST_CHECK(scratchBare.GetMinRebuiltVertexHeight() <= pindex->nHeight);
+    BOOST_REQUIRE(txdb.EraseDAGLinks(hash));
 
     // Leave the invalid block flagged for the suites that follow.
     pindex->SetFailedValid();

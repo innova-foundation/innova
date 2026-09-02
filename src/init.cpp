@@ -2848,7 +2848,7 @@ bool AppInit2()
             else
                 txdbRebuilt.TxnAbort();
             printf("IDAG: persisted %d rebuilt DAG vertices%s\n",
-                   (int)vRebuilt.size(), fOK ? "" : " FAILED");
+                   (int)vRebuilt.size(), fOK ? "" : " FAILED; they will be rebuilt at the next start");
         }
 
         std::vector<uint256> vTips = g_dagManager.GetDAGTips();

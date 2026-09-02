@@ -1422,13 +1422,20 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
                    it->first.ToString().substr(0,20).c_str(), strWhy.c_str());
             return false;
         }
+        // Every coloured vertex carries a positive score; a record without one was written
+        // before its block was coloured. Treat it as rebuilt so the order rebuild starts
+        // below it and init writes it back with its fields.
+        if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->nHeight >= nPruneBelow &&
+            it->second.nDAGScore == 0)
+        {
+            vRebuiltVertices.push_back(it->first);
+            printf("LoadDAGLinks: DAG vertex %s at height %d has no order fields; recolouring\n",
+                   it->first.ToString().substr(0,20).c_str(), pindex->nHeight);
+        }
     }
 
-    // Every retained DAG-era PoW index above the prune boundary carries a vertex,
-    // flagged or not. One without a record is rebuilt from the block on disk: the
-    // parents are the coinbase commitment, the child links are re-derived below and
-    // the order fields by the startup rebuild. Only a V3 block that cannot be read
-    // or bound is fatal; a vertex was never required of the GHOSTDAG window.
+    // Every DAG-era PoW index above the prune boundary carries a vertex; a missing one is rebuilt
+    // from the block on disk. Only a V3 block that cannot be read or bound is fatal.
     int nRebuilt = 0;
     for (std::map<uint256, CBlockIndex*>::const_iterator it = mapBlockIndex.begin();
          it != mapBlockIndex.end(); ++it)
@@ -1469,14 +1476,11 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
             return false;
         }
 
+        // Not written here: the record has no order fields yet. init persists it once the
+        // startup order rebuild has coloured it, so a start that stops in between leaves
+        // nothing behind and the next one rebuilds again.
         CBlockDAGData data;
         data.vDAGParents = vParents;
-        if (!txdb.IsReadOnly() && !txdb.WriteDAGLinks(it->first, data))
-        {
-            printf("LoadDAGLinks: FATAL could not persist the rebuilt DAG vertex for %s\n",
-                   it->first.ToString().substr(0,20).c_str());
-            return false;
-        }
         mapLoaded[it->first] = data;
         vRebuiltVertices.push_back(it->first);
         ++nRebuilt;
