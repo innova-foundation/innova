@@ -1486,17 +1486,15 @@ void ThreadSocketHandler2(void* parg)
                     continue;
                 {
                     TRY_LOCK(pnode->cs_vSend, lockSend);
-                    if (lockSend) {
-                        // do not read, if draining write queue
-                        if (!pnode->vSendMsg.empty())
-                            FD_SET(pnode->hSocket, &fdsetSend);
-                        else
-                            FD_SET(pnode->hSocket, &fdsetRecv);
-                        FD_SET(pnode->hSocket, &fdsetError);
-                        hSocketMax = max(hSocketMax, pnode->hSocket);
-                        have_fds = true;
-                    }
+                    if (lockSend && !pnode->vSendMsg.empty())
+                        FD_SET(pnode->hSocket, &fdsetSend);
                 }
+                // Read regardless of the write queue: two peers with data queued for each
+                // other otherwise deadlock. Receive-flood backpressure already limits reads.
+                FD_SET(pnode->hSocket, &fdsetRecv);
+                FD_SET(pnode->hSocket, &fdsetError);
+                hSocketMax = max(hSocketMax, pnode->hSocket);
+                have_fds = true;
             }
         }
 
