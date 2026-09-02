@@ -798,6 +798,19 @@ BOOST_AUTO_TEST_CASE(both_reorg_sites_still_route_through_the_shared_guard)
     // second copy at a call site is how the two sites drift apart.
     BOOST_CHECK_EQUAL(CountOccurrences(strMain, "nForkHeight >= nFinalCurOut"), 1u);
 
+    // Selection sites read the verdict through BestChainSwitchVerdict, which must stay
+    // persistence-free.
+    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "BestChainSwitchVerdict("), 4u);
+    const size_t nSwitch = strMain.find("ReorgFinalityVerdict BestChainSwitchVerdict(");
+    BOOST_REQUIRE(nSwitch != std::string::npos);
+    const size_t nSwitchEnd = strMain.find("\n}\n", nSwitch);
+    BOOST_REQUIRE(nSwitchEnd != std::string::npos);
+    const std::string strSwitch = strMain.substr(nSwitch, nSwitchEnd - nSwitch);
+    BOOST_CHECK_MESSAGE(strSwitch.find("SetFailedValid") == std::string::npos &&
+                        strSwitch.find("pfPermanentInvalid") == std::string::npos &&
+                        strSwitch.find("ApplyReorgFinalityGuard") == std::string::npos,
+                        "BestChainSwitchVerdict persists or latches a verdict");
+
     // The node-local live streak must not reach the decision. It stalls below the
     // deterministic value on out-of-order vote arrival and differs between nodes,
     // so folding it in puts path-dependent state back into a consensus reorg --

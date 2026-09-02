@@ -219,10 +219,26 @@ static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBloc
     // A heavier index this node may not switch to (its fork with the tip lies below the
     // finality anchor) is kept as a side block by AddToBlockIndex; building on it would
     // solve blocks that are side-indexed in turn and never relayed. Evaluated only for a
-    // candidate that would otherwise win, so the fork walk runs for the few heavy tips.
+    // candidate that would otherwise win, and remembered per tip: on a node whose anchor
+    // has diverged from the fleet every fleet block is such a candidate, and each verdict
+    // is a fork walk.
+    static uint256 hashMemoTip;
+    static std::set<uint256> setIneligibleForTip;
+    if (hashMemoTip != hashBestChain)
+    {
+        hashMemoTip = hashBestChain;
+        setIneligibleForTip.clear();
+    }
+    const bool fHaveHash = pCandidate->phashBlock != NULL;
+    if (fHaveHash && setIneligibleForTip.count(pCandidate->GetBlockHash()))
+        return false;
     int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
-    return BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch) ==
-           REORG_FINALITY_ALLOW;
+    if (BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch) ==
+        REORG_FINALITY_ALLOW)
+        return true;
+    if (fHaveHash)
+        setIneligibleForTip.insert(pCandidate->GetBlockHash());
+    return false;
 }
 
 static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)

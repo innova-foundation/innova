@@ -11652,6 +11652,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     ConnectResult connectResult = CONNECT_RESULT_INVALID;
     if (!ConnectBlock(txdb, pindexNew, false, true, &connectResult))
     {
+        // Read the verdict's text before the abort and the restore can log over it.
+        const std::string strConnectError = GetLastErrorString();
         txdb.TxnAbort();
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
         if (ConnectResultMayPersistVerdict(connectResult))
@@ -11663,7 +11665,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
             {
                 pFailReason->hashFailedBlock = pindexNew->GetBlockHash();
                 pFailReason->nFailedHeight = pindexNew->nHeight;
-                pFailReason->strReason = GetLastErrorString();
+                pFailReason->strReason = strConnectError;
                 pFailReason->nTime = GetTime();
             }
         }
@@ -12231,6 +12233,8 @@ static bool ReselectBestValidChain(CTxDB& txdb)
     for (size_t i = 0; i < vCandidates.size(); i++)
     {
         CBlockIndex* pbest = vCandidates[i];
+        if (pbest->IsInvalid())
+            continue; // flagged by an earlier candidate's failure below
         int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
         const ReorgFinalityVerdict switchVerdict = BestChainSwitchVerdict(
             pbest, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
@@ -12256,26 +12260,32 @@ static bool ReselectBestValidChain(CTxDB& txdb)
         if (!fPermanentInvalid)
             return error("ReselectBestValidChain() : switching to %s failed transiently",
                          pbest->GetBlockHash().ToString().substr(0,20).c_str());
-        // The candidate was pre-gated for finality, so only a ConnectBlock verdict reaches
-        // here: flag it and its descendants as AddToBlockIndex would have (the vertex stays),
-        // and go on to the next candidate rather than leave a rejected block unflagged and
-        // heavier than the tip.
+        // Flag the block that actually failed and its descendants (vertices stay), then try
+        // the next candidate.
+        CBlockIndex* pFailed = pbest;
+        if (failReason.hashFailedBlock != 0)
+        {
+            std::map<uint256, CBlockIndex*>::iterator miFailed = mapBlockIndex.find(failReason.hashFailedBlock);
+            if (miFailed != mapBlockIndex.end() && miFailed->second)
+                pFailed = miFailed->second;
+        }
         std::vector<CBlockIndex*> vFlagged;
-        MarkFailedSubtree(pbest, true, vFlagged);
+        MarkFailedSubtree(pFailed, true, vFlagged);
+        bool fFlagCommitted = false;
         if (txdb.TxnBegin())
         {
-            bool fWritesOK = txdb.WriteBlockFailReason(pbest->GetBlockHash(), failReason);
+            bool fWritesOK = txdb.WriteBlockFailReason(pFailed->GetBlockHash(), failReason);
             for (size_t j = 0; j < vFlagged.size(); j++)
                 fWritesOK = txdb.WriteBlockIndex(CDiskBlockIndex(vFlagged[j])) && fWritesOK;
             if (fWritesOK)
-                txdb.TxnCommit();
+                fFlagCommitted = txdb.TxnCommit();
             else
                 txdb.TxnAbort();
         }
         printf("ReselectBestValidChain() : %s at height %d rejected by ConnectBlock; flagged with "
-               "%d descendants\n",
-               pbest->GetBlockHash().ToString().substr(0,20).c_str(), pbest->nHeight,
-               (int)vFlagged.size() - 1);
+               "%d descendants%s\n",
+               pFailed->GetBlockHash().ToString().substr(0,20).c_str(), pFailed->nHeight,
+               (int)vFlagged.size() - 1, fFlagCommitted ? "" : " (flag write FAILED)");
     }
     return true; // nothing switchable beats the current tip -> no-op
 }
@@ -12367,6 +12377,7 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 
     InvalidChainFound(pindex);
 
+    bool fCommitted = false;
     if (txdb.TxnBegin())
     {
         CBlockFailReason reason;
@@ -12374,11 +12385,16 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
         reason.nFailedHeight = pindex->nHeight;
         reason.strReason = "invalidateblock";
         reason.nTime = GetTime();
-        txdb.WriteBlockFailReason(pindex->GetBlockHash(), reason);
+        bool fWritesOK = txdb.WriteBlockFailReason(pindex->GetBlockHash(), reason);
         for (size_t i = 0; i < vChanged.size(); i++)
-            txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
-        txdb.TxnCommit();
+            fWritesOK = txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i])) && fWritesOK;
+        if (fWritesOK)
+            fCommitted = txdb.TxnCommit();
+        else
+            txdb.TxnAbort();
     }
+    if (!fCommitted)
+        { strError = "could not persist the invalid marks"; return false; }
 
     if (!ReselectBestValidChain(txdb))
         { strError = "reselection of best valid chain failed"; return false; }
@@ -12404,21 +12420,74 @@ bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bo
     for (size_t i = 0; i < vChanged.size(); i++)
         vChanged[i]->ClearFailed();
 
+    bool fCommitted = false;
     if (txdb.TxnBegin())
     {
+        bool fWritesOK = true;
         for (size_t i = 0; i < vChanged.size(); i++)
         {
-            txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
+            fWritesOK = txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i])) && fWritesOK;
             txdb.EraseBlockFailReason(vChanged[i]->GetBlockHash());
         }
-        txdb.TxnCommit();
+        if (fWritesOK)
+            fCommitted = txdb.TxnCommit();
+        else
+            txdb.TxnAbort();
     }
+    if (!fCommitted)
+        { strError = "could not persist the cleared marks"; return false; }
     if (pfFlagsCleared)
         *pfFlagsCleared = true;
 
     if (!ReselectBestValidChain(txdb))
         { strError = "reselection of best valid chain failed"; return false; }
     return true;
+}
+
+// Blocks refused transiently (local read or resource condition). A retry reuses the
+// on-disk position, and repeated refusals back off.
+struct CTransientRefusal
+{
+    unsigned int nFile;
+    unsigned int nBlockPos;
+    int nAttempts;
+    int64_t nLast;
+};
+static std::map<uint256, CTransientRefusal> mapTransientRefusals; // cs_main
+static const int TRANSIENT_REFUSAL_LOUD_AT = 8;
+
+static bool IsTransientlyHeld(const uint256& hash)
+{
+    std::map<uint256, CTransientRefusal>::const_iterator it = mapTransientRefusals.find(hash);
+    if (it == mapTransientRefusals.end() || it->second.nAttempts < 2)
+        return false;
+    const int64_t nHold = std::min<int64_t>(600, (int64_t)1 << std::min(it->second.nAttempts, 10));
+    return GetTime() - it->second.nLast < nHold;
+}
+
+static void NoteTransientRefusal(const uint256& hash, unsigned int nFile, unsigned int nBlockPos)
+{
+    if (mapTransientRefusals.size() > 5000)
+    {
+        const int64_t nCutoff = GetTime() - 3600;
+        for (std::map<uint256, CTransientRefusal>::iterator it = mapTransientRefusals.begin();
+             it != mapTransientRefusals.end();)
+        {
+            if (it->second.nLast < nCutoff)
+                mapTransientRefusals.erase(it++);
+            else
+                ++it;
+        }
+    }
+    CTransientRefusal& r = mapTransientRefusals[hash];
+    r.nFile = nFile;
+    r.nBlockPos = nBlockPos;
+    r.nAttempts++;
+    r.nLast = GetTime();
+    if (r.nAttempts == TRANSIENT_REFUSAL_LOUD_AT)
+        printf("AddToBlockIndex() : %s has been refused transiently %d times (last: %s); this "
+               "node's local state may need repair, retries are backing off\n",
+               hash.ToString().substr(0,20).c_str(), r.nAttempts, GetLastErrorString().c_str());
 }
 
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof)
@@ -12816,7 +12885,9 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             }
 
             // Transient (DB / resource) failure: preserve the original delete-based retry path so a later
-            // attempt can re-accept the block cleanly (A1 / resource recovery).
+            // attempt can re-accept the block cleanly (A1 / resource recovery). The block's bytes stay
+            // where they are; the next attempt reuses them and backs off after repeated refusals.
+            NoteTransientRefusal(hash, nFile, nBlockPos);
             if (fDAGDataInitialized)
                 g_dagManager.RemoveBlockDAGData(hash);
 
@@ -13341,7 +13412,16 @@ bool CBlock::AcceptBlock()
     int64_t nWriteDiskStart = GetTimeMillis();
     {
         BLOCK_PHASE(BP_WRITEDISK);
-        if (!WriteToDisk(nFile, nBlockPos))
+        std::map<uint256, CTransientRefusal>::const_iterator itRefused = mapTransientRefusals.find(hash);
+        if (itRefused != mapTransientRefusals.end())
+        {
+            if (IsTransientlyHeld(hash))
+                return error("AcceptBlock() : %s was refused transiently %d times; not retrying yet",
+                             hash.ToString().substr(0,20).c_str(), itRefused->second.nAttempts);
+            nFile = itRefused->second.nFile;
+            nBlockPos = itRefused->second.nBlockPos;
+        }
+        else if (!WriteToDisk(nFile, nBlockPos))
             return error("AcceptBlock() : WriteToDisk failed");
     }
     int64_t nWriteDiskMs = GetTimeMillis() - nWriteDiskStart;
@@ -14409,7 +14489,8 @@ bool static AlreadyHave(CTxDB& txdb, const CInv& inv)
 
     case MSG_BLOCK:
         return mapBlockIndex.count(inv.hash) ||
-               mapOrphanBlocks.count(inv.hash);
+               mapOrphanBlocks.count(inv.hash) ||
+               IsTransientlyHeld(inv.hash);
     case MSG_SPORK:
         return mapSporks.count(inv.hash);
     case MSG_COLLATERALNODE_WINNER:

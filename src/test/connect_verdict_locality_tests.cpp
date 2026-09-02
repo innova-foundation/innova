@@ -146,6 +146,9 @@ BOOST_AUTO_TEST_CASE(a_child_of_a_flagged_parent_is_refused_without_a_score)
     pChild->nDoS = 0;
     BOOST_CHECK(!ProcessBlock(NULL, pChild.get()));
     BOOST_CHECK_EQUAL(pChild->nDoS, 0);
+    BOOST_CHECK_MESSAGE(GetLastErrorString().find("marked failed/invalid") != std::string::npos ||
+                        GetLastErrorString().find("AcceptBlock FAILED") != std::string::npos,
+                        "refused for another reason: " << GetLastErrorString());
     {
         LOCK(cs_main);
         BOOST_CHECK(mapBlockIndex.count(hashChild) == 0);
@@ -192,6 +195,8 @@ BOOST_AUTO_TEST_CASE(an_incomplete_sibling_set_is_a_transient_refusal)
     }
     BOOST_CHECK_EQUAL((int)result, (int)CBlock::CONNECT_RESULT_TRANSIENT);
     BOOST_CHECK_EQUAL(block.nDoS, 0);
+    BOOST_CHECK_MESSAGE(GetLastErrorString().find("incomplete on this node") != std::string::npos,
+                        "refused for another reason: " << GetLastErrorString());
 
     BOOST_REQUIRE(g_dagManager.InitBlockDAGData(pParent, parentData.vDAGParents));
     fIncomplete = true;
@@ -262,10 +267,13 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
     BOOST_CHECK_MESSAGE(fPrimaryLocal, "a damaged deeper record was skipped instead of reported");
     BOOST_REQUIRE(txdb.WriteEpochState(nAsOf - 1, savedDeeper));
 
-    // Absent: an epoch far below the first record is the chain's answer.
+    // Absent: the finalized epoch's own record erased is the chain's answer (NOT_FOUND
+    // stays a chain property by design; see EpochStateReadIsLocalFailure).
+    BOOST_REQUIRE(txdb.EraseEpochState(nFinEpoch));
     fLocal = true;
-    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, nFinEpoch + 1000, state, &fLocal));
-    BOOST_CHECK(!fLocal);
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
+    BOOST_CHECK_MESSAGE(!fLocal, "an absent record was classed as a local failure");
+    BOOST_REQUIRE(txdb.WriteEpochState(nFinEpoch, saved));
 
     fLocal = true;
     BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
