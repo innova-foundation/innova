@@ -2115,8 +2115,10 @@ const CBlockIndex* GetFinalityAncestorOnChain(const CBlockIndex* pindexTip, int 
 
 bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
                                    std::vector<CFinalityVote>& vVotesOut,
-                                   std::string* pstrError)
+                                   std::string* pstrError, bool* pfLocalFailure)
 {
+    if (pfLocalFailure)
+        *pfLocalFailure = false;
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
             *pstrError = strReason;
@@ -2149,7 +2151,13 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
     {
         CBlock blockWindow;
         if (!blockWindow.ReadFromDisk(vWindow[i], true))
+        {
+            // This node's block file, not the chain: the only refusal here that a
+            // peer holding the same ancestors does not share.
+            if (pfLocalFailure)
+                *pfLocalFailure = true;
             return reject("settlement window block not readable");
+        }
 
         // Decode at the window block's own height (envelope encoding changes at
         // Boundary A). Votes live in the coinbase, which is never DAG-skipped, so the

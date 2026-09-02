@@ -707,6 +707,34 @@ BOOST_AUTO_TEST_CASE(the_settlement_vote_set_is_walked_off_the_whole_window)
         strError.clear();
         BOOST_CHECK(!GatherFinalitySettlementVotes(NULL, nEpoch, vVotes, &strError));
         BOOST_CHECK_EQUAL(strError, "settlement has no parent block");
+
+        // The refusals above are properties of the ancestor chain; a window block this
+        // node cannot read is not, and says so, so ConnectBlock refuses it transiently
+        // instead of condemning the settlement block.
+        bool fLocalFailure = true;
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(
+            full.At(FINALITY_VOTE_INCLUSION_WINDOW - 2), nEpoch, vVotes, &strError,
+            &fLocalFailure));
+        BOOST_CHECK(!fLocalFailure);
+        CBlockIndex* pDamaged = full.At(3);
+        const unsigned int nSavedFile = pDamaged->nFile;
+        const unsigned int nSavedPos = pDamaged->nBlockPos;
+        pDamaged->nFile = 9999;
+        pDamaged->nBlockPos = 0;
+        fLocalFailure = false;
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(full.Tip(), nEpoch, vVotes, &strError,
+                                                   &fLocalFailure));
+        BOOST_CHECK_EQUAL(strError, "settlement window block not readable");
+        BOOST_CHECK_MESSAGE(fLocalFailure, "an unreadable block file was reported as a chain property");
+        BOOST_CHECK(vVotes.empty());
+        pDamaged->nFile = nSavedFile;
+        pDamaged->nBlockPos = nSavedPos;
+        fLocalFailure = true;
+        BOOST_CHECK(GatherFinalitySettlementVotes(full.Tip(), nEpoch, vVotes, &strError,
+                                                  &fLocalFailure));
+        BOOST_CHECK(!fLocalFailure);
     }
 
     {

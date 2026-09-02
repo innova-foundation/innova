@@ -1323,7 +1323,8 @@ bool IsFinalityVoteWindowClosedForTip(int nEpoch, int nTipHeight);
  *  Pure function of the ancestor chain; both tiers are returned. */
 bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
                                    std::vector<CFinalityVote>& vVotesOut,
-                                   std::string* pstrError = NULL);
+                                   std::string* pstrError = NULL,
+                                   bool* pfLocalFailure = NULL);
 
 /** Dedupe half of the enumerator. vWindowBlockVotes is in ascending window-block order;
  *  the first occurrence of each nullifier is kept, so a re-carried vote is paid once. */

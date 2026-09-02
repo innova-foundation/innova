@@ -8695,8 +8695,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         {
             std::vector<CFinalityVote> vSettlementVotes;
             std::string strSettleError;
-            if (!GatherFinalitySettlementVotes(pindex->pprev, nSettlementEpoch, vSettlementVotes, &strSettleError))
+            bool fSettleLocalFailure = false;
+            if (!GatherFinalitySettlementVotes(pindex->pprev, nSettlementEpoch, vSettlementVotes,
+                                               &strSettleError, &fSettleLocalFailure))
+            {
+                // An unreadable window block is this node's block file; every other
+                // refusal is a property of the ancestor chain.
+                if (fSettleLocalFailure)
+                    return TransientFailure(error("ConnectBlock() : finality settlement set unreadable: %s",
+                                                  strSettleError.c_str()));
                 return DoS(100, error("ConnectBlock() : finality settlement set unavailable: %s", strSettleError.c_str()));
+            }
             const int64_t nSettlementBudget =
                 GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch);
             if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
