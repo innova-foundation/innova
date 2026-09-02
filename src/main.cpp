@@ -5895,7 +5895,15 @@ bool IsInitialBlockDownload()
                 if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
                     nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
 
-                bool fPeerHasWork = fFreshHeight && pnode->nBestKnownHeight > nBestHeight + 2;
+                // Deliberately not gated on fFreshHeight. nLastHeightUpdate only moves when
+                // a peer's height RISES, so a peer sitting at the tip goes stale after 120s
+                // and stops counting -- which said a node thousands of blocks behind was not
+                // in initial download, so it stopped clearing per-peer orphan counts and
+                // began scoring the one peer that could help it as misbehaving. Outstanding
+                // requests to a peer we know is ahead is catch-up whether or not its height
+                // moved recently, and it cannot be claimed by an idle peer: something has to
+                // actually be in flight.
+                bool fPeerHasWork = pnode->nBestKnownHeight > nBestHeight + 2;
                 if (fPeerHasWork && (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty()))
                     fActiveCatchup = true;
             }
