@@ -1241,8 +1241,11 @@ std::set<uint256> CDAGManager::GetDAGSiblingBlocks(const uint256& hashBlock, boo
             {
                 std::map<uint256, CBlockIndex*>::const_iterator miParent =
                     mapBlockIndex.find(hashParent);
+                // Below the DAG fork no block has a vertex; below the prune boundary
+                // none is retained. Anything else missing is this node's gap.
                 if (miParent == mapBlockIndex.end() || !miParent->second ||
-                    miParent->second->nHeight >= nPrunedBelowHeight)
+                    (miParent->second->nHeight >= FORK_HEIGHT_DAG &&
+                     miParent->second->nHeight >= nPrunedBelowHeight))
                     *pfIncomplete = true;
             }
             continue;
