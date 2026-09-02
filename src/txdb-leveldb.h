@@ -709,6 +709,10 @@ public:
     bool IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut);
     bool WriteDAGCleanHeight(int nHeight);
     bool ReadDAGCleanHeight(int& nHeight);
+    /** Exclusive lower bound of retained DAG vertices; records below it are absent by design. */
+    bool WriteDAGPruneBoundary(int nHeight);
+    bool ReadDAGPruneBoundary(int& nHeight);
+    bool IsReadOnly() const { return fReadOnly; }
     bool WriteEpochStateSchema(int nVersion);
     bool ReadEpochStateSchema(int& nVersion);
     bool HasEpochStateSchema();

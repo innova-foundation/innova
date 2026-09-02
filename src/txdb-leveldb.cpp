@@ -1943,6 +1943,16 @@ bool CTxDB::ReadDAGCleanHeight(int& nHeight)
     return Read(string("dagcleanheight"), nHeight);
 }
 
+bool CTxDB::WriteDAGPruneBoundary(int nHeight)
+{
+    return Write(string("dagprunebelow"), nHeight);
+}
+
+bool CTxDB::ReadDAGPruneBoundary(int& nHeight)
+{
+    return Read(string("dagprunebelow"), nHeight);
+}
+
 // DB-wide epoch-state schema marker (see EPOCHSTATE_SCHEMA_V2 in dag.h). Absent -> nVersion left 0,
 // which classifies the DB as pre-deterministic-anchor (needs the upgrade guard in AppInit2).
 bool CTxDB::WriteEpochStateSchema(int nVersion)

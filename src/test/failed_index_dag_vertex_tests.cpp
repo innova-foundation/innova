@@ -159,4 +159,68 @@ BOOST_AUTO_TEST_CASE(reconsider_refuses_a_flagged_block_without_a_vertex_and_cha
                         "the loader refuses a flagged, vertex-less index");
 }
 
+// A valid index with no vertex: the loader rebuilds and persists the vertex from the
+// block on disk; a block not on disk stays fatal.
+BOOST_AUTO_TEST_CASE(the_loader_rebuilds_a_missing_vertex_from_the_block_on_disk)
+{
+    BOOST_REQUIRE(fRegTest);
+    CBlockIndex* pindexPrev = BestIndex();
+    std::unique_ptr<CBlock> pblock = MakeOverpayingBlock(pindexPrev);
+    const uint256 hash = pblock->GetHash();
+    BOOST_CHECK(!ProcessBlock(NULL, pblock.get()));
+
+    LOCK(cs_main);
+    BOOST_REQUIRE(mapBlockIndex.count(hash) != 0);
+    CBlockIndex* pindex = mapBlockIndex[hash];
+    BOOST_REQUIRE(pindex->IsFailed());
+
+    // The damage, then the flag cleared behind the guard's back.
+    g_dagManager.RemoveBlockDAGData(hash);
+    {
+        CTxDB txdbDamage;
+        BOOST_REQUIRE(txdbDamage.EraseDAGLinks(hash));
+        pindex->ClearFailed();
+        BOOST_REQUIRE(txdbDamage.WriteBlockIndex(CDiskBlockIndex(pindex)));
+    }
+    CTxDB txdbRead("r");
+    CBlockDAGData gone;
+    BOOST_REQUIRE(!txdbRead.ReadDAGLinks(hash, gone));
+
+    CTxDB txdb;
+    CDAGManager scratch;
+    BOOST_REQUIRE_MESSAGE(scratch.LoadDAGLinks(txdb), "the loader refused a rebuildable index");
+    CBlockDAGData rebuilt;
+    BOOST_REQUIRE(scratch.GetDAGData(hash, rebuilt));
+    std::vector<CScript> vScripts;
+    for (size_t i = 0; i < pblock->vtx[0].vout.size(); i++)
+        vScripts.push_back(pblock->vtx[0].vout[i].scriptPubKey);
+    std::vector<uint256> vExpected;
+    std::string strError;
+    BOOST_REQUIRE(ReadDAGParentCommitmentAtHeight(vScripts, pindex->nHeight, vExpected, strError));
+    BOOST_REQUIRE(!vExpected.empty());
+    BOOST_CHECK(vExpected[0] == pindexPrev->GetBlockHash());
+    BOOST_CHECK(rebuilt.vDAGParents == vExpected);
+    BOOST_CHECK(scratch.GetMinRebuiltVertexHeight() >= FORK_HEIGHT_DAG);
+    BOOST_CHECK(scratch.GetMinRebuiltVertexHeight() <= pindex->nHeight);
+    CBlockDAGData persisted;
+    BOOST_CHECK_MESSAGE(txdbRead.ReadDAGLinks(hash, persisted), "the rebuilt vertex was not persisted");
+    BOOST_CHECK(persisted.vDAGParents == vExpected);
+
+    // Leave the invalid block flagged for the suites that follow.
+    pindex->SetFailedValid();
+    BOOST_REQUIRE(txdb.WriteBlockIndex(CDiskBlockIndex(pindex)));
+
+    // An index whose block is not on disk cannot be rebuilt.
+    CBlock empty;
+    CBlockIndex* pFake = new CBlockIndex(0, 0, empty);
+    const uint256 hashFake(0xfa4e);
+    pFake->pprev = pindexPrev;
+    pFake->nHeight = pindexPrev->nHeight + 1;
+    pFake->phashBlock = &mapBlockIndex.insert(std::make_pair(hashFake, pFake)).first->first;
+    CDAGManager scratchFake;
+    BOOST_CHECK_MESSAGE(!scratchFake.LoadDAGLinks(txdbRead), "an index with no block data loaded");
+    mapBlockIndex.erase(hashFake);
+    delete pFake;
+}
+
 BOOST_AUTO_TEST_SUITE_END()

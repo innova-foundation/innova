@@ -501,7 +501,7 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
             nLastRebuildTime = nNow;
             printf("InitBlockDAGData: tip flood detected (%d tips), triggering incremental rebuild\n",
                    (int)setDAGTips.size());
-            RebuildDAGOrderIncremental(nPrunedBelowHeight);
+            RebuildDAGOrderIncremental(nOrderCleanHeight);
         }
     }
 
@@ -1320,6 +1320,36 @@ bool CDAGManager::WriteDAGLinks(CTxDB& txdb, const uint256& hash)
     return txdb.WriteDAGLinks(hash, it->second);
 }
 
+// A V3 vertex binds to the immutable block-index parent chain: its primary parent is
+// the index's own predecessor and every parent is indexed, older, a DAG-era PoW block,
+// and within DAG_MERGE_DEPTH of the predecessor.
+static bool CheckV3VertexBinding(const CBlockIndex* pindex, const std::vector<uint256>& vParents,
+                                 std::string& strWhy)
+{
+    if (pindex->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+        return true;
+    if (vParents.empty() || vParents.size() > MAX_DAG_PARENTS ||
+        !pindex->pprev || !pindex->pprev->phashBlock ||
+        vParents[0] != pindex->pprev->GetBlockHash())
+    {
+        strWhy = "has an invalid primary-parent binding";
+        return false;
+    }
+    for (size_t i = 0; i < vParents.size(); ++i)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator pi = mapBlockIndex.find(vParents[i]);
+        if (pi == mapBlockIndex.end() || !pi->second ||
+            pi->second->nHeight >= pindex->nHeight ||
+            (pi->second->nHeight >= FORK_HEIGHT_DAG && pi->second->IsProofOfStake()) ||
+            (i > 0 && pindex->pprev->nHeight - pi->second->nHeight > DAG_MERGE_DEPTH))
+        {
+            strWhy = "references invalid/missing parent " + vParents[i].ToString().substr(0,20);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
 {
     LOCK(cs_dag);
@@ -1335,9 +1365,10 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
 
     // V3 must never start with a partial DAG: cross-check each retained V3 index against its vertex
     // and each vertex against the block-index parent chain. Records below the prune boundary are absent.
-    int nCleanHeight = 0;
-    if (!txdb.ReadDAGCleanHeight(nCleanHeight) || nCleanHeight < 0)
-        nCleanHeight = 0;
+    int nPruneBelow = 0;
+    if (!txdb.ReadDAGPruneBoundary(nPruneBelow) || nPruneBelow < 0)
+        nPruneBelow = 0;
+    vRebuiltVertices.clear();
 
     for (std::map<uint256, CBlockDAGData>::const_iterator it = mapLoaded.begin();
          it != mapLoaded.end(); ++it)
@@ -1361,55 +1392,76 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
             return false;
         }
 
-        if (pindex->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        std::string strWhy;
+        if (!CheckV3VertexBinding(pindex, it->second.vDAGParents, strWhy))
         {
-            const std::vector<uint256>& vParents = it->second.vDAGParents;
-            if (vParents.empty() || vParents.size() > MAX_DAG_PARENTS ||
-                !pindex->pprev || !pindex->pprev->phashBlock ||
-                vParents[0] != pindex->pprev->GetBlockHash())
-            {
-                printf("LoadDAGLinks: FATAL V3 DAG vertex %s has an invalid primary-parent "
-                       "binding; -reindex/resync required\n",
-                       it->first.ToString().substr(0,20).c_str());
-                return false;
-            }
-            for (size_t i = 0; i < vParents.size(); ++i)
-            {
-                std::map<uint256, CBlockIndex*>::const_iterator pi =
-                    mapBlockIndex.find(vParents[i]);
-                if (pi == mapBlockIndex.end() || !pi->second ||
-                    pi->second->nHeight >= pindex->nHeight ||
-                    (pi->second->nHeight >= FORK_HEIGHT_DAG &&
-                     pi->second->IsProofOfStake()) ||
-                    (i > 0 && pindex->pprev->nHeight - pi->second->nHeight >
-                                  DAG_MERGE_DEPTH))
-                {
-                    printf("LoadDAGLinks: FATAL V3 DAG vertex %s references invalid/missing "
-                           "parent %s; -reindex/resync required\n",
-                           it->first.ToString().substr(0,20).c_str(),
-                           vParents[i].ToString().substr(0,20).c_str());
-                    return false;
-                }
-            }
+            printf("LoadDAGLinks: FATAL V3 DAG vertex %s %s; resync required\n",
+                   it->first.ToString().substr(0,20).c_str(), strWhy.c_str());
+            return false;
         }
     }
 
+    // Every retained DAG-era PoW index above the prune boundary carries a vertex,
+    // flagged or not. One without a record is rebuilt from the block on disk: the
+    // parents are the coinbase commitment, the child links are re-derived below and
+    // the order fields by the startup rebuild. Only a V3 block that cannot be read
+    // or bound is fatal; a vertex was never required of the GHOSTDAG window.
+    int nRebuilt = 0;
     for (std::map<uint256, CBlockIndex*>::const_iterator it = mapBlockIndex.begin();
          it != mapBlockIndex.end(); ++it)
     {
         const CBlockIndex* pindex = it->second;
-        if (!pindex || pindex->nHeight < FORK_HEIGHT_EPOCH_STATE_V3 ||
-            pindex->nHeight < nCleanHeight || pindex->IsProofOfStake() ||
-            pindex->IsInvalid())
+        if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || pindex->nHeight < nPruneBelow ||
+            pindex->IsProofOfStake() || mapLoaded.count(it->first))
             continue;
-        if (!mapLoaded.count(it->first))
+
+        std::string strWhy;
+        std::vector<uint256> vParents;
+        bool fOK = pindex->nFile != 0 || pindex->nBlockPos != 0;
+        CBlock block;
+        if (!fOK)
+            strWhy = "no block data on disk";
+        else if (!block.ReadFromDisk(pindex))
         {
-            printf("LoadDAGLinks: FATAL retained V3 block index %s at height %d has no "
-                   "DAG vertex; -reindex/resync required\n",
-                   it->first.ToString().substr(0,20).c_str(), pindex->nHeight);
+            fOK = false;
+            strWhy = "block not readable";
+        }
+        if (fOK)
+        {
+            std::vector<CScript> vScripts;
+            if (!block.vtx.empty())
+                for (size_t i = 0; i < block.vtx[0].vout.size(); i++)
+                    vScripts.push_back(block.vtx[0].vout[i].scriptPubKey);
+            fOK = ReadDAGParentCommitmentAtHeight(vScripts, pindex->nHeight, vParents, strWhy);
+        }
+        if (fOK)
+            fOK = CheckV3VertexBinding(pindex, vParents, strWhy);
+        if (!fOK)
+        {
+            if (pindex->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+                continue;
+            printf("LoadDAGLinks: FATAL retained V3 block index %s at height %d has no DAG "
+                   "vertex and it cannot be rebuilt (%s); resync required\n",
+                   it->first.ToString().substr(0,20).c_str(), pindex->nHeight, strWhy.c_str());
             return false;
         }
+
+        CBlockDAGData data;
+        data.vDAGParents = vParents;
+        if (!txdb.IsReadOnly() && !txdb.WriteDAGLinks(it->first, data))
+        {
+            printf("LoadDAGLinks: FATAL could not persist the rebuilt DAG vertex for %s\n",
+                   it->first.ToString().substr(0,20).c_str());
+            return false;
+        }
+        mapLoaded[it->first] = data;
+        vRebuiltVertices.push_back(it->first);
+        ++nRebuilt;
+        printf("LoadDAGLinks: rebuilt DAG vertex %s at height %d from disk (%d parents)\n",
+               it->first.ToString().substr(0,20).c_str(), pindex->nHeight, (int)vParents.size());
     }
+    if (nRebuilt > 0)
+        printf("LoadDAGLinks: rebuilt %d DAG vertices from disk\n", nRebuilt);
     mapDAGData.swap(mapLoaded);
 
     RebuildPendingChildIndex();
@@ -1887,8 +1939,8 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
         }
     }
 
-    // Persist prune height so GetBlueSet boundary check survives restart
-    if (!txdb.WriteDAGCleanHeight(nPruneBelow))
+    // Records below the boundary are expected absent at the next start.
+    if (!txdb.WriteDAGPruneBoundary(nPruneBelow))
     {
         txdb.TxnAbort();
         return false;
@@ -3662,6 +3714,37 @@ int CDAGManager::GetDAGEntryCount() const
 {
     LOCK(cs_dag);
     return (int)mapDAGData.size();
+}
+
+int CDAGManager::GetOrderCleanHeight() const
+{
+    LOCK(cs_dag);
+    return nOrderCleanHeight;
+}
+
+void CDAGManager::SetOrderCleanHeight(int nHeight)
+{
+    LOCK(cs_dag);
+    nOrderCleanHeight = nHeight;
+}
+
+std::vector<uint256> CDAGManager::GetRebuiltVertices() const
+{
+    LOCK(cs_dag);
+    return vRebuiltVertices;
+}
+
+int CDAGManager::GetMinRebuiltVertexHeight() const
+{
+    LOCK(cs_dag);
+    int nMin = -1;
+    for (size_t i = 0; i < vRebuiltVertices.size(); i++)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(vRebuiltVertices[i]);
+        if (mi != mapBlockIndex.end() && mi->second && (nMin < 0 || mi->second->nHeight < nMin))
+            nMin = mi->second->nHeight;
+    }
+    return nMin;
 }
 
 int CDAGManager::GetPrunedBelowHeight() const

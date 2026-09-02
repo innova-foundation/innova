@@ -343,6 +343,7 @@ static const CRPCCommand vRPCCommands[] =
     { "setbestblockbyheight",   &setbestblockbyheight,   false,  false },
     { "invalidateblock",        &invalidateblock,        false,  false },
     { "reconsiderblock",        &reconsiderblock,        false,  false },
+    { "erasedagvertex",        &erasedagvertex,        false,  false },
     { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblockhash",           &getblockhash,           false,  false },

@@ -1226,6 +1226,32 @@ Value reconsiderblock(const Array& params, bool fHelp)
     return result;
 }
 
+// Regtest only. Drops a block's DAG vertex from memory and disk: the state a build
+// that erased the vertex of a flagged block left behind, for the restart test.
+Value erasedagvertex(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "erasedagvertex \"hash\"\n"
+            "Regtest only. Removes the DAG vertex of a block from memory and disk so a\n"
+            "restart has to rebuild it from the block on disk. Test tooling.");
+
+    extern bool fRegTest;
+    if (!fRegTest)
+        throw JSONRPCError(RPC_MISC_ERROR, "erasedagvertex is available on regtest only");
+
+    LOCK(cs_main);
+    uint256 hash(params[0].get_str());
+    if (mapBlockIndex.count(hash) == 0)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+
+    g_dagManager.RemoveBlockDAGData(hash);
+    CTxDB txdb;
+    if (!txdb.EraseDAGLinks(hash))
+        throw JSONRPCError(RPC_MISC_ERROR, "could not erase the persisted vertex");
+    return Value::null;
+}
+
 // ppcoin: get information of sync-checkpoint
 Value getcheckpoint(const Array& params, bool fHelp)
 {

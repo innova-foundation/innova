@@ -357,7 +357,7 @@ class CDAGManager
 public:
     mutable CCriticalSection cs_dag;
 
-    CDAGManager() : nPrunedBelowHeight(-1) {}
+    CDAGManager() : nPrunedBelowHeight(-1), nOrderCleanHeight(-1) {}
 
     /** Initialize DAG data for a newly accepted block.
      *  Must be called under cs_main. Sets parents, registers children, updates tips. */
@@ -525,6 +525,14 @@ public:
     /** Set pruned below height (used on startup to restore from LevelDB). */
     void SetPrunedBelowHeight(int nHeight);
 
+    /** Height at or below which persisted order fields are trusted at start (-1 = none). */
+    int GetOrderCleanHeight() const;
+    void SetOrderCleanHeight(int nHeight);
+
+    /** Vertices LoadDAGLinks rebuilt from the blocks on disk, and the lowest of their heights. */
+    std::vector<uint256> GetRebuiltVertices() const;
+    int GetMinRebuiltVertexHeight() const;
+
     /** Check if a block has DAG data. */
     bool HasDAGData(const uint256& hash) const;
 
@@ -562,6 +570,8 @@ private:
     std::map<int, CCurveTree> mapEpochCurveTrees;
     std::set<uint256> setEpochBoundaryBlocks;
     int nPrunedBelowHeight;
+    int nOrderCleanHeight;                 // startup floor for incremental order rebuilds
+    std::vector<uint256> vRebuiltVertices; // vertices LoadDAGLinks rebuilt from disk
 
     // Performance: LRU cache for blue sets (avoids recomputing expensive BFS)
     mutable std::map<uint256, std::set<uint256>> mapBlueSetCache;

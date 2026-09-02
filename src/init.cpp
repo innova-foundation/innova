@@ -2812,15 +2812,19 @@ bool AppInit2()
         // Check for clean height; use incremental rebuild if available
         // Also restore nPrunedBelowHeight for GetBlueSet boundary detection
         CTxDB txdbDAGInit;
+        int nDAGPruneBelow = -1;
+        if (txdbDAGInit.ReadDAGPruneBoundary(nDAGPruneBelow) && nDAGPruneBelow > 0)
+            g_dagManager.SetPrunedBelowHeight(nDAGPruneBelow);
         int nDAGCleanHeight = -1;
-        if (txdbDAGInit.ReadDAGCleanHeight(nDAGCleanHeight) && nDAGCleanHeight > 0)
-        {
-            // PruneDAGData persists the actual exclusive prune boundary,
-            // not the tip height. Subtracting DAG_PRUNE_DEPTH a second time
-            // made restart disagree about which missing DAG records were
-            // expected versus corrupt.
-            g_dagManager.SetPrunedBelowHeight(nDAGCleanHeight);
-        }
+        if (!txdbDAGInit.ReadDAGCleanHeight(nDAGCleanHeight))
+            nDAGCleanHeight = -1;
+        // A vertex LoadDAGLinks rebuilt from disk carries no order fields, and the
+        // incremental rebuild recolours only blocks above its floor.
+        const std::vector<uint256> vRebuilt = g_dagManager.GetRebuiltVertices();
+        const int nMinRebuilt = g_dagManager.GetMinRebuiltVertexHeight();
+        if (nMinRebuilt >= 0 && nMinRebuilt - 1 < nDAGCleanHeight)
+            nDAGCleanHeight = nMinRebuilt - 1;
+        g_dagManager.SetOrderCleanHeight(nDAGCleanHeight);
         if (nDAGCleanHeight > 0)
         {
             printf("IDAG: Found DAG clean height %d, using incremental rebuild\n", nDAGCleanHeight);
@@ -2830,6 +2834,21 @@ bool AppInit2()
         {
             printf("IDAG: No clean height found, full DAG rebuild\n");
             g_dagManager.RebuildDAGOrder();
+        }
+        // The rebuilt vertices now carry order fields; the next start trusts records at
+        // or below its clean height as persisted, so write them back.
+        if (!vRebuilt.empty())
+        {
+            CTxDB txdbRebuilt;
+            bool fOK = txdbRebuilt.TxnBegin();
+            for (size_t i = 0; fOK && i < vRebuilt.size(); i++)
+                fOK = g_dagManager.WriteDAGLinks(txdbRebuilt, vRebuilt[i]);
+            if (fOK)
+                fOK = txdbRebuilt.TxnCommit();
+            else
+                txdbRebuilt.TxnAbort();
+            printf("IDAG: persisted %d rebuilt DAG vertices%s\n",
+                   (int)vRebuilt.size(), fOK ? "" : " FAILED");
         }
 
         std::vector<uint256> vTips = g_dagManager.GetDAGTips();
