@@ -1199,14 +1199,24 @@ std::set<uint256> CDAGManager::GetPastSet(const uint256& hashBlock, int nMaxDept
 // CDAGManager: Sibling Blocks (for conflict resolution in ConnectBlock)
 // ---------------------------------------------------------------------------
 
-std::set<uint256> CDAGManager::GetDAGSiblingBlocks(const uint256& hashBlock) const
+std::set<uint256> CDAGManager::GetDAGSiblingBlocks(const uint256& hashBlock, bool* pfIncomplete) const
 {
     LOCK(cs_dag);
 
     std::set<uint256> siblings;
     auto it = mapDAGData.find(hashBlock);
     if (it == mapDAGData.end())
+    {
+        if (pfIncomplete)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator miOwn = mapBlockIndex.find(hashBlock);
+            if (miOwn != mapBlockIndex.end() && miOwn->second &&
+                miOwn->second->nHeight >= FORK_HEIGHT_DAG &&
+                miOwn->second->nHeight >= nPrunedBelowHeight)
+                *pfIncomplete = true;
+        }
         return siblings;
+    }
 
     // A known child of a parent counts only if this block reaches it through its committed parents,
     // otherwise activation depends on arrival order. Applies from FORK_HEIGHT_DAG.
@@ -1226,7 +1236,17 @@ std::set<uint256> CDAGManager::GetDAGSiblingBlocks(const uint256& hashBlock) con
     {
         auto pit = mapDAGData.find(hashParent);
         if (pit == mapDAGData.end())
+        {
+            if (pfIncomplete)
+            {
+                std::map<uint256, CBlockIndex*>::const_iterator miParent =
+                    mapBlockIndex.find(hashParent);
+                if (miParent == mapBlockIndex.end() || !miParent->second ||
+                    miParent->second->nHeight >= nPrunedBelowHeight)
+                    *pfIncomplete = true;
+            }
             continue;
+        }
 
         for (const uint256& hashChild : pit->second.vDAGChildren)
         {
@@ -2815,8 +2835,16 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             return false;
         }
         // One derivation of a block's active set, shared with ConnectBlock.
+        bool fSkipSetIncomplete = false;
         const std::set<uint256> setDAGSkippedTxs =
-            GetDAGSkippedTxsForBlock(block, mi->second);
+            GetDAGSkippedTxsForBlock(block, mi->second, &fSkipSetIncomplete);
+        if (fSkipSetIncomplete)
+        {
+            strError = strprintf("epoch %d: DAG sibling set of block %s is incomplete on this "
+                                 "node; resync required", nEpoch,
+                                 mi->first.ToString().substr(0, 20).c_str());
+            return false;
+        }
         const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
         // A merge block is never connected, so none of its transaction effects may reach the epoch's

@@ -541,7 +541,8 @@ public:
 
     /** Get the set of blocks that are DAG siblings of a given block
      *  (blocks at similar height that share some parents). */
-    std::set<uint256> GetDAGSiblingBlocks(const uint256& hashBlock) const;
+    /** Siblings via committed parents; *pfIncomplete is set if a needed vertex is missing. */
+    std::set<uint256> GetDAGSiblingBlocks(const uint256& hashBlock, bool* pfIncomplete = NULL) const;
 
     /** Get the selected parent (highest-scoring parent) of a block. */
     uint256 GetSelectedParent(const uint256& hashBlock) const;

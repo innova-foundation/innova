@@ -4533,7 +4533,8 @@ std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
 static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
                                                           const CBlockIndex* pindex,
                                                           std::map<uint256, std::set<uint256> >& mapSkipCache,
-                                                          std::set<uint256>& setVisiting)
+                                                          std::set<uint256>& setVisiting,
+                                                          bool* pfIncomplete)
 {
     std::set<uint256> setDAGSkippedTxs;
     if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || !pindex->phashBlock)
@@ -4550,7 +4551,10 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
     std::set<COutPoint> setDAGSpentOutputs;
     std::set<uint256> setDAGSpentNullifiers;
 
-    std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hashBlock);
+    // Anything this set depends on that is missing here -- a vertex, a sibling's index or
+    // its body -- is reported instead of shrinking the set: every other node computes the
+    // full set, and a smaller one connects a transaction they skipped.
+    std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hashBlock, pfIncomplete);
 
     for (const uint256& hashSibling : siblings)
     {
@@ -4559,14 +4563,23 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
 
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
         if (mi == mapBlockIndex.end())
+        {
+            if (pfIncomplete)
+                *pfIncomplete = true;
             continue;
+        }
 
         CBlock sibBlock;
         if (!sibBlock.ReadFromDisk(mi->second))
+        {
+            if (pfIncomplete)
+                *pfIncomplete = true;
             continue;
+        }
 
         std::set<uint256> setSiblingSkippedTxs =
-            GetDAGSkippedTxsForBlockInternal(sibBlock, mi->second, mapSkipCache, setVisiting);
+            GetDAGSkippedTxsForBlockInternal(sibBlock, mi->second, mapSkipCache, setVisiting,
+                                             pfIncomplete);
 
         for (const CTransaction& sibTx : sibBlock.vtx)
         {
@@ -4588,11 +4601,14 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
     return setDAGSkippedTxs;
 }
 
-std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex)
+std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex,
+                                           bool* pfIncomplete)
 {
+    if (pfIncomplete)
+        *pfIncomplete = false;
     std::map<uint256, std::set<uint256> > mapSkipCache;
     std::set<uint256> setVisiting;
-    return GetDAGSkippedTxsForBlockInternal(block, pindex, mapSkipCache, setVisiting);
+    return GetDAGSkippedTxsForBlockInternal(block, pindex, mapSkipCache, setVisiting, pfIncomplete);
 }
 
 uint256 ComputeShieldedWalletEffectPlanDigest(
@@ -8269,7 +8285,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     // IDAG: skipped transactions are a deterministic inactive subgraph.
     // Every consensus consumer below must use this same filtered block view.
-    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex);
+    bool fSkipSetIncomplete = false;
+    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex, &fSkipSetIncomplete);
+    if (fSkipSetIncomplete)
+        return TransientFailure(error("ConnectBlock() : DAG sibling set for %s is incomplete on this node "
+                                      "(missing vertex or unreadable sibling)",
+                                      pindex->GetBlockHash().ToString().substr(0,20).c_str()));
     if (!setDAGSkippedTxs.empty())
     {
         for (const CTransaction& tx : vtx)

@@ -15,6 +15,8 @@
 #include <string>
 
 #include "../bignum.h"
+#include "../dag.h"
+#include "../finality.h"
 #include "../init.h"
 #include "../main.h"
 #include "../miner.h"
@@ -156,6 +158,45 @@ BOOST_AUTO_TEST_CASE(a_child_of_a_flagged_parent_is_refused_without_a_score)
         BOOST_REQUIRE_MESSAGE(ReconsiderBlock(txdb, pTip, strError), strError);
     }
     BOOST_CHECK(BestIndex() == pTip);
+}
+
+// A missing DAG vertex would shrink the sibling set, so the block is refused
+// transiently rather than connected against a smaller set.
+BOOST_AUTO_TEST_CASE(an_incomplete_sibling_set_is_a_transient_refusal)
+{
+    BOOST_REQUIRE(fRegTest);
+    MineOne();
+    CBlockIndex* pTip = BestIndex();
+    CBlockIndex* pParent = pTip->pprev;
+    BOOST_REQUIRE(pParent && pParent->nHeight >= FORK_HEIGHT_DAG);
+    CBlock block;
+    BOOST_REQUIRE(block.ReadFromDisk(pTip));
+
+    bool fIncomplete = true;
+    GetDAGSkippedTxsForBlock(block, pTip, &fIncomplete);
+    BOOST_CHECK(!fIncomplete);
+
+    CBlockDAGData parentData;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(pParent->GetBlockHash(), parentData));
+    g_dagManager.RemoveBlockDAGData(pParent->GetBlockHash());
+    fIncomplete = false;
+    GetDAGSkippedTxsForBlock(block, pTip, &fIncomplete);
+    BOOST_CHECK_MESSAGE(fIncomplete, "a missing parent vertex went unreported");
+
+    block.nDoS = 0;
+    CBlock::ConnectResult result = CBlock::CONNECT_RESULT_OK;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        BOOST_CHECK(!block.ConnectBlock(txdb, pTip, true, true, &result));
+    }
+    BOOST_CHECK_EQUAL((int)result, (int)CBlock::CONNECT_RESULT_TRANSIENT);
+    BOOST_CHECK_EQUAL(block.nDoS, 0);
+
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(pParent, parentData.vDAGParents));
+    fIncomplete = true;
+    GetDAGSkippedTxsForBlock(block, pTip, &fIncomplete);
+    BOOST_CHECK(!fIncomplete);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
