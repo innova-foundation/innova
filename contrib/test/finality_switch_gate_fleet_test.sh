@@ -29,10 +29,18 @@ node_dir()  { echo "$TEST_DIR/node$1"; }
 node_port() { echo $((BASE_PORT + $1)); }
 node_rpc()  { echo $((BASE_RPC + $1)); }
 logfile()   { echo "$(node_dir "$1")/regtest/debug.log"; }
+is_int()    { echo "${1:-}" | grep -qE '^-?[0-9]+$'; }
 rpc() { local n="$1"; shift; "$INNOVAD" -datadir="$(node_dir "$n")" -regtest -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport="$(node_rpc "$n")" "$@" 2>&1; }
-height()   { rpc "$1" getblockcount 2>/dev/null | tr -d '"[:space:]'; }
+height() {
+    local h i
+    for i in 1 2 3 4 5; do
+        h="$(rpc "$1" getblockcount 2>/dev/null | tr -d '"[:space:]')"
+        is_int "$h" && { echo "$h"; return 0; }
+        sleep 1
+    done
+    echo ""
+}
 besthash() { rpc "$1" getbestblockhash 2>/dev/null | tr -d '"[:space:]'; }
-is_int()   { echo "${1:-}" | grep -qE '^-?[0-9]+$'; }
 is_hash()  { echo "${1:-}" | grep -qE '^[0-9a-f]{64}$'; }
 jget() { FIELD="$2" python3 -c '
 import json, os, sys
@@ -42,7 +50,7 @@ try:
     elif v is None: print("")
     else: print(v)
 except Exception:
-    pass' <<< "$1" 2>/dev/null; }
+    print("__jget_error__")' <<< "$1" 2>/dev/null; }
 count_log() { local n; n="$(grep -a -c -- "$2" "$(logfile "$1")" 2>/dev/null)"; echo "${n:-0}"; }
 daemon_pids() { pgrep -f -- "-datadir=$(node_dir "$1") -regtest -daemon" 2>/dev/null; }
 finalized() { jget "$(rpc "$1" getfinalityinfo 2>/dev/null)" deterministic_finalized_height; }
@@ -67,7 +75,13 @@ write_conf() {
 launch_node() { "$INNOVAD" -datadir="$(node_dir "$1")" -regtest -daemon >/dev/null 2>&1; }
 start_node() {
     local n="$1" i; launch_node "$n"
-    for i in $(seq 1 180); do rpc "$n" getinfo >/dev/null 2>&1 && return 0; sleep 1; done
+    for i in $(seq 1 300); do
+        rpc "$n" getinfo >/dev/null 2>&1 && return 0
+        if [ "$i" -gt 5 ] && ! daemon_pids "$n" >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    echo "  node$n did not answer after ${i}s; daemon $(daemon_pids "$n" >/dev/null 2>&1 && echo alive || echo gone); last log lines:"
+    tail -12 "$(logfile "$n")" 2>/dev/null | cut -c1-160 | sed 's/^/    | /'
     return 1
 }
 stop_node() {
@@ -109,7 +123,8 @@ mine_to() {
     last="$h"; rpc "$n" setgenerate true $((target - h)) "$threads" >/dev/null 2>&1
     for i in $(seq 1 3000); do
         h="$(height "$n")"
-        if is_int "$h" && [ "$h" -ge "$target" ]; then rpc "$n" setgenerate false 0 >/dev/null 2>&1; return 0; fi
+        is_int "$h" || { sleep 1; continue; }
+        if [ "$h" -ge "$target" ]; then rpc "$n" setgenerate false 0 >/dev/null 2>&1; return 0; fi
         if [ "$h" = "$last" ]; then stall=$((stall + 1)); else stall=0; last="$h"; [ $((h % 100)) -eq 0 ] && log "  ...height $h/$target"; fi
         if [ "$stall" -ge 20 ]; then rpc "$n" setgenerate true $((target - h)) "$threads" >/dev/null 2>&1; stall=0; fi
         sleep 1
@@ -129,8 +144,8 @@ blkfile_size() { stat -f '%z' "$(node_dir "$1")/regtest/blk0001.dat" 2>/dev/null
 
 cleanup() {
     local n
-    for n in 0 1 2 3 4; do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
-    for n in 0 1 2 3 4; do stop_node "$n" >/dev/null 2>&1 || kill_node "$n" >/dev/null 2>&1 || true; done
+    for n in 0 1 2 3 4 5; do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
+    for n in 0 1 2 3 4 5; do stop_node "$n" >/dev/null 2>&1 || kill_node "$n" >/dev/null 2>&1 || true; done
     if [ "$KEEP_DIR" = "1" ]; then echo "kept $TEST_DIR"; else rm -rf "$TEST_DIR"; fi
 }
 trap cleanup EXIT
@@ -140,8 +155,8 @@ mkdir -p "$TEST_DIR"
 
 header "1. Fleet, voters, parked nodes"
 for n in 0 1 2; do write_conf "$n" "0 1 2"; done
-write_conf 3 "0"; write_conf 4 "0"
-for n in 0 1 2 3 4; do start_node "$n" || { fail "node$n did not start"; exit 1; }; done
+write_conf 3 "0"; write_conf 4 "0"; write_conf 5 "0"
+for n in 0 1 2 3 4 5; do start_node "$n" || { fail "node$n did not start"; exit 1; }; done
 mine_to 0 "$FUND_HEIGHT" || { fail "could not mine to $FUND_HEIGHT"; exit 1; }
 ADDR1="$(rpc 1 getnewaddress 2>/dev/null | tr -d '"[:space:]')"
 TXID=""
@@ -152,19 +167,27 @@ for attempt in 1 2 3 4; do
 done
 is_hash "$TXID" && success "node1 funded with $VOTER_FUND INN" || { fail "could not fund node1"; exit 1; }
 mine_to 0 $(( $(height 0) + 2 )) >/dev/null
-wait_sync "$(height 0)" "0 1 2 3 4" || { fail "fleet did not sync the funding blocks"; exit 1; }
+wait_sync "$(height 0)" "0 1 2 3 4 5" || { fail "fleet did not sync the funding blocks"; exit 1; }
 
 # Epoch 2 is the first with votes; its round happens before parking.
-vote_round "$(epoch_start 2)" "0 1 2 3 4" || { fail "vote round at epoch 2 failed"; exit 1; }
+vote_round "$(epoch_start 2)" "0 1 2 3 4 5" || { fail "vote round at epoch 2 failed"; exit 1; }
 mine_to 0 "$PARK_HEIGHT" || { fail "could not mine to the parking height"; exit 1; }
-wait_sync "$PARK_HEIGHT" "0 1 2 3 4" || { fail "nodes did not reach $PARK_HEIGHT"; exit 1; }
+wait_sync "$PARK_HEIGHT" "0 1 2 3 4 5" || { fail "nodes did not reach $PARK_HEIGHT"; exit 1; }
 [ "$(height 0)" -eq "$PARK_HEIGHT" ] && success "fleet at the parking height $PARK_HEIGHT (end of epoch 2)" || fail "node0 overshot the parking height: $(height 0)"
 PARK_HASH="$(besthash 0)"
 stop_node 3 || fail "node3 did not stop"; stop_node 4 || fail "node4 did not stop"
 success "node3 and node4 parked at $PARK_HEIGHT"
 
 header "2. Three HARD epochs raise the deterministic anchor above the parked height"
-for e in 3 4 5; do vote_round "$(epoch_start "$e")" "0 1 2" || { fail "vote round at epoch $e failed"; exit 1; }; done
+vote_round "$(epoch_start 3)" "0 1 2 5" || { fail "vote round at epoch 3 failed"; exit 1; }
+# node5 parks at the end of epoch 3: two epochs below where the latch anchor will sit
+# once epochs 6 and 7 are HARD as well, so its branch draws the permanent verdict.
+PARK2_HEIGHT=$(( $(epoch_start 4) - 1 ))
+mine_to 0 "$PARK2_HEIGHT" || { fail "could not mine to $PARK2_HEIGHT"; exit 1; }
+wait_sync "$PARK2_HEIGHT" "0 1 2 5" || { fail "node5 did not reach $PARK2_HEIGHT"; exit 1; }
+PARK2_HASH="$(besthash 0)"; stop_node 5 || fail "node5 did not stop"
+success "node5 parked at $PARK2_HEIGHT (end of epoch 3)"
+for e in 4 5; do vote_round "$(epoch_start "$e")" "0 1 2" || { fail "vote round at epoch $e failed"; exit 1; }; done
 FIN="$(finalized 0)"
 if is_int "$FIN" && [ "$FIN" -gt "$PARK_HEIGHT" ]; then
     success "deterministic finalized height $FIN > $PARK_HEIGHT on node0"
@@ -202,8 +225,15 @@ sleep 10
 [ "$(besthash 0)" = "$FLEET_TIP" ] && success "node0 kept its tip" || fail "node0 moved to $(height 0) $(besthash 0)"
 [ "$(besthash 1)" = "$FLEET_TIP" ] && success "node1 kept its tip" || fail "node1 moved to $(height 1) $(besthash 1)"
 [ "$(besthash 2)" = "$FLEET_TIP" ] && success "node2 kept its tip" || fail "node2 moved to $(height 2)"
-KEPT="$(count_log 0 'kept as a side block')"
-[ "$KEPT" -ge 1 ] && success "node0 side-indexed heavier ineligible blocks ($KEPT gate decisions)" || fail "node0 never took the side-block path for a heavier ineligible block"
+# One gate decision per branch block whose DAG score beats the tip: at least
+# BRANCH_H - FLEET_TIP_H, each naming the parked fork height.
+KEPT_MIN=$(( BRANCH_H - FLEET_TIP_H ))
+for n in 0 1; do
+    KEPT="$(count_log "$n" 'kept as a side block')"
+    AT_FORK="$(grep -a -c "forks at $PARK_HEIGHT below finalized height $FIN .*kept as a side block" "$(logfile "$n")")"
+    [ "$KEPT" -ge "$KEPT_MIN" ] && [ "$AT_FORK" -eq "$KEPT" ] && success "node$n side-indexed the heavier ineligible blocks ($KEPT gate decisions, all at fork $PARK_HEIGHT under anchor $FIN; >= $KEPT_MIN expected)" || fail "node$n gate decisions: $KEPT (>= $KEPT_MIN expected), $AT_FORK naming fork $PARK_HEIGHT"
+done
+[ "$(count_log 0 'kept as a side block')" -eq "$(grep -a -c 'below finalized height .* (latch anchor .*, retryable); kept as a side block' "$(logfile 0)")" ] && success "every decision on node0 was the retryable verdict" || fail "node0 logged a non-retryable verdict in this phase"
 [ "$(count_log 0 'SetBestChain() : rejected reorg')" -eq 0 ] && success "no reorg attempt reached the guard on node0" || fail "node0 still attempted a below-anchor reorg: $(grep -a 'SetBestChain() : rejected reorg' "$(logfile 0)" | tail -1 | cut -c1-140)"
 [ "$(count_log 0 'Misbehaving')" -eq "$MISB0_BEFORE" ] && [ "$(count_log 1 'Misbehaving')" -eq "$MISB1_BEFORE" ] && success "no peer was scored for relaying the branch" || fail "a peer was scored: node0 +$(( $(count_log 0 Misbehaving) - MISB0_BEFORE )) node1 +$(( $(count_log 1 Misbehaving) - MISB1_BEFORE ))"
 [ "$(count_log 0 'marked failed/invalid')" -eq 0 ] && success "no child of the branch was refused as failed on node0" || fail "node0 refused children of a flagged block"
@@ -223,9 +253,13 @@ start_node 0 || { fail "node0 did not restart"; exit 1; }
 [ "$(count_log 0 'LoadDAGLinks: FATAL')" -eq 0 ] && [ "$(besthash 0)" = "$FLEET_TIP" ] && success "node0 restarted on its tip with the branch retained" || fail "node0 after restart: tip $(height 0), FATAL lines $(count_log 0 'LoadDAGLinks: FATAL')"
 rpc 0 getblock "$BRANCH_TIP" >/dev/null 2>&1 && success "the branch tip is still indexed after the restart" || fail "the branch tip is gone after the restart"
 
-header "6. node4 syncs late through the fleet, killed mid-way"
-write_conf 4 "0 1"
+header "6. node4 syncs late, fed the branch by node3 before the fleet, killed mid-way"
+# node3 still holds its branch as the tip; node4 hears it first and the fleet's chain
+# through node0. Its own anchor is still low, so it may follow the branch for a while;
+# what matters is that it converges, scores nobody, and refuses nothing.
+write_conf 4 "3 0"
 start_node 4 || { fail "node4 did not restart"; exit 1; }
+MISB3_BEFORE="$(count_log 3 'Misbehaving')"
 MISB4_BEFORE="$(count_log 0 'Misbehaving')"
 KILL_AT=$(( PARK_HEIGHT + 150 ))
 killed=0
@@ -233,9 +267,15 @@ for i in $(seq 1 600); do h="$(height 4)"; if is_int "$h" && [ "$h" -ge "$KILL_A
 [ "$killed" -eq 1 ] && success "node4 killed at $h during catch-up" || fail "node4 never reached $KILL_AT ($(height 4))"
 start_node 4 || { fail "node4 did not restart after the kill"; exit 1; }
 [ "$(count_log 4 'LoadDAGLinks: FATAL')" -eq 0 ] && success "node4 loaded after the kill" || fail "node4 refused its datadir after the kill"
-wait_hash 4 "$FLEET_TIP" 600 && success "node4 converged on the fleet tip $FLEET_TIP_H" || fail "node4 stuck at $(height 4) (fleet $FLEET_TIP_H)"
-[ "$(count_log 4 'Misbehaving')" -eq 0 ] && [ "$(count_log 0 'Misbehaving')" -eq "$MISB4_BEFORE" ] && success "no scores in either direction while node4 caught up" || fail "scores during node4's catch-up: node4 $(count_log 4 Misbehaving), node0 +$(( $(count_log 0 Misbehaving) - MISB4_BEFORE ))"
-rpc 4 getblock "$BRANCH_TIP" >/dev/null 2>&1 && success "node4 holds the side branch too" || log "node4 has not received the side branch tip (not required)"
+# Its anchor was still low when the branch arrived, so it may have followed the heavier
+# branch; either tip is a legitimate resting point until the fleet outgrows the branch
+# (phase 7 asserts the convergence).
+settled=0
+for i in $(seq 1 600); do h4="$(besthash 4)"; { [ "$h4" = "$FLEET_TIP" ] || [ "$h4" = "$BRANCH_TIP" ]; } && { settled=1; break; }; sleep 1; done
+[ "$settled" -eq 1 ] && success "node4 caught up to $([ "$h4" = "$FLEET_TIP" ] && echo "the fleet tip $FLEET_TIP_H" || echo "the heavier branch $BRANCH_H (its own anchor was still low)")" || fail "node4 stuck at $(height 4) on neither chain"
+[ "$(count_log 4 'Misbehaving')" -eq 0 ] && [ "$(count_log 0 'Misbehaving')" -eq "$MISB4_BEFORE" ] && [ "$(count_log 3 'Misbehaving')" -eq "$MISB3_BEFORE" ] && success "no scores in any direction while node4 caught up" || fail "scores during node4's catch-up: node4 $(count_log 4 Misbehaving), node0 +$(( $(count_log 0 Misbehaving) - MISB4_BEFORE )), node3 +$(( $(count_log 3 Misbehaving) - MISB3_BEFORE ))"
+rpc 4 getblock "$BRANCH_TIP" >/dev/null 2>&1 && success "node4 holds the side branch it was fed first" || fail "node4 never indexed the branch node3 fed it"
+[ "$(count_log 4 'marked failed/invalid')" -eq 0 ] && [ "$(count_log 4 'LoadDAGLinks: FATAL')" -eq 0 ] && success "node4 flagged nothing and loads" || fail "node4 refused children of a flagged block or failed to load"
 
 header "7. The fleet mines on; everyone converges"
 mine_to 0 $(( BRANCH_H + 20 )) || fail "node0 could not resume mining"
@@ -244,6 +284,30 @@ NEW_TIP="$(besthash 0)"; NEW_H="$(height 0)"
 wait_hash 1 "$NEW_TIP" 300 && wait_hash 2 "$NEW_TIP" 300 && wait_hash 4 "$NEW_TIP" 300 && success "node1, node2, node4 follow the fleet tip" || fail "a fleet node lags: node1=$(height 1) node2=$(height 2) node4=$(height 4)"
 wait_hash 3 "$NEW_TIP" 300 && success "node3 abandoned its branch and converged" || fail "node3 stuck on its branch at $(height 3) ($(besthash 3))"
 [ "$(count_log 0 'LoadDAGLinks: FATAL')" -eq 0 ] && [ "$(count_log 3 'LoadDAGLinks: FATAL')" -eq 0 ] || fail "a node logged a loader FATAL"
+
+header "8. Two more HARD epochs; node5's branch from $PARK2_HEIGHT draws the permanent verdict"
+for e in 6 7; do vote_round "$(epoch_start "$e")" "0 1 2 3 4" || { fail "vote round at epoch $e failed"; exit 1; }; done
+FIN2="$(finalized 0)"; FLEET2_H="$(height 0)"; FLEET2_TIP="$(besthash 0)"
+[ "$FIN2" -gt "$FIN" ] && success "anchor advanced to $FIN2; fleet paused at $FLEET2_H" || fail "the anchor did not advance past $FIN (now $FIN2)"
+write_conf 5 "" "listen=0"
+start_node 5 || { fail "node5 did not restart"; exit 1; }
+[ "$(besthash 5)" = "$PARK2_HASH" ] && success "node5 restarted on $PARK2_HEIGHT with no peers" || fail "node5 tip is $(height 5), expected $PARK2_HEIGHT"
+mine_to 5 $(( FLEET2_H + 15 )) "$BRANCH_THREADS" || { fail "node5 could not mine its branch"; exit 1; }
+BRANCH2_H="$(height 5)"; BRANCH2_TIP="$(besthash 5)"
+MISB0_B="$(count_log 0 'Misbehaving')"; KEPT0_B="$(count_log 0 'kept as a side block')"
+rpc 5 addnode "127.0.0.1:$(node_port 0)" onetry >/dev/null 2>&1
+got=0; for i in $(seq 1 300); do rpc 0 getblock "$BRANCH2_TIP" >/dev/null 2>&1 && { got=1; break; }; sleep 1; done
+[ "$got" -eq 1 ] && success "node0 holds the second branch tip ($i s)" || fail "the second branch never reached node0"
+sleep 10
+[ "$(besthash 0)" = "$FLEET2_TIP" ] && success "node0 kept its tip against the permanently refused branch" || fail "node0 moved to $(height 0)"
+PERM="$(grep -a -c 'permanent); kept as a side block' "$(logfile 0)")"
+[ "$PERM" -ge $(( BRANCH2_H - FLEET2_H )) ] && success "node0 side-indexed the branch under the permanent verdict ($PERM decisions)" || fail "expected >= $(( BRANCH2_H - FLEET2_H )) permanent gate decisions on node0, saw $PERM"
+[ "$(count_log 0 'Misbehaving')" -eq "$MISB0_B" ] && [ "$(count_log 0 'marked failed/invalid')" -eq 0 ] && success "no score, no flag for the permanently refused branch" || fail "node0 scored or flagged on the permanent branch"
+GB2="$(rpc 0 getblock "$BRANCH2_TIP" 2>/dev/null)"
+[ "$(jget "$GB2" hash)" = "$BRANCH2_TIP" ] && [ -z "$(jget "$GB2" failreason)" ] && success "the second branch tip is indexed on node0 with no fail reason" || fail "node0's view of the second branch tip: $(echo "$GB2" | head -c 200)"
+mine_to 0 $(( BRANCH2_H + 20 )) || fail "node0 could not resume mining"
+NEW2="$(besthash 0)"
+wait_hash 1 "$NEW2" 300 && wait_hash 5 "$NEW2" 300 && success "node1 and node5 converge on the fleet tip $(height 0)" || fail "convergence after the permanent branch: node1=$(height 1) node5=$(height 5)"
 
 echo; echo "passed=$PASSED failed=$FAILED"
 [ "$FAILED" -eq 0 ]
