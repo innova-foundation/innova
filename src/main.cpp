@@ -12125,12 +12125,11 @@ static bool ReselectBestValidChain(CTxDB& txdb)
     return block.SetBestChain(txdb, pbest);
 }
 
-// Taint pindex (BLOCK_FAILED_VALID) and every descendant (BLOCK_FAILED_CHILD). Collects the changed
-// indexes for persistence. O(N * depth-from-target); fine for an admin RPC, cheap near the tip.
-static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector<CBlockIndex*>& vChanged)
+// pindex first, then every descendant whose flag state an invalidate (unflagged) or a
+// reconsider (flagged) would change. O(N * depth-from-target); fine for an admin RPC.
+static void CollectFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector<CBlockIndex*>& vOut)
 {
-    if (fInvalidate) pindex->SetFailedValid(); else pindex->ClearFailed();
-    vChanged.push_back(pindex);
+    vOut.push_back(pindex);
     for (map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.begin(); it != mapBlockIndex.end(); ++it)
     {
         CBlockIndex* p = it->second;
@@ -12142,12 +12141,48 @@ static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector
         {
             if (q == pindex)
             {
-                if (fInvalidate) p->SetFailedChild(); else p->ClearFailed();
-                vChanged.push_back(p);
+                vOut.push_back(p);
                 break;
             }
         }
     }
+}
+
+// Taint pindex (BLOCK_FAILED_VALID) and every descendant (BLOCK_FAILED_CHILD), or clear both.
+// Collects the changed indexes for persistence.
+static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector<CBlockIndex*>& vChanged)
+{
+    CollectFailedSubtree(pindex, fInvalidate, vChanged);
+    for (size_t i = 0; i < vChanged.size(); i++)
+    {
+        if (!fInvalidate)
+            vChanged[i]->ClearFailed();
+        else if (i == 0)
+            vChanged[i]->SetFailedValid();
+        else
+            vChanged[i]->SetFailedChild();
+    }
+}
+
+// A retained post-DAG PoW index must carry its DAG vertex; clearing the flag of one
+// without it would leave a state LoadDAGLinks refuses, so refuse with nothing changed.
+static bool SubtreeHasDAGVertices(const std::vector<CBlockIndex*>& vIndexes, std::string& strError)
+{
+    const int nPrunedBelow = g_dagManager.GetPrunedBelowHeight();
+    for (size_t i = 0; i < vIndexes.size(); i++)
+    {
+        const CBlockIndex* p = vIndexes[i];
+        if (p->nHeight < FORK_HEIGHT_DAG || p->nHeight < nPrunedBelow || p->IsProofOfStake())
+            continue;
+        if (!g_dagManager.HasDAGData(p->GetBlockHash()))
+        {
+            strError = strprintf("block %s at height %d has no DAG vertex; restart the node to "
+                                 "rebuild it from disk, then retry",
+                                 p->GetBlockHash().ToString().c_str(), p->nHeight);
+            return false;
+        }
+    }
+    return true;
 }
 
 // Mark a block permanently invalid, roll the active chain back off it if present, re-select the best
@@ -12190,15 +12225,23 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 }
 
 // Clear the invalid marks on a block and its descendant subtree, then re-select the best valid chain.
-bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
+// Nothing changes when the subtree is refused; *pfFlagsCleared tells a caller whether the flags
+// were committed when the reselection afterwards fails.
+bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bool* pfFlagsCleared)
 {
+    if (pfFlagsCleared)
+        *pfFlagsCleared = false;
     VerifyProofCacheClear();
     ClearPrivacyVNextEffectsCache();
     if (!pindex)
         { strError = "null block index"; return false; }
 
     std::vector<CBlockIndex*> vChanged;
-    MarkFailedSubtree(pindex, false, vChanged);
+    CollectFailedSubtree(pindex, false, vChanged);
+    if (!SubtreeHasDAGVertices(vChanged, strError))
+        return false;
+    for (size_t i = 0; i < vChanged.size(); i++)
+        vChanged[i]->ClearFailed();
 
     if (txdb.TxnBegin())
     {
@@ -12206,6 +12249,8 @@ bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
             txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
         txdb.TxnCommit();
     }
+    if (pfFlagsCleared)
+        *pfFlagsCleared = true;
 
     if (!ReselectBestValidChain(txdb))
         { strError = "reselection of best valid chain failed"; return false; }

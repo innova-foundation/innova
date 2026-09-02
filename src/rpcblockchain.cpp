@@ -1194,7 +1194,12 @@ Value reconsiderblock(const Array& params, bool fHelp)
         throw runtime_error(
             "reconsiderblock \"hash\"\n"
             "Removes invalidity status from a block and its descendant subtree, allowing\n"
-            "them to be reconsidered for the best chain. Undoes 'invalidateblock'.");
+            "them to be reconsidered for the best chain. Undoes 'invalidateblock'.\n"
+            "Refuses, changing nothing, when a block in the subtree has no DAG vertex\n"
+            "(restart the node to rebuild it). Returns what happened:\n"
+            "  flags_cleared  the marks were removed and committed\n"
+            "  tip_moved      the best chain changed as a result\n"
+            "  error          present when the marks were cleared but the tip did not move");
 
     LOCK(cs_main);
     uint256 hash(params[0].get_str());
@@ -1204,9 +1209,21 @@ Value reconsiderblock(const Array& params, bool fHelp)
 
     CTxDB txdb;
     std::string strError;
-    if (!ReconsiderBlock(txdb, pindex, strError))
+    bool fFlagsCleared = false;
+    const CBlockIndex* pindexTipBefore = pindexBest;
+    const bool fOK = ReconsiderBlock(txdb, pindex, strError, &fFlagsCleared);
+    if (!fOK && !fFlagsCleared)
         throw JSONRPCError(RPC_MISC_ERROR, strError);
-    return Value::null;
+
+    Object result;
+    result.push_back(Pair("hash", hash.GetHex()));
+    result.push_back(Pair("flags_cleared", fFlagsCleared));
+    result.push_back(Pair("tip_moved", pindexBest != pindexTipBefore));
+    result.push_back(Pair("tip_height", pindexBest ? pindexBest->nHeight : -1));
+    result.push_back(Pair("tip_hash", pindexBest ? pindexBest->GetBlockHash().GetHex() : std::string()));
+    if (!fOK)
+        result.push_back(Pair("error", strError));
+    return result;
 }
 
 // ppcoin: get information of sync-checkpoint

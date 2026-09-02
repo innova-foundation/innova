@@ -122,4 +122,41 @@ BOOST_AUTO_TEST_CASE(a_flagged_index_keeps_its_vertex_and_the_loader_accepts_it)
                         "the loader refuses the persisted state");
 }
 
+// Flagged with no vertex: reconsider must refuse before any write, and the loader
+// tolerates the index as it is.
+BOOST_AUTO_TEST_CASE(reconsider_refuses_a_flagged_block_without_a_vertex_and_changes_nothing)
+{
+    BOOST_REQUIRE(fRegTest);
+    CBlockIndex* pindexPrev = BestIndex();
+    std::unique_ptr<CBlock> pblock = MakeOverpayingBlock(pindexPrev);
+    const uint256 hash = pblock->GetHash();
+    BOOST_CHECK(!ProcessBlock(NULL, pblock.get()));
+
+    LOCK(cs_main);
+    BOOST_REQUIRE(mapBlockIndex.count(hash) != 0);
+    CBlockIndex* pindex = mapBlockIndex[hash];
+    BOOST_REQUIRE(pindex->IsFailed());
+    BOOST_REQUIRE(g_dagManager.HasDAGData(hash));
+
+    g_dagManager.RemoveBlockDAGData(hash);
+    {
+        CTxDB txdbDamage;
+        BOOST_REQUIRE(txdbDamage.EraseDAGLinks(hash));
+    }
+
+    CTxDB txdb;
+    std::string strError;
+    bool fFlagsCleared = true;
+    BOOST_CHECK(!ReconsiderBlock(txdb, pindex, strError, &fFlagsCleared));
+    BOOST_CHECK_MESSAGE(strError.find("no DAG vertex") != std::string::npos, strError);
+    BOOST_CHECK(!fFlagsCleared);
+    BOOST_CHECK_MESSAGE(pindex->IsFailed(), "the refused reconsider cleared the flag");
+    BOOST_CHECK(pindexBest == pindexPrev);
+
+    CTxDB txdbRead("r");
+    CDAGManager scratch;
+    BOOST_CHECK_MESSAGE(scratch.LoadDAGLinks(txdbRead),
+                        "the loader refuses a flagged, vertex-less index");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

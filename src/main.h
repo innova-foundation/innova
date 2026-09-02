@@ -1022,7 +1022,7 @@ CBlockIndex* FindBlockByHeight(int nHeight);
 bool RebuildMainChainForwardLinks();
 // invalidateblock / reconsiderblock RPC support (defined in main.cpp; assume cs_main held).
 bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
-bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
+bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bool* pfFlagsCleared = NULL);
 bool ProcessMessages(CNode* pfrom);
 bool SendMessages(CNode* pto, bool fSendTrickle);
 // BIP130 tip announcement: headers to a sendheaders peer, inv otherwise. Distinct
