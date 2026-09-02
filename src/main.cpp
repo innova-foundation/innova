@@ -9094,9 +9094,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 uint64_t nExpectedStakeModifier = 0;
                 int nStakeModifierHeight = 0;
                 int64_t nStakeModifierTime = 0;
+                // Walks pnext, which a reorg sets only after its connect loop, and reads the
+                // wall clock: a miss is this node's position, not the block's.
                 if (!GetKernelStakeModifier(pBlockFrom->GetBlockHash(), nExpectedStakeModifier,
                                             nStakeModifierHeight, nStakeModifierTime, false))
-                    return DoS(100, error("ConnectBlock() : Failed to get stake modifier for NullStake proof"));
+                    return TransientFailure(error("ConnectBlock() : Failed to get stake modifier for NullStake proof"));
 
                 if (vtx[1].nullstakeProof.nStakeModifier != nExpectedStakeModifier)
                     return DoS(100, error("ConnectBlock() : NullStake stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
