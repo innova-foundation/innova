@@ -3596,18 +3596,28 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         return false;
     }
 
-    const int nFinEpoch = GetEpochForHeight(nFinHeight);
+    // Before anything is finalized the "finalized epoch" is epoch 0, which has no record
+    // on a chain whose epochs start at the DAG fork; requiring it rejected every IV5
+    // transaction until the first finalization, on every node alike -- the one window
+    // the depth anchor below exists for. With nothing finalized the search below is
+    // the whole answer.
+    const int nFinEpoch = (nFinHeight > 0) ? GetEpochForHeight(nFinHeight) : -1;
     CEpochState state;
-    if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+    bool fHaveAnchor = false;
+    if (nFinHeight > 0)
     {
-        fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
-        return false;
+        if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+        {
+            fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
+            return false;
+        }
+        fHaveAnchor = true;
     }
 
     // Past the finalized epoch, take the newest epoch already deep enough to anchor on
     // its own, so notes stay spendable when finality stalls. Validator and wallet both use
     // this function; it depends only on the height and the recorded epoch states.
-    for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch; --nEpoch)
+    for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch && nEpoch >= 0; --nEpoch)
     {
         CEpochState deeper;
         if (txdb.ProbeEpochState(nEpoch) == TXDB_READ_NOT_FOUND)
@@ -3622,9 +3632,33 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                 EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH)
             continue;
         state = deeper;
+        fHaveAnchor = true;
         break;
     }
 
+    // Nothing finalized and nothing deep enough: the oldest record there is. On a chain
+    // with records from genesis that is epoch 0, as it always was; on one whose records
+    // start at the fork it is the first post-fork epoch, which the validator's depth rule
+    // still refuses as a spend anchor while it is shallow, so shields keep working and
+    // spends wait for depth rather than for the first finalization.
+    if (!fHaveAnchor)
+    {
+        for (int nEpoch = 0; nEpoch <= nAsOfEpoch && !fHaveAnchor; ++nEpoch)
+        {
+            if (txdb.ProbeEpochState(nEpoch) == TXDB_READ_NOT_FOUND)
+                continue;
+            CEpochState oldest;
+            if (!txdb.ReadEpochState(nEpoch, oldest) || oldest.nEpoch != nEpoch)
+            {
+                fLocalFailureOut = true;
+                return false;
+            }
+            state = oldest;
+            fHaveAnchor = true;
+        }
+    }
+    if (!fHaveAnchor)
+        return false; // no record at all yet: the chain's answer
     stateOut = state;
     return true;
 }

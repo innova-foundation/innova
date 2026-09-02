@@ -280,4 +280,85 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
     BOOST_CHECK(!fLocal);
 }
 
+// Before the first finalization the finalized epoch is epoch 0, and a chain whose
+// epochs begin at the DAG fork has no record for it. The reader used to require that
+// record before it reached the depth anchor, so nothing in the IV5 pool was spendable
+// until finality first advanced -- the window the depth anchor is for. With nothing
+// finalized, an epoch deep enough below the tip anchors on its own.
+BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nTip = BestIndex()->nHeight;
+    const int nAsOf = GetEpochForHeight(nTip) - 1;
+    BOOST_REQUIRE(nAsOf >= 2);
+    CTxDB txdb;
+
+    // Nothing finalized in any record, written through.
+    std::map<int, CEpochState> saved;
+    {
+        std::map<int, CEpochState> states;
+        std::map<int, CCurveTree> trees;
+        for (int e = 0; e <= nAsOf; e++)
+        {
+            CEpochState state;
+            if (!g_dagManager.GetEpochState(e, state))
+                state.nEpoch = e;
+            saved[e] = state;
+            state.hashCurveRoot = 0;
+            state.nFinalizedHeightAsOf = 0;
+            state.fFinalized = false;
+            states[e] = state;
+            trees[e] = CCurveTree();
+        }
+        BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(0, states, trees));
+        for (int e = 0; e <= nAsOf; e++)
+            BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, e));
+    }
+    // And no record at all for epoch 0, as on a chain whose epochs start at the fork.
+    txdb.EraseEpochState(0);
+
+    CEpochState anchor;
+    bool fLocal = true;
+    BOOST_CHECK_MESSAGE(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, anchor, fLocal),
+                        "with nothing finalized, no anchor at all: the pool is frozen until "
+                        "the first finalization");
+    BOOST_CHECK(!fLocal);
+    BOOST_CHECK(anchor.nHeightEnd > 0);
+    BOOST_CHECK(nTip - anchor.nHeightEnd >= EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH);
+    BOOST_CHECK(!anchor.fFinalized);
+
+    // A height whose as-of epoch has a record but is not yet deep enough: the oldest
+    // record there is (epoch 1 here, epoch 0 having been erased), which the validator's
+    // depth rule refuses as a spend anchor while shields, which need only a context, keep
+    // working -- the pre-fix behaviour on chains that carry an epoch-0 record.
+    fLocal = true;
+    CEpochState shallow;
+    BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(
+        txdb, GetEpochBoundaryHeight(2, nTip) + 5, shallow, fLocal));
+    BOOST_CHECK(!fLocal);
+    BOOST_CHECK_EQUAL(shallow.nEpoch, 1);
+    BOOST_CHECK(!shallow.fFinalized);
+
+    // A height whose as-of epoch has no record at all (epoch 0, erased): no state -- the
+    // chain's answer, not a local failure.
+    fLocal = true;
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(
+        txdb, GetEpochBoundaryHeight(1, nTip) + 5, shallow, fLocal));
+    BOOST_CHECK(!fLocal);
+
+    // Put the records back for whatever runs after this suite.
+    std::map<int, CEpochState> states;
+    std::map<int, CCurveTree> trees;
+    for (std::map<int, CEpochState>::const_iterator it = saved.begin(); it != saved.end(); ++it)
+    {
+        CEpochState state = it->second;
+        state.hashCurveRoot = 0;
+        states[it->first] = state;
+        trees[it->first] = CCurveTree();
+    }
+    BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(0, states, trees));
+    for (int e = 0; e <= nAsOf; e++)
+        BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, e));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
