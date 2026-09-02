@@ -2574,8 +2574,27 @@ void ThreadMessageHandler2(void* parg)
             // Receive messages
             {
                 TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
+                // Both threads TRY_LOCK cs_vRecvMsg, so a peer can starve (never getting
+                // its version dispatched). Count consecutive misses per peer.
+                if (!lockRecv)
+                {
+                    pnode->nRecvDispatchMisses++;
+                    if (fDebugNet && (pnode->nRecvDispatchMisses % 500) == 0)
+                        printf("dispatch: cs_vRecvMsg missed %" PRId64" consecutive times peer=%s "
+                               "version=%d queued=%u\n",
+                               pnode->nRecvDispatchMisses, pnode->addr.ToString().c_str(),
+                               pnode->nVersion, (unsigned int)pnode->vRecvMsg.size());
+                }
                 if (lockRecv)
                 {
+                    if (pnode->nRecvDispatchMisses > 0)
+                    {
+                        if (fDebugNet && pnode->nRecvDispatchMisses >= 50)
+                            printf("dispatch: recovered after %" PRId64" misses peer=%s version=%d\n",
+                                   pnode->nRecvDispatchMisses, pnode->addr.ToString().c_str(),
+                                   pnode->nVersion);
+                        pnode->nRecvDispatchMisses = 0;
+                    }
                     if (!ProcessMessages(pnode))
                         pnode->CloseSocketDisconnect("process-message-failed");
 

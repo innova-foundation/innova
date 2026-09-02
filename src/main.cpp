@@ -15578,7 +15578,20 @@ bool ProcessMessages(CNode* pfrom)
     // Preserve response ordering while getdata can make progress. If the send
     // queue is full, continue processing inbound messages so backpressure does
     // not deadlock block/header relay behind pending getdata.
-    if (!pfrom->vRecvGetData.empty() && pfrom->nSendSize < SendBufferSize()) return fOk;
+    if (!pfrom->vRecvGetData.empty() && pfrom->nSendSize < SendBufferSize())
+    {
+        // Returning here skips the inbound queue; if vRecvGetData never drains, this peer's
+        // version is never handled and its receive queue grows without bound.
+        pfrom->nGetDataDeferrals++;
+        if (fDebugNet && (pfrom->nGetDataDeferrals % 200) == 0)
+            printf("processmsgs: deferred for getdata %" PRId64" times peer=%s version=%d "
+                   "getdata=%u recvqueue=%u sendsize=%u\n",
+                   pfrom->nGetDataDeferrals, pfrom->addr.ToString().c_str(), pfrom->nVersion,
+                   (unsigned int)pfrom->vRecvGetData.size(), (unsigned int)pfrom->vRecvMsg.size(),
+                   (unsigned int)pfrom->nSendSize);
+        return fOk;
+    }
+    pfrom->nGetDataDeferrals = 0;
 
     std::deque<CNetMessage>::iterator it = pfrom->vRecvMsg.begin();
     while (!pfrom->fDisconnect && it != pfrom->vRecvMsg.end()) {

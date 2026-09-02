@@ -396,6 +396,12 @@ public:
     bool fVerified;
     bool fNetworkNode;
     bool fSuccessfullyConnected;
+    // Consecutive rounds this peer's queue could not be dispatched because
+    // cs_vRecvMsg was held elsewhere. Reset on the first successful round.
+    int64_t nRecvDispatchMisses;
+    // Consecutive ProcessMessages calls that returned to service pending getdata
+    // without touching the inbound queue.
+    int64_t nGetDataDeferrals;
     bool fDisconnect;
 	// We use fRelayTxes for two purposes -
     // a) it allows us to not relay tx invs before receiving the peer's version message
@@ -508,6 +514,8 @@ public:
         fWhitelisted = false;
         fNetworkNode = false;
         fSuccessfullyConnected = false;
+        nRecvDispatchMisses = 0;
+        nGetDataDeferrals = 0;
         fDisconnect = false;
         nRefCount = 0;
         nSendSize = 0;
