@@ -122,6 +122,36 @@ BOOST_AUTO_TEST_CASE(a_flagged_index_keeps_its_vertex_and_the_loader_accepts_it)
                         "the loader refuses the persisted state");
 }
 
+// Reconsidering the rejected block re-attempts it: ConnectBlock rejects it again, the
+// reselection flags it again with the vertex intact, and the recovery RPC succeeds.
+BOOST_AUTO_TEST_CASE(reconsidering_a_rejected_block_flags_it_again_with_its_vertex)
+{
+    BOOST_REQUIRE(fRegTest);
+    CBlockIndex* pindexPrev = BestIndex();
+    std::unique_ptr<CBlock> pblock = MakeOverpayingBlock(pindexPrev);
+    const uint256 hash = pblock->GetHash();
+    BOOST_CHECK(!ProcessBlock(NULL, pblock.get()));
+
+    LOCK(cs_main);
+    BOOST_REQUIRE(mapBlockIndex.count(hash) != 0);
+    CBlockIndex* pindex = mapBlockIndex[hash];
+    BOOST_REQUIRE(pindex->IsFailed());
+
+    CTxDB txdb;
+    std::string strError;
+    bool fFlagsCleared = false;
+    BOOST_CHECK_MESSAGE(ReconsiderBlock(txdb, pindex, strError, &fFlagsCleared), strError);
+    BOOST_CHECK(fFlagsCleared);
+    BOOST_CHECK_MESSAGE(pindex->IsFailed(), "the rejected block was left unflagged after reconsider");
+    BOOST_CHECK(pindexBest == pindexPrev);
+    BOOST_CHECK(g_dagManager.HasDAGData(hash));
+    CTxDB txdbRead("r");
+    CBlockDAGData data;
+    BOOST_CHECK(txdbRead.ReadDAGLinks(hash, data));
+    CDAGManager scratch;
+    BOOST_CHECK(scratch.LoadDAGLinks(txdbRead));
+}
+
 // Flagged with no vertex: reconsider must refuse before any write, and the loader
 // tolerates the index as it is.
 BOOST_AUTO_TEST_CASE(reconsider_refuses_a_flagged_block_without_a_vertex_and_changes_nothing)

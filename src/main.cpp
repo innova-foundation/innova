@@ -12178,6 +12178,8 @@ bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
 // All three assume cs_main is held (the RPCs run unlocked=false -> LOCK2(cs_main, wallet)).
 // ---------------------------------------------------------------------------
 
+static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector<CBlockIndex*>& vChanged);
+
 // Switch to the highest-trust non-invalid block that has block data on disk, if it beats the current
 // tip. Mirrors the native selection rule (nChainTrust > nBestChainTrust), which also excludes interior
 // best-chain nodes. Used by both invalidateblock (after rollback) and reconsiderblock.
@@ -12228,7 +12230,32 @@ static bool ReselectBestValidChain(CTxDB& txdb)
         if (!block.ReadFromDisk(pbest))
             return error("ReselectBestValidChain() : ReadFromDisk failed for %s",
                          pbest->GetBlockHash().ToString().substr(0,20).c_str());
-        return block.SetBestChain(txdb, pbest);
+        bool fPermanentInvalid = false;
+        if (block.SetBestChain(txdb, pbest, &fPermanentInvalid))
+            return true;
+        if (!fPermanentInvalid)
+            return error("ReselectBestValidChain() : switching to %s failed transiently",
+                         pbest->GetBlockHash().ToString().substr(0,20).c_str());
+        // The candidate was pre-gated for finality, so only a ConnectBlock verdict reaches
+        // here: flag it and its descendants as AddToBlockIndex would have (the vertex stays),
+        // and go on to the next candidate rather than leave a rejected block unflagged and
+        // heavier than the tip.
+        std::vector<CBlockIndex*> vFlagged;
+        MarkFailedSubtree(pbest, true, vFlagged);
+        if (txdb.TxnBegin())
+        {
+            bool fWritesOK = true;
+            for (size_t j = 0; j < vFlagged.size(); j++)
+                fWritesOK = txdb.WriteBlockIndex(CDiskBlockIndex(vFlagged[j])) && fWritesOK;
+            if (fWritesOK)
+                txdb.TxnCommit();
+            else
+                txdb.TxnAbort();
+        }
+        printf("ReselectBestValidChain() : %s at height %d rejected by ConnectBlock; flagged with "
+               "%d descendants\n",
+               pbest->GetBlockHash().ToString().substr(0,20).c_str(), pbest->nHeight,
+               (int)vFlagged.size() - 1);
     }
     return true; // nothing switchable beats the current tip -> no-op
 }
