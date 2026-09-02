@@ -538,7 +538,8 @@ public:
     /** Get the selected parent (highest-scoring parent) of a block. */
     uint256 GetSelectedParent(const uint256& hashBlock) const;
 
-    /** Remove DAG data for a block (used during reorg). */
+    /** Remove DAG data for a block. Only for an index that is being discarded
+     *  (uncommitted or transient failure); a retained index keeps its vertex. */
     void RemoveBlockDAGData(const uint256& hashBlock);
 
 private:

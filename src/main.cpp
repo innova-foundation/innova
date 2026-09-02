@@ -12521,8 +12521,6 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 // possibly persisted WITHOUT the failed bit, so re-write it WITH the bit so the mark
                 // survives restart. Do NOT erase setStakeSeen (retain duplicate-stake detection); leave
                 // the index in mapBlockIndex (AlreadyHave stays true; children are rejected in AcceptBlock).
-                if (fDAGDataInitialized)
-                    g_dagManager.RemoveBlockDAGData(hash);
                 pindexNew->SetFailedValid();
                 CTxDB txdbFail;
                 bool fFailedIndexCommitted = false;
@@ -12532,7 +12530,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                         txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew));
                     if (fDAGDataInitialized)
                     {
-                        fWritesOK = txdbFail.EraseDAGLinks(hash) && fWritesOK;
+                        fWritesOK = g_dagManager.WriteDAGLinks(txdbFail, hash) && fWritesOK;
                         for (std::vector<uint256>::const_iterator it = vDAGParents.begin();
                              it != vDAGParents.end(); ++it)
                             if (g_dagManager.HasDAGData(*it))
@@ -12547,7 +12545,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 if (!fFailedIndexCommitted)
                 {
                     printf("AddToBlockIndex() : FATAL could not persist the permanent-invalid "
-                           "index/DAG cleanup for %s; shutting down\n",
+                           "index/DAG vertex for %s; shutting down\n",
                            hash.ToString().substr(0,20).c_str());
                     StartShutdown();
                 }
@@ -12593,23 +12591,15 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 if (fLatePermanentInvalid)
                 {
                     const uint256 hashLate = pLateBest->GetBlockHash();
-                    CBlockDAGData lateData;
-                    g_dagManager.GetDAGData(hashLate, lateData);
+                    // Vertex and parent links were persisted by the side-block commit;
+                    // only the flag changes.
                     pLateBest->SetFailedValid();
-                    g_dagManager.RemoveBlockDAGData(hashLate);
                     CTxDB txdbLateFail;
                     bool fLateFailureCommitted = false;
                     if (txdbLateFail.TxnBegin())
                     {
                         bool fWritesOK =
-                            txdbLateFail.WriteBlockIndex(CDiskBlockIndex(pLateBest)) &&
-                            txdbLateFail.EraseDAGLinks(hashLate);
-                        for (std::vector<uint256>::const_iterator it =
-                                 lateData.vDAGParents.begin();
-                             it != lateData.vDAGParents.end(); ++it)
-                            if (g_dagManager.HasDAGData(*it))
-                                fWritesOK = g_dagManager.WriteDAGLinks(txdbLateFail, *it) &&
-                                            fWritesOK;
+                            txdbLateFail.WriteBlockIndex(CDiskBlockIndex(pLateBest));
                         if (fWritesOK)
                             fLateFailureCommitted = txdbLateFail.TxnCommit();
                         else

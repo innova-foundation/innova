@@ -381,6 +381,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (miTip == mapBlockIndex.end() || miTip->second == NULL)
                     continue;
                 CBlockIndex* pTip = miTip->second;
+                if (pTip->IsInvalid())
+                    continue; // a flagged tip keeps its vertex but is never merged
                 if (pTip != pindexBest && pTip->nChainTrust > nBestChainTrust)
                     continue;
                 uint256 nScore = g_dagManager.ComputeDAGScore(pTip);
@@ -407,6 +409,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (mi == mapBlockIndex.end() || mi->second == NULL)
                     continue;
                 CBlockIndex* pTip = mi->second;
+                if (pTip->IsInvalid())
+                    continue;
                 if (pTip != pindexBest && pTip->nChainTrust > nBestChainTrust)
                     continue;
                 if (pTip->nHeight < pindexPrev->nHeight - DAG_MERGE_DEPTH)
