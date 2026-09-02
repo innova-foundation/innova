@@ -12126,24 +12126,54 @@ bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
 // best-chain nodes. Used by both invalidateblock (after rollback) and reconsiderblock.
 static bool ReselectBestValidChain(CTxDB& txdb)
 {
-    CBlockIndex* pbest = NULL;
+    // Every index that beats the tip, heaviest first, with the same tie-break as the
+    // DAG tip selection. The first one this node may switch to is taken; a heavier
+    // index whose fork lies below the finality anchor is passed over, not attempted.
+    std::vector<CBlockIndex*> vCandidates;
     for (map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.begin(); it != mapBlockIndex.end(); ++it)
     {
         CBlockIndex* p = it->second;
-        if (!p || p->IsInvalid())
+        if (!p || p->IsInvalid() || p->nChainTrust <= nBestChainTrust)
             continue;
         if (p->nFile == 0 && p->nBlockPos == 0 && p != pindexGenesisBlock)
             continue; // header-only / no block data -> cannot be connected
-        if (p->nChainTrust > nBestChainTrust && (!pbest || p->nChainTrust > pbest->nChainTrust))
-            pbest = p;
+        if (p->nHeight >= FORK_HEIGHT_DAG && !p->IsProofOfStake() &&
+            !g_dagManager.HasDAGData(p->GetBlockHash()))
+            continue; // no vertex: its trust is not comparable to the DAG-scored tips
+        vCandidates.push_back(p);
     }
-    if (!pbest)
-        return true; // nothing beats the current tip -> no-op
-    CBlock block;
-    if (!block.ReadFromDisk(pbest))
-        return error("ReselectBestValidChain() : ReadFromDisk failed for %s",
-                     pbest->GetBlockHash().ToString().substr(0,20).c_str());
-    return block.SetBestChain(txdb, pbest);
+    std::sort(vCandidates.begin(), vCandidates.end(),
+              [](const CBlockIndex* a, const CBlockIndex* b) {
+                  if (a->nChainTrust != b->nChainTrust)
+                      return a->nChainTrust > b->nChainTrust;
+                  if (a->nHeight != b->nHeight)
+                      return a->nHeight > b->nHeight;
+                  return a->GetBlockHash() < b->GetBlockHash();
+              });
+    for (size_t i = 0; i < vCandidates.size(); i++)
+    {
+        CBlockIndex* pbest = vCandidates[i];
+        int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+        const ReorgFinalityVerdict switchVerdict = BestChainSwitchVerdict(
+            pbest, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
+        if (switchVerdict == REORG_FINALITY_STATE_MISSING)
+            return error("ReselectBestValidChain() : missing deterministic finalized-height state "
+                         "for epoch %d; resync required", nAsOfEpoch);
+        if (switchVerdict != REORG_FINALITY_ALLOW)
+        {
+            printf("ReselectBestValidChain() : %s at height %d outweighs the tip but forks at %d "
+                   "below finalized height %d; passed over\n",
+                   pbest->GetBlockHash().ToString().substr(0,20).c_str(), pbest->nHeight,
+                   nForkHeight, nFinalCur);
+            continue;
+        }
+        CBlock block;
+        if (!block.ReadFromDisk(pbest))
+            return error("ReselectBestValidChain() : ReadFromDisk failed for %s",
+                         pbest->GetBlockHash().ToString().substr(0,20).c_str());
+        return block.SetBestChain(txdb, pbest);
+    }
+    return true; // nothing switchable beats the current tip -> no-op
 }
 
 // pindex first, then every descendant whose flag state an invalidate (unflagged) or a

@@ -203,15 +203,26 @@ static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBloc
         return false;
     if (IsPostDAGProofOfStakeIndex(pCandidate))
         return false;
+    bool fBetter;
     if (!pBest)
-        return true;
-    if (pCandidate->nChainTrust != pBest->nChainTrust)
-        return pCandidate->nChainTrust > pBest->nChainTrust;
-    if (pCandidate->nHeight != pBest->nHeight)
-        return pCandidate->nHeight > pBest->nHeight;
-    if (pCandidate->phashBlock && pBest->phashBlock)
-        return pCandidate->GetBlockHash() < pBest->GetBlockHash();
-    return pCandidate->phashBlock && !pBest->phashBlock;
+        fBetter = true;
+    else if (pCandidate->nChainTrust != pBest->nChainTrust)
+        fBetter = pCandidate->nChainTrust > pBest->nChainTrust;
+    else if (pCandidate->nHeight != pBest->nHeight)
+        fBetter = pCandidate->nHeight > pBest->nHeight;
+    else if (pCandidate->phashBlock && pBest->phashBlock)
+        fBetter = pCandidate->GetBlockHash() < pBest->GetBlockHash();
+    else
+        fBetter = pCandidate->phashBlock && !pBest->phashBlock;
+    if (!fBetter)
+        return false;
+    // A heavier index this node may not switch to (its fork with the tip lies below the
+    // finality anchor) is kept as a side block by AddToBlockIndex; building on it would
+    // solve blocks that are side-indexed in turn and never relayed. Evaluated only for a
+    // candidate that would otherwise win, so the fork walk runs for the few heavy tips.
+    int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+    return BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch) ==
+           REORG_FINALITY_ALLOW;
 }
 
 static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)

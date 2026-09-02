@@ -1090,6 +1090,12 @@ ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, int nForkHeight,
                                              int& nFinalCurOut, int& nFinalLatchOut,
                                              int& nAsOfEpochOut);
 
+/** Finality verdict for switching the best chain to pCandidate, against the current tip;
+ *  never persisted. ALLOW for a candidate that extends the tip or a tip below the gate. */
+ReorgFinalityVerdict BestChainSwitchVerdict(const CBlockIndex* pCandidate, int& nForkHeightOut,
+                                            int& nFinalCurOut, int& nFinalLatchOut,
+                                            int& nAsOfEpochOut);
+
 bool CheckProofOfWork(uint256 hash, unsigned int nBits);
 unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake);
 // Pure retarget arithmetic: nActualSpan over nWindow blocks vs nEffectiveSpacing * nWindow.
