@@ -34,6 +34,9 @@ static const int PING_INTERVAL = 2 * 60;
 /** Time after which to disconnect, after waiting for a ping response (or inactivity). */
 static const int TIMEOUT_INTERVAL = 20 * 60;
 
+// Blocks a peer may have in flight. Every path that requests a block must consult this window.
+static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
+
 inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 50*1000); }
 inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 10*1000); }
 inline unsigned int ReceiveFloodHardSize()
@@ -709,7 +712,6 @@ public:
 
             static const int64_t BLOCK_ASK_RETRY_US = 1000000;
             static const int64_t BLOCK_ASK_DEFER_US = 250000;
-            static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
             if (setBlocksInFlight.size() >= MAX_BLOCKS_IN_FLIGHT_PER_PEER)
                 nRequestTime = std::max(nRequestTime + BLOCK_ASK_RETRY_US, nNow + BLOCK_ASK_DEFER_US);
             else

@@ -13246,9 +13246,9 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                     pfrom->PushGetBlocks(pindexBest, uint256(0));
 
                     if (IsInitialBlockDownload())
-                        return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty)", pfrom->GetId());
+                        return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty) %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
                     pfrom->Misbehaving(1, "DAG orphan limit exceeded");
-                    return error("ProcessBlock() : peer %d exceeded DAG orphan limit", pfrom->GetId());
+                    return error("ProcessBlock() : peer %d exceeded DAG orphan limit %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
                 }
             }
 
@@ -13293,10 +13293,10 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 pfrom->PushGetBlocks(pindexBest, uint256(0));
 
                 if (IsInitialBlockDownload()) {
-                    return error("ProcessBlock() : peer %d exceeded orphan limit (IBD, no penalty)", pfrom->GetId());
+                    return error("ProcessBlock() : peer %d exceeded orphan limit (IBD, no penalty) %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
                 }
                 pfrom->Misbehaving(1, "orphan block limit exceeded");
-                return error("ProcessBlock() : peer %d exceeded orphan limit", pfrom->GetId());
+                return error("ProcessBlock() : peer %d exceeded orphan limit %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
             }
         }
 
@@ -14872,7 +14872,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         uint256 hashPrevHeader;
         int nPrevHeaderHeight = -1;
         bool fHavePrevHeader = false;
-        std::vector<CInv> vGetData;
         for (const CBlock& header : vHeaders)
         {
             uint256 hash = header.GetHash();
@@ -14968,20 +14967,20 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             else
             {
-                // Request full block data, skip if already in-flight
-                if (pfrom->IsBlockInFlight(hash))
-                {
-                    if (fDebug)
-                        printf("Header block %s already in-flight, skipping\n",
-                               hash.ToString().substr(0,20).c_str());
-                }
-                else
-                {
-                    if (fDebug)
-                        printf("Header announced block %s (parent height %d), requesting full block\n",
-                               hash.ToString().substr(0,20).c_str(), nParentHeight);
-                    vGetData.push_back(CInv(MSG_BLOCK, hash));
-                }
+                // A block already held as an orphan is not missing, so it is not
+                // requested again: re-requesting held orphans is what produced the
+                // "already have block (orphan)" deliveries by the hundred thousand.
+                // The request goes through AskFor so it shares the one per-peer
+                // window with every other block request, and only for headers within
+                // that window of the tip -- a header further out cannot connect until
+                // the tip advances anyway. Marking headers in flight directly, with no
+                // window, pinned the in-flight set near two thousand, the getdata flush
+                // then never drained AskFor, and the merge parents a DAG orphan asks
+                // for were never sent: that is what kept a node's tip parked with the
+                // next block already in hand.
+                if (!mapOrphanBlocks.count(hash) &&
+                    nHeaderHeight <= nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                    pfrom->AskFor(CInv(MSG_BLOCK, hash));
                 if (pindexPrev)
                     pindexLast = pindexPrev;
             }
@@ -14991,19 +14990,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             fHavePrevHeader = true;
         }
 
-        // In full node mode, request full blocks for announced headers
-        if (!fSPVMode && !vGetData.empty())
-        {
-            if (fDebug)
-                printf("Requesting %u full blocks from peer %s via getdata\n",
-                       (unsigned int)vGetData.size(), pfrom->addr.ToString().c_str());
-            pfrom->PushMessage("getdata", vGetData);
-            for (const CInv& inv : vGetData)
-                pfrom->MarkBlockInFlight(inv.hash);
-        }
-
-        // Continue header sync during IBD and steady-state catch-up.
-        if (pindexLast && vHeaders.size() >= 2000)
+        // Continue header sync only in SPV mode; a stuck full node would be handed the same
+        // headers on every reply.
+        if (fSPVMode && pindexLast && vHeaders.size() >= 2000)
         {
             pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
             pfrom->PushGetBlocks(pindexBest, uint256(0));
@@ -16035,7 +16024,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     {
         vector<CInv> vGetData;
         int64_t nNow = GetTime() * 1000000;
-        static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
         pto->ExpireBlockInFlight();
         while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)
         {

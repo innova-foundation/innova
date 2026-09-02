@@ -323,6 +323,7 @@ TEST_OBJS= \
     obj/test/sigopcount_tests.o \
     obj/test/block_request_order_tests.o \
     obj/test/orphan_stake_marker_tests.o \
+    obj/test/headers_request_window_tests.o \
     obj/test/Checkpoints_tests.o \
     obj/test/build_metadata_tests.o \
     obj/test/bulletproof_ac_tests.o \
