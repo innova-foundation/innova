@@ -4298,9 +4298,20 @@ void PushBlockAnnouncement(CNode* pnode, const CBlock& header, bool fForce)
         pnode->vInventoryToSend.push_back(inv);
 }
 
+// Ceiling on side-block inventory one getblocks may assemble: the walk reads each block
+// from disk under cs_main on the message handler thread.
+static const size_t MAX_DAG_SIDE_INV_PER_GETBLOCKS = 2000;
+
 static void QueueDAGSideBlockWithAncestors(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued, std::set<uint256>& setVisiting, int nDepth)
 {
     if (!pfrom || nDepth > DAG_MERGE_DEPTH)
+        return;
+
+    // Already queued for this request: skip, or shared side blocks are re-walked once per
+    // merge parent reaching them (exponential).
+    if (setQueued.count(hash))
+        return;
+    if (setQueued.size() >= MAX_DAG_SIDE_INV_PER_GETBLOCKS)
         return;
 
     std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
