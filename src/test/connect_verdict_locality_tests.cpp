@@ -4,6 +4,8 @@
 // INVALID result is serialized as BLOCK_FAILED_VALID. Every deterministic rejection in
 // ConnectBlock is a DoS(...) return; a bare return comes from a clock or local read
 // condition, so a verdict that did not raise nDoS is downgraded to TRANSIENT on exit.
+// AcceptBlock refuses a child of a flagged parent, but the flag is this node's own,
+// so the relayer is not scored.
 //
 // Mines on the shared regtest fixture; linked last in TEST_OBJS.
 
@@ -119,6 +121,41 @@ BOOST_AUTO_TEST_CASE(an_unscored_refusal_is_transient_and_a_scored_one_persists)
     BOOST_CHECK_EQUAL((int)twoResult, (int)CBlock::CONNECT_RESULT_INVALID);
     BOOST_CHECK_GE(pTwo->nDoS, 100);
     BOOST_CHECK(ConnectResultMayPersistVerdict(twoResult));
+}
+
+BOOST_AUTO_TEST_CASE(a_child_of_a_flagged_parent_is_refused_without_a_score)
+{
+    BOOST_REQUIRE(fRegTest);
+    CBlockIndex* pTip = BestIndex();
+    BOOST_REQUIRE(pTip->pprev != NULL);
+    std::unique_ptr<CBlock> pChild = TemplateOnTip();
+    BOOST_REQUIRE(SolveBlock(pChild.get()));
+    const uint256 hashChild = pChild->GetHash();
+
+    {
+        LOCK(cs_main);
+        CTxDB txdb;
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(InvalidateBlock(txdb, pTip, strError), strError);
+    }
+    BOOST_REQUIRE(BestIndex() == pTip->pprev);
+    BOOST_REQUIRE(pTip->IsInvalid());
+
+    pChild->nDoS = 0;
+    BOOST_CHECK(!ProcessBlock(NULL, pChild.get()));
+    BOOST_CHECK_EQUAL(pChild->nDoS, 0);
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(mapBlockIndex.count(hashChild) == 0);
+    }
+
+    {
+        LOCK(cs_main);
+        CTxDB txdb;
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(ReconsiderBlock(txdb, pTip, strError), strError);
+    }
+    BOOST_CHECK(BestIndex() == pTip);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

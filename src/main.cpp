@@ -13007,9 +13007,9 @@ bool CBlock::AcceptBlock()
     // DELETED, so a child's prev was "not found" and the child orphaned. Now the failed parent stays in
     // mapBlockIndex (to stop the re-request loop / support invalidateblock), so a child would find its
     // prev -- guard here or a peer could re-feed the invalidated chain and re-connect on top of it.
-    if (pindexPrev->IsInvalid())
-        return DoS(100, error("AcceptBlock() : prev block %s is marked failed/invalid",
-                              hashPrevBlock.ToString().substr(0,20).c_str()));
+    if (pindexPrev->IsInvalid()) // node-local flag: the relayer is not scored
+        return error("AcceptBlock() : prev block %s is marked failed/invalid",
+                     hashPrevBlock.ToString().substr(0,20).c_str());
     int nHeight = pindexPrev->nHeight+1;
 
     if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
