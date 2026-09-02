@@ -102,6 +102,11 @@ cleanup() {
 trap cleanup EXIT
 
 [ -x "$INNOVAD" ] || { echo "no innovad at $INNOVAD"; exit 1; }
+for port in "$PORT" "$RPCPORT"; do
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "port $port is in use by pid $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t | head -1); stop it or set FIR_PORT/FIR_RPC_PORT"; exit 2
+    fi
+done
 write_conf
 start_node || { fail "node did not start"; exit 1; }
 mine_to "$H_START" || { fail "could not mine to $H_START"; exit 1; }

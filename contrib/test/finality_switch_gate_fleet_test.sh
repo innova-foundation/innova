@@ -151,6 +151,16 @@ cleanup() {
 trap cleanup EXIT
 
 [ -x "$INNOVAD" ] || { echo "no innovad at $INNOVAD"; exit 1; }
+# A daemon left behind by an interrupted run still listens on our ports; a fresh fleet
+# would peer with it and inherit its chain (seen: node0 pulled 1835 headers from a
+# ghost node1). Refuse to start on occupied ports rather than run against a ghost.
+for n in 0 1 2 3 4 5; do
+    for port in "$(node_port "$n")" "$(node_rpc "$n")"; do
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "port $port is in use by pid $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t | head -1); stop it or set FSG_PORT_BASE/FSG_RPC_BASE"; exit 2
+        fi
+    done
+done
 mkdir -p "$TEST_DIR"
 
 header "1. Fleet, voters, parked nodes"
