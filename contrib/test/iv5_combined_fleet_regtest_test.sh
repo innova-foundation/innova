@@ -1590,17 +1590,14 @@ else
     exit 1
 fi
 
-# And the narrower thing that stays true while it is: the rehearsal switch opens the
-# pool without the product declaring itself consensus ready. The linked ABI reports
-# zero consensus capabilities, so privacy_vnext_consensus_ready is false here and
-# must be -- a build where it were true off a rehearsal network would be claiming a
-# review that has not happened.
+# The verifier is linked on every network: privacy_vnext_consensus_ready must
+# be true with a non-empty consensus set.
 B_READY="$(jget "$INFO" privacy_vnext_consensus_ready)"
 B_CAPS="$(jget "$INFO" privacy_vnext_consensus_capabilities)"
-if [ "$B_READY" = "false" ]; then
-    success "the rehearsal opens the pool without claiming consensus readiness (consensus_ready=$B_READY, consensus_capabilities=$B_CAPS)"
+if [ "$B_READY" = "true" ] && is_int "$B_CAPS" && [ "$B_CAPS" -ne 0 ]; then
+    success "the build reports the linked verifier's consensus set (consensus_ready=$B_READY, consensus_capabilities=$B_CAPS)"
 else
-    fail "privacy_vnext_consensus_ready is '$B_READY' on a rehearsal network; the build is claiming a readiness the ABI does not report"
+    fail "privacy_vnext_consensus_ready is '$B_READY' with consensus_capabilities '$B_CAPS'; the linked verifier is not reporting its consensus set"
 fi
 
 mine_to 0 "$SHIELD_HEIGHT" || { fail "could not mine to the shield height"; exit 1; }
