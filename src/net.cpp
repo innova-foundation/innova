@@ -1054,6 +1054,7 @@ uint64_t CNode::GetTotalBytesSent()
 // requires LOCK(cs_vRecvMsg)
 bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
 {
+    const unsigned int nArrived = nBytes;
     while (nBytes > 0) {
 
         // get current incomplete message, or create a new one
@@ -1065,19 +1066,37 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
 
         // absorb network data
         int handled;
+        const bool fWasHeader = !msg.in_data;
         if (!msg.in_data)
             handled = msg.readHeader(pch, nBytes);
         else
             handled = msg.readData(pch, nBytes);
 
         if (handled < 0)
-                return false;
+        {
+            // A parse failure disconnects the peer, so name which half rejected it
+            // and how far it had got: a header that will not deserialize and a body
+            // that overran its stated length are different faults.
+            printf("recvmsg: parse failed peer=%s in=%s hdrpos=%u datapos=%u size=%u "
+                   "cmd=%s arrived=%u left=%u\n",
+                   addr.ToString().c_str(), fWasHeader ? "header" : "data",
+                   msg.nHdrPos, msg.nDataPos, msg.in_data ? msg.hdr.nMessageSize : 0,
+                   msg.in_data ? msg.hdr.GetCommand().c_str() : "?", nArrived, nBytes);
+            return false;
+        }
 
         pch += handled;
         nBytes -= handled;
 
         if (msg.complete())
             msg.nTime = GetTimeMicros();
+        else if (fDebugNet)
+            printf("recvmsg: incomplete peer=%s cmd=%s hdrpos=%u datapos=%u of %u "
+                   "(arrived=%u, queued=%u)\n",
+                   addr.ToString().c_str(),
+                   msg.in_data ? msg.hdr.GetCommand().c_str() : "<header>",
+                   msg.nHdrPos, msg.nDataPos, msg.in_data ? msg.hdr.nMessageSize : 0,
+                   nArrived, (unsigned int)vRecvMsg.size());
     }
 
     return true;

@@ -15592,7 +15592,18 @@ bool ProcessMessages(CNode* pfrom)
 
         // end, if an incomplete message is found
         if (!msg.complete())
+        {
+            // The only silent exit, a break: one message that never completes stops every later
+            // message from this peer until the 90s timeout.
+            if (fDebugNet && it == pfrom->vRecvMsg.begin())
+                printf("processmsgs: head incomplete peer=%s cmd=%s hdrpos=%u datapos=%u of %u queued=%u\n",
+                       pfrom->addr.ToString().c_str(),
+                       msg.in_data ? msg.hdr.GetCommand().c_str() : "<header>",
+                       msg.nHdrPos, msg.nDataPos,
+                       msg.in_data ? msg.hdr.nMessageSize : 0,
+                       (unsigned int)pfrom->vRecvMsg.size());
             break;
+        }
 
         // at this point, any failure means we can delete the current message
         it++;
@@ -15849,6 +15860,24 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     }
 
     TRY_LOCK(cs_main, lockMain);
+    // Everything below is skipped when cs_main is busy; count the misses so a starved
+    // inventory flush is visible.
+    {
+        static int64_t nSendLockTries = 0, nSendLockMisses = 0, nLastSendLockLog = 0;
+        nSendLockTries++;
+        if (!lockMain)
+            nSendLockMisses++;
+        const int64_t nNowLog = GetTime();
+        if (fDebugNet && nSendLockTries >= 20 && nNowLog - nLastSendLockLog >= 10)
+        {
+            nLastSendLockLog = nNowLog;
+            printf("sendmsgs: cs_main unavailable on %" PRId64"/%" PRId64" attempts (%d%%)\n",
+                   nSendLockMisses, nSendLockTries,
+                   (int)((nSendLockMisses * 100) / nSendLockTries));
+            nSendLockTries = 0;
+            nSendLockMisses = 0;
+        }
+    }
     if (lockMain) {
 
         // Address refresh broadcast
