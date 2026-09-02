@@ -551,4 +551,44 @@ BOOST_AUTO_TEST_CASE(a_persisted_verdict_survives_restart)
     BOOST_CHECK(!indexReloaded.IsInvalid());
 }
 
+// Every return in ConnectBlock is scored, wrapped, or the one bare `false` under the scope
+// guard; no bare `return error(...)` remains and the guard must be installed.
+BOOST_AUTO_TEST_CASE(every_connectblock_return_is_scored_wrapped_or_guarded)
+{
+    ConnectBlockSource src;
+    BOOST_REQUIRE_MESSAGE(LoadGatedScopes(src), "could not locate ConnectBlock");
+    const std::string strBody =
+        src.strMasked.substr(src.nBodyBegin, src.nBodyEnd - src.nBodyBegin + 1);
+    BOOST_CHECK_MESSAGE(CountIdentifier(strBody, "CVerdictScopeGuard") >= 1,
+                        "ConnectBlock no longer installs the verdict scope guard, so an "
+                        "unscored bare return is persistable again");
+
+    std::vector<std::pair<size_t, std::string> > vReturns;
+    CollectReturns(strBody, vReturns);
+    BOOST_REQUIRE_GE(vReturns.size(), (size_t)100);
+    size_t nBareFalse = 0;
+    for (size_t i = 0; i < vReturns.size(); i++)
+    {
+        const std::string& strToken = vReturns[i].second;
+        if (strToken == "DoS" || strToken == "TransientFailure" || strToken == "Connected")
+            continue;
+        if (strToken == "fReturn" || strToken == "true") // the wrapper lambdas' own returns
+            continue;
+        if (strToken == "false")
+        {
+            nBareFalse++;
+            continue;
+        }
+        BOOST_CHECK_MESSAGE(false,
+                            "main.cpp:" << LineOf(src.strFile, src.nBodyBegin + vReturns[i].first)
+                                << ": return yields '" << strToken << "'. Unscored, so the "
+                                   "scope guard makes it transient; if the site is "
+                                   "deterministic it must be DoS-scored, otherwise wrap it "
+                                   "in TransientFailure so the intent is explicit.");
+    }
+    // The CheckBlock re-run: unscored only for the clock check and CheckTransaction's
+    // local-failure paths, which is exactly what the guard is for.
+    BOOST_CHECK_EQUAL(nBareFalse, (size_t)1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

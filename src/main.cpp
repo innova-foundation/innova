@@ -8159,10 +8159,8 @@ bool ColdStakeCNPayeeIsRegistered(int nHeight, const CScript& payeeScript)
     return false;
 }
 
-// Whether a ConnectBlock result may be written down as BLOCK_FAILED_VALID. That flag
-// is serialized and cleared only by reconsiderblock, so only a verdict every node
-// reproduces qualifies. Both best-chain sites call this rather than comparing the
-// enum themselves.
+// Whether a ConnectBlock result may be persisted as BLOCK_FAILED_VALID: only a
+// DoS-scored verdict every node reproduces. Both best-chain sites call this.
 bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result)
 {
     return result == CBlock::CONNECT_RESULT_INVALID;
@@ -8188,6 +8186,20 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             *pResult = CONNECT_RESULT_OK;
         return true;
     };
+    // A verdict persists only if the site scored it. Every deterministic rejection here
+    // is a DoS(...) return, so an INVALID result reached without raising nDoS came from a
+    // bare return -- a clock or local read condition -- and is downgraded on exit.
+    struct CVerdictScopeGuard
+    {
+        ConnectResult* pResult;
+        const CBlock& block;
+        const int nDoSAtEntry;
+        ~CVerdictScopeGuard()
+        {
+            if (pResult && *pResult == CONNECT_RESULT_INVALID && block.nDoS <= nDoSAtEntry)
+                *pResult = CONNECT_RESULT_TRANSIENT;
+        }
+    } verdictGuard = { pResult, *this, nDoS };
 
     BLOCK_PHASE(BP_CONNECTBLOCK);
     if (!fJustCheck)

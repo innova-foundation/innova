@@ -413,7 +413,8 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/ms_timestamp_tests.o \
     obj/test/ms_timestamp_index_tests.o \
     obj/test/failed_index_dag_vertex_tests.o \
-    obj/test/finality_switch_gate_tests.o
+    obj/test/finality_switch_gate_tests.o \
+    obj/test/connect_verdict_locality_tests.o
 
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.
