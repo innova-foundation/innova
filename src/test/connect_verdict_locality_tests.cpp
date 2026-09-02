@@ -199,4 +199,77 @@ BOOST_AUTO_TEST_CASE(an_incomplete_sibling_set_is_a_transient_refusal)
     BOOST_CHECK(!fIncomplete);
 }
 
+// An epoch-state record that reads back damaged is this node's failure; an absent one is
+// the chain's answer. The record is rewritten under its own key with the wrong epoch
+// number -- what a corrupt decode looks like to the reader -- and restored afterwards.
+BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one_is_not)
+{
+    BOOST_REQUIRE(fRegTest);
+    // Finalized heights a few epochs back, so both the anchor record and the deeper
+    // records between it and the tip are V3 records with a key of their own.
+    const int nV3Epoch = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3);
+    while (GetEpochForHeight(BestIndex()->nHeight) - 3 <= nV3Epoch)
+        MineTo(BestIndex()->nHeight + 50);
+    const int nTip = BestIndex()->nHeight;
+    const int nAsOf = GetEpochForHeight(nTip) - 1;
+    const int nFinEpoch = nAsOf - 2;
+    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip) - 1;
+    {
+        std::map<int, CEpochState> states;
+        std::map<int, CCurveTree> trees;
+        for (int e = nFinEpoch; e <= nAsOf; e++)
+        {
+            CEpochState state;
+            BOOST_REQUIRE(g_dagManager.GetEpochState(e, state));
+            state.hashCurveRoot = 0;
+            state.nFinalizedHeightAsOf = (e == nAsOf) ? nFinalized : 0;
+            states[e] = state;
+            trees[e] = CCurveTree();
+        }
+        BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(nFinEpoch, states, trees));
+    }
+    // The txdb readers under test read the records on disk, not the in-memory set.
+    CTxDB txdb;
+    for (int e = nFinEpoch; e <= nAsOf; e++)
+        BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, e));
+    CEpochState saved;
+    BOOST_REQUIRE(txdb.ReadEpochState(nFinEpoch, saved));
+    CEpochState state;
+
+    // Intact: the finalized epoch's record is found.
+    bool fLocal = true;
+    BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
+    BOOST_CHECK(!fLocal);
+    BOOST_CHECK_EQUAL(state.nEpoch, nFinEpoch);
+
+    // Damaged: the same key holds a record that does not decode as this epoch.
+    CEpochState wrong = saved;
+    wrong.nEpoch = nFinEpoch + 100;
+    BOOST_REQUIRE(txdb.WriteEpochState(nFinEpoch, wrong));
+    fLocal = false;
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
+    BOOST_CHECK_MESSAGE(fLocal, "a damaged epoch record was reported as the chain's answer");
+    // The primary reader walks the deeper records between the anchor and the tip.
+    CEpochState primary;
+    bool fPrimaryLocal = false;
+    BOOST_REQUIRE(txdb.WriteEpochState(nFinEpoch, saved));
+    CEpochState savedDeeper;
+    BOOST_REQUIRE(txdb.ReadEpochState(nAsOf - 1, savedDeeper));
+    CEpochState wrongDeeper = savedDeeper;
+    wrongDeeper.nEpoch = nAsOf + 100;
+    BOOST_REQUIRE(txdb.WriteEpochState(nAsOf - 1, wrongDeeper));
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, primary, fPrimaryLocal));
+    BOOST_CHECK_MESSAGE(fPrimaryLocal, "a damaged deeper record was skipped instead of reported");
+    BOOST_REQUIRE(txdb.WriteEpochState(nAsOf - 1, savedDeeper));
+
+    // Absent: an epoch far below the first record is the chain's answer.
+    fLocal = true;
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, nFinEpoch + 1000, state, &fLocal));
+    BOOST_CHECK(!fLocal);
+
+    fLocal = true;
+    BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
+    BOOST_CHECK(!fLocal);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

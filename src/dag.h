@@ -510,7 +510,7 @@ public:
      *  The epoch number is derived from the chain, not from node-local state, so the set of
      *  states a block may be validated against is the same on every node. */
     bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight, int nEpochsBack,
-                                    CEpochState& stateOut) const;
+                                    CEpochState& stateOut, bool* pfLocalFailure = NULL) const;
 
     /** Validate that V3 persistence ends at the exact completed epoch required by pBest and
      *  that both the migration-base and highest-required boundaries are on pBest's pprev chain. */

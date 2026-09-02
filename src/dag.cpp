@@ -3572,8 +3572,13 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch; --nEpoch)
     {
         CEpochState deeper;
-        if (!txdb.ReadEpochState(nEpoch, deeper) || deeper.nEpoch != nEpoch)
+        if (txdb.ProbeEpochState(nEpoch) == TXDB_READ_NOT_FOUND)
             continue;
+        if (!txdb.ReadEpochState(nEpoch, deeper) || deeper.nEpoch != nEpoch)
+        {
+            fLocalFailureOut = true;
+            return false;
+        }
         if (deeper.nHeightEnd <= 0 ||
             nBlockHeight - deeper.nHeightEnd <
                 EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH)
@@ -3618,21 +3623,32 @@ bool ApplyPrivacyVNextPoolDelta(int64_t& nBalance, int64_t nDelta,
 
 bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                              int nEpochsBack,
-                                             CEpochState& stateOut) const
+                                             CEpochState& stateOut,
+                                             bool* pfLocalFailure) const
 {
+    if (pfLocalFailure)
+        *pfLocalFailure = false;
     if (nEpochsBack < 0)
         return false;
     const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
     int nFinHeight = 0;
     if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
+    {
+        if (pfLocalFailure)
+            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch);
         return false;
+    }
 
     const int nFinEpoch = GetEpochForHeight(nFinHeight) - nEpochsBack;
     if (nFinEpoch < 0)
         return false;
     CEpochState state;
     if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+    {
+        if (pfLocalFailure)
+            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
         return false;
+    }
     stateOut = state;
     return true;
 }

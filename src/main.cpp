@@ -2210,9 +2210,20 @@ static bool ValidatePrivacyVNextFinalizedContext(
              ++nBack)
         {
             CEpochState olderState;
+            bool fOlderLocalFailure = false;
             if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nContextHeight,
-                                                         nBack, olderState))
+                                                         nBack, olderState,
+                                                         &fOlderLocalFailure))
+            {
+                if (fOlderLocalFailure)
+                {
+                    fLocalFailure = true;
+                    strError = strprintf("epoch-state record %d back from the finalized epoch "
+                                         "is unreadable on this node", nBack);
+                    return false;
+                }
                 break;
+            }
             // An older anchor is deeper than the one resolved above, so the same
             // finalized-or-deep rule applies and never admits anything shallower.
             const bool fOlderDeepEnough =
