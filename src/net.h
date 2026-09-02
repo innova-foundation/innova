@@ -1057,6 +1057,20 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);
     void CancelSubscribe(unsigned int nChannel);
     void CloseSocketDisconnect(const char* pszReason = NULL);
+
+    // Set fDisconnect and log why. A peer flagged before its version is dispatched
+    // never has it read and is only reaped at the handshake timeout, so the site and
+    // time since connect are recorded.
+    void MarkDisconnect(const char* pszReason)
+    {
+        if (!fDisconnect && fDebugNet)
+            printf("markdisconnect: %s peer=%s version=%d age=%" PRId64"s "
+                   "recvqueue=%u misbehavior=%d\n",
+                   pszReason ? pszReason : "unspecified", addr.ToString().c_str(),
+                   nVersion, GetTime() - nTimeConnected,
+                   (unsigned int)vRecvMsg.size(), nMisbehavior);
+        fDisconnect = true;
+    }
 	void Cleanup();
 
     // Denial-of-service detection/prevention

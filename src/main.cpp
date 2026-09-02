@@ -6012,7 +6012,7 @@ void Misbehaving(NodeId pnode, int howmuch, const std::string& reason)
                 printf("Misbehaving: %s (%d -> %d) BAN THRESHOLD EXCEEDED%s%s\n",
                        pn->addrName.c_str(), pn->nMisbehavior-howmuch, pn->nMisbehavior,
                        reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
-                pn->fDisconnect = true;
+                pn->MarkDisconnect("ban-threshold-exceeded");
             }
             else
                 printf("Misbehaving: %s (%d -> %d)%s%s\n",
@@ -14229,7 +14229,7 @@ void static ProcessGetData(CNode* pfrom)
                     printf("net historical block serving limit reached, disconnected peer=%d\n", pfrom->GetId());
 
                     //disconnect node
-                    pfrom->fDisconnect = true;
+                    pfrom->MarkDisconnect("historical-block-serving-limit");
                     send = false;
                 }
             }
@@ -14377,7 +14377,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         {
             // disconnect from peers older than this proto version
             printf("partner %s using obsolete version %i; disconnecting\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->fDisconnect = true;
+            pfrom->MarkDisconnect("proto-version-too-old");
             return false;
         }*/
 
@@ -14408,7 +14408,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (oldVersion == true)
         {
           printf("Partner %s using obsolete version %i; DISCONNECTING\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
-          pfrom->fDisconnect = true;
+          pfrom->MarkDisconnect("subver-obsolete");
           if (pfrom->fColLateralMaster)
               printf("Masternode hosting node version was obsolete. This masternode should be removed from the list\n");
           return false;
@@ -14432,7 +14432,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (nNonce == nLocalHostNonce && nNonce > 1)
         {
             printf("connected to self at %s, disconnecting\n", pfrom->addr.ToString().c_str());
-            pfrom->fDisconnect = true;
+            pfrom->MarkDisconnect("connected-to-self");
             return true;
         }
 
@@ -14521,8 +14521,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Must have a version message before anything else, as it is sent as soon as the socket opens
         pfrom->Misbehaving(1, "message before version");
         if (fDebug) printf("net: received an out-of-sequence %s from peer at %s\n", strCommand.c_str(), pfrom->addr.ToString().c_str());
+        // Do not disconnect when the version is queued but not dispatched: fDisconnect stops
+        // ProcessMessages from ever reading it.
         if (pfrom->nMisbehavior > 10 || pfrom->nTimeConnected < GetTime() - 10)
-            pfrom->fDisconnect = true; // Disconnect them so we can reconnect and try for another version message
+            pfrom->MarkDisconnect("message-before-version");
         return false;
     }
 
@@ -14615,7 +14617,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->fGetAddr = false;
         if (pfrom->fOneShot) {
             printf("DEBUG-DISCONNECT fOneShot peer=%s\n", pfrom->addr.ToString().c_str());
-            pfrom->fDisconnect = true;
+            pfrom->MarkDisconnect("one-shot-complete");
         }
     }
 
