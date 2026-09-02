@@ -10429,6 +10429,15 @@ bool ProduceFinalityVote()
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
+    // Heaviest outputs first. A key's stake proof holds at most FINALITY_MAX_STAKE_PROOFS
+    // outpoints and the group stops growing once full, so in wallet order a key with many
+    // small coinbase outputs filled its proof with those and its large output never
+    // counted -- the vote then fell under the minimum weight.
+    std::stable_sort(vCoins.begin(), vCoins.end(), [](const COutput& a, const COutput& b) {
+        const int64_t nA = (a.tx && a.i >= 0 && (unsigned int)a.i < a.tx->vout.size()) ? a.tx->vout[a.i].nValue : 0;
+        const int64_t nB = (b.tx && b.i >= 0 && (unsigned int)b.i < b.tx->vout.size()) ? b.tx->vout[b.i].nValue : 0;
+        return nA > nB;
+    });
 
     for (const COutput& out : vCoins)
     {
