@@ -151,6 +151,11 @@ int OutputDebugStringF(const char* pszFormat, ...);
 /* When we switch to C++11, this can be switched to variadic templates instead
  * of this macro-based construction (see tinyformat.h).
  */
+/* Log an error and return false; the text is kept per thread so a caller that just
+   saw a false can read why (GetLastErrorString). */
+bool ErrorString(const std::string& str);
+std::string GetLastErrorString();
+
 #define MAKE_ERROR_AND_LOG_FUNC(n)                                        \
     /*   Print to debug.log if -debug=category switch is given OR category is NULL. */ \
     template<TINYFORMAT_ARGTYPES(n)>                                          \
@@ -166,10 +171,7 @@ int OutputDebugStringF(const char* pszFormat, ...);
         /* Errors log whatever -debug says, matching the varargs error(). Routing   \
            these through LogPrintStr hid every rejection that carries an argument,  \
            which is most of them, from an operator running without -debug. */       \
-        OutputDebugStringF(                                                          \
-            "ERROR: %s\n",                                                           \
-            tfm::format(format, TINYFORMAT_PASSARGS(n)).c_str());                    \
-        return false;                                                                \
+        return ErrorString(tfm::format(format, TINYFORMAT_PASSARGS(n)));             \
     }                                                                                \
     /*   Log error and return n */                                                   \
     template<TINYFORMAT_ARGTYPES(n)>                                                 \

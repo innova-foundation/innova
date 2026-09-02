@@ -472,14 +472,27 @@ string real_strprintf(const std::string &format, int dummy, ...)
     return str;
 }
 
+static thread_local std::string strLastErrorString;
+
+bool ErrorString(const std::string& str)
+{
+    strLastErrorString = str;
+    printf("ERROR: %s\n", str.c_str());
+    return false;
+}
+
+std::string GetLastErrorString()
+{
+    return strLastErrorString;
+}
+
 bool error(const char *format, ...)
 {
     va_list arg_ptr;
     va_start(arg_ptr, format);
     std::string str = vstrprintf(format, arg_ptr);
     va_end(arg_ptr);
-    printf("ERROR: %s\n", str.c_str());
-    return false;
+    return ErrorString(str);
 }
 
 

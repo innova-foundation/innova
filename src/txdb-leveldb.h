@@ -712,6 +712,11 @@ public:
     /** Exclusive lower bound of retained DAG vertices; records below it are absent by design. */
     bool WriteDAGPruneBoundary(int nHeight);
     bool ReadDAGPruneBoundary(int& nHeight);
+
+    // Why a block index carries BLOCK_FAILED_VALID; written beside the flag, erased with it.
+    bool WriteBlockFailReason(const uint256& hash, const CBlockFailReason& reason);
+    bool ReadBlockFailReason(const uint256& hash, CBlockFailReason& reason);
+    bool EraseBlockFailReason(const uint256& hash);
     bool IsReadOnly() const { return fReadOnly; }
     bool WriteEpochStateSchema(int nVersion);
     bool ReadEpochStateSchema(int& nVersion);

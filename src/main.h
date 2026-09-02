@@ -1027,6 +1027,27 @@ bool RebuildMainChainForwardLinks();
 // invalidateblock / reconsiderblock RPC support (defined in main.cpp; assume cs_main held).
 bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
 bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bool* pfFlagsCleared = NULL);
+
+/** Why an index was flagged BLOCK_FAILED_VALID, persisted beside the flag and erased with
+ *  it. The failing block can differ from the flagged one: a reorg that fails at an ancestor
+ *  flags the candidate tip. */
+struct CBlockFailReason
+{
+    uint256 hashFailedBlock;
+    int nFailedHeight;
+    std::string strReason;
+    int64_t nTime;
+
+    CBlockFailReason() : hashFailedBlock(0), nFailedHeight(-1), nTime(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(hashFailedBlock);
+        READWRITE(nFailedHeight);
+        READWRITE(strReason);
+        READWRITE(nTime);
+    )
+};
 bool ProcessMessages(CNode* pfrom);
 bool SendMessages(CNode* pto, bool fSendTrickle);
 // BIP130 tip announcement: headers to a sendheaders peer, inv otherwise. Distinct
@@ -2436,7 +2457,8 @@ public:
                       bool fJustCheck=false, bool fWriteNames = true,
                       ConnectResult* pResult = NULL);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
-    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid = NULL);
+    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid = NULL,
+                      CBlockFailReason* pFailReason = NULL);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);
     bool CheckBlock(bool fCheckPOW=true, bool fCheckMerkleRoot=true, bool fCheckSig=true) const;
     bool AcceptBlock();
@@ -2448,7 +2470,8 @@ public:
 private:
     bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
                            bool* pfPermanentInvalid = NULL,
-                           CBestChainEffectJournal* pCommittedEffects = NULL);
+                           CBestChainEffectJournal* pCommittedEffects = NULL,
+                           CBlockFailReason* pFailReason = NULL);
 };
 
 // Collateralnode payment rule (S4): its gate depends on the local clock, tip, CN list

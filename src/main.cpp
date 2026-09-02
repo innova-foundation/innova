@@ -11211,7 +11211,8 @@ ReorgFinalityVerdict BestChainSwitchVerdict(const CBlockIndex* pCandidate, int& 
 
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
-                       CBestChainEffectJournal* pCommittedEffects)
+                       CBestChainEffectJournal* pCommittedEffects,
+                       CBlockFailReason* pFailReason)
 {
     if (pfPermanentInvalid)
         *pfPermanentInvalid = false;
@@ -11382,9 +11383,18 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         CBlock::ConnectResult connectResult = CBlock::CONNECT_RESULT_INVALID;
         if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
-            if (pfPermanentInvalid &&
-                ConnectResultMayPersistVerdict(connectResult))
-                *pfPermanentInvalid = true;
+            if (ConnectResultMayPersistVerdict(connectResult))
+            {
+                if (pfPermanentInvalid)
+                    *pfPermanentInvalid = true;
+                if (pFailReason)
+                {
+                    pFailReason->hashFailedBlock = pindex->GetBlockHash();
+                    pFailReason->nFailedHeight = pindex->nHeight;
+                    pFailReason->strReason = GetLastErrorString();
+                    pFailReason->nTime = GetTime();
+                }
+            }
             return error("Reorganize() : ConnectBlock %s failed (%s)",
                          pindex->GetBlockHash().ToString().substr(0,20).c_str(),
                          connectResult == CBlock::CONNECT_RESULT_TRANSIENT
@@ -11559,7 +11569,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
 // Called from inside SetBestChain: attaches a block to the new best chain being built
 bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
                                bool* pfPermanentInvalid,
-                               CBestChainEffectJournal* pCommittedEffects)
+                               CBestChainEffectJournal* pCommittedEffects,
+                               CBlockFailReason* pFailReason)
 {
     uint256 hash = GetHash();
     std::map<int, CEpochState> mapStagedEpochStates;
@@ -11648,6 +11659,13 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
             InvalidChainFound(pindexNew);
             if (pfPermanentInvalid)
                 *pfPermanentInvalid = true;
+            if (pFailReason)
+            {
+                pFailReason->hashFailedBlock = pindexNew->GetBlockHash();
+                pFailReason->nFailedHeight = pindexNew->nHeight;
+                pFailReason->strReason = GetLastErrorString();
+                pFailReason->nTime = GetTime();
+            }
         }
         return false;
     }
@@ -11804,7 +11822,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     return true;
 }
 
-bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid)
+bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid,
+                          CBlockFailReason* pFailReason)
 {
     BLOCK_PHASE(BP_SETBESTCHAIN);
     if (pfPermanentInvalid) *pfPermanentInvalid = false;
@@ -11860,7 +11879,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
     else if (hashPrevBlock == hashBestChain)
     {
         if (!SetBestChainInner(txdb, pindexNew, pfPermanentInvalid,
-                               &committedEffects))
+                               &committedEffects, pFailReason))
             return error("SetBestChain() : SetBestChainInner failed");
     }
     else
@@ -11922,7 +11941,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
         bool fReorgPermanentInvalid = false;
         bool fReorgChainStateMutated = false;
         if (!Reorganize(txdb, pindexIntermediate, &fReorgPermanentInvalid,
-                        &fReorgChainStateMutated, &committedEffects))
+                        &fReorgChainStateMutated, &committedEffects, pFailReason))
         {
             txdb.TxnAbort();
             if (fReorgChainStateMutated)
@@ -11961,7 +11980,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             }
             // errors now are not fatal, we still did a reorganisation to a new chain in a valid way
             if (!block.SetBestChainInner(txdb, pindex, NULL,
-                                         &committedEffects))
+                                         &committedEffects, pFailReason))
                 break;
             pindexCommittedBest = pindex;
             if (!PublishAndReplayCommittedEffects(
@@ -12231,7 +12250,8 @@ static bool ReselectBestValidChain(CTxDB& txdb)
             return error("ReselectBestValidChain() : ReadFromDisk failed for %s",
                          pbest->GetBlockHash().ToString().substr(0,20).c_str());
         bool fPermanentInvalid = false;
-        if (block.SetBestChain(txdb, pbest, &fPermanentInvalid))
+        CBlockFailReason failReason;
+        if (block.SetBestChain(txdb, pbest, &fPermanentInvalid, &failReason))
             return true;
         if (!fPermanentInvalid)
             return error("ReselectBestValidChain() : switching to %s failed transiently",
@@ -12244,7 +12264,7 @@ static bool ReselectBestValidChain(CTxDB& txdb)
         MarkFailedSubtree(pbest, true, vFlagged);
         if (txdb.TxnBegin())
         {
-            bool fWritesOK = true;
+            bool fWritesOK = txdb.WriteBlockFailReason(pbest->GetBlockHash(), failReason);
             for (size_t j = 0; j < vFlagged.size(); j++)
                 fWritesOK = txdb.WriteBlockIndex(CDiskBlockIndex(vFlagged[j])) && fWritesOK;
             if (fWritesOK)
@@ -12349,6 +12369,12 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 
     if (txdb.TxnBegin())
     {
+        CBlockFailReason reason;
+        reason.hashFailedBlock = pindex->GetBlockHash();
+        reason.nFailedHeight = pindex->nHeight;
+        reason.strReason = "invalidateblock";
+        reason.nTime = GetTime();
+        txdb.WriteBlockFailReason(pindex->GetBlockHash(), reason);
         for (size_t i = 0; i < vChanged.size(); i++)
             txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
         txdb.TxnCommit();
@@ -12381,7 +12407,10 @@ bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bo
     if (txdb.TxnBegin())
     {
         for (size_t i = 0; i < vChanged.size(); i++)
+        {
             txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
+            txdb.EraseBlockFailReason(vChanged[i]->GetBlockHash());
+        }
         txdb.TxnCommit();
     }
     if (pfFlagsCleared)
@@ -12743,7 +12772,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (fAttemptBestChain)
     {
         bool fPermanentInvalid = false;
-        if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid))
+        CBlockFailReason failReason;
+        if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid, &failReason))
         {
             if (fPermanentInvalid)
             {
@@ -12759,7 +12789,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 if (txdbFail.TxnBegin())
                 {
                     bool fWritesOK =
-                        txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew));
+                        txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew)) &&
+                        txdbFail.WriteBlockFailReason(hash, failReason);
                     if (fDAGDataInitialized)
                     {
                         fWritesOK = g_dagManager.WriteDAGLinks(txdbFail, hash) && fWritesOK;
@@ -12837,8 +12868,10 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         {
             CBlock lateBestBlock;
             bool fLatePermanentInvalid = false;
+            CBlockFailReason lateFailReason;
             if (!lateBestBlock.ReadFromDisk(pLateBest) ||
-                !lateBestBlock.SetBestChain(txdb, pLateBest, &fLatePermanentInvalid))
+                !lateBestBlock.SetBestChain(txdb, pLateBest, &fLatePermanentInvalid,
+                                            &lateFailReason))
             {
                 if (fLatePermanentInvalid)
                 {
@@ -12851,7 +12884,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     if (txdbLateFail.TxnBegin())
                     {
                         bool fWritesOK =
-                            txdbLateFail.WriteBlockIndex(CDiskBlockIndex(pLateBest));
+                            txdbLateFail.WriteBlockIndex(CDiskBlockIndex(pLateBest)) &&
+                            txdbLateFail.WriteBlockFailReason(hashLate, lateFailReason);
                         if (fWritesOK)
                             fLateFailureCommitted = txdbLateFail.TxnCommit();
                         else

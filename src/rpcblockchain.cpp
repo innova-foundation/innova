@@ -999,7 +999,22 @@ Value getblock(const Array& params, bool fHelp)
         return strHex;
     }
 
-    return blockToJSON(block, pblockindex, verbosity >= 2);
+    Object result = blockToJSON(block, pblockindex, verbosity >= 2);
+    if (pblockindex->IsInvalid())
+    {
+        // Why this node flagged it; the failing block can be an ancestor when a reorg
+        // failed part-way. Erased by reconsiderblock.
+        CBlockFailReason reason;
+        CTxDB txdbReason("r");
+        if (txdbReason.ReadBlockFailReason(hash, reason))
+        {
+            result.push_back(Pair("failreason", reason.strReason));
+            result.push_back(Pair("failedblock", reason.hashFailedBlock.GetHex()));
+            result.push_back(Pair("failedheight", reason.nFailedHeight));
+            result.push_back(Pair("failtime", reason.nTime));
+        }
+    }
+    return result;
 }
 
 Value getblockheader(const Array& params, bool fHelp)

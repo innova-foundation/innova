@@ -137,12 +137,32 @@ BOOST_AUTO_TEST_CASE(reconsidering_a_rejected_block_flags_it_again_with_its_vert
     CBlockIndex* pindex = mapBlockIndex[hash];
     BOOST_REQUIRE(pindex->IsFailed());
 
+    // The reason is written beside the flag: what failed, where, and why.
     CTxDB txdb;
+    CBlockFailReason reason;
+    BOOST_REQUIRE_MESSAGE(txdb.ReadBlockFailReason(hash, reason), "no fail reason recorded with the flag");
+    BOOST_CHECK(reason.hashFailedBlock == hash);
+    BOOST_CHECK_EQUAL(reason.nFailedHeight, pindex->nHeight);
+    BOOST_CHECK_MESSAGE(reason.strReason.find("coinbase reward exceeded") != std::string::npos, reason.strReason);
+    BOOST_CHECK(reason.nTime > 0);
+
     std::string strError;
     bool fFlagsCleared = false;
     BOOST_CHECK_MESSAGE(ReconsiderBlock(txdb, pindex, strError, &fFlagsCleared), strError);
     BOOST_CHECK(fFlagsCleared);
     BOOST_CHECK_MESSAGE(pindex->IsFailed(), "the rejected block was left unflagged after reconsider");
+    CBlockFailReason again;
+    BOOST_CHECK_MESSAGE(txdb.ReadBlockFailReason(hash, again), "the re-flag recorded no reason");
+    BOOST_CHECK(again.strReason.find("coinbase reward exceeded") != std::string::npos);
+
+    // Reconsidering a valid block erases whatever record it carried.
+    CBlockFailReason stale;
+    stale.hashFailedBlock = pindexPrev->GetBlockHash();
+    stale.strReason = "stale";
+    BOOST_REQUIRE(txdb.WriteBlockFailReason(pindexPrev->GetBlockHash(), stale));
+    BOOST_CHECK(ReconsiderBlock(txdb, pindexPrev, strError));
+    BOOST_CHECK_MESSAGE(!txdb.ReadBlockFailReason(pindexPrev->GetBlockHash(), stale),
+                        "reconsider left the fail reason behind");
     BOOST_CHECK(pindexBest == pindexPrev);
     BOOST_CHECK(g_dagManager.HasDAGData(hash));
     CTxDB txdbRead("r");

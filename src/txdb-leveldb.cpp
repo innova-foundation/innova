@@ -1953,6 +1953,21 @@ bool CTxDB::ReadDAGPruneBoundary(int& nHeight)
     return Read(string("dagprunebelow"), nHeight);
 }
 
+bool CTxDB::WriteBlockFailReason(const uint256& hash, const CBlockFailReason& reason)
+{
+    return Write(make_pair(string("blockfail"), hash), reason);
+}
+
+bool CTxDB::ReadBlockFailReason(const uint256& hash, CBlockFailReason& reason)
+{
+    return Read(make_pair(string("blockfail"), hash), reason);
+}
+
+bool CTxDB::EraseBlockFailReason(const uint256& hash)
+{
+    return Erase(make_pair(string("blockfail"), hash));
+}
+
 // DB-wide epoch-state schema marker (see EPOCHSTATE_SCHEMA_V2 in dag.h). Absent -> nVersion left 0,
 // which classifies the DB as pre-deterministic-anchor (needs the upgrade guard in AppInit2).
 bool CTxDB::WriteEpochStateSchema(int nVersion)

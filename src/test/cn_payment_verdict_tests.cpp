@@ -482,7 +482,7 @@ BOOST_AUTO_TEST_CASE(a_transient_refusal_leaves_the_block_requestable)
     BOOST_REQUIRE(!strFile.empty());
     const std::string strMasked = MaskLiteralsAndComments(strFile);
 
-    const size_t nCall = strMasked.find("if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid))");
+    const size_t nCall = strMasked.find("if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid, &failReason))");
     BOOST_REQUIRE_MESSAGE(nCall != std::string::npos,
                           "could not locate the AddToBlockIndex best-chain call");
     size_t nOuterBegin = 0, nOuterEnd = 0;
