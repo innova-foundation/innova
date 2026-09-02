@@ -2264,6 +2264,10 @@ void ThreadOpenConnections2(void* parg)
             }
         }
 
+        // A pass draws at most 100 addresses, or a few per known address when the table is
+        // small: with one or two addresses that were all tried recently, every draw is skipped
+        // below and 100 selections per pass kept ThreadOpenConnections at a full core.
+        const int nMaxTries = std::min(100, std::max(2, 4 * (int)addrman.size()));
         int nTries = 0;
         while (true)
         {
@@ -2274,11 +2278,11 @@ void ThreadOpenConnections2(void* parg)
             if (!addr.IsValid() || setConnected.count(addr.GetGroup()) || IsLocal(addr))
                 break;
 
-            // If we didn't find an appropriate destination after trying 100 addresses fetched from addrman,
-            // stop this loop, and let the outer loop run again (which sleeps, adds seed nodes, recalculates
-            // already-connected network ranges, ...) before trying new addrman addresses.
+            // If we didn't find an appropriate destination after trying enough addresses fetched from
+            // addrman, stop this loop, and let the outer loop run again (which sleeps, adds seed nodes,
+            // recalculates already-connected network ranges, ...) before trying new addrman addresses.
             nTries++;
-            if (nTries > 100)
+            if (nTries > nMaxTries)
                 break;
 
             if (IsLimited(addr))
