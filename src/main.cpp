@@ -11105,6 +11105,53 @@ ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, int nForkHeight,
                                    nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
 }
 
+// The fork point of a candidate tip with the current best chain: the common ancestor of
+// pCandidate and pindexBest, NULL when there is none. One walk for every reorg verdict.
+static const CBlockIndex* ForkPointWithBestChain(const CBlockIndex* pCandidate)
+{
+    const CBlockIndex* pa = pCandidate;
+    const CBlockIndex* pb = pindexBest;
+    while (pa && pb && pa != pb)
+    {
+        if (pa->nHeight > pb->nHeight)
+            pa = pa->pprev;
+        else if (pb->nHeight > pa->nHeight)
+            pb = pb->pprev;
+        else
+        {
+            pa = pa->pprev;
+            pb = pb->pprev;
+        }
+    }
+    return (pa && pa == pb) ? pa : NULL;
+}
+
+// No common ancestor is unreachable with a single genesis; the value then cannot be
+// rejected, so a caller's missing-state fail-closed still runs.
+static int ForkHeightWithBestChain(const CBlockIndex* pCandidate)
+{
+    const CBlockIndex* pFork = ForkPointWithBestChain(pCandidate);
+    return pFork ? pFork->nHeight : std::numeric_limits<int>::max();
+}
+
+// The finality verdict for switching the best chain to pCandidate, against the current tip
+// and never persisted. Extending the tip, or a tip below the gate, is switchable outright.
+ReorgFinalityVerdict BestChainSwitchVerdict(const CBlockIndex* pCandidate, int& nForkHeightOut,
+                                            int& nFinalCurOut, int& nFinalLatchOut,
+                                            int& nAsOfEpochOut)
+{
+    nForkHeightOut = std::numeric_limits<int>::max();
+    nFinalCurOut = 0;
+    nFinalLatchOut = 0;
+    nAsOfEpochOut = 0;
+    if (!pindexBest || !pCandidate || pCandidate->pprev == pindexBest ||
+        pindexBest->nHeight < FORK_HEIGHT_FINALITY)
+        return REORG_FINALITY_ALLOW;
+    nForkHeightOut = ForkHeightWithBestChain(pCandidate);
+    return CheckReorgAgainstFinality(pindexBest->nHeight, nForkHeightOut,
+                                     nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects)
@@ -11124,36 +11171,23 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         // each other cannot latch pfPermanentInvalid on different reorgs.
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
-            CBlockIndex* pCheck = pindexBest;
-            CBlockIndex* pLonger = pindexNew;
-            while (pCheck != pLonger)
+            const int nForkHeight = ForkHeightWithBestChain(pindexNew);
+            int nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+            const ReorgFinalityVerdict verdict = ApplyReorgFinalityGuard(
+                pindexBest->nHeight, nForkHeight, pfPermanentInvalid,
+                nFinalCur, nFinalLatch, nAsOfEpoch);
+            if (verdict == REORG_FINALITY_STATE_MISSING)
+                return error("Reorganize() : missing deterministic finalized-height state for "
+                             "epoch %d; -reindex/resync required", nAsOfEpoch);
+            if (verdict != REORG_FINALITY_ALLOW)
             {
-                while (pLonger && pLonger->nHeight > pCheck->nHeight)
-                    pLonger = pLonger->pprev;
-                if (pCheck == pLonger)
-                    break;
-                if (pCheck)
-                    pCheck = pCheck->pprev;
-            }
-            {
-                // No common ancestor is unreachable with a single genesis; pass a fork height
-                // that cannot be rejected so the missing-state fail-closed below still runs.
-                const int nForkHeight = pCheck ? pCheck->nHeight : std::numeric_limits<int>::max();
-                int nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
-                const ReorgFinalityVerdict verdict = ApplyReorgFinalityGuard(
-                    pindexBest->nHeight, nForkHeight, pfPermanentInvalid,
-                    nFinalCur, nFinalLatch, nAsOfEpoch);
-                if (verdict == REORG_FINALITY_STATE_MISSING)
-                    return error("Reorganize() : missing deterministic finalized-height state for "
-                                 "epoch %d; -reindex/resync required", nAsOfEpoch);
-                if (verdict != REORG_FINALITY_ALLOW)
-                {
-                    return error("Reorganize() : rejected - fork point height %d is below finalized "
-                                 "height %d (latch anchor %d, %s)",
-                                 nForkHeight, nFinalCur, nFinalLatch,
-                                 verdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent"
-                                                                            : "retryable");
-                }
+                return error("Reorganize() : rejected - fork point height %d is below finalized "
+                             "height %d (latch anchor %d, %s); candidate %s at height %d",
+                             nForkHeight, nFinalCur, nFinalLatch,
+                             verdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent"
+                                                                        : "retryable",
+                             pindexNew->GetBlockHash().ToString().substr(0,20).c_str(),
+                             pindexNew->nHeight);
             }
         }
     }
@@ -11782,24 +11816,8 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             // skew agrees on; inside the band the block is rejected but left re-requestable.
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
-                CBlockIndex* pWalk = pindexNew;
-                while (pWalk && pWalk->nHeight > nBestHeight)
-                    pWalk = pWalk->pprev;
-                CBlockIndex* pOld = pindexBest;
-                while (pOld && pWalk && pOld != pWalk)
                 {
-                    if (pOld->nHeight > pWalk->nHeight)
-                        pOld = pOld->pprev;
-                    else if (pWalk->nHeight > pOld->nHeight)
-                        pWalk = pWalk->pprev;
-                    else
-                    {
-                        pOld = pOld->pprev;
-                        pWalk = pWalk->pprev;
-                    }
-                }
-                {
-                    const int nForkHeight = pOld ? pOld->nHeight : std::numeric_limits<int>::max();
+                    const int nForkHeight = ForkHeightWithBestChain(pindexNew);
                     int nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
                     const ReorgFinalityVerdict verdict = ApplyReorgFinalityGuard(
                         pindexBest->nHeight, nForkHeight, pfPermanentInvalid,
@@ -11814,10 +11832,13 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
                     {
                         txdb.TxnAbort();
                         return error("SetBestChain() : rejected reorg - fork height %d below "
-                                     "finalized height %d (latch anchor %d, %s)",
+                                     "finalized height %d (latch anchor %d, %s); candidate %s "
+                                     "at height %d",
                                      nForkHeight, nFinalCur, nFinalLatch,
                                      verdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent"
-                                                                                : "retryable");
+                                                                                : "retryable",
+                                     pindexNew->GetBlockHash().ToString().substr(0,20).c_str(),
+                                     pindexNew->nHeight);
                     }
                 }
             }
