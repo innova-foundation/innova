@@ -210,10 +210,8 @@ bool CTxDB::LoadBlockIndex()
     nBestHeight = pindexBest->nHeight;
     nBestChainTrust = pindexBest->nChainTrust;
 
-    // The forward links come off disk with the rest of the index. Rebuilding
-    // them walks the whole chain on every start, so it is opt-in for the case
-    // where an index is actually suspect.
-    if (GetBoolArg("-rebuildforwardlinks", false) && !RebuildMainChainForwardLinks())
+    // See the note in txdb-leveldb.cpp: forward links do not survive a restart.
+    if (!RebuildMainChainForwardLinks())
         return false;
 
     printf("LoadBlockIndex(): hashBestChain=%s  height=%d  trust=%s  date=%s\n",

@@ -4034,12 +4034,20 @@ bool RebuildMainChainForwardLinks()
         return true;
     }
 
+    // Count what was wrong before overwriting it, so only real repairs are reported.
+    int nRepaired = 0;
+    for (size_t i = 0; i < vChain.size(); ++i)
+        if (vChain[i]->pprev->pnext != vChain[i])
+            nRepaired++;
+
     for (PAIRTYPE(const uint256, CBlockIndex*)& item : mapBlockIndex)
         item.second->pnext = NULL;
     for (size_t i = 0; i < vChain.size(); ++i)
         vChain[i]->pprev->pnext = vChain[i];
 
-    printf("Rebuilt %d main-chain forward links\n", (int)vChain.size());
+    if (nRepaired > 0)
+        printf("Rebuilt %d main-chain forward links (%d were missing or wrong)\n",
+               (int)vChain.size(), nRepaired);
     return true;
 }
 
