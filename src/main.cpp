@@ -12340,6 +12340,33 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     CTxDB txdb;
     bool fDAGDataInitialized = false;
     bool fBlockIndexPersisted = false;
+    // Whether this block is attempted as the new tip. A heavier index forking below the
+    // finality anchor is kept as a side block, never flagged or erased.
+    bool fAttemptBestChain = false;
+    int nSwitchAsOfEpoch = 0;
+    const auto EvaluateBestChainSwitch = [&]() {
+        fAttemptBestChain = pindexNew->nChainTrust > nBestChainTrust;
+        if (!fAttemptBestChain || hashPrevBlock == hashBestChain)
+            return true;
+        int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+        const ReorgFinalityVerdict switchVerdict = BestChainSwitchVerdict(
+            pindexNew, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
+        if (switchVerdict == REORG_FINALITY_STATE_MISSING)
+        {
+            nSwitchAsOfEpoch = nAsOfEpoch;
+            return false;
+        }
+        if (switchVerdict != REORG_FINALITY_ALLOW)
+        {
+            fAttemptBestChain = false;
+            printf("AddToBlockIndex() : %s at height %d outweighs the tip but forks at %d below "
+                   "finalized height %d (latch anchor %d, %s); kept as a side block\n",
+                   hash.ToString().substr(0,20).c_str(), pindexNew->nHeight, nForkHeight,
+                   nFinalCur, nFinalLatch,
+                   switchVerdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent" : "retryable");
+        }
+        return true;
+    };
     bool fResolvedLateDAGChildren = false;
     std::vector<uint256> vDAGParents;
 
@@ -12436,6 +12463,13 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 pindexNew->nChainTrust = g_dagManager.ComputeDAGScore(pindexNew);
             }
 
+            if (!EvaluateBestChainSwitch())
+            {
+                CleanupUncommittedIndex();
+                return error("AddToBlockIndex() : missing deterministic finalized-height state "
+                             "for epoch %d; resync required", nSwitchAsOfEpoch);
+            }
+
             // Remove DAG sibling txs from mempool
             std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
             for (const uint256& hashSibling : siblings)
@@ -12456,27 +12490,36 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     bool fEpochV2 =
                         (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
                     if (!fEpochV2 ||
-                        (hashPrevBlock == hashBestChain &&
-                         pindexNew->nChainTrust > nBestChainTrust))
+                        (hashPrevBlock == hashBestChain && fAttemptBestChain))
                     {
                         const CBlockIndex* pV2Anchor = fEpochV2 ? pindexNew : NULL;
                         if (!g_dagManager.ComputeEpochState(
                                 nCompletedEpoch, nEpochInterval, pV2Anchor))
+                        {
+                            CleanupUncommittedIndex();
                             return error("AddToBlockIndex() : V2 epoch %d build failed",
                                          nCompletedEpoch);
+                        }
 
                         CTxDB txdbEpoch;
                         if (!txdbEpoch.TxnBegin())
+                        {
+                            CleanupUncommittedIndex();
                             return error("AddToBlockIndex() : V2 epoch TxnBegin failed");
+                        }
                         if (!g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch) ||
                             (fEpochV2 &&
                              !txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2)))
                         {
                             txdbEpoch.TxnAbort();
+                            CleanupUncommittedIndex();
                             return error("AddToBlockIndex() : V2 epoch state/schema write failed");
                         }
                         if (!txdbEpoch.TxnCommit())
+                        {
+                            CleanupUncommittedIndex();
                             return error("AddToBlockIndex() : V2 epoch TxnCommit failed");
+                        }
                     }
                 }
 
@@ -12494,9 +12537,12 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     else if (!g_dagManager.TryGetDeterministicFinalizedHeight(
                                  nAsOfEpoch, pindexNew->nFinalizedHeight))
                     {
-                        if (pindexNew->nChainTrust > nBestChainTrust)
+                        if (fAttemptBestChain)
+                        {
+                            CleanupUncommittedIndex();
                             return error("AddToBlockIndex() : missing deterministic finalized-height "
-                                         "state for epoch %d; -reindex/resync required", nAsOfEpoch);
+                                         "state for epoch %d; resync required", nAsOfEpoch);
+                        }
                         pindexNew->nFinalizedHeight = 0;
                     }
                 }
@@ -12509,7 +12555,14 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
 
     LOCK(cs_main);
 
-    if (fDAGDataInitialized && pindexNew->nChainTrust <= nBestChainTrust)
+    if (!fDAGDataInitialized && !EvaluateBestChainSwitch())
+    {
+        CleanupUncommittedIndex();
+        return error("AddToBlockIndex() : missing deterministic finalized-height state for "
+                     "epoch %d; resync required", nSwitchAsOfEpoch);
+    }
+
+    if (fDAGDataInitialized && !fAttemptBestChain)
     {
         // A side branch must survive restart immediately, but its index and
         // DAG graph are one invariant and therefore one transaction.
@@ -12573,15 +12626,14 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     }
 
     // New best
-    if (pindexNew->nChainTrust > nBestChainTrust)
+    if (fAttemptBestChain)
     {
         bool fPermanentInvalid = false;
         if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid))
         {
             if (fPermanentInvalid)
             {
-                // Permanent consensus invalidity (ConnectBlock/Reorganize rejected this block, or its
-                // fork is below the finalized height). KEEP the index in mapBlockIndex flagged failed --
+                // Permanent consensus invalidity: KEEP the index in mapBlockIndex flagged failed --
                 // deleting it flips AlreadyHave() back to "don't have it" so the block is re-inv'd,
                 // re-downloaded and re-validated forever (the stuck-node re-request loop). The index was
                 // possibly persisted WITHOUT the failed bit, so re-write it WITH the bit so the mark
@@ -12646,8 +12698,28 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (fResolvedLateDAGChildren && pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
     {
         CBlockIndex* pLateBest = g_dagManager.SelectBestDAGTip();
-        if (pLateBest && pLateBest != pindexBest && !pLateBest->IsInvalid() &&
-            pLateBest->nChainTrust > nBestChainTrust)
+        bool fLateSwitchable = pLateBest && pLateBest != pindexBest &&
+                               !pLateBest->IsInvalid() &&
+                               pLateBest->nChainTrust > nBestChainTrust;
+        if (fLateSwitchable)
+        {
+            // Same decision as above: a late best tip this node may not follow is left
+            // where it is, never flagged for the verdict.
+            int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+            const ReorgFinalityVerdict lateVerdict = BestChainSwitchVerdict(
+                pLateBest, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
+            if (lateVerdict != REORG_FINALITY_ALLOW)
+            {
+                fLateSwitchable = false;
+                printf("AddToBlockIndex() : late best tip %s at height %d is not switchable "
+                       "(fork %d, finalized %d, latch %d, %s); staying on the current tip\n",
+                       pLateBest->GetBlockHash().ToString().substr(0,20).c_str(),
+                       pLateBest->nHeight, nForkHeight, nFinalCur, nFinalLatch,
+                       lateVerdict == REORG_FINALITY_STATE_MISSING ? "finalized-height state missing"
+                       : lateVerdict == REORG_FINALITY_REJECT_PERMANENT ? "permanent" : "retryable");
+            }
+        }
+        if (fLateSwitchable)
         {
             CBlock lateBestBlock;
             bool fLatePermanentInvalid = false;
