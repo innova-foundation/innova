@@ -10514,18 +10514,26 @@ bool ProduceFinalityVote()
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
-    // Heaviest outputs first. A key's stake proof holds at most FINALITY_MAX_STAKE_PROOFS
-    // outpoints and the group stops growing once full, so in wallet order a key with many
-    // small coinbase outputs filled its proof with those and its large output never
-    // counted -- the vote then fell under the minimum weight.
-    std::stable_sort(vCoins.begin(), vCoins.end(), [](const COutput& a, const COutput& b) {
-        const int64_t nA = (a.tx && a.i >= 0 && (unsigned int)a.i < a.tx->vout.size()) ? a.tx->vout[a.i].nValue : 0;
-        const int64_t nB = (b.tx && b.i >= 0 && (unsigned int)b.i < b.tx->vout.size()) ? b.tx->vout[b.i].nValue : 0;
-        return nA > nB;
-    });
-
-    for (const COutput& out : vCoins)
+    // Heaviest outputs first: a stake proof holds at most FINALITY_MAX_STAKE_PROOFS
+    // outpoints. Weights are read once up front, not per comparison.
+    std::vector<std::pair<int64_t, size_t> > vByWeight;
+    vByWeight.reserve(vCoins.size());
+    for (size_t nCoin = 0; nCoin < vCoins.size(); nCoin++)
     {
+        const COutput& coin = vCoins[nCoin];
+        const int64_t nValue = (coin.tx && coin.i >= 0 && (unsigned int)coin.i < coin.tx->vout.size())
+                                   ? coin.tx->vout[coin.i].nValue
+                                   : 0;
+        vByWeight.push_back(std::make_pair(nValue, nCoin));
+    }
+    std::stable_sort(vByWeight.begin(), vByWeight.end(),
+                     [](const std::pair<int64_t, size_t>& a, const std::pair<int64_t, size_t>& b) {
+                         return a.first > b.first;
+                     });
+
+    for (const std::pair<int64_t, size_t>& weighted : vByWeight)
+    {
+        const COutput& out = vCoins[weighted.second];
         const CWalletTx* wtx = out.tx;
         unsigned int nOut = out.i;
         if (!wtx || nOut >= wtx->vout.size())
