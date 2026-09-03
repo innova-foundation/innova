@@ -3248,6 +3248,25 @@ static bool CanonicalFinalityTrafficAtTip()
     return UseCanonicalFinalityTrafficForTip(nBestHeight);
 }
 
+bool OwnVoteNeedsRebroadcast(const CFinalityVote& vote, int nCurrentHeight, bool fConnected,
+                             int64_t nNowMs, int64_t nLastRelayMs)
+{
+    if (fConnected)
+        return false;
+    if (nCurrentHeight < vote.nHeight ||
+        nCurrentHeight >= vote.nHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+        return false;
+    return nNowMs - nLastRelayMs >= FINALITY_VOTE_REBROADCAST_MS;
+}
+
+// The last identity vote this node produced, kept so it can be relayed again: a vote is
+// one-shot and pending sets are memory-only, so a miner that restarted inside the
+// inclusion window would otherwise never carry it and the epoch goes SOFT.
+static CCriticalSection cs_ownFinalityVote;
+static CFinalityVote voteOwnLast;
+static bool fHaveOwnVote = false;
+static int64_t nOwnVoteLastRelayMs = 0;
+
 static bool PushFinalityVoteMessage(CNode* pnode, const CFinalityVote& vote)
 {
     if (CanonicalFinalityTrafficAtTip())
@@ -6500,6 +6519,17 @@ bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFina
     return false;
 }
 
+std::vector<CFinalityVote> CFinalityTracker::GetPendingVotes(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityVote> vOut;
+    for (std::map<uint256, CFinalityVote>::const_iterator it = mapPendingVotes.begin();
+         it != mapPendingVotes.end(); ++it)
+        if (it->second.nEpoch == nEpoch)
+            vOut.push_back(it->second);
+    return vOut;
+}
+
 std::vector<CFinalityVote> CFinalityTracker::GetEpochVotes(int nEpoch) const
 {
     LOCK(cs_finality);
@@ -8791,9 +8821,24 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
         if (mapLastFvreq.size() > 1000)
             mapLastFvreq.clear();
 
+        // Connected votes, then the relayed ones no block has carried yet: a peer that
+        // restarted inside an inclusion window lost its pending set, and if it is the
+        // only miner those votes reach no block unless it asks for them again.
         std::vector<CFinalityVote> votes = g_finalityTracker.GetEpochVotes(nEpoch);
+        std::set<uint256> setServed;
         for (const CFinalityVote& vote : votes)
         {
+            if (vote.IsPrivate() &&
+                LegacyPrivateFinalityTrafficDisabledAtTip())
+                continue;
+            setServed.insert(vote.nullifier);
+            PushFinalityVoteMessage(pfrom, vote);
+        }
+        std::vector<CFinalityVote> pending = g_finalityTracker.GetPendingVotes(nEpoch);
+        for (const CFinalityVote& vote : pending)
+        {
+            if (setServed.count(vote.nullifier))
+                continue;
             if (vote.IsPrivate() &&
                 LegacyPrivateFinalityTrafficDisabledAtTip())
                 continue;
@@ -9608,6 +9653,36 @@ static void ProcessDeferredNoteVotes(int nCurrentHeight)
     }
 }
 
+static void RebroadcastOwnVoteIfUncarried(int nCurrentHeight)
+{
+    CFinalityVote vote;
+    int64_t nLastRelayMs = 0;
+    {
+        LOCK(cs_ownFinalityVote);
+        if (!fHaveOwnVote)
+            return;
+        vote = voteOwnLast;
+        nLastRelayMs = nOwnVoteLastRelayMs;
+    }
+    bool fConnected = false;
+    const std::vector<CFinalityVote> vConnected = g_finalityTracker.GetEpochVotes(vote.nEpoch);
+    for (size_t i = 0; i < vConnected.size() && !fConnected; i++)
+        fConnected = vConnected[i].nullifier == vote.nullifier;
+    if (!OwnVoteNeedsRebroadcast(vote, nCurrentHeight, fConnected, GetTimeMillis(), nLastRelayMs))
+        return;
+    {
+        LOCK(cs_vNodes);
+        for (CNode* pnode : vNodes)
+            PushFinalityVoteMessage(pnode, vote);
+    }
+    {
+        LOCK(cs_ownFinalityVote);
+        nOwnVoteLastRelayMs = GetTimeMillis();
+    }
+    printf("FinalityVoter: re-relayed the epoch %d vote; no block has carried it yet (height %d)\n",
+           vote.nEpoch, nCurrentHeight);
+}
+
 static void FinalityVoterLoop()
 {
     if (GetBoolArg("-nofinalityvoting", false))
@@ -9661,6 +9736,8 @@ static void FinalityVoterLoop()
         // A tip advance may have arrived while this pass was busy; the latch
         // carries it, so claim against the tip as it stands now.
         NotifyFinalityTipChanged(nCurrentHeight);
+
+        RebroadcastOwnVoteIfUncarried(nCurrentHeight);
 
         int nClaimedEpoch = -1;
         if (ClaimFinalityVote(nCurrentHeight, nClaimedEpoch) != FINALITY_VOTE_CLAIM_OK)
@@ -10555,6 +10632,12 @@ bool ProduceFinalityVote()
         {
             PushFinalityVoteMessage(pnode, vote);
         }
+    }
+    {
+        LOCK(cs_ownFinalityVote);
+        voteOwnLast = vote;
+        fHaveOwnVote = true;
+        nOwnVoteLastRelayMs = GetTimeMillis();
     }
 
     return true;

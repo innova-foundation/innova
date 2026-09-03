@@ -665,6 +665,29 @@ private:
 
 } // namespace
 
+// Pending sets are memory-only, so a voter re-relays its own uncarried vote at a
+// bounded rate while the inclusion window is open.
+BOOST_AUTO_TEST_CASE(an_uncarried_vote_is_relayed_again_only_inside_its_window)
+{
+    CFinalityVote vote;
+    vote.nEpoch = 5;
+    vote.nHeight = 1211;
+    const int64_t nT0 = 1000000;
+    // Open window, not carried, interval passed: relay again.
+    BOOST_CHECK(OwnVoteNeedsRebroadcast(vote, 1214, false, nT0 + FINALITY_VOTE_REBROADCAST_MS, nT0));
+    BOOST_CHECK(OwnVoteNeedsRebroadcast(vote, 1211 + FINALITY_VOTE_INCLUSION_WINDOW - 1, false,
+                                        nT0 + FINALITY_VOTE_REBROADCAST_MS, nT0));
+    // Carried by a connected block: done.
+    BOOST_CHECK(!OwnVoteNeedsRebroadcast(vote, 1214, true, nT0 + FINALITY_VOTE_REBROADCAST_MS, nT0));
+    // Too soon since the last relay.
+    BOOST_CHECK(!OwnVoteNeedsRebroadcast(vote, 1214, false, nT0 + FINALITY_VOTE_REBROADCAST_MS - 1, nT0));
+    // Window closed: a vote outside [H_E, H_E + K) is not block-valid, so relaying it is noise.
+    BOOST_CHECK(!OwnVoteNeedsRebroadcast(vote, 1211 + FINALITY_VOTE_INCLUSION_WINDOW, false,
+                                         nT0 + FINALITY_VOTE_REBROADCAST_MS, nT0));
+    // Before the boundary (a vote for a boundary the tip has not reached): not yet.
+    BOOST_CHECK(!OwnVoteNeedsRebroadcast(vote, 1210, false, nT0 + FINALITY_VOTE_REBROADCAST_MS, nT0));
+}
+
 BOOST_AUTO_TEST_CASE(the_settlement_vote_set_is_walked_off_the_whole_window)
 {
     const bool fSavedRegTest = fRegTest;

@@ -59,6 +59,15 @@ static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs b
 // the window, and the last quarter of the window is left for signing and relay.
 static const int64_t FINALITY_VOTER_POLL_MS_PRE_DAG = 5000;
 static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
+/** A voter re-relays its own vote at this interval while the inclusion window is open and
+ *  no connected block carries it yet. */
+static const int64_t FINALITY_VOTE_REBROADCAST_MS = 10000;
+
+class CFinalityVote;
+/** Whether a voter's own vote should be relayed again: the window is still open at
+ *  nCurrentHeight, no connected block carries it, and the interval has passed. */
+bool OwnVoteNeedsRebroadcast(const CFinalityVote& vote, int nCurrentHeight, bool fConnected,
+                             int64_t nNowMs, int64_t nLastRelayMs);
 /** Bound on how long shutdown waits for ThreadFinalityVoter to leave the wait. */
 static const int64_t FINALITY_VOTER_STOP_TIMEOUT_MS = 20000;
 // Bounded retries per epoch so a node with no eligible stake does not rescan
@@ -1605,6 +1614,8 @@ public:
 
     /** Get votes for a given epoch */
     std::vector<CFinalityVote> GetEpochVotes(int nEpoch) const;
+    /** Relayed votes for nEpoch not yet carried by a connected block. */
+    std::vector<CFinalityVote> GetPendingVotes(int nEpoch) const;
     /** Connected (on-chain) votes for an epoch, EXCLUDING node-local pending relay
      *  state. The tally-certificate producer must build coverage from exactly this
      *  set: the connect-time coverage rule (R3) requires cert.vVoteNullifiers to

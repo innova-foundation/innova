@@ -14834,6 +14834,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         // Ask every node for the collateralnode list straight away
         pfrom->PushMessage("iseg", CTxIn());
+        // And for the current epoch's finality votes: pending votes live in memory only, so
+        // a node that restarted inside an inclusion window has none until it asks.
+        if (nBestHeight >= FORK_HEIGHT_FINALITY)
+            pfrom->PushMessage("fvreq", GetEpochForHeight(nBestHeight));
 
         // Ask every eligible network peer for catch-up work. Per-peer
         // PushGetBlocks throttling keeps reconnect loops from spamming.
