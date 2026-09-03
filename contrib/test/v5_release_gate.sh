@@ -34,12 +34,14 @@ STATIC_COMMANDS=(
 # for <obligation>_sha256, so the field is read from the file name.
 VERIFICATION_PRODUCERS=(
     "$SCRIPT_DIR/produce_asan_lsan_evidence.sh"
+    "$SCRIPT_DIR/produce_crash_injection_evidence.sh"
     "$SCRIPT_DIR/produce_fuzz_corpora_evidence.sh"
     "$SCRIPT_DIR/produce_integration_evidence.sh"
     "$SCRIPT_DIR/produce_linux_clean_evidence.sh"
     "$SCRIPT_DIR/produce_macos_clean_evidence.sh"
     "$SCRIPT_DIR/produce_performance_evidence.sh"
     "$SCRIPT_DIR/produce_qt6_release_evidence.sh"
+    "$SCRIPT_DIR/produce_rust_audit_evidence.sh"
     "$SCRIPT_DIR/produce_ubsan_evidence.sh"
 )
 

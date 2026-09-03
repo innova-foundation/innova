@@ -16,7 +16,24 @@ evidence_reuse && exit 0
 evidence_require_command python3
 BASELINE="${V5_PERFORMANCE_BASELINE:-$ROOT/contrib/test/performance_baseline.json}"
 TOLERANCE="${V5_PERFORMANCE_TOLERANCE:-0.20}"
-evidence_toolchain "$("$ROOT/src/innovad" --version 2>/dev/null | head -1 || echo 'innovad (version unavailable)')"
+# --version is unknown to the daemon and would start a node; use --help with an
+# explicit datadir under a watchdog.
+VERSION_PROBE="$EV_DIR/.version-probe"
+probe_version() {
+    local pid i
+    rm -rf "$VERSION_PROBE"
+    mkdir -p "$VERSION_PROBE" || return 0
+    "$ROOT/src/innovad" -datadir="$VERSION_PROBE" --help > "$VERSION_PROBE/version.txt" 2>/dev/null &
+    pid=$!
+    for i in $(seq 1 30); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    head -1 "$VERSION_PROBE/version.txt" 2>/dev/null
+}
+evidence_toolchain "$(probe_version)"
 evidence_observe innovad_sha256 \
     "$( { sha256sum "$ROOT/src/innovad" 2>/dev/null || shasum -a 256 "$ROOT/src/innovad"; } | awk '{print $1}')"
 evidence_observe baseline "${BASELINE#$ROOT/}"

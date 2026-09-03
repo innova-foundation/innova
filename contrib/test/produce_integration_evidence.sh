@@ -13,7 +13,24 @@ evidence_reuse && exit 0
 # No scratch copy: this builds nothing and has to use the daemon under test.
 [ -x "$ROOT/src/innovad" ] || \
     evidence_die "build src/innovad before producing $EV_FIELD; the integration suites drive it"
-evidence_toolchain "$("$ROOT/src/innovad" --version 2>/dev/null | head -1 || echo 'innovad (version unavailable)')"
+# An unknown flag starts a node on the default datadir; --help prints the version and
+# exits. Explicit datadir and a watchdog guard the probe.
+VERSION_PROBE="$EV_DIR/.version-probe"
+probe_version() {
+    local pid i
+    rm -rf "$VERSION_PROBE"
+    mkdir -p "$VERSION_PROBE" || return 0
+    "$ROOT/src/innovad" -datadir="$VERSION_PROBE" --help > "$VERSION_PROBE/version.txt" 2>/dev/null &
+    pid=$!
+    for i in $(seq 1 30); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true
+    head -1 "$VERSION_PROBE/version.txt" 2>/dev/null
+}
+evidence_toolchain "$(probe_version)"
 evidence_observe innovad_sha256 \
     "$( { sha256sum "$ROOT/src/innovad" 2>/dev/null || shasum -a 256 "$ROOT/src/innovad"; } | awk '{print $1}')"
 
