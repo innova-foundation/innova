@@ -249,4 +249,30 @@ BOOST_FIXTURE_TEST_CASE(repeated_batches_stay_bounded, Fixture)
     }
 }
 
+// The DoS scorer resolves a peer by id (Misbehaving in main.cpp scans vNodes for a
+// matching GetId()), and the per-peer orphan budget is a map keyed on it, so two live
+// peers sharing an id score and charge each other.
+BOOST_AUTO_TEST_CASE(each_peer_is_given_its_own_id)
+{
+    std::vector<TestPeer*> vPeers;
+    for (int i = 0; i < 8; i++)
+        vPeers.push_back(new TestPeer(20000 + i));
+
+    std::set<NodeId> setIds;
+    NodeId idPrev = 0;
+    for (size_t i = 0; i < vPeers.size(); i++)
+    {
+        const NodeId id = vPeers[i]->node.GetId();
+        BOOST_CHECK_MESSAGE(setIds.insert(id).second,
+            strprintf("peer %d reused id %d", (int)i, (int)id));
+        if (i > 0)
+            BOOST_CHECK_MESSAGE(id > idPrev,
+                strprintf("peer %d took id %d, not above %d", (int)i, (int)id, (int)idPrev));
+        idPrev = id;
+    }
+
+    for (size_t i = 0; i < vPeers.size(); i++)
+        delete vPeers[i];
+}
+
 BOOST_AUTO_TEST_SUITE_END()

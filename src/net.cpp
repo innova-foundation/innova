@@ -92,6 +92,10 @@ CAddrMan addrman;
 
 vector<CNode*> vNodes;
 CCriticalSection cs_vNodes;
+// Peers are addressed by id in the DoS scorer and in the per-peer orphan accounting.
+// The counter starts above zero so a default-constructed NodeId is not a live peer.
+NodeId nLastNodeId = 1;
+CCriticalSection cs_nLastNodeId;
 map<CInv, CDataStream> mapRelay;
 deque<pair<int64_t, CInv> > vRelayExpiration;
 CCriticalSection cs_mapRelay;

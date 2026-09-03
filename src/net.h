@@ -521,6 +521,10 @@ public:
         nGetDataDeferrals = 0;
         fDisconnect = false;
         nRefCount = 0;
+        {
+            LOCK(cs_nLastNodeId);
+            id = nLastNodeId++;
+        }
         nSendSize = 0;
         nSendOffset = 0;
         hashContinue = 0;
