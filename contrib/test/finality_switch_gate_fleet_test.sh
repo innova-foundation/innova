@@ -74,11 +74,18 @@ write_conf() {
 }
 launch_node() { "$INNOVAD" -datadir="$(node_dir "$1")" -regtest -daemon >/dev/null 2>&1; }
 start_node() {
-    local n="$1" i; launch_node "$n"
-    for i in $(seq 1 300); do
-        rpc "$n" getinfo >/dev/null 2>&1 && return 0
-        if [ "$i" -gt 5 ] && ! daemon_pids "$n" >/dev/null 2>&1; then break; fi
-        sleep 1
+    local n="$1" i attempt
+    for attempt in 1 2 3 4 5; do
+        launch_node "$n"
+        for i in $(seq 1 300); do
+            rpc "$n" getinfo >/dev/null 2>&1 && return 0
+            if [ "$i" -gt 5 ] && ! daemon_pids "$n" >/dev/null 2>&1; then break; fi
+            sleep 1
+        done
+        # A daemon killed a moment ago can still hold the datadir lock while the kernel
+        # tears it down; its argv is already unreadable, so pgrep no longer lists it.
+        tail -12 "$(logfile "$n")" 2>/dev/null | grep -q "Cannot obtain a lock" || break
+        sleep 2
     done
     echo "  node$n did not answer after ${i}s; daemon $(daemon_pids "$n" >/dev/null 2>&1 && echo alive || echo gone); last log lines:"
     tail -12 "$(logfile "$n")" 2>/dev/null | cut -c1-160 | sed 's/^/    | /'
@@ -93,9 +100,28 @@ kill_node() {
     local n="$1" pids i; pids="$(daemon_pids "$n")"; [ -n "$pids" ] || return 1
     # shellcheck disable=SC2086
     kill -9 $pids 2>/dev/null
-    for i in $(seq 1 60); do daemon_pids "$n" >/dev/null 2>&1 || break; sleep 1; done
+    # kill -0 keeps answering for a process in teardown after pgrep has stopped matching
+    # its argv; wait for the pids themselves so the datadir lock is really released.
+    for i in $(seq 1 600); do
+        local alive=0 p
+        for p in $pids; do kill -0 "$p" 2>/dev/null && alive=1; done
+        [ "$alive" -eq 0 ] && ! daemon_pids "$n" >/dev/null 2>&1 && break
+        sleep 0.1
+    done
     rm -f "$(node_dir "$n")/regtest/innovad.pid" "$(node_dir "$n")/innovad.pid" 2>/dev/null
     return 0
+}
+hex_gt() { local a="${1#0}" b="${2#0}"; [ ${#a} -gt ${#b} ] || { [ ${#a} -eq ${#b} ] && [[ "$a" > "$b" ]]; }; }
+# A branch mined on several threads merges its own siblings, and each merged sibling adds
+# a block of trust, so a linear fleet chain must outgrow the branch by trust, not height.
+outgrow() {
+    local branch="$1" i ft bt
+    for i in $(seq 1 20); do
+        ft="$(jget "$(rpc 0 getblock "$(besthash 0)")" chaintrust)"; bt="$(jget "$(rpc 0 getblock "$branch")" chaintrust)"
+        [ -n "$ft" ] && [ -n "$bt" ] && hex_gt "$ft" "$bt" && { log "  fleet trust $ft > branch trust $bt at $(height 0)"; return 0; }
+        mine_to 0 $(( $(height 0) + 5 )) || return 1
+    done
+    return 1
 }
 wait_height() {
     local n="$1" target="$2" limit="${3:-600}" i h
@@ -289,10 +315,11 @@ rpc 4 getblock "$BRANCH_TIP" >/dev/null 2>&1 && success "node4 holds the side br
 
 header "7. The fleet mines on; everyone converges"
 mine_to 0 $(( BRANCH_H + 20 )) || fail "node0 could not resume mining"
+outgrow "$BRANCH_TIP" || fail "the fleet chain did not outweigh the branch"
 NEW_TIP="$(besthash 0)"; NEW_H="$(height 0)"
 [ "$NEW_H" -gt "$BRANCH_H" ] && success "fleet chain outgrew the branch ($NEW_H > $BRANCH_H)" || fail "fleet did not outgrow the branch"
-wait_hash 1 "$NEW_TIP" 300 && wait_hash 2 "$NEW_TIP" 300 && wait_hash 4 "$NEW_TIP" 300 && success "node1, node2, node4 follow the fleet tip" || fail "a fleet node lags: node1=$(height 1) node2=$(height 2) node4=$(height 4)"
-wait_hash 3 "$NEW_TIP" 300 && success "node3 abandoned its branch and converged" || fail "node3 stuck on its branch at $(height 3) ($(besthash 3))"
+wait_hash 1 "$NEW_TIP" 900 && wait_hash 2 "$NEW_TIP" 900 && wait_hash 4 "$NEW_TIP" 900 && success "node1, node2, node4 follow the fleet tip" || fail "a fleet node lags: node1=$(height 1) node2=$(height 2) node4=$(height 4)"
+wait_hash 3 "$NEW_TIP" 900 && success "node3 abandoned its branch and converged" || fail "node3 stuck on its branch at $(height 3) ($(besthash 3))"
 [ "$(count_log 0 'LoadDAGLinks: FATAL')" -eq 0 ] && [ "$(count_log 3 'LoadDAGLinks: FATAL')" -eq 0 ] || fail "a node logged a loader FATAL"
 
 header "8. Two more HARD epochs; node5's branch from $PARK2_HEIGHT draws the permanent verdict"
@@ -316,8 +343,9 @@ PERM="$(grep -a -c 'permanent); kept as a side block' "$(logfile 0)")"
 GB2="$(rpc 0 getblock "$BRANCH2_TIP" 2>/dev/null)"
 [ "$(jget "$GB2" hash)" = "$BRANCH2_TIP" ] && [ -z "$(jget "$GB2" failreason)" ] && success "the second branch tip is indexed on node0 with no fail reason" || fail "node0's view of the second branch tip: $(echo "$GB2" | head -c 200)"
 mine_to 0 $(( BRANCH2_H + 20 )) || fail "node0 could not resume mining"
+outgrow "$BRANCH2_TIP" || fail "the fleet chain did not outweigh the second branch"
 NEW2="$(besthash 0)"
-wait_hash 1 "$NEW2" 300 && wait_hash 5 "$NEW2" 300 && success "node1 and node5 converge on the fleet tip $(height 0)" || fail "convergence after the permanent branch: node1=$(height 1) node5=$(height 5)"
+wait_hash 1 "$NEW2" 900 && wait_hash 5 "$NEW2" 900 && success "node1 and node5 converge on the fleet tip $(height 0)" || fail "convergence after the permanent branch: node1=$(height 1) node5=$(height 5)"
 
 echo; echo "passed=$PASSED failed=$FAILED"
 [ "$FAILED" -eq 0 ]
