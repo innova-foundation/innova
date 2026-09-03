@@ -630,45 +630,66 @@ BOOST_AUTO_TEST_CASE(one_member_key_gets_one_seat)
     CTxDB txdb("r+");
     ScopedRegistry registry(txdb);
 
-    const int nTermEpoch = 100000 * TermEpochs();
-    const int nAnchorEpoch = nTermEpoch - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS;
-    const int nAnchorHeight = GetEpochBoundaryHeight(nAnchorEpoch, 0);
+    // One draw is one fixed ordering, and with a handful of rows that ordering can put
+    // the distinct keys on top by luck, which passes whether or not the seats are
+    // deduplicated. Several terms are swept instead: each has its own seed, so a run
+    // that seats a key twice anywhere fails.
+    const int nTerms = 8;
+    const int nShared = 8 * Seats();
+    const int nRows = nShared + Seats();
 
-    // Every row registers the SAME key except the last few, so a draw without the
-    // dedup would seat that one key repeatedly.
-    const int nRows = 4 * Seats();
+    const int nFirstTerm = 100000 * TermEpochs();
     CKey shared;
     shared.MakeNewKey(true);
-    std::vector<CKey> vDistinct;
-    for (int i = 0; i < nRows; i++)
+    const std::vector<unsigned char> vchShared(shared.GetPubKey().begin(),
+                                               shared.GetPubKey().end());
+
+    for (int t = 0; t < nTerms; t++)
     {
-        CPubKey pubkey;
-        if (i < nRows - Seats())
-            pubkey = shared.GetPubKey();
-        else
+        const int nTermEpoch = nFirstTerm + t * TermEpochs();
+        const int nAnchorEpoch = nTermEpoch - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS;
+        const int nAnchorHeight = GetEpochBoundaryHeight(nAnchorEpoch, 0);
+
+        // Most rows carry the same member key, so a draw without the dedup seats it
+        // more than once unless every one of its rows sorts below the distinct ones.
+        for (int i = 0; i < nRows; i++)
         {
-            CKey key;
-            key.MakeNewKey(true);
-            vDistinct.push_back(key);
-            pubkey = key.GetPubKey();
+            CPubKey pubkey;
+            if (i < nShared)
+                pubkey = shared.GetPubKey();
+            else
+            {
+                CKey key;
+                key.MakeNewKey(true);
+                pubkey = key.GetPubKey();
+            }
+            registry.AddMember(KeyImageFor(20000 + t * nRows + i), pubkey,
+                               nAnchorHeight - 1);
         }
-        registry.AddMember(KeyImageFor(20000 + i), pubkey, nAnchorHeight - 1);
+        registry.PutEpochState(AnchorState(nAnchorEpoch, nAnchorHeight, 0x03));
+
+        CFinalityCommitteeDraw draw;
+        bool fLocalFailure = false;
+        std::string strError;
+        BOOST_REQUIRE(DrawFinalityCommitteeForTerm(txdb, txdb, nTermEpoch, draw,
+                                                    fLocalFailure, strError));
+        BOOST_REQUIRE(draw.fSeated);
+        BOOST_CHECK_EQUAL((int)draw.vSeats.size(), Seats());
+
+        std::set<std::vector<unsigned char> > setSeen;
+        int nShareSeats = 0;
+        for (size_t i = 0; i < draw.vSeats.size(); ++i)
+        {
+            const std::vector<unsigned char> vch(draw.vSeats[i].begin(),
+                                                 draw.vSeats[i].end());
+            BOOST_CHECK_MESSAGE(setSeen.insert(vch).second,
+                strprintf("term %d seated one member key twice", nTermEpoch));
+            if (vch == vchShared)
+                nShareSeats++;
+        }
+        BOOST_CHECK_MESSAGE(nShareSeats <= 1,
+            strprintf("term %d gave the shared key %d seats", nTermEpoch, nShareSeats));
     }
-    registry.PutEpochState(AnchorState(nAnchorEpoch, nAnchorHeight, 0x03));
-
-    CFinalityCommitteeDraw draw;
-    bool fLocalFailure = false;
-    std::string strError;
-    BOOST_REQUIRE(DrawFinalityCommitteeForTerm(txdb, txdb, nTermEpoch, draw,
-                                                fLocalFailure, strError));
-    BOOST_REQUIRE(draw.fSeated);
-    BOOST_CHECK_EQUAL((int)draw.vSeats.size(), Seats());
-
-    std::set<std::vector<unsigned char> > setSeen;
-    for (size_t i = 0; i < draw.vSeats.size(); ++i)
-        BOOST_CHECK(setSeen.insert(std::vector<unsigned char>(draw.vSeats[i].begin(),
-                                                              draw.vSeats[i].end()))
-                        .second);
 }
 
 // Below FORK_HEIGHT_IV5_NOTE_VOTE an epoch state is written at the pre-committee
@@ -719,8 +740,18 @@ BOOST_AUTO_TEST_CASE(only_the_epoch_before_a_term_carries_the_draw)
     bool fLocalFailure = false;
     std::string strError;
 
-    // Only this fixture's own term has an anchor epoch state, so it is the one epoch
-    // in the run that both leads a term and can draw.
+    // Every epoch in the sweep is given the anchor state its own draw would read, so a
+    // non-carrier epoch is stopped by the lead-in rule alone. Without that, the sweep
+    // passes whether or not the rule is there, because the other epochs have nothing
+    // to draw from either way.
+    for (int nEpoch = f.nTermEpoch - 3; nEpoch <= f.nTermEpoch + 1; nEpoch++)
+    {
+        const int nAnchor = nEpoch - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS;
+        if (nAnchor > 0 && nAnchor != f.nAnchorEpoch)
+            f.registry.PutEpochState(
+                AnchorState(nAnchor, GetEpochBoundaryHeight(nAnchor, 0), 0x04));
+    }
+
     for (int nEpoch = f.nTermEpoch - 3; nEpoch <= f.nTermEpoch + 1; nEpoch++)
     {
         CEpochState state;
@@ -728,8 +759,10 @@ BOOST_AUTO_TEST_CASE(only_the_epoch_before_a_term_carries_the_draw)
         state.nSerVersion = EPOCHSTATE_SER_VERSION_V6;
         BOOST_REQUIRE(SeatFinalityCommitteeForEpochState(f.txdb, state, fLocalFailure,
                                                           strError));
-        BOOST_CHECK_EQUAL(!state.vFinalityCommittee.empty(),
-                          nEpoch == f.nTermEpoch - 1);
+        BOOST_CHECK_MESSAGE(state.vFinalityCommittee.empty() ==
+                                (nEpoch != f.nTermEpoch - 1),
+            strprintf("epoch %d carried %d seats", nEpoch,
+                      (int)state.vFinalityCommittee.size()));
         if (nEpoch != f.nTermEpoch - 1)
             BOOST_CHECK_EQUAL(state.nFinalityCommitteeM, 0);
     }
