@@ -181,6 +181,11 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("timeoffset",    (int64_t)GetTimeOffset()));
     obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     obj.push_back(Pair("connections",   (int)vNodes.size()));
+    {
+        LOCK(cs_main);
+        obj.push_back(Pair("orphanblocks",    (int)mapOrphanBlocks.size()));
+        obj.push_back(Pair("orphanpoolbytes", (int64_t)GetOrphanBlocksFootprint()));
+    }
     obj.push_back(Pair("datareceived",  bytesReadable(CNode::GetTotalBytesRecv())));
     obj.push_back(Pair("datasent",      bytesReadable(CNode::GetTotalBytesSent())));
     obj.push_back(Pair("proxy",         (proxy.first.IsValid() ? proxy.first.ToStringIPPort() : string())));

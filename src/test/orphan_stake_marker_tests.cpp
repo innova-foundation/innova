@@ -36,45 +36,23 @@ static CBlock* MakePosOrphanBlock(
     return pblock;
 }
 
-// Mirrors the receive-path orphan-store bookkeeping: block table, by-prev
-// index, per-peer counts, and the proof-of-stake marker set.
+// Parks through the receive path's own writer, so this suite is not a second
+// copy of the bookkeeping that can drift from it. The park sites take the stake
+// marker themselves, so that half is done here too.
 static void RegisterPosOrphan(CBlock* pblock, NodeId peer = -1)
 {
-    const uint256 hash = pblock->GetHash();
-    mapOrphanBlocks[hash] = pblock;
-    mapOrphanBlocksByPrev.insert(std::make_pair(pblock->hashPrevBlock, pblock));
+    LOCK(cs_main);
     if (pblock->IsProofOfStake())
         setStakeSeenOrphan.insert(pblock->GetProofOfStake());
-    if (peer >= 0)
-    {
-        mapOrphanBlocksByNode[hash] = peer;
-        mapOrphanCountByNode[peer]++;
-    }
+    AddOrphanBlock(pblock->GetHash(), pblock, pblock->hashPrevBlock, peer,
+                   OrphanBlockFootprint(*pblock));
 }
 
-// Mirrors the parent-connect / orphan-replay removal body exactly as the fix
-// performs it: remove block bookkeeping, then release the marker only when no
-// retained orphan still references it.
+// The parent-connect removal, through the receive path's own writer.
 static void RemoveOrphanAsParentConnect(const uint256& hash)
 {
-    std::map<uint256, CBlock*>::iterator it = mapOrphanBlocks.find(hash);
-    if (it == mapOrphanBlocks.end())
-        return;
-    CBlock* pblockOrphan = it->second;
-    const bool fIsProofOfStake = pblockOrphan->IsProofOfStake();
-    const std::pair<COutPoint, unsigned int> stake = pblockOrphan->GetProofOfStake();
-
-    mapOrphanBlocks.erase(hash);
-    if (fIsProofOfStake)
-        EraseStakeSeenOrphanIfUnreferenced(stake);
-
-    std::map<uint256, NodeId>::iterator nodeIt = mapOrphanBlocksByNode.find(hash);
-    if (nodeIt != mapOrphanBlocksByNode.end()) {
-        mapOrphanCountByNode[nodeIt->second]--;
-        mapOrphanBlocksByNode.erase(nodeIt);
-    }
-
-    delete pblockOrphan;
+    LOCK(cs_main);
+    EraseOrphanBlock(hash, true);
 }
 
 // Mirrors the receive-path duplicate-stake-orphan reject gate.
@@ -98,7 +76,7 @@ static Stake MakeStake(unsigned int nHash, unsigned int nTime)
 class CScopedOrphanStorage
 {
 private:
-    std::map<uint256, CBlock*> savedBlocks;
+    std::map<uint256, COrphanBlock> savedBlocks;
     std::multimap<uint256, CBlock*> savedByPrev;
     std::map<uint256, NodeId> savedByNode;
     std::map<NodeId, int> savedCount;
@@ -118,18 +96,20 @@ public:
         mapOrphanBlocksByNode.clear();
         mapOrphanCountByNode.clear();
         setStakeSeenOrphan.clear();
+        RecomputeOrphanBlocksFootprint();
     }
     ~CScopedOrphanStorage()
     {
         LOCK(cs_main);
-        for (std::map<uint256, CBlock*>::iterator it = mapOrphanBlocks.begin();
+        for (std::map<uint256, COrphanBlock>::iterator it = mapOrphanBlocks.begin();
              it != mapOrphanBlocks.end(); ++it)
-            delete it->second;
+            delete it->second.pblock;
         mapOrphanBlocks = savedBlocks;
         mapOrphanBlocksByPrev = savedByPrev;
         mapOrphanBlocksByNode = savedByNode;
         mapOrphanCountByNode = savedCount;
         setStakeSeenOrphan = savedStakeSeen;
+        RecomputeOrphanBlocksFootprint();
     }
 };
 
@@ -161,13 +141,15 @@ public:
 BOOST_AUTO_TEST_CASE(prune_eviction_releases_unreferenced_marker)
 {
     CScopedOrphanStorage scope;
-    CScopedMaxOrphanBlocks max0("0");
+    // A bound of one with one orphan held: the next park needs room, so the
+    // single removable orphan is deterministically evicted. A bound of zero
+    // would refuse the park outright and evict nothing.
+    CScopedMaxOrphanBlocks max1("1");
     Stake K1 = MakeStake(1, 100);
     RegisterPosOrphan(MakePosOrphanBlock(K1, 1));
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K1), 1U);
 
-    // Single removable orphan is deterministically evicted.
-    PruneOrphanBlocks();
+    BOOST_CHECK(PruneOrphanBlocks(0, (NodeId)-1));
 
     BOOST_CHECK(mapOrphanBlocks.empty());
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K1), 0U);
@@ -226,12 +208,12 @@ BOOST_AUTO_TEST_CASE(final_reference_marker_release)
 BOOST_AUTO_TEST_CASE(legitimate_redelivery_after_final_marker_release)
 {
     CScopedOrphanStorage scope;
-    CScopedMaxOrphanBlocks max0("0");
+    CScopedMaxOrphanBlocks max1("1");
     Stake K = MakeStake(5, 100);
     CBlock* orphan = MakePosOrphanBlock(K, 1);
     RegisterPosOrphan(orphan);
 
-    PruneOrphanBlocks();
+    BOOST_CHECK(PruneOrphanBlocks(0, (NodeId)-1));
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K), 0U);
 
     // With the marker released, a fresh same-stake orphan is no longer
@@ -258,6 +240,7 @@ BOOST_AUTO_TEST_CASE(orphan_bookkeeping_consistent_after_marker_cleanup)
     RemoveOrphanAsParentConnect(orphanA->GetHash());
 
     BOOST_CHECK_EQUAL(mapOrphanCountByNode[7], 1);
+    BOOST_CHECK_EQUAL(mapOrphanCountByNode.count(7), 1U);
     BOOST_CHECK_EQUAL(mapOrphanBlocksByNode.count(orphanA->GetHash()), 0U);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K1), 0U);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K2), 1U);

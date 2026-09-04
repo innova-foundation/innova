@@ -298,21 +298,252 @@ CMedianFilter<int> cPeerBlockCounts(5, 0); // Amount of blocks that other nodes 
 
 std::map<int64_t, CAnonOutputCount> mapAnonOutputStats;
 //map<int64_t, CAnonOutputCount> mapAnonOutputStats; // display only, not 100% accurate, height could become inaccurate due to undos
-map<uint256, CBlock*> mapOrphanBlocks;
+map<uint256, COrphanBlock> mapOrphanBlocks;
 multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 map<uint256, NodeId> mapOrphanBlocksByNode;
 map<NodeId, int> mapOrphanCountByNode;
 static const int MAX_ORPHAN_BLOCKS_PER_PEER = 750;
 set<pair<COutPoint, unsigned int> > setStakeSeenOrphan;
 
+// Bytes charged for the held orphans. Written only by AddOrphanBlock and
+// EraseOrphanBlock, from the footprint stored in the record they move, so it is
+// always the sum of mapOrphanBlocks' footprints.
+static size_t nOrphanBlocksFootprint = 0;
+
+// The same total split by owner so no peer occupies the whole ceiling. Never reset:
+// the IBD relief clears mapOrphanCountByNode, and a share that followed it would hand one peer the pool.
+static map<NodeId, size_t> mapOrphanBytesByNode;
+static size_t nOrphanBytesUnowned = 0;
+
+// Departed peers, under a leaf lock taken alone. setOrphanDepartedPending holds ids the
+// next sweep must release; setOrphanGoneNodes outlives that release so a later park for
+// the same id is refused. Retired when the CNode is destroyed.
+static CCriticalSection cs_orphanDeparted;
+static set<NodeId> setOrphanDepartedPending;
+static set<NodeId> setOrphanGoneNodes;
+
+// Hashes whose footprint the pool can never hold, when each suppression expires, and the
+// hashes the refused block waits on. Lifted early once the whole wait set is indexed.
+// Leaf lock, so CNode::AskFor can consult it without cs_main.
+struct COrphanSuppression
+{
+    int64_t nUntil;
+    std::vector<uint256> vWaitedOn;
+    COrphanSuppression() : nUntil(0) {}
+    COrphanSuppression(int64_t nUntilIn, const std::vector<uint256>& vWaitedOnIn)
+        : nUntil(nUntilIn), vWaitedOn(vWaitedOnIn) {}
+};
+static CCriticalSection cs_orphanNeverFits;
+static map<uint256, COrphanSuppression> mapOrphanNeverFits;
+
+// Consecutive refusals of one hash, so the re-ask deferral grows instead of
+// settling at a fixed rate: SendMessages resets mapAlreadyAskedFor to now on
+// every getdata it sends, so that map alone cannot carry a backoff across the
+// request going out. Read and written under cs_main.
+struct COrphanRefusal
+{
+    int64_t nTime;
+    int nShift;
+    COrphanRefusal() : nTime(0), nShift(0) {}
+    COrphanRefusal(int64_t nTimeIn, int nShiftIn) : nTime(nTimeIn), nShift(nShiftIn) {}
+};
+static map<uint256, COrphanRefusal> mapOrphanRefused;
+
+// Wire size plus vector overhead plus the cached merkle tree. The wire term uses the
+// CheckBlock/AcceptBlock flags, so it is bounded by ADAPTIVE_BLOCK_CEILING.
+size_t OrphanBlockFootprint(const CBlock& block)
+{
+    size_t nFootprint = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    nFootprint += block.vtx.size() * sizeof(CTransaction);
+    nFootprint += block.vMerkleTree.size() * sizeof(uint256);
+    for (unsigned int i = 0; i < block.vtx.size(); i++)
+    {
+        const CTransaction& tx = block.vtx[i];
+        nFootprint += tx.vin.size() * sizeof(CTxIn);
+        nFootprint += tx.vout.size() * sizeof(CTxOut);
+        nFootprint += tx.vShieldedSpend.size() * sizeof(CShieldedSpendDescription);
+        nFootprint += tx.vShieldedOutput.size() * sizeof(CShieldedOutputDescription);
+    }
+    return nFootprint;
+}
+
+size_t GetOrphanBlocksFootprint()
+{
+    return nOrphanBlocksFootprint;
+}
+
+size_t GetOrphanBlocksFootprintForNode(NodeId owner)
+{
+    if (owner < 0)
+        return nOrphanBytesUnowned;
+    map<NodeId, size_t>::const_iterator it = mapOrphanBytesByNode.find(owner);
+    return it == mapOrphanBytesByNode.end() ? 0 : it->second;
+}
+
+size_t GetOrphanOwnerBucketCount()
+{
+    return mapOrphanBytesByNode.size();
+}
+
+size_t GetOrphanRefusalRecordCount()
+{
+    return mapOrphanRefused.size();
+}
+
+void ClearOrphanRefusalRecords()
+{
+    mapOrphanRefused.clear();
+}
+
+int64_t GetOrphanRefusalBackoff(const uint256& hash)
+{
+    map<uint256, COrphanRefusal>::const_iterator it = mapOrphanRefused.find(hash);
+    if (it == mapOrphanRefused.end())
+        return ORPHAN_REFUSAL_BACKOFF_SECONDS;
+    return ORPHAN_REFUSAL_BACKOFF_SECONDS << it->second.nShift;
+}
+
+bool OrphanOwnerHasDeparted(NodeId owner)
+{
+    if (owner < 0)
+        return false;
+    LOCK(cs_orphanDeparted);
+    return setOrphanGoneNodes.count(owner) != 0 || setOrphanDepartedPending.count(owner) != 0;
+}
+
+size_t GetOrphanDepartedOwnerCount()
+{
+    LOCK(cs_orphanDeparted);
+    return setOrphanGoneNodes.size();
+}
+
+void ClearOrphanDepartedOwners()
+{
+    LOCK(cs_orphanDeparted);
+    setOrphanDepartedPending.clear();
+    setOrphanGoneNodes.clear();
+}
+
+// Consulted by CNode::AskFor, so the suppression covers every path that requests
+// a block and not only the refusal that raised it.
+bool IsOrphanBlockRequestSuppressed(const uint256& hash)
+{
+    LOCK(cs_orphanNeverFits);
+    map<uint256, COrphanSuppression>::iterator it = mapOrphanNeverFits.find(hash);
+    if (it == mapOrphanNeverFits.end())
+        return false;
+    if (GetTime() >= it->second.nUntil)
+    {
+        mapOrphanNeverFits.erase(it);
+        return false;
+    }
+    return true;
+}
+
+void SuppressOrphanBlockRequest(const uint256& hash, int64_t nNow,
+                                const std::vector<uint256>& vWaitedOn)
+{
+    LOCK(cs_orphanNeverFits);
+    map<uint256, COrphanSuppression>::iterator it = mapOrphanNeverFits.find(hash);
+    if (it != mapOrphanNeverFits.end())
+    {
+        // The wait set follows the latest refusal: a block refused for an
+        // unknown parent is refused again for its merge parents once the
+        // parent is in.
+        it->second = COrphanSuppression(nNow + ORPHAN_NEVER_FITS_SUPPRESS_SECONDS, vWaitedOn);
+        return;
+    }
+    // Past the cap nothing is recorded and the hash is requested as before, so
+    // the map cannot grow with the hashes a peer offers.
+    if (mapOrphanNeverFits.size() >= MAX_ORPHAN_NEVER_FITS_RECORDS)
+        return;
+    mapOrphanNeverFits.insert(make_pair(hash, COrphanSuppression(nNow + ORPHAN_NEVER_FITS_SUPPRESS_SECONDS,
+                                                                 vWaitedOn)));
+}
+
+// The premise of the suppression is that the block would be parked. Once the
+// pool holds it that is moot, so the record is dropped.
+void LiftOrphanBlockRequestSuppression(const uint256& hash)
+{
+    LOCK(cs_orphanNeverFits);
+    mapOrphanNeverFits.erase(hash);
+}
+
+// Lift only once every hash the refusal waited on is indexed, i.e. the block would be
+// accepted on delivery rather than parked.
+bool LiftOrphanBlockRequestSuppressionIfConnectable(const uint256& hash)
+{
+    AssertLockHeld(cs_main);
+    LOCK(cs_orphanNeverFits);
+    map<uint256, COrphanSuppression>::iterator it = mapOrphanNeverFits.find(hash);
+    if (it == mapOrphanNeverFits.end())
+        return false;
+    for (unsigned int i = 0; i < it->second.vWaitedOn.size(); i++)
+        if (!mapBlockIndex.count(it->second.vWaitedOn[i]))
+            return false;
+    mapOrphanNeverFits.erase(it);
+    return true;
+}
+
+size_t GetOrphanBlockRequestSuppressionCount()
+{
+    LOCK(cs_orphanNeverFits);
+    return mapOrphanNeverFits.size();
+}
+
+void ClearOrphanBlockRequestSuppression()
+{
+    LOCK(cs_orphanNeverFits);
+    mapOrphanNeverFits.clear();
+}
+
+void RecomputeOrphanBlocksFootprint()
+{
+    size_t nTotal = 0;
+    mapOrphanBytesByNode.clear();
+    nOrphanBytesUnowned = 0;
+    for (std::map<uint256, COrphanBlock>::const_iterator it = mapOrphanBlocks.begin();
+         it != mapOrphanBlocks.end(); ++it)
+    {
+        nTotal += it->second.nFootprint;
+        std::map<uint256, NodeId>::const_iterator itOwner = mapOrphanBlocksByNode.find(it->first);
+        if (itOwner == mapOrphanBlocksByNode.end())
+            nOrphanBytesUnowned += it->second.nFootprint;
+        else
+            mapOrphanBytesByNode[itOwner->second] += it->second.nFootprint;
+    }
+    nOrphanBlocksFootprint = nTotal;
+}
+
+size_t GetMaxOrphanBlocksFootprint()
+{
+    int64_t nMB = GetArg("-maxorphanmem", DEFAULT_MAX_ORPHAN_BLOCKS_MEM);
+    if (nMB < (int64_t)MIN_MAX_ORPHAN_BLOCKS_MEM)
+        nMB = MIN_MAX_ORPHAN_BLOCKS_MEM;
+    // Clamped from above as well: the megabyte-to-byte multiply is done in
+    // size_t, and an absurd argument would otherwise wrap to a ceiling smaller
+    // than the floor.
+    const int64_t nMaxMB = (int64_t)(((size_t)-1) >> 20);
+    if (nMB > nMaxMB)
+        nMB = nMaxMB;
+    return (size_t)nMB * 1024 * 1024;
+}
+
+size_t GetMaxOrphanBlocksFootprintPerPeer()
+{
+    // Divide before multiplying: the ceiling is at least MIN_MAX_ORPHAN_BLOCKS_MEM
+    // so the loss of precision is bytes, and the product cannot wrap.
+    return GetMaxOrphanBlocksFootprint() / 100 * MAX_ORPHAN_MEM_SHARE_PER_PEER_PERCENT;
+}
+
 void EraseStakeSeenOrphanIfUnreferenced(const std::pair<COutPoint, unsigned int>& stake)
 {
     if (!setStakeSeenOrphan.count(stake))
         return;
-    for (std::map<uint256, CBlock*>::const_iterator mi = mapOrphanBlocks.begin();
+    for (std::map<uint256, COrphanBlock>::const_iterator mi = mapOrphanBlocks.begin();
          mi != mapOrphanBlocks.end(); ++mi)
     {
-        const CBlock* orphan = mi->second;
+        const CBlock* orphan = mi->second.pblock;
         if (!orphan->IsProofOfStake() || orphan->vtx.size() < 2)
             continue;
         // The stake's second element is the coinstake nTime, which is readable
@@ -4162,8 +4393,9 @@ bool CBlock::ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions)
 uint256 static GetOrphanRoot(const CBlock* pblock)
 {
     // Work back to the first block in the orphan chain
-    while (mapOrphanBlocks.count(pblock->hashPrevBlock))
-        pblock = mapOrphanBlocks[pblock->hashPrevBlock];
+    std::map<uint256, COrphanBlock>::const_iterator mi;
+    while ((mi = mapOrphanBlocks.find(pblock->hashPrevBlock)) != mapOrphanBlocks.end())
+        pblock = mi->second.pblock;
     return pblock->GetHash();
 }
 
@@ -4171,16 +4403,283 @@ uint256 static GetOrphanRoot(const CBlock* pblock)
 uint256 WantedByOrphan(const CBlock* pblockOrphan)
 {
     // Work back to the first block in the orphan chain
-    while (mapOrphanBlocks.count(pblockOrphan->hashPrevBlock))
-        pblockOrphan = mapOrphanBlocks[pblockOrphan->hashPrevBlock];
+    std::map<uint256, COrphanBlock>::const_iterator mi;
+    while ((mi = mapOrphanBlocks.find(pblockOrphan->hashPrevBlock)) != mapOrphanBlocks.end())
+        pblockOrphan = mi->second.pblock;
     return pblockOrphan->hashPrevBlock;
 }
 
-// Remove a random orphan block (which does not have any dependent orphans).
-void PruneOrphanBlocks()
+// The only writer that adds to the orphan tables.
+bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWaitedFor,
+                    NodeId owner, size_t nFootprint)
 {
-    if (mapOrphanBlocksByPrev.size() <= (size_t)std::max((int64_t)0, GetArg("-maxorphanblocks", DEFAULT_MAX_ORPHAN_BLOCKS)))
+    AssertLockHeld(cs_main);
+
+    // Checked against a marker that outlives the sweep, so a park and the owner's departure
+    // give the same result in either order.
+    if (OrphanOwnerHasDeparted(owner))
+    {
+        if (fDebug)
+            printf("orphan pool: not parking %s, peer %d has departed\n",
+                   hash.ToString().substr(0,20).c_str(), (int)owner);
+        delete pblock;
+        return false;
+    }
+
+    // Takes ownership: a duplicate hash is already refused earlier in
+    // ProcessBlock, and dropping the copy here is what keeps that true. The
+    // caller is told so it cannot go on to read the block it handed over.
+    if (!mapOrphanBlocks.insert(make_pair(hash, COrphanBlock(pblock, nFootprint, hashWaitedFor,
+                                                             GetTime()))).second)
+    {
+        delete pblock;
+        return false;
+    }
+    mapOrphanBlocksByPrev.insert(make_pair(hashWaitedFor, pblock));
+    nOrphanBlocksFootprint += nFootprint;
+    // Parked, so the refusals that preceded it are spent, and the pool held it,
+    // so no suppression of it stands.
+    mapOrphanRefused.erase(hash);
+    LiftOrphanBlockRequestSuppression(hash);
+
+    if (owner >= 0)
+    {
+        mapOrphanBlocksByNode[hash] = owner;
+        mapOrphanCountByNode[owner]++;
+        mapOrphanBytesByNode[owner] += nFootprint;
+    }
+    else
+        nOrphanBytesUnowned += nFootprint;
+
+    return true;
+}
+
+// The only writer that removes from them. Subtracts the footprint the record
+// was charged, never a recomputed one, so the total follows the set exactly.
+bool EraseOrphanBlock(const uint256& hash, bool fEraseByPrevEntries)
+{
+    AssertLockHeld(cs_main);
+
+    std::map<uint256, COrphanBlock>::iterator it = mapOrphanBlocks.find(hash);
+    if (it == mapOrphanBlocks.end())
+        return false;
+
+    CBlock* pblock = it->second.pblock;
+    const size_t nFootprint = it->second.nFootprint;
+    const uint256 hashWaitedFor = it->second.hashWaitedFor;
+    const bool fIsProofOfStake = pblock->IsProofOfStake();
+    const std::pair<COutPoint, unsigned int> stake = pblock->GetProofOfStake();
+
+    if (fEraseByPrevEntries)
+    {
+        std::multimap<uint256, CBlock*>::iterator lo = mapOrphanBlocksByPrev.lower_bound(hashWaitedFor);
+        const std::multimap<uint256, CBlock*>::iterator hi = mapOrphanBlocksByPrev.upper_bound(hashWaitedFor);
+        while (lo != hi)
+        {
+            if (lo->second == pblock)
+                mapOrphanBlocksByPrev.erase(lo++);
+            else
+                ++lo;
+        }
+    }
+
+    mapOrphanBlocks.erase(it);
+    nOrphanBlocksFootprint -= (nFootprint <= nOrphanBlocksFootprint) ? nFootprint : nOrphanBlocksFootprint;
+
+    // The marker check reads the remaining records, so it has to run after this
+    // block's record is gone.
+    if (fIsProofOfStake)
+        EraseStakeSeenOrphanIfUnreferenced(stake);
+
+    std::map<uint256, NodeId>::iterator nodeIt = mapOrphanBlocksByNode.find(hash);
+    if (nodeIt != mapOrphanBlocksByNode.end())
+    {
+        std::map<NodeId, int>::iterator countIt = mapOrphanCountByNode.find(nodeIt->second);
+        if (countIt != mapOrphanCountByNode.end())
+        {
+            countIt->second--;
+            // The IBD reset clears counts but not the ownership map, so clamp at zero and
+            // erase; the map holds only NodeIds that currently hold orphans.
+            if (countIt->second <= 0)
+                mapOrphanCountByNode.erase(countIt);
+        }
+        std::map<NodeId, size_t>::iterator bytesIt = mapOrphanBytesByNode.find(nodeIt->second);
+        if (bytesIt != mapOrphanBytesByNode.end())
+        {
+            bytesIt->second -= (nFootprint <= bytesIt->second) ? nFootprint : bytesIt->second;
+            if (bytesIt->second == 0)
+                mapOrphanBytesByNode.erase(bytesIt);
+        }
+        mapOrphanBlocksByNode.erase(nodeIt);
+    }
+    else
+        nOrphanBytesUnowned -= (nFootprint <= nOrphanBytesUnowned) ? nFootprint : nOrphanBytesUnowned;
+
+    delete pblock;
+    return true;
+}
+
+// Peer release is deferred to the next sweep under cs_main (cs_vNodes is taken under
+// cs_main). The id is queued twice: as work, and as a marker that stops a later park
+// from re-charging it.
+void OrphanBlocksNodeDisconnected(NodeId owner)
+{
+    if (owner < 0)
         return;
+    LOCK(cs_orphanDeparted);
+    setOrphanDepartedPending.insert(owner);
+    setOrphanGoneNodes.insert(owner);
+}
+
+// Called from ~CNode: no park can name the id any more, so the marker is retired here,
+// keeping it bounded by the live CNode objects.
+void OrphanBlocksNodeDestroyed(NodeId owner)
+{
+    if (owner < 0)
+        return;
+    LOCK(cs_orphanDeparted);
+    setOrphanGoneNodes.erase(owner);
+}
+
+// Release a departed peer's byte and entry accounting along with its blocks, so
+// reconnecting under a fresh NodeId cannot pin the pool.
+size_t ReleaseDepartedOrphanOwners()
+{
+    AssertLockHeld(cs_main);
+
+    set<NodeId> setDeparted;
+    {
+        LOCK(cs_orphanDeparted);
+        if (setOrphanDepartedPending.empty())
+            return 0;
+        // Only the work list is taken. setOrphanGoneNodes stays, so a park that
+        // lands after this sweep is still refused for these ids.
+        setDeparted.swap(setOrphanDepartedPending);
+    }
+
+    vector<uint256> vOwned;
+    for (map<uint256, NodeId>::const_iterator it = mapOrphanBlocksByNode.begin();
+         it != mapOrphanBlocksByNode.end(); ++it)
+        if (setDeparted.count(it->second))
+            vOwned.push_back(it->first);
+
+    size_t nReleased = 0;
+    for (unsigned int i = 0; i < vOwned.size(); i++)
+        if (EraseOrphanBlock(vOwned[i], true))
+            nReleased++;
+
+    // The buckets themselves, in case the periodic count reset during initial
+    // download left one behind that no record erase would have cleared.
+    for (set<NodeId>::const_iterator it = setDeparted.begin(); it != setDeparted.end(); ++it)
+    {
+        mapOrphanCountByNode.erase(*it);
+        mapOrphanBytesByNode.erase(*it);
+    }
+
+    if (nReleased && fDebug)
+        printf("orphan pool: released %u records from %u departed peers (%u bytes held)\n",
+               (unsigned)nReleased, (unsigned)setDeparted.size(), (unsigned)nOrphanBlocksFootprint);
+    return nReleased;
+}
+
+// Orphans expire so a block whose parent never arrives is not held forever. Expiry is
+// not a rejection: the block returns via headers or a fresh inv.
+size_t ExpireOrphanBlocks(int64_t nNow)
+{
+    AssertLockHeld(cs_main);
+
+    if (ORPHAN_BLOCK_EXPIRY_SECONDS <= 0)
+        return 0;
+
+    vector<uint256> vExpired;
+    for (map<uint256, COrphanBlock>::const_iterator it = mapOrphanBlocks.begin();
+         it != mapOrphanBlocks.end(); ++it)
+        if (nNow - it->second.nTimeParked > ORPHAN_BLOCK_EXPIRY_SECONDS)
+            vExpired.push_back(it->first);
+
+    size_t nDropped = 0;
+    for (unsigned int i = 0; i < vExpired.size(); i++)
+        if (EraseOrphanBlock(vExpired[i], true))
+            nDropped++;
+
+    if (nDropped && fDebug)
+        printf("orphan pool: expired %u records older than %" PRId64"s (%u bytes held)\n",
+               (unsigned)nDropped, (int64_t)ORPHAN_BLOCK_EXPIRY_SECONDS,
+               (unsigned)nOrphanBlocksFootprint);
+    return nDropped;
+}
+
+size_t SweepOrphanPool(int64_t nNow)
+{
+    AssertLockHeld(cs_main);
+
+    // Refusal records outlive their usefulness once the longest deferral they
+    // can produce has passed, and nothing else drops one for a hash that is
+    // never offered again.
+    const int64_t nStale = (ORPHAN_REFUSAL_BACKOFF_SECONDS << ORPHAN_REFUSAL_BACKOFF_MAX_SHIFT) * 2;
+    for (map<uint256, COrphanRefusal>::iterator it = mapOrphanRefused.begin();
+         it != mapOrphanRefused.end(); )
+    {
+        if (nNow - it->second.nTime > nStale)
+            mapOrphanRefused.erase(it++);
+        else
+            ++it;
+    }
+
+    // Suppression records the same way: AskFor drops one it finds lapsed, but a
+    // hash nothing asks for again would otherwise sit in the map.
+    {
+        LOCK(cs_orphanNeverFits);
+        for (map<uint256, COrphanSuppression>::iterator it = mapOrphanNeverFits.begin();
+             it != mapOrphanNeverFits.end(); )
+        {
+            if (nNow >= it->second.nUntil)
+                mapOrphanNeverFits.erase(it++);
+            else
+                ++it;
+        }
+    }
+
+    return ReleaseDepartedOrphanOwners() + ExpireOrphanBlocks(nNow);
+}
+
+// Sweep driver, called from the message-handler loop so it runs even with no peers
+// connected. Rate limited: it walks the pool.
+void PeriodicOrphanPoolSweep()
+{
+    static int64_t nLastOrphanSweep = 0;
+
+    const int64_t nNow = GetTime();
+    if (nNow - nLastOrphanSweep < ORPHAN_POOL_SWEEP_INTERVAL_SECONDS)
+        return;
+
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+        return;
+
+    nLastOrphanSweep = nNow;
+    SweepOrphanPool(nNow);
+}
+
+// A block larger than an empty pool's room (or the owner's full share) can never be
+// held, so re-asking it is pointless.
+bool OrphanPoolCouldEverHold(size_t nFootprint, NodeId owner)
+{
+    if (GetArg("-maxorphanblocks", DEFAULT_MAX_ORPHAN_BLOCKS) <= 0)
+        return false;
+    if (nFootprint > GetMaxOrphanBlocksFootprint())
+        return false;
+    if (owner >= 0 && nFootprint > GetMaxOrphanBlocksFootprintPerPeer())
+        return false;
+    return true;
+}
+
+// A random orphan with no orphan depending on it, as the entry bound has always
+// picked one.
+static uint256 RandomOrphanLeaf()
+{
+    if (mapOrphanBlocksByPrev.empty())
+        return mapOrphanBlocks.empty() ? uint256(0) : mapOrphanBlocks.begin()->first;
 
     unsigned char randBytes[4];
     unsigned int randVal;
@@ -4202,25 +4701,127 @@ void PruneOrphanBlocks()
         it = it2;
     } while(1);
 
-    uint256 hash = it->second->GetHash();
-    const bool fIsProofOfStake = it->second->IsProofOfStake();
-    const std::pair<COutPoint, unsigned int> stake = it->second->GetProofOfStake();
-    delete it->second;
-    mapOrphanBlocksByPrev.erase(it);
-    mapOrphanBlocks.erase(hash);
+    return it->second->GetHash();
+}
 
-    map<uint256, NodeId>::iterator nodeIt = mapOrphanBlocksByNode.find(hash);
-    if (nodeIt != mapOrphanBlocksByNode.end()) {
-        mapOrphanCountByNode[nodeIt->second]--;
-        mapOrphanBlocksByNode.erase(nodeIt);
+// Make room for one orphan of nIncomingFootprint bytes charged to owner. The byte bound
+// refuses and never evicts; entry pressure evicts a random leaf. A refused park evicts nothing.
+bool PruneOrphanBlocks(size_t nIncomingFootprint, NodeId owner)
+{
+    AssertLockHeld(cs_main);
+
+    // Sweep first so the park is measured against the live pool. Only removes.
+    SweepOrphanPool(GetTime());
+
+    const size_t nMaxEntries = (size_t)std::max((int64_t)0, GetArg("-maxorphanblocks", DEFAULT_MAX_ORPHAN_BLOCKS));
+    const size_t nMaxFootprint = GetMaxOrphanBlocksFootprint();
+
+    if (nMaxEntries == 0)
+        return false;
+
+    if (nOrphanBlocksFootprint + nIncomingFootprint > nMaxFootprint)
+    {
+        if (fDebug)
+            printf("PruneOrphanBlocks: byte-bound refusal of %u bytes (pool %u entries, %u of %u bytes)\n",
+                   (unsigned)nIncomingFootprint, (unsigned)mapOrphanBlocks.size(),
+                   (unsigned)nOrphanBlocksFootprint, (unsigned)nMaxFootprint);
+        return false;
     }
 
-    // A pruned orphan must release its stake marker, otherwise later
-    // re-deliveries of the same block are rejected as duplicate proof-of-stake
-    // orphan even though no stored orphan still references it.  Only release
-    // the kernel when no other stored orphan still references it.
-    if (fIsProofOfStake)
-        EraseStakeSeenOrphanIfUnreferenced(stake);
+    if (owner >= 0)
+    {
+        const size_t nShare = GetMaxOrphanBlocksFootprintPerPeer();
+        const size_t nHeld = GetOrphanBlocksFootprintForNode(owner);
+        if (nHeld + nIncomingFootprint > nShare)
+        {
+            if (fDebug)
+                printf("PruneOrphanBlocks: peer %d over its byte share (%u held + %u incoming > %u)\n",
+                       (int)owner, (unsigned)nHeld, (unsigned)nIncomingFootprint, (unsigned)nShare);
+            return false;
+        }
+    }
+
+    while (!mapOrphanBlocks.empty() && mapOrphanBlocks.size() + 1 > nMaxEntries)
+    {
+        const uint256 hashEvict = RandomOrphanLeaf();
+        if (fDebug)
+            printf("PruneOrphanBlocks: entry-bound eviction of %s (pool %u entries, %u bytes)\n",
+                   hashEvict.ToString().substr(0,20).c_str(),
+                   (unsigned)mapOrphanBlocks.size(), (unsigned)nOrphanBlocksFootprint);
+        if (!EraseOrphanBlock(hashEvict, true))
+            break;
+    }
+
+    return mapOrphanBlocks.size() + 1 <= nMaxEntries;
+}
+
+// Requeue a refused block for that peer (a re-announce is swallowed by setInventoryKnown).
+// mapAlreadyAskedFor is the backoff; a block the pool can never hold is suppressed pool-side.
+static void ReAskForRefusedOrphan(CNode* pfrom, const uint256& hash, size_t nFootprint,
+                                  NodeId owner, const std::vector<uint256>& vWaitedOn)
+{
+    AssertLockHeld(cs_main);
+
+    if (!OrphanPoolCouldEverHold(nFootprint, owner))
+    {
+        SuppressOrphanBlockRequest(hash, GetTime(), vWaitedOn);
+        if (fDebug)
+            printf("orphan pool: suppressing %s for %" PRId64"s, %u bytes never fits\n",
+                   hash.ToString().substr(0,20).c_str(),
+                   (int64_t)ORPHAN_NEVER_FITS_SUPPRESS_SECONDS, (unsigned)nFootprint);
+        return;
+    }
+    if (!pfrom)
+        return;
+
+    const int64_t nNow = GetTime();
+    int64_t nBackoff = ORPHAN_REFUSAL_BACKOFF_SECONDS;
+    {
+        map<uint256, COrphanRefusal>::iterator it = mapOrphanRefused.find(hash);
+        if (it == mapOrphanRefused.end())
+        {
+            // Past the cap no record is kept and the base deferral stands, so
+            // the map cannot grow with the hashes a peer offers.
+            if (mapOrphanRefused.size() < MAX_ORPHAN_REFUSAL_RECORDS)
+                mapOrphanRefused.insert(make_pair(hash, COrphanRefusal(nNow, 0)));
+        }
+        else
+        {
+            if (it->second.nShift < ORPHAN_REFUSAL_BACKOFF_MAX_SHIFT)
+                it->second.nShift++;
+            it->second.nTime = nNow;
+            nBackoff = ORPHAN_REFUSAL_BACKOFF_SECONDS << it->second.nShift;
+        }
+    }
+
+    const CInv inv(MSG_BLOCK, hash);
+    {
+        LOCK(cs_mapAlreadyAskedFor);
+        std::map<CInv, int64_t>::iterator it = mapAlreadyAskedFor.find(inv);
+        if (it == mapAlreadyAskedFor.end())
+        {
+            // Mirrors AskFor's own cap: inserting past it here would grow the
+            // map by the one path that bypasses the check.
+            if (mapAlreadyAskedFor.size() >= MAX_ASKFOR_SIZE)
+                return;
+            it = mapAlreadyAskedFor.insert(std::make_pair(inv, (int64_t)0)).first;
+        }
+        const int64_t nNowUs = nNow * 1000000;
+        if (it->second < nNowUs)
+            it->second = nNowUs;
+        it->second += nBackoff * 1000000;
+        // Capped against now: the record is keyed by hash, so without a cap one peer's
+        // refusals would push the request out for every peer without limit.
+        const int64_t nCapUs = nNowUs + ORPHAN_REASK_MAX_DEFERRAL_SECONDS * 1000000;
+        if (it->second > nCapUs)
+            it->second = nCapUs;
+        nBackoff = (it->second - nNowUs) / 1000000;
+    }
+    pfrom->AskFor(inv);
+
+    if (fDebug)
+        printf("orphan pool: refused %s, next request deferred %" PRId64"s\n",
+               hash.ToString().substr(0,20).c_str(), nBackoff);
 }
 
 // The parent fetch paths request and serve merge parents by this list, so they
@@ -13592,11 +14193,13 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                        hash.ToString().substr(0,20).c_str(),
                        vMissingDAGParents[0].ToString().substr(0,20).c_str());
 
-            PruneOrphanBlocks();
-
             if (pfrom)
             {
-                int nOrphansFromPeer = mapOrphanCountByNode[pfrom->GetId()];
+                // Read, do not create: operator[] would leave a zero entry for a
+                // peer holding nothing, which is both a growing map keyed on a
+                // per-connection id and a count the erase-at-zero rule forbids.
+                std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
+                int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
                 if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER)
                 {
                     pfrom->PushGetBlocks(pindexBest, uint256(0));
@@ -13608,14 +14211,36 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 }
             }
 
+            // Measured before the copy is made; room is made last, so a refused block costs no held
+            // orphan its place.
+            const size_t nFootprint = OrphanBlockFootprint(*pblock);
+            const NodeId owner = pfrom ? pfrom->GetId() : (NodeId)-1;
+
+            // Cheap first cut before the room test; AddOrphanBlock holds the binding check.
+            if (pfrom && (pfrom->fDisconnect || OrphanOwnerHasDeparted(owner)))
+                return error("ProcessBlock() : peer %d disconnecting, %s not parked", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
+
+            if (!PruneOrphanBlocks(nFootprint, owner))
+            {
+                // Ask for the merge parents even though the block is not held: they are what let a
+                // refused orphan connect.
+                if (pfrom)
+                {
+                    for (const uint256& hashMissing : vMissingDAGParents)
+                        pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+                }
+                // Unscored, and asked for again unless it could never fit: the
+                // block is admissible and the pool simply has no room for it now.
+                ReAskForRefusedOrphan(pfrom, hash, nFootprint, owner, vMissingDAGParents);
+                return error("ProcessBlock() : orphan pool cannot hold %s", hash.ToString().substr(0,20).c_str());
+            }
+
             CBlock* pblock2 = new CBlock(*pblock);
-            mapOrphanBlocks.insert(make_pair(hash, pblock2));
-            mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblock2));
+            if (!AddOrphanBlock(hash, pblock2, vMissingDAGParents[0], owner, nFootprint))
+                return error("ProcessBlock() : orphan pool already holds %s", hash.ToString().substr(0,20).c_str());
 
             if (pfrom)
             {
-                mapOrphanBlocksByNode[hash] = pfrom->GetId();
-                mapOrphanCountByNode[pfrom->GetId()]++;
                 for (const uint256& hashMissing : vMissingDAGParents)
                     pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
             }
@@ -13630,8 +14255,6 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             printf("ProcessBlock: ORPHAN BLOCK, prev=%s\n", pblock->hashPrevBlock.ToString().substr(0,20).c_str());
             //LogPrintf("ProcessBlock: ORPHAN BLOCK %lu, prev=%s\n", (unsigned long)mapOrphanBlocks.size(), pblock->hashPrevBlock.ToString());
 
-        PruneOrphanBlocks();
-
         if (IsInitialBlockDownload()) {
             static int64_t nLastOrphanCountClear = 0;
             int64_t nNow = GetTime();
@@ -13644,7 +14267,9 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         }
 
         if (pfrom) {
-            int nOrphansFromPeer = mapOrphanCountByNode[pfrom->GetId()];
+            // Read, do not create (see the DAG park site above).
+            std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
+            int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
             if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER) {
                 pfrom->PushGetBlocks(pindexBest, uint256(0));
 
@@ -13663,17 +14288,39 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             // Duplicate stake allowed only when there is orphan child block
             if (setStakeSeenOrphan.count(pblock->GetProofOfStake()) && !mapOrphanBlocksByPrev.count(hash) && !Checkpoints::WantedByPendingSyncCheckpoint(hash))
                 return error("ProcessBlock() : duplicate proof-of-stake (%s, %d) for orphan block %s", pblock->GetProofOfStake().first.ToString().c_str(), pblock->GetProofOfStake().second, hash.ToString().c_str());
-            else
-                setStakeSeenOrphan.insert(pblock->GetProofOfStake());
         }
-        CBlock* pblock2 = new CBlock(*pblock);
-        mapOrphanBlocks.insert(make_pair(hash, pblock2));
-        mapOrphanBlocksByPrev.insert(make_pair(pblock2->hashPrevBlock, pblock2));
 
-        if (pfrom) {
-            mapOrphanBlocksByNode[hash] = pfrom->GetId();
-            mapOrphanCountByNode[pfrom->GetId()]++;
+        // Measured before the copy (see the DAG park site); room is made last.
+        const size_t nFootprint = OrphanBlockFootprint(*pblock);
+        const NodeId owner = pfrom ? pfrom->GetId() : (NodeId)-1;
+
+        // See the DAG park site: a cheap first cut ahead of the room test, with
+        // the binding guard in AddOrphanBlock.
+        if (pfrom && (pfrom->fDisconnect || OrphanOwnerHasDeparted(owner)))
+            return error("ProcessBlock() : peer %d disconnecting, %s not parked", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
+
+        if (!PruneOrphanBlocks(nFootprint, owner))
+        {
+            // Ancestor requests go out even though the block is not held (see the DAG park site).
+            if (pfrom)
+            {
+                pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(pblock));
+                pfrom->AskFor(CInv(MSG_BLOCK, WantedByOrphan(pblock)));
+            }
+            ReAskForRefusedOrphan(pfrom, hash, nFootprint, owner,
+                                  std::vector<uint256>(1, pblock->hashPrevBlock));
+            return error("ProcessBlock() : orphan pool cannot hold %s", hash.ToString().substr(0,20).c_str());
         }
+
+        CBlock* pblock2 = new CBlock(*pblock);
+
+        if (!AddOrphanBlock(hash, pblock2, pblock2->hashPrevBlock, owner, nFootprint))
+            return error("ProcessBlock() : orphan pool already holds %s", hash.ToString().substr(0,20).c_str());
+
+        // Take the stake marker after the park and eviction, so a refused park leaves no
+        // marker to reject the block's later re-delivery.
+        if (pblock->IsProofOfStake())
+            setStakeSeenOrphan.insert(pblock->GetProofOfStake());
 
         // Ask this guy to fill in what we're missing
         if (pfrom)
@@ -13699,11 +14346,20 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     for (unsigned int i = 0; i < vWorkQueue.size(); i++)
     {
         uint256 hashPrev = vWorkQueue[i];
+
+        // Collect the waiters, then drop the whole key range, then process them:
+        // a still-incomplete DAG orphan re-parks itself into this multimap, which
+        // must not happen while a range of it is being walked.
+        std::vector<CBlock*> vWaiting;
         for (multimap<uint256, CBlock*>::iterator mi = mapOrphanBlocksByPrev.lower_bound(hashPrev);
              mi != mapOrphanBlocksByPrev.upper_bound(hashPrev);
              ++mi)
+            vWaiting.push_back((*mi).second);
+        mapOrphanBlocksByPrev.erase(hashPrev);
+
+        for (unsigned int j = 0; j < vWaiting.size(); j++)
         {
-            CBlock* pblockOrphan = (*mi).second;
+            CBlock* pblockOrphan = vWaiting[j];
             uint256 orphanHash = pblockOrphan->GetHash();
             std::vector<uint256> vMissingDAGParents = GetMissingDAGMergeParents(*pblockOrphan);
             if (!vMissingDAGParents.empty())
@@ -13713,6 +14369,11 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                            orphanHash.ToString().substr(0,20).c_str(),
                            vMissingDAGParents[0].ToString().substr(0,20).c_str());
                 mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblockOrphan));
+                // The record follows the block to the hash it now waits on, so a
+                // later removal erases the by-prev entry that actually exists.
+                std::map<uint256, COrphanBlock>::iterator itRecord = mapOrphanBlocks.find(orphanHash);
+                if (itRecord != mapOrphanBlocks.end())
+                    itRecord->second.hashWaitedFor = vMissingDAGParents[0];
                 if (pfrom)
                 {
                     for (const uint256& hashMissing : vMissingDAGParents)
@@ -13722,22 +14383,9 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             }
             if (pblockOrphan->AcceptBlock())
                 vWorkQueue.push_back(orphanHash);
-            mapOrphanBlocks.erase(orphanHash);
-            // Release the stake marker only when no other stored orphan still
-            // references the kernel (duplicate stakes are allowed on the
-            // orphan path while an orphan child depends on the block).
-            if (pblockOrphan->IsProofOfStake())
-                EraseStakeSeenOrphanIfUnreferenced(pblockOrphan->GetProofOfStake());
-
-            map<uint256, NodeId>::iterator nodeIt = mapOrphanBlocksByNode.find(orphanHash);
-            if (nodeIt != mapOrphanBlocksByNode.end()) {
-                mapOrphanCountByNode[nodeIt->second]--;
-                mapOrphanBlocksByNode.erase(nodeIt);
-            }
-
-            delete pblockOrphan;
+            // The by-prev entries for this key are already gone.
+            EraseOrphanBlock(orphanHash, false);
         }
-        mapOrphanBlocksByPrev.erase(hashPrev);
     }
 
     if (fDebug && GetBoolArg("-showtimers", false)) {
@@ -15066,10 +15714,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             if (inv.type == MSG_BLOCK && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
                 printf("sync inv: %s %s from %s\n", inv.ToString().c_str(), fAlreadyHave ? "HAVE" : "NEW", pfrom->addrName.c_str());
 
+            // The same lift the headers path applies, so a block learned of
+            // by inv alone does not wait out the suppression window.
+            if (inv.type == MSG_BLOCK && !fAlreadyHave)
+                LiftOrphanBlockRequestSuppressionIfConnectable(inv.hash);
             if (!fAlreadyHave)
                 pfrom->AskFor(inv);
             else if (inv.type == MSG_BLOCK && mapOrphanBlocks.count(inv.hash)) {
-                pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(mapOrphanBlocks[inv.hash]));
+                pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(mapOrphanBlocks[inv.hash].pblock));
 				//PushGetBlocks(pfrom, pindexBest, GetOrphanRoot(mapOrphanBlocks[inv.hash]));
             } else if (nInv == nLastBlock) {
                 // In case we are on a very long side-chain, it is possible that we already have
@@ -15328,17 +15980,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             else
             {
-                // A block already held as an orphan is not missing, so it is not
-                // requested again: re-requesting held orphans is what produced the
-                // "already have block (orphan)" deliveries by the hundred thousand.
-                // The request goes through AskFor so it shares the one per-peer
-                // window with every other block request, and only for headers within
-                // that window of the tip -- a header further out cannot connect until
-                // the tip advances anyway. Marking headers in flight directly, with no
-                // window, pinned the in-flight set near two thousand, the getdata flush
-                // then never drained AskFor, and the merge parents a DAG orphan asks
-                // for were never sent: that is what kept a node's tip parked with the
-                // next block already in hand.
+                // Held orphans are not re-requested. Requests go through AskFor, within one in-flight
+                // window of the tip. A suppressed hash is lifted once its whole wait set is indexed.
+                if (pindexPrev)
+                    LiftOrphanBlockRequestSuppressionIfConnectable(hash);
                 if (!mapOrphanBlocks.count(hash) &&
                     nHeaderHeight <= nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER)
                     pfrom->AskFor(CInv(MSG_BLOCK, hash));

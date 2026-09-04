@@ -60,7 +60,7 @@ unsigned int CountCommand(CNode& node, const std::string& strWant)
 // orphan leaves no trace for the suites that follow.
 class CScopedOrphanTables
 {
-    std::map<uint256, CBlock*> savedBlocks;
+    std::map<uint256, COrphanBlock> savedBlocks;
     std::multimap<uint256, CBlock*> savedByPrev;
     std::map<uint256, NodeId> savedByNode;
 public:
@@ -72,15 +72,17 @@ public:
         mapOrphanBlocks.clear();
         mapOrphanBlocksByPrev.clear();
         mapOrphanBlocksByNode.clear();
+        RecomputeOrphanBlocksFootprint();
     }
     ~CScopedOrphanTables()
     {
-        for (std::map<uint256, CBlock*>::iterator it = mapOrphanBlocks.begin();
+        for (std::map<uint256, COrphanBlock>::iterator it = mapOrphanBlocks.begin();
              it != mapOrphanBlocks.end(); ++it)
-            delete it->second;
+            delete it->second.pblock;
         mapOrphanBlocks = savedBlocks;
         mapOrphanBlocksByPrev = savedByPrev;
         mapOrphanBlocksByNode = savedByNode;
+        RecomputeOrphanBlocksFootprint();
     }
 };
 
@@ -184,8 +186,11 @@ BOOST_FIXTURE_TEST_CASE(held_orphan_is_not_requested, Fixture)
     std::vector<CBlock> vHeaders = MakeHeaderChain(pindexBest->GetBlockHash(), 40, 2);
     const size_t nHeld = 5;
     CBlock* pheld = new CBlock(vHeaders[nHeld]);
-    mapOrphanBlocks[pheld->GetHash()] = pheld;
-    mapOrphanBlocksByPrev.insert(std::make_pair(pheld->hashPrevBlock, pheld));
+    {
+        LOCK(cs_main);
+        AddOrphanBlock(pheld->GetHash(), pheld, pheld->hashPrevBlock, (NodeId)-1,
+                       OrphanBlockFootprint(*pheld));
+    }
 
     DeliverHeaders(sender, receiver, vHeaders);
     SendMessages(&receiver.node, false);

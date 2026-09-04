@@ -1406,6 +1406,10 @@ void ThreadSocketHandler2(void* parg)
                     // remove from vNodes
                     vNodes.erase(remove(vNodes.begin(), vNodes.end(), pnode), vNodes.end());
 
+                    // Release the orphan pool records this peer owns (NodeIds are not
+                    // reused). Recorded, not released here: cs_main precedes cs_vNodes.
+                    OrphanBlocksNodeDisconnected(pnode->GetId());
+
                     // release outbound grant (if any)
                     pnode->grantOutbound.Release();
 
@@ -2565,6 +2569,10 @@ void ThreadMessageHandler2(void* parg)
         // Before the per-peer loop: everything below holds a peer's cs_vSend.
         if (!vNodesCopy.empty())
             SendMessagesGlobal();
+
+        // Ungated on the peer count: a node that has just lost the peer holding
+        // its orphans has no park and no SendMessages pass left to release them.
+        PeriodicOrphanPoolSweep();
 
         bool fSleep = true;
 

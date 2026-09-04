@@ -178,9 +178,16 @@ extern std::deque<std::pair<int64_t, CInv> > vRelayExpiration;
 extern CCriticalSection cs_mapRelay;
 extern std::map<CInv, int64_t> mapAlreadyAskedFor;
 extern CCriticalSection cs_mapAlreadyAskedFor;
+/** Cap on mapAlreadyAskedFor; every writer of the map must honour it. */
+static const size_t MAX_ASKFOR_SIZE = 50000;
 
 extern NodeId nLastNodeId;
 extern CCriticalSection cs_nLastNodeId;
+
+/** Orphan-pool hooks, defined in main.cpp. OrphanBlocksNodeDestroyed runs at CNode destruction;
+ *  IsOrphanBlockRequestSuppressed gates every block request path. */
+void OrphanBlocksNodeDestroyed(NodeId owner);
+bool IsOrphanBlockRequestSuppressed(const uint256& hash);
 
 struct LocalServiceInfo {
     int nScore;
@@ -566,6 +573,9 @@ public:
 
     ~CNode()
     {
+        // No thread can name this id again, so the pool may retire its
+        // departure marker.
+        OrphanBlocksNodeDestroyed(id);
         if (hSocket != INVALID_SOCKET)
         {
             closesocket(hSocket);
@@ -684,8 +694,16 @@ public:
 
     void AskFor(const CInv& inv)
     {
+        // Suppressed orphan blocks are not requested by any path; the headers path re-asks every round.
+        if (inv.type == MSG_BLOCK && IsOrphanBlockRequestSuppressed(inv.hash))
+        {
+            if (fDebugNet)
+                printf("askfor %s suppressed: the orphan pool can never hold it\n",
+                       inv.ToString().c_str());
+            return;
+        }
+
         LOCK(cs_mapAlreadyAskedFor);
-        static const size_t MAX_ASKFOR_SIZE = 50000;
         if (mapAlreadyAskedFor.size() >= MAX_ASKFOR_SIZE)
         {
             if (fDebugNet)

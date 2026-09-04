@@ -686,6 +686,7 @@ std::string HelpMessage()
         "  -blockprioritysize=<n> "   + _("Set maximum size of high-priority/low-fee transactions in bytes (default: 27000)") + "\n" +
         "  -maxorphantx=<n>       "   + strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS) + "\n" +
         "  -maxorphanblocks=<n>   "   + strprintf(_("Keep at most <n> unconnectable blocks in memory (default: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS) + "\n" +
+        "  -maxorphanmem=<n>      "   + strprintf(_("Keep the unconnectable block pool below <n> megabytes (default: %u, minimum: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS_MEM, MIN_MAX_ORPHAN_BLOCKS_MEM) + "\n" +
         "  -maxmempool=<n>        "   + strprintf(_("Keep the transaction memory pool below <n> megabytes (default: %u)"), DEFAULT_MAX_MEMPOOL_SIZE) + "\n" +
 
         "\n" + _("SSL options: (see the Bitcoin Wiki for SSL setup instructions)") + "\n" +
@@ -1569,6 +1570,8 @@ bool AppInit2()
             SoftSetArg("-maxorphantx", "10");       // Reduce orphan tx limit
         if (!mapArgs.count("-maxorphanblocks"))
             SoftSetArg("-maxorphanblocks", "100");  // Reduce orphan block limit
+        if (!mapArgs.count("-maxorphanmem"))
+            SoftSetArg("-maxorphanmem", strprintf("%u", LOWMEM_MAX_ORPHAN_BLOCKS_MEM));  // Reduce orphan block pool ceiling
 
         // Messaging defaults are resolved below.
 

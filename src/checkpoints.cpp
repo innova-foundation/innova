@@ -376,7 +376,7 @@ namespace Checkpoints
         if (hashBlock == hashPendingCheckpoint)
             return true;
         if (mapOrphanBlocks.count(hashPendingCheckpoint)
-            && hashBlock == WantedByOrphan(mapOrphanBlocks[hashPendingCheckpoint]))
+            && hashBlock == WantedByOrphan(mapOrphanBlocks[hashPendingCheckpoint].pblock))
             return true;
         return false;
     }
@@ -555,8 +555,8 @@ bool CSyncCheckpoint::ProcessSyncCheckpoint(CNode* pfrom)
             //PushGetBlocks(pfrom, pindexBest, hashCheckpoint);
             // ask directly as well in case rejected earlier by duplicate
             // proof-of-stake because getblocks may not get it this time
-            std::map<uint256, CBlock*>::iterator orphanIt = mapOrphanBlocks.find(hashCheckpoint);
-            pfrom->AskFor(CInv(MSG_BLOCK, orphanIt != mapOrphanBlocks.end() ? WantedByOrphan(orphanIt->second) : hashCheckpoint));
+            std::map<uint256, COrphanBlock>::iterator orphanIt = mapOrphanBlocks.find(hashCheckpoint);
+            pfrom->AskFor(CInv(MSG_BLOCK, orphanIt != mapOrphanBlocks.end() ? WantedByOrphan(orphanIt->second.pblock) : hashCheckpoint));
         };
         return false;
     };

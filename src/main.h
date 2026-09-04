@@ -108,6 +108,49 @@ static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 /** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 2500; // Increased for faster parallel sync
+/** Default for -maxorphanmem, orphan pool ceiling in MB: the smallest power of two that holds
+ *  one worst-case admitted block (up to ~28x its wire size).
+ *  Pinned by orphan_pool_bound_tests/the_ceiling_holds_the_worst_admitted_block_at_the_measured_expansion. */
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS_MEM = 256;
+/** Floor for the effective -maxorphanmem ceiling, in megabytes: a sanity clamp
+ *  on the knob. It sits below the low-memory soft-set so that profile gets the
+ *  smaller pool it asks for instead of being clamped back up. */
+static const unsigned int MIN_MAX_ORPHAN_BLOCKS_MEM = 32;
+/** -maxorphanmem soft-set for the low-memory (hybrid SPV) profile, in megabytes.
+ *  An ADAPTIVE_BLOCK_CEILING block exceeds it and is refused (unscored, re-asked). */
+static const unsigned int LOWMEM_MAX_ORPHAN_BLOCKS_MEM = 64;
+/** Percentage of the orphan byte ceiling one peer's held blocks may occupy, so one
+ *  peer's never-draining orphans cannot pin the pool (byte pressure refuses, not
+ *  evicts). Mirrors the entry bound's 750 of 2500; self-submitted blocks are exempt. */
+static const unsigned int MAX_ORPHAN_MEM_SHARE_PER_PEER_PERCENT = 30;
+/** Orphan block hold time in seconds, equal to TIMEOUT_INTERVAL; must exceed the entry-bound
+ *  drain time (600 s). Pinned by orphan_pool_bound_tests/the_expiry_covers_an_honest_ancestor_fetch
+ *  and .../an_orphan_older_than_the_expiry_is_dropped_and_a_younger_one_is_not. */
+static const int64_t ORPHAN_BLOCK_EXPIRY_SECONDS = 20 * 60;
+/** Base deferral added to a refused block's next request, in seconds. Doubles per
+ *  refusal of the same hash so a full pool does not cause a re-request hot loop. */
+static const int64_t ORPHAN_REFUSAL_BACKOFF_SECONDS = 8;
+/** Doublings the deferral may take, so it tops out at 8 << 6 = 512 s. */
+static const int ORPHAN_REFUSAL_BACKOFF_MAX_SHIFT = 6;
+/** Cap on the refusal records held. Past it the base deferral is used and no
+ *  record is kept, so the map cannot grow with the hashes offered. */
+static const size_t MAX_ORPHAN_REFUSAL_RECORDS = 4096;
+/** Cap on how far refusals push a hash's next request, in seconds; the record is keyed by
+ *  hash, so one peer cannot delay a block for every peer.
+ *  Pinned by orphan_pool_bound_tests/the_re_ask_deferral_is_capped_however_many_refusals_land. */
+static const int64_t ORPHAN_REASK_MAX_DEFERRAL_SECONDS =
+    ORPHAN_REFUSAL_BACKOFF_SECONDS << ORPHAN_REFUSAL_BACKOFF_MAX_SHIFT;
+/** How long a block the pool can never hold is not requested, in seconds; lifted once its
+ *  wait set is indexed. Pinned by orphan_pool_bound_tests/a_never_fits_block_is_not_re_asked_by_the_headers_path
+ *  and .../a_never_fits_dag_orphan_is_not_re_asked_until_its_merge_parent_connects. */
+static const int64_t ORPHAN_NEVER_FITS_SUPPRESS_SECONDS = 600;
+/** Cap on the suppression records held, so the map cannot grow with the hashes a
+ *  peer offers. Past it nothing is recorded and the hash is requested as before. */
+static const size_t MAX_ORPHAN_NEVER_FITS_RECORDS = 4096;
+/** How often the periodic sweep runs, in seconds. Parks sweep unconditionally,
+ *  so this only covers a node that is not being offered blocks; it walks the
+ *  pool and the message-handler loop calls it every turn, so it is spaced. */
+static const int64_t ORPHAN_POOL_SWEEP_INTERVAL_SECONDS = 10;
 /** Default for -maxmempool, maximum mempool size in MB */
 static const unsigned int DEFAULT_MAX_MEMPOOL_SIZE = 300; // 300MB default
 static const unsigned int MAX_INV_SZ = 50000;
@@ -912,7 +955,24 @@ extern int64_t nTimeBestReceived;
 extern CCriticalSection cs_setpwalletRegistered;
 extern std::set<CWallet*> setpwalletRegistered;
 extern unsigned char pchMessageStart[4];
-extern std::map<uint256, CBlock*> mapOrphanBlocks;
+/** One held orphan block: the block, the byte footprint charged for it, and the
+ *  hash it is parked under. The size is stored once, here, so the pool total
+ *  cannot drift away from the set of records it sums. */
+struct COrphanBlock
+{
+    CBlock* pblock;
+    size_t nFootprint;
+    uint256 hashWaitedFor;
+    int64_t nTimeParked;
+
+    COrphanBlock() : pblock(NULL), nFootprint(0), nTimeParked(0) {}
+    COrphanBlock(CBlock* pblockIn, size_t nFootprintIn, const uint256& hashWaitedForIn,
+                 int64_t nTimeParkedIn)
+        : pblock(pblockIn), nFootprint(nFootprintIn), hashWaitedFor(hashWaitedForIn),
+          nTimeParked(nTimeParkedIn) {}
+};
+
+extern std::map<uint256, COrphanBlock> mapOrphanBlocks;
 extern std::multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 extern std::map<uint256, NodeId> mapOrphanBlocksByNode;
 extern std::map<NodeId, int> mapOrphanCountByNode;
@@ -922,9 +982,95 @@ extern std::set<std::pair<COutPoint, unsigned int> > setStakeSeenOrphan;
 // it, so an evicted orphan cannot leave a stale marker that rejects re-deliveries.
 void EraseStakeSeenOrphanIfUnreferenced(const std::pair<COutPoint, unsigned int>& stake);
 
-// Randomly evict one orphan (plus any selected descendants) once the orphan
-// table exceeds -maxorphanblocks.
-void PruneOrphanBlocks();
+// Memory charged for holding one orphan: its wire size plus the per-object
+// overhead of the vectors it deserialises into.
+size_t OrphanBlockFootprint(const CBlock& block);
+
+// Running total of the footprints of the held orphans, and the effective
+// -maxorphanmem ceiling in bytes (clamped to MIN_MAX_ORPHAN_BLOCKS_MEM from
+// below and to what a size_t can hold from above).
+size_t GetOrphanBlocksFootprint();
+size_t GetMaxOrphanBlocksFootprint();
+
+// The share of that ceiling one peer's own held blocks may occupy.
+size_t GetMaxOrphanBlocksFootprintPerPeer();
+
+// Bytes charged to one owner. owner < 0 reads the bytes held for no peer.
+size_t GetOrphanBlocksFootprintForNode(NodeId owner);
+
+// How many owners currently carry charged bytes, so a test can see a bucket
+// left behind for an owner that holds nothing.
+size_t GetOrphanOwnerBucketCount();
+
+// Re-derive the running totals from the records, for callers that replace the
+// record set wholesale.
+void RecomputeOrphanBlocksFootprint();
+
+// The only two writers of the orphan tables. owner < 0 parks with no peer.
+// False means the hash was already held: the block is deleted and nothing is
+// stored, so the caller must not touch it again.
+bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWaitedFor,
+                    NodeId owner, size_t nFootprint);
+bool EraseOrphanBlock(const uint256& hash, bool fEraseByPrevEntries);
+
+// Record that a peer has gone. Called from the socket thread under cs_vNodes,
+// which is taken after cs_main everywhere else, so it only notes the id under a
+// leaf lock; the records are released on the next sweep, under cs_main.
+void OrphanBlocksNodeDisconnected(NodeId owner);
+
+// True while the pool still refuses to charge anything to this owner: the peer
+// has departed and its CNode has not been destroyed, so a park issued before the
+// departure was seen may still be in flight for it. Read under cs_orphanDeparted.
+bool OrphanOwnerHasDeparted(NodeId owner);
+
+// Owners currently carrying a departure marker, and a reset for callers that
+// replace the pool state wholesale.
+size_t GetOrphanDepartedOwnerCount();
+void ClearOrphanDepartedOwners();
+
+// Request suppression for a block the pool can never hold, keyed by hash and checked in
+// CNode::AskFor. Lifted once every hash in vWaitedOn is indexed, or when the block parks.
+void SuppressOrphanBlockRequest(const uint256& hash, int64_t nNow,
+                                const std::vector<uint256>& vWaitedOn);
+void LiftOrphanBlockRequestSuppression(const uint256& hash);
+bool LiftOrphanBlockRequestSuppressionIfConnectable(const uint256& hash);
+size_t GetOrphanBlockRequestSuppressionCount();
+void ClearOrphanBlockRequestSuppression();
+
+// Drop every record a departed peer owns, releasing its bytes and its entry
+// charge, so a host that reconnects under a fresh NodeId cannot accumulate a
+// permanent share of the pool. Returns the number of records dropped.
+size_t ReleaseDepartedOrphanOwners();
+
+// Drop every record parked more than ORPHAN_BLOCK_EXPIRY_SECONDS ago. Returns
+// the number dropped.
+size_t ExpireOrphanBlocks(int64_t nNow);
+
+// Both of the above. Runs before every park, and on a timer from the driver
+// below so a quiescent node still releases.
+size_t SweepOrphanPool(int64_t nNow);
+
+// The timer. Called from the message-handler loop, which turns with no peers
+// connected as well; takes cs_main itself and skips the pass if it is busy.
+void PeriodicOrphanPoolSweep();
+
+// Whether a block of this footprint could ever be parked for this owner. False
+// means no drain and no expiry makes room for it, so the refusal suppresses the
+// hash for every requester rather than only declining its own re-ask.
+bool OrphanPoolCouldEverHold(size_t nFootprint, NodeId owner);
+
+// Records behind the refusal backoff, and a reset for callers that replace the
+// pool state wholesale.
+size_t GetOrphanRefusalRecordCount();
+void ClearOrphanRefusalRecords();
+
+// The deferral the next refusal of this hash would apply, in seconds.
+int64_t GetOrphanRefusalBackoff(const uint256& hash);
+
+// Make room for one block of nIncomingFootprint bytes charged to owner (< 0 = self).
+// The byte bound (and per-peer share) refuses and never evicts and is tested first;
+// entry pressure (-maxorphanblocks) evicts. False means the caller must not park.
+bool PruneOrphanBlocks(size_t nIncomingFootprint, NodeId owner);
 extern std::map<int64_t, CAnonOutputCount> mapAnonOutputStats;
 
 extern int nLastFinalizedHeight;
