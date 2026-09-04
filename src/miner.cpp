@@ -193,7 +193,137 @@ static bool IsPostDAGProofOfStakeIndex(const CBlockIndex* pindex)
     return pindex && pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake();
 }
 
-static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBlockIndex* pBest)
+// Identity of the finality state a verdict was reached against: the tip it was measured
+// from, plus the anchors that tip implies. The anchors belong in it because installing or
+// replacing epoch state changes every verdict without moving the tip.
+struct CVerdictAnchor
+{
+    uint256 hashTip;
+    int nFinalCur;
+    int nFinalLatch;
+    int nAsOfEpoch;
+    // The probe's own verdict. Without it an epoch-state gap is indistinguishable from a
+    // chain with no finalized height yet: both report anchors of zero, so verdicts reached
+    // before the gap would survive into it.
+    int nProbeVerdict;
+
+    CVerdictAnchor()
+        : hashTip(0), nFinalCur(0), nFinalLatch(0), nAsOfEpoch(0),
+          nProbeVerdict((int)REORG_FINALITY_ALLOW) {}
+    bool operator==(const CVerdictAnchor& o) const
+    {
+        return hashTip == o.hashTip && nFinalCur == o.nFinalCur &&
+               nFinalLatch == o.nFinalLatch && nAsOfEpoch == o.nAsOfEpoch &&
+               nProbeVerdict == o.nProbeVerdict;
+    }
+    bool operator!=(const CVerdictAnchor& o) const { return !(*this == o); }
+};
+
+// Requires cs_main. A fork height equal to the tip's cannot be rejected, so this reads the
+// anchors out of the same function the verdict itself uses rather than deriving them again.
+static CVerdictAnchor CurrentVerdictAnchor()
+{
+    CVerdictAnchor anchor;
+    anchor.hashTip = hashBestChain;
+    if (pindexBest)
+        anchor.nProbeVerdict = (int)CheckReorgAgainstFinality(
+            pindexBest->nHeight, pindexBest->nHeight,
+            anchor.nFinalCur, anchor.nFinalLatch, anchor.nAsOfEpoch);
+    return anchor;
+}
+
+// Cache of RAW BestChainSwitchVerdict answers; parent selection and the merge loop apply
+// different predicates to them. Cleared when the anchor moves, which makes releasing
+// cs_main between the two consumers safe.
+static CVerdictAnchor g_cachedVerdictAnchor;
+static bool g_fVerdictCacheValid = false;
+static std::map<uint256, ReorgFinalityVerdict> g_mapCachedVerdicts;
+
+// One template's handle on that cache. It records the anchor its parent selection ran
+// against so a straddled tip or anchor move is visible rather than silently applied.
+struct CTemplateVerdicts
+{
+    CVerdictAnchor anchorAtFill;
+    bool fFilled;
+
+    CTemplateVerdicts() : fFilled(false) {}
+};
+
+static ReorgFinalityVerdict TemplateSwitchVerdict(const CBlockIndex* pCandidate,
+                                                  CTemplateVerdicts& tv)
+{
+    int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
+    if (!pCandidate || pCandidate->phashBlock == NULL)
+        return BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch,
+                                      nAsOfEpoch);
+
+    const CVerdictAnchor anchor = CurrentVerdictAnchor();
+    if (!g_fVerdictCacheValid || g_cachedVerdictAnchor != anchor)
+    {
+        g_mapCachedVerdicts.clear();
+        g_cachedVerdictAnchor = anchor;
+        g_fVerdictCacheValid = true;
+    }
+    if (!tv.fFilled)
+    {
+        tv.anchorAtFill = anchor;
+        tv.fFilled = true;
+    }
+    else if (tv.anchorAtFill != anchor)
+    {
+        // cs_main is released between parent selection and the merge loop. Nothing recorded
+        // against the superseded anchor survives -- the cache was just cleared by the
+        // comparison above -- so this only re-bases what the template reports.
+        tv.anchorAtFill = anchor;
+        if (fDebug)
+            printf("CreateNewBlock: finality anchor moved mid-template; verdicts recomputed\n");
+    }
+
+    const uint256 hash = pCandidate->GetBlockHash();
+    std::map<uint256, ReorgFinalityVerdict>::const_iterator it = g_mapCachedVerdicts.find(hash);
+    if (it != g_mapCachedVerdicts.end())
+        return it->second;
+
+    const ReorgFinalityVerdict verdict =
+        BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
+    g_mapCachedVerdicts.insert(std::make_pair(hash, verdict));
+    return verdict;
+}
+
+// Only the permanent verdict (fork below the lagged anchor) blocks merging; REJECT_TRANSIENT
+// and STATE_MISSING must not, or an epoch-state gap would halt merging.
+static bool DAGMergeBlockedByVerdict(ReorgFinalityVerdict verdict)
+{
+    return verdict == REORG_FINALITY_REJECT_PERMANENT;
+}
+
+// Whether pTip's fork with pindexPrev's chain lies within DAG_MERGE_DEPTH of pindexPrev.
+// One hop only: not a transitive bound on the merge parent's ancestry.
+static bool TipForksWithinMergeDepth(const CBlockIndex* pTip, const CBlockIndex* pindexPrev)
+{
+    if (!pTip || !pindexPrev)
+        return false;
+
+    const int nFloor = pindexPrev->nHeight - DAG_MERGE_DEPTH;
+    const CBlockIndex* pa = pTip;
+    const CBlockIndex* pb = pindexPrev;
+    while (pa && pb && pa != pb && pa->nHeight > nFloor && pb->nHeight > nFloor)
+    {
+        if (pa->nHeight > pb->nHeight)
+            pa = pa->pprev;
+        else if (pb->nHeight > pa->nHeight)
+            pb = pb->pprev;
+        else
+        {
+            pa = pa->pprev;
+            pb = pb->pprev;
+        }
+    }
+    return pa && pa == pb;
+}
+
+static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBlockIndex* pBest,
+                                      CTemplateVerdicts& tv)
 {
     if (!pCandidate)
         return false;
@@ -216,48 +346,30 @@ static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBloc
         fBetter = pCandidate->phashBlock && !pBest->phashBlock;
     if (!fBetter)
         return false;
-    // A heavier index this node may not switch to (its fork with the tip lies below the
-    // finality anchor) is kept as a side block by AddToBlockIndex; building on it would
-    // solve blocks that are side-indexed in turn and never relayed. Evaluated only for a
-    // candidate that would otherwise win, and remembered per tip: on a node whose anchor
-    // has diverged from the fleet every fleet block is such a candidate, and each verdict
-    // is a fork walk.
-    static uint256 hashMemoTip;
-    static std::set<uint256> setIneligibleForTip;
-    if (hashMemoTip != hashBestChain)
-    {
-        hashMemoTip = hashBestChain;
-        setIneligibleForTip.clear();
-    }
-    const bool fHaveHash = pCandidate->phashBlock != NULL;
-    if (fHaveHash && setIneligibleForTip.count(pCandidate->GetBlockHash()))
-        return false;
-    int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
-    if (BestChainSwitchVerdict(pCandidate, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch) ==
-        REORG_FINALITY_ALLOW)
-        return true;
-    if (fHaveHash)
-        setIneligibleForTip.insert(pCandidate->GetBlockHash());
-    return false;
+    // A heavier index this node may not switch to is a side block; building on it yields
+    // unrelayed blocks. Fails closed on anything but ALLOW, unlike the merge loop. Checked
+    // only for a would-be winner, through the verdict cache (each verdict is a fork walk).
+    return TemplateSwitchVerdict(pCandidate, tv) == REORG_FINALITY_ALLOW;
 }
 
-static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)
+static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred,
+                                                CTemplateVerdicts& tv)
 {
     CBlockIndex* pBest = NULL;
 
-    if (IsBetterPoWTemplateParent(pPreferred, pBest))
+    if (IsBetterPoWTemplateParent(pPreferred, pBest, tv))
         pBest = pPreferred;
 
     CBlockIndex* pWalk = pindexBest;
     while (IsPostDAGProofOfStakeIndex(pWalk))
         pWalk = pWalk->pprev;
-    if (IsBetterPoWTemplateParent(pWalk, pBest))
+    if (IsBetterPoWTemplateParent(pWalk, pBest, tv))
         pBest = pWalk;
 
     for (std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.begin();
          mi != mapBlockIndex.end(); ++mi)
     {
-        if (IsBetterPoWTemplateParent(mi->second, pBest))
+        if (IsBetterPoWTemplateParent(mi->second, pBest, tv))
             pBest = mi->second;
     }
 
@@ -312,6 +424,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     if (!pblock.get())
         return NULL;
 
+    // This template's handle on the verdict cache, shared by parent selection and the merge
+    // loop. cs_main is released between them, so the cache is keyed on the finality anchor
+    // and re-checked on every read rather than trusted across the gap.
+    CTemplateVerdicts templateVerdicts;
+
     CBlockIndex* pindexPrev;
     {
         LOCK2(cs_main, g_dagManager.cs_dag);
@@ -319,7 +436,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if (!fProofOfStake && pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG)
         {
             CBlockIndex* pindexDAGTip = pindexPrev;
-            pindexPrev = SelectBestPoWTemplateParent(pindexPrev);
+            pindexPrev = SelectBestPoWTemplateParent(pindexPrev, templateVerdicts);
             if (pindexPrev && pindexDAGTip && pindexPrev != pindexDAGTip)
             {
                 printf("CreateNewBlock: selected PoW template parent height=%d hash=%s over DAG tip height=%d hash=%s\n",
@@ -443,6 +560,15 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (pTip->nHeight < pindexPrev->nHeight - DAG_MERGE_DEPTH)
                     continue;
                 if (pTip->nHeight >= nHeight)
+                    continue;
+                // Bounds the branch a peer must fetch. Run first: at most
+                // 2 * DAG_MERGE_DEPTH pprev steps, whereas the verdict is an unbounded walk.
+                if (!TipForksWithinMergeDepth(pTip, pindexPrev))
+                    continue;
+                // The trust filter above is transient: it stops excluding a branch this node
+                // may never switch to as soon as this chain outgrows it, and the block that
+                // merges it then cannot be served to a peer that lacks it.
+                if (DAGMergeBlockedByVerdict(TemplateSwitchVerdict(pTip, templateVerdicts)))
                     continue;
 
                 vDAGParentsForBlock.push_back(hashTip);
