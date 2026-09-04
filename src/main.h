@@ -646,11 +646,14 @@ inline int GetForkHeightIV5NoteVote()
     extern bool fTestNet;
     if (fRegTest)
         return nRegtestIV5NoteVoteHeight;
-    // 4,700 blocks past Boundary B, so the pool exists and has been transacted
-    // against before a note carries a vote.
+    // Unset on the networks that carry value until the unspent-note proof lands.
+    // A note vote does not prove its note is unspent, so one note self-transferred
+    // votes once per transfer and is paid for each; a configured height is a claim
+    // the lane is safe. Restore 1700 on testnet and ShiftMainnetV5Activation(7955000)
+    // on mainnet, 4,700 blocks past Boundary B, when the proof is in.
     if (fTestNet)
-        return 1700;
-    return ShiftMainnetV5Activation(7955000);
+        return PRIVACY_VNEXT_HEIGHT_UNSET;
+    return PRIVACY_VNEXT_HEIGHT_UNSET;
 }
 #define FORK_HEIGHT_IV5_NOTE_VOTE (GetForkHeightIV5NoteVote())
 

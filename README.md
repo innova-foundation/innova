@@ -164,7 +164,7 @@ Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP
 Nothing in the v5 ladder has activated on mainnet. Mainnet gate heights are not
 literals in the source: every gate returns
 `ShiftMainnetV5Activation(base)`, adding `MAINNET_V5_ACTIVATION_SHIFT`
-(`src/v5activation.h`, currently 180,000) to its base, so the whole ladder moves
+(`src/v5activation.h`, currently 270,000) to its base, so the whole ladder moves
 as a unit. The effective heights below are base + shift for the current shift and
 are re-derived by the release preflight against a fresh mainnet tip.
 

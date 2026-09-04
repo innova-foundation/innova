@@ -117,12 +117,11 @@ BOOST_AUTO_TEST_CASE(private_cert_paths_cannot_predate_their_committee)
     // committee requirement is in force.
     BOOST_CHECK_EQUAL(FORK_HEIGHT_TALLY_GOVERNANCE, FORK_HEIGHT_DAG);
 
-    // The note tally -- the live private path, and the one whose authorization
-    // IS its committee signer set -- is scheduled after Boundary B, so the
-    // day-one path is still transparent-only.
-    BOOST_CHECK(IsIV5NoteVoteConfigured());
-    BOOST_CHECK(FORK_HEIGHT_IV5_NOTE_VOTE > FORK_HEIGHT_BOUNDARY_B);
+    // The note tally is unconfigured at the DAG fork, so day one is transparent-only; the
+    // ordering is checked against the height this case sets.
     BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(FORK_HEIGHT_DAG));
+    if (IsIV5NoteVoteConfigured())
+        BOOST_CHECK(FORK_HEIGHT_IV5_NOTE_VOTE > FORK_HEIGHT_BOUNDARY_B);
 
     // The floor is a plain constant rather than a fork-gated one, so it reads
     // the same on both sides of the note height.
