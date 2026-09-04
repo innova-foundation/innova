@@ -112,6 +112,13 @@ launch_node() {
     "$INNOVAD" -datadir="$(node_dir "$1")" -regtest -daemon >/dev/null 2>&1
 }
 
+# Same launch with extra command-line flags. The daemon_pids pattern matches the
+# argv prefix, so anything appended after -daemon leaves the node findable.
+launch_node_with() {
+    local n="$1"; shift
+    "$INNOVAD" -datadir="$(node_dir "$n")" -regtest -daemon "$@" >/dev/null 2>&1
+}
+
 start_node() {
     local n="$1" i
     launch_node "$n"
@@ -120,6 +127,100 @@ start_node() {
         sleep 1
     done
     return 1
+}
+
+# A full -rescan walks the whole chain on the init thread before the RPC server
+# exists, so this waits longer than an ordinary start.
+start_node_with() {
+    local n="$1"; shift
+    local i
+    launch_node_with "$n" "$@"
+    for i in $(seq 1 600); do
+        rpc "$n" getinfo >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# The wallet's own record of the blocks whose shielded payloads it never
+# trial-decrypted. -1 means it believes the note view is complete.
+shielded_gap() {
+    rpc "$1" z_getshieldedinfo 2>/dev/null \
+        | sed -n 's/.*"privacy_vnext_scan_gap_height" *: *\(-\{0,1\}[0-9]\{1,\}\).*/\1/p' \
+        | head -1
+}
+
+# How the close of that gap is going. An unlock only queues it; the wallet's
+# gap-closer thread does the reading, so this is what says it finished.
+shielded_gap_close() {
+    rpc "$1" z_getshieldedinfo 2>/dev/null \
+        | sed -n 's/.*"privacy_vnext_scan_gap_close" *: *"\([a-z]*\)".*/\1/p' \
+        | head -1
+}
+
+shielded_gap_close_blocks() {
+    rpc "$1" z_getshieldedinfo 2>/dev/null \
+        | sed -n 's/.*"privacy_vnext_scan_gap_close_blocks" *: *\([0-9]\{1,\}\).*/\1/p' \
+        | head -1
+}
+
+# Waits for the queued close, not the unlock. Reads both fields: the gap clears
+# before the job records its outcome.
+wait_gap_closed() {
+    local n="$1" limit="${2:-900}" i g c
+    for i in $(seq 1 "$limit"); do
+        g="$(shielded_gap "$n")"
+        c="$(shielded_gap_close "$n")"
+        if [ "${g:-none}" = "-1" ]; then
+            case "${c:-none}" in
+                running|pending) ;;
+                *) return 0 ;;
+            esac
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# z_listunspent stays empty for a 2008-envelope shield; privacy_vnext_note_count is
+# the count a missed scan decrements.
+capture_notes() {
+    local out="$1"
+    : > "$out"
+    rpc 1 z_getshieldedinfo 2>/dev/null \
+        | grep -oE '"(privacy_vnext_note_count|privacy_vnext_balance|privacy_vnext_pool_value|privacy_vnext_tree_size)" *: *-?[0-9.]+' \
+        | sort >> "$out"
+    rpc 1 z_listunspent 2>/dev/null \
+        | grep -oE '"(txid|amount|address)" *: *("[^"]*"|-?[0-9.]+)' | sort >> "$out"
+    rpc 1 listunspent 2>/dev/null \
+        | grep -oE '"(txid|amount|vout)" *: *("[^"]*"|-?[0-9.]+)' | sort >> "$out"
+    rpc 1 z_gettotalbalance 2>/dev/null \
+        | grep -oE '"(transparent|shielded|total)" *: *-?[0-9.]+' | sort >> "$out"
+}
+
+# The wallet's note view alone: pool value, tree size and transparent unspents
+# legitimately move across a reorg.
+capture_iv5_notes() {
+    local out="$1"
+    : > "$out"
+    rpc 1 z_getshieldedinfo 2>/dev/null \
+        | grep -oE '"(privacy_vnext_note_count|privacy_vnext_balance)" *: *-?[0-9.]+' \
+        | sort >> "$out"
+}
+
+note_count_in() {
+    sed -n 's/.*"privacy_vnext_note_count" *: *\([0-9]*\).*/\1/p' "$1" | head -1
+}
+
+# Lines present in $1 that are absent from $2, written to $3; count on stdout.
+missing_lines() {
+    local before="$1" after="$2" lost="$3" n=0 line
+    : > "$lost"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        grep -qxF "$line" "$after" || { n=$((n + 1)); echo "$line" >> "$lost"; }
+    done < "$before"
+    echo "$n"
 }
 
 stop_node() {
@@ -521,24 +622,6 @@ if [ "$WALLET_PHASE_OK" = "1" ]; then
 fi
 
 if [ "$WALLET_PHASE_OK" = "1" ]; then
-    # The IV5 note state lives behind z_getshieldedinfo. z_listunspent reports
-    # the legacy pool and stays empty for a 2008-envelope shield, so a capture
-    # built on it would compare nothing and pass. privacy_vnext_note_count is
-    # the wallet-side count a missed scan actually decrements.
-    capture_notes() {
-        local out="$1"
-        : > "$out"
-        rpc 1 z_getshieldedinfo 2>/dev/null \
-            | grep -oE '"(privacy_vnext_note_count|privacy_vnext_balance|privacy_vnext_pool_value|privacy_vnext_tree_size)" *: *-?[0-9.]+' \
-            | sort >> "$out"
-        rpc 1 z_listunspent 2>/dev/null \
-            | grep -oE '"(txid|amount|address)" *: *("[^"]*"|-?[0-9.]+)' | sort >> "$out"
-        rpc 1 listunspent 2>/dev/null \
-            | grep -oE '"(txid|amount|vout)" *: *("[^"]*"|-?[0-9.]+)' | sort >> "$out"
-        rpc 1 z_gettotalbalance 2>/dev/null \
-            | grep -oE '"(transparent|shielded|total)" *: *-?[0-9.]+' | sort >> "$out"
-    }
-
     capture_notes "$EVIDENCE_DIR/notes.before.txt"
     NOTES_BEFORE="$(digest_of "$EVIDENCE_DIR/notes.before.txt")"
     NOTE_LINES="$(wc -l < "$EVIDENCE_DIR/notes.before.txt" | tr -d ' ')"
@@ -579,21 +662,12 @@ if [ "$WALLET_PHASE_OK" = "1" ]; then
     # Every note identity known before the kill must still be known after it.
     # Containment rather than digest equality: the balance summary legitimately
     # moves as the chain advances, but a note may never disappear.
-    MISSING=0
-    : > "$EVIDENCE_DIR/notes.lost.txt"
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        grep -qxF "$line" "$EVIDENCE_DIR/notes.after.txt" || {
-            MISSING=$((MISSING + 1))
-            echo "$line" >> "$EVIDENCE_DIR/notes.lost.txt"
-        }
-    done < "$EVIDENCE_DIR/notes.before.txt"
+    MISSING="$(missing_lines "$EVIDENCE_DIR/notes.before.txt" \
+                             "$EVIDENCE_DIR/notes.after.txt" \
+                             "$EVIDENCE_DIR/notes.lost.txt")"
 
     # The sharpest signal on its own: the wallet's own count of the notes it
     # can see. A rescan that skips the shielded scan drives this down.
-    note_count_in() {
-        sed -n 's/.*"privacy_vnext_note_count" *: *\([0-9]*\).*/\1/p' "$1" | head -1
-    }
     NC_BEFORE="$(note_count_in "$EVIDENCE_DIR/notes.before.txt")"
     NC_AFTER="$(note_count_in "$EVIDENCE_DIR/notes.after.txt")"
     NC_BEFORE="${NC_BEFORE:-0}"; NC_AFTER="${NC_AFTER:-0}"
@@ -623,7 +697,117 @@ else
 fi
 
 # ===========================================================================
-header "4. SIGKILL during a reorg that recrosses an epoch boundary"
+header "4. Startup rescan of an encrypted wallet that is locked"
+# ===========================================================================
+# A locked encrypted wallet's startup rescan (-rescan) must record the scan gap,
+# refuse to spend over it, and close it once unlocked.
+
+LOCKED_RESCAN_OK=0
+# Set by whichever phase reaches them; read again when the manifest is tallied.
+GAP_LOCKED=""
+GAP_REORG=""
+if [ "$WALLET_PHASE_OK" = "1" ] && [ "${NC_BEFORE:-0}" -gt 0 ]; then
+    LOCKED_RESCAN_OK=1
+else
+    fail "the locked-rescan phase could not run: phase 3 left no shielded payload on chain"
+    echo "locked_rescan: NOT RUN" >> "$EVIDENCE_DIR/manifest.txt"
+fi
+
+if [ "$LOCKED_RESCAN_OK" = "1" ]; then
+    stop_node 1 || warn "victim did not stop cleanly before the locked-rescan phase"
+    if start_node_with 1 -rescan; then
+        success "victim restarted with -rescan while its encrypted wallet was locked"
+    else
+        diagnose_failed_start "locked-wallet startup rescan"
+        LOCKED_RESCAN_OK=0
+    fi
+fi
+
+if [ "$LOCKED_RESCAN_OK" = "1" ]; then
+    connect_peers 1
+    GAP_LOCKED="$(shielded_gap 1)"
+    echo "locked_rescan_gap: ${GAP_LOCKED:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    if is_int "${GAP_LOCKED#-}" && [ "${GAP_LOCKED:-0}" -ge 0 ]; then
+        success "victim names its incomplete note view: IV5 scan gap at height $GAP_LOCKED"
+    else
+        # A rescan that covered every payload would report -1, and then this phase
+        # proved nothing about the degraded path it exists to test.
+        fail "victim reports no IV5 scan gap (${GAP_LOCKED:-unreadable}) after a locked -rescan: the degraded path was not exercised"
+    fi
+
+    # A locked wallet is refused at the seed before the gap is consulted. The gap's own
+    # refusal is the unit case an_iv5_spend_is_refused_while_a_scan_gap_is_recorded.
+    SPEND_REFUSAL="$(rpc 1 z_iv5transfer "iv5unusable" 1 2>&1 | tr -d '\r' | head -3 | tr '\n' ' ')"
+    echo "locked_rescan_spend_refusal: $SPEND_REFUSAL" >> "$EVIDENCE_DIR/manifest.txt"
+    if echo "$SPEND_REFUSAL" | grep -qiE "seed is locked|no unlocked IV5 seed|scan gap|wallet passphrase"; then
+        success "victim refuses to build an IV5 spend while the scan is outstanding"
+    else
+        fail "victim did not refuse an IV5 spend while its note view was incomplete: $SPEND_REFUSAL"
+    fi
+
+    # The unlock only records the close request; the gap-closer thread does the reading.
+    # Measure the unlock round trip, then the close.
+    UNLOCK_T0="$SECONDS"
+    rpc 1 walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1
+    UNLOCK_SECONDS=$(( SECONDS - UNLOCK_T0 ))
+    echo "locked_rescan_unlock_seconds: $UNLOCK_SECONDS" >> "$EVIDENCE_DIR/manifest.txt"
+    # A whole-chain rescan on this chain is not a sub-second operation; the
+    # startup -rescan above takes minutes. An unlock that still returns inside a
+    # few seconds did not perform one.
+    if [ "$UNLOCK_SECONDS" -le 10 ]; then
+        success "walletpassphrase returned in ${UNLOCK_SECONDS}s without rescanning"
+    else
+        fail "walletpassphrase took ${UNLOCK_SECONDS}s: the gap close is back on the unlock path"
+    fi
+
+    if wait_gap_closed 1 900; then
+        success "the queued IV5 scan gap close completed"
+    else
+        fail "the IV5 scan gap was never closed after the unlock"
+    fi
+    GAP_UNLOCKED="$(shielded_gap 1)"
+    GAP_CLOSE_STATUS="$(shielded_gap_close 1)"
+    GAP_CLOSE_BLOCKS="$(shielded_gap_close_blocks 1)"
+    echo "locked_rescan_gap_after_unlock: ${GAP_UNLOCKED:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    echo "locked_rescan_gap_close_status: ${GAP_CLOSE_STATUS:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    echo "locked_rescan_gap_close_blocks: ${GAP_CLOSE_BLOCKS:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    if [ "${GAP_UNLOCKED:-none}" = "-1" ]; then
+        success "the wallet reports no outstanding IV5 scan gap"
+    else
+        fail "the IV5 scan gap survived the unlock (${GAP_UNLOCKED:-unreadable})"
+    fi
+    # An operator has to be able to see that it finished without reading the log.
+    if [ "${GAP_CLOSE_STATUS:-none}" = "complete" ] && \
+       is_int "${GAP_CLOSE_BLOCKS:-x}" && [ "${GAP_CLOSE_BLOCKS:-0}" -gt 0 ]; then
+        success "the close reports itself complete over ${GAP_CLOSE_BLOCKS} block(s)"
+    else
+        fail "the close does not report itself complete (status=${GAP_CLOSE_STATUS:-unreadable} blocks=${GAP_CLOSE_BLOCKS:-unreadable})"
+    fi
+
+    # The degraded start must not have cost a note. Same measure phase 3 uses.
+    capture_notes "$EVIDENCE_DIR/notes.locked-rescan.txt"
+    NC_LOCKED="$(note_count_in "$EVIDENCE_DIR/notes.locked-rescan.txt")"
+    NC_LOCKED="${NC_LOCKED:-0}"
+    echo "locked_rescan_note_count: before=$NC_BEFORE after=$NC_LOCKED" >> "$EVIDENCE_DIR/manifest.txt"
+    if [ "$NC_LOCKED" -ge "$NC_BEFORE" ]; then
+        success "shielded note count survived the locked -rescan ($NC_BEFORE before, $NC_LOCKED after)"
+    else
+        fail "FUND LOSS: shielded note count fell from $NC_BEFORE to $NC_LOCKED across the locked -rescan"
+    fi
+
+    # The refusal was a state, not a permanent disability: with the scan complete
+    # the builder gets past the seed and gap checks and fails on the spend itself.
+    SPEND_AFTER="$(rpc 1 z_iv5transfer "iv5unusable" 1 2>&1 | tr -d '\r' | head -3 | tr '\n' ' ')"
+    echo "locked_rescan_spend_after: $SPEND_AFTER" >> "$EVIDENCE_DIR/manifest.txt"
+    if echo "$SPEND_AFTER" | grep -qiE "seed is locked|no unlocked IV5 seed|scan gap|wallet passphrase"; then
+        fail "the wallet still refuses an IV5 spend for a locked seed or a scan gap after the rescan completed: $SPEND_AFTER"
+    else
+        success "with the scan complete the spend builder is past the seed and gap checks"
+    fi
+fi
+
+# ===========================================================================
+header "5. SIGKILL during a reorg that recrosses an epoch boundary"
 # ===========================================================================
 # Kill during the epoch-state suffix rewrite; the invalidated span crosses the 611
 # boundary, so recovery must redo the suffix.
@@ -636,8 +820,19 @@ success "all three nodes past $H_REORG_TIP with epoch 1 durable"
 # Park the victim while the competing branch is built so it meets the reorg at once.
 # The reorg has started once its height leaves this parked height.
 PARKED_HEIGHT="$(height 1)"
+
+# The note view as it stands going into the kill window that found the recovery
+# deadlock. Recovering the chain is not the question an operator asks after a
+# crash; whether the wallet's value is still reachable is.
+capture_notes "$EVIDENCE_DIR/notes.reorg-before.txt"
+capture_iv5_notes "$EVIDENCE_DIR/notes.reorg-before.iv5.txt"
+NC_REORG_BEFORE="$(note_count_in "$EVIDENCE_DIR/notes.reorg-before.iv5.txt")"
+NC_REORG_BEFORE="${NC_REORG_BEFORE:-0}"
+echo "reorg_notes_before: $(digest_of "$EVIDENCE_DIR/notes.reorg-before.txt") ($NC_REORG_BEFORE notes)" \
+    >> "$EVIDENCE_DIR/manifest.txt"
+
 stop_node 1 || warn "victim did not stop cleanly before the reorg phase"
-log "victim parked at $PARKED_HEIGHT on the old branch"
+log "victim parked at $PARKED_HEIGHT on the old branch with $NC_REORG_BEFORE note(s)"
 
 REORG_HASH="$(rpc 0 getblockhash "$REORG_FROM" 2>/dev/null | tr -d '"[:space:]')"
 if ! echo "$REORG_HASH" | grep -qE '^[0-9a-f]{64}$'; then
@@ -681,6 +876,11 @@ else
     REORG_RESTARTED=1
     if start_node 1; then
         success "victim restarted after a reorg-time kill"
+        # The wallet restarts locked, so a replayed payload block may be recorded as a gap.
+        # The gap height is recorded, not required; required is nothing outstanding after
+        # the unlock and no missing note.
+        GAP_REORG="$(shielded_gap 1)"
+        echo "reorg_restart_scan_gap: ${GAP_REORG:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
     else
         # Not fatal. The run still has to emit its manifest: a node that will
         # not come back is the result, not a reason to print nothing.
@@ -711,11 +911,74 @@ if [ "${REORG_RESTARTED:-0}" = "1" ]; then
     else
         fail "victim did not reach the producer's branch (victim=$V_TIP producer=$P_TIP)"
     fi
+
+    # Note reachability: unlock, require any unscanned range to close, compare note sets.
+    rpc 1 walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1
+
+    if wait_gap_closed 1 900; then
+        success "no IV5 scan gap is outstanding after the reorg-kill recovery"
+    else
+        fail "an IV5 scan gap survived the unlock after the reorg-kill recovery ($(shielded_gap 1))"
+    fi
+    REORG_GAP_AFTER="$(shielded_gap 1)"
+    REORG_GAP_CLOSE="$(shielded_gap_close 1)"
+    echo "reorg_scan_gap_after_unlock: ${REORG_GAP_AFTER:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    echo "reorg_scan_gap_close_status: ${REORG_GAP_CLOSE:-unreadable}" >> "$EVIDENCE_DIR/manifest.txt"
+    # If this window did record a gap, the close is not optional: it is the only
+    # route back to a note in the span the locked wallet skipped.
+    if is_int "${GAP_REORG#-}" && [ "${GAP_REORG:--1}" -ge 0 ]; then
+        if [ "${REORG_GAP_CLOSE:-none}" = "complete" ]; then
+            success "the gap recorded at the reorg kill ($GAP_REORG) closed after the unlock"
+        else
+            fail "the gap recorded at the reorg kill ($GAP_REORG) did not close (status=${REORG_GAP_CLOSE:-unreadable})"
+        fi
+    else
+        log "the reorg-kill replay reached no payload block, so no gap was recorded there"
+    fi
+
+    capture_notes "$EVIDENCE_DIR/notes.reorg-after.txt"
+    capture_iv5_notes "$EVIDENCE_DIR/notes.reorg-after.iv5.txt"
+    NC_REORG_AFTER="$(note_count_in "$EVIDENCE_DIR/notes.reorg-after.iv5.txt")"
+    NC_REORG_AFTER="${NC_REORG_AFTER:-0}"
+    echo "reorg_note_count: before=$NC_REORG_BEFORE after=$NC_REORG_AFTER" \
+        >> "$EVIDENCE_DIR/manifest.txt"
+
+    # Containment over the wallet's own note view. Pool value, tree size and the
+    # transparent unspent set may legitimately move across a reorg, so they are
+    # recorded, not required.
+    REORG_MISSING="$(missing_lines "$EVIDENCE_DIR/notes.reorg-before.iv5.txt" \
+                                   "$EVIDENCE_DIR/notes.reorg-after.iv5.txt" \
+                                   "$EVIDENCE_DIR/notes.reorg-lost.txt")"
+    REORG_MISSING_ALL="$(missing_lines "$EVIDENCE_DIR/notes.reorg-before.txt" \
+                                       "$EVIDENCE_DIR/notes.reorg-after.txt" \
+                                       "$EVIDENCE_DIR/notes.reorg-lost.all.txt")"
+    echo "reorg_notes_lost: $REORG_MISSING" >> "$EVIDENCE_DIR/manifest.txt"
+    echo "reorg_capture_fields_moved: $REORG_MISSING_ALL" >> "$EVIDENCE_DIR/manifest.txt"
+
+    if [ "$NC_REORG_BEFORE" -le 0 ]; then
+        fail "the victim held no shielded notes going into the reorg kill: reachability was not tested"
+    elif [ "$NC_REORG_AFTER" -lt "$NC_REORG_BEFORE" ]; then
+        fail "FUND LOSS: shielded note count fell from $NC_REORG_BEFORE to $NC_REORG_AFTER across the reorg kill"
+    elif [ "$REORG_MISSING" -ne 0 ]; then
+        fail "FUND LOSS: $REORG_MISSING note field(s) held before the reorg kill are absent after recovery"
+        head -10 "$EVIDENCE_DIR/notes.reorg-lost.txt"
+    else
+        success "every note the victim held before the reorg kill is reachable after it ($NC_REORG_BEFORE note(s), none lost)"
+    fi
 fi
 
 # ===========================================================================
 header "Evidence"
 # ===========================================================================
+
+# How many kill or restart windows actually left a block unscanned. A run in which
+# none did never exercised the degraded path at all, so every claim it makes about
+# recording, refusing and closing a gap is vacuous. The producer refuses on this.
+SCAN_GAPS_RECORDED=0
+for g in "$GAP_LOCKED" "$GAP_REORG"; do
+    is_int "${g#-}" && [ "${g:--1}" -ge 0 ] && SCAN_GAPS_RECORDED=$(( SCAN_GAPS_RECORDED + 1 ))
+done
+echo "scan_gaps_recorded: $SCAN_GAPS_RECORDED" >> "$EVIDENCE_DIR/manifest.txt"
 
 {
     echo "finished:           $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -748,6 +1011,12 @@ cat <<'LIMITS'
     was actually in flight.
   - One kill per phase, one ordering. Concurrent kills, kills during the
     startup rescan itself, and kills of the producer are not exercised.
+  - Note reachability is measured over the wallet's own note count and note
+    balance. No RPC lists IV5 notes individually, so the containment check is
+    over those two fields rather than over per-note identities.
+  - Whether the reorg-kill window leaves a block unscanned depends on where the
+    kill landed and on whether the replayed span carries a payload. The
+    deterministic form of that path is phase 4, which reaches it with -rescan.
   - Regtest only, single host, no network partition and no clock skew.
   - The digest compares what RPC exposes: tip, per-epoch consensus state and
     the IDNS name index. It is not a full database byte-compare. State that no

@@ -1,27 +1,95 @@
 #!/bin/bash
-# Produces crash_injection_sha256: the SIGKILL recovery run over the batched
-# persistence points, and the digest that run computes over its own manifest.
-#
-# crash_injection_test.sh already kills a victim mid-ConnectBlock, mid-name-index
-# batch, with the wallet locator lagging and mid-reorg, and prints
-# "crash_injection_sha256: <sha>" over the manifest it leaves. Nothing keyed that
-# digest to a commit, so the field had no producer. This drives the run, records
-# the digest it printed, recomputes it from the manifest on disk, and refuses a
-# run that reached no kill window or compared two empty states.
-#
-# What a pass covers: a victim killed with SIGKILL at each of the four batching
-# points recovers to a tip and to per-epoch and name-index state byte-identical
-# to a control that ran the same block stream uninterrupted, and loses no
-# shielded note field across the kill.
-# What it does not: the harness prints its own limits under WHAT THIS DOES NOT
-# COVER, and they hold for this document. It is not a torn-write or power-loss
-# test, the kill points are timing-driven rather than instrumented, and the
-# comparison is over what RPC exposes, not a database byte-compare.
+# Produces crash_injection_sha256 from crash_injection_test.sh, recomputing the digest from
+# the manifest and refusing a run with no kill window or two empty states.
+# `--check-manifest <file>` runs only those refusals over an existing manifest.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 . "$SCRIPT_DIR/v5_evidence_lib.sh"
+
+manifest_matches() { { grep -c '^MATCH ' "$1" || true; } | tr -dc '0-9'; }
+manifest_differs() { { grep -c '^DIFFER ' "$1" || true; } | tr -dc '0-9'; }
+manifest_field()   { sed -n "s/^$2: *//p" "$1" | tail -1; }
+
+# Every reason a manifest is refused, one per line; empty output is a pass.
+# Checked independently of the harness exit status.
+manifest_refusals() {
+    local m="$1" v
+
+    v="$(manifest_differs "$m")"
+    [ "${v:-0}" = "0" ] || echo "recovered states that differed from the control: $v"
+    v="$(manifest_field "$m" failed)"
+    [ "${v:-0}" = "0" ] || echo "harness checks that failed: ${v:-unrecorded}"
+    v="$(manifest_field "$m" passed)"
+    [ "${v:-0}" -gt 0 ] 2>/dev/null || echo "the run recorded no passing check"
+    v="$(manifest_matches "$m")"
+    [ "${v:-0}" -ge 3 ] 2>/dev/null || echo "only ${v:-0} of the 3 state comparisons ran"
+
+    case "$(manifest_field "$m" kill_connectblock_height)" in
+        *"mid-connect"*) ;;
+        *) echo "no mid-ConnectBlock kill window was reached" ;;
+    esac
+    case "$(manifest_field "$m" kill_nameindex_height)" in
+        NONE*|"") echo "no mid-batch name-index kill window was reached" ;;
+    esac
+    case "$(manifest_field "$m" kill_reorg_height)" in
+        *"mid-reorg"*) ;;
+        *) echo "no mid-reorg kill window was reached" ;;
+    esac
+    [ -n "$(manifest_field "$m" kill_wallet_height)" ] || \
+        echo "the wallet-locator phase recorded no kill"
+    v="$(manifest_field "$m" notes_lost)"
+    [ "${v:-unrecorded}" = "0" ] || \
+        echo "the wallet-locator phase recorded notes_lost=${v:-unrecorded}"
+    # Two empty indexes match trivially, so an empty one proves nothing.
+    v="$(manifest_field "$m" nameidx_fields)"
+    [ "${v:-0}" -gt 0 ] 2>/dev/null || \
+        echo "the name index was empty, so its comparison proved nothing"
+
+    # A run with no unscanned gap never exercised this phase.
+    v="$(manifest_field "$m" scan_gaps_recorded)"
+    [ "${v:-0}" -gt 0 ] 2>/dev/null || \
+        echo "no IV5 scan gap was recorded anywhere in the run (${v:-none}), so the degraded path was never exercised"
+    case "$(manifest_field "$m" locked_rescan_gap)" in
+        ""|none|-*) echo "the locked-wallet rescan recorded no IV5 scan gap, so the degraded start was not exercised" ;;
+    esac
+    v="$(manifest_field "$m" locked_rescan_gap_after_unlock)"
+    [ "${v:-none}" = "-1" ] || \
+        echo "the IV5 scan gap survived the unlock (${v:-none})"
+    v="$(manifest_field "$m" locked_rescan_gap_close_status)"
+    [ "${v:-none}" = "complete" ] || \
+        echo "the queued IV5 scan gap close did not report itself complete (${v:-none})"
+    # The unlock must not be the thread that rescans; it runs under the RPC
+    # dispatcher's lock on the chain and the wallet.
+    v="$(manifest_field "$m" locked_rescan_unlock_seconds)"
+    [ "${v:-999}" -le 10 ] 2>/dev/null || \
+        echo "walletpassphrase took ${v}s, so the gap close is back on the unlock path"
+
+    # Note reachability at the mid-reorg kill.
+    v="$(manifest_field "$m" reorg_scan_gap_after_unlock)"
+    [ "${v:-none}" = "-1" ] || \
+        echo "an IV5 scan gap survived the unlock after the reorg kill (${v:-none})"
+    v="$(manifest_field "$m" reorg_notes_lost)"
+    [ "${v:-unrecorded}" = "0" ] || \
+        echo "the reorg kill lost ${v:-an unrecorded number of} note field(s)"
+    v="$(manifest_field "$m" reorg_note_count)"
+    case "$v" in
+        "") echo "the reorg kill recorded no note count, so reachability was not measured" ;;
+        *"before=0"*) echo "the victim held no shielded notes going into the reorg kill" ;;
+    esac
+}
+
+if [ "${1:-}" = "--check-manifest" ]; then
+    [ -f "${2:-}" ] || { echo "usage: $0 --check-manifest <manifest.txt>" >&2; exit 2; }
+    REASONS="$(manifest_refusals "$2")"
+    if [ -n "$REASONS" ]; then
+        echo "$REASONS"
+        exit 1
+    fi
+    echo "manifest accepted"
+    exit 0
+fi
 
 evidence_begin crash_injection_sha256
 evidence_reuse && exit 0
@@ -84,58 +152,35 @@ RECOMPUTED="$( { sha256sum "$MANIFEST" 2>/dev/null || shasum -a 256 "$MANIFEST";
 [ "$PRINTED" = "$RECOMPUTED" ] || \
     evidence_finish fail "the printed digest $PRINTED is not the digest of $MANIFEST ($RECOMPUTED)"
 
-PASSED="$(manifest_value passed)"
-FAILED="$(manifest_value failed)"
-KILL_CONNECT="$(manifest_value kill_connectblock_height)"
-KILL_IDNS="$(manifest_value kill_nameindex_height)"
-KILL_WALLET="$(manifest_value kill_wallet_height)"
-KILL_REORG="$(manifest_value kill_reorg_height)"
-NAMES="$(manifest_value names_registered)"
-NAMEIDX="$(manifest_value nameidx_fields)"
-NOTES_LOST="$(manifest_value notes_lost)"
-NOTE_COUNT="$(manifest_value note_count)"
-MATCHES="$( { grep -c '^MATCH ' "$MANIFEST" || true; } | tr -dc '0-9')"
-DIFFERS="$( { grep -c '^DIFFER ' "$MANIFEST" || true; } | tr -dc '0-9')"
-
 evidence_observe manifest_sha256 "$PRINTED"
-evidence_observe checks_passed "${PASSED:-0}"
-evidence_observe checks_failed "${FAILED:-0}"
-evidence_observe kill_connectblock_height "${KILL_CONNECT:-none}"
-evidence_observe kill_nameindex_height "${KILL_IDNS:-none}"
-evidence_observe kill_wallet_height "${KILL_WALLET:-none}"
-evidence_observe kill_reorg_height "${KILL_REORG:-none}"
-evidence_observe names_registered "${NAMES:-0}"
-evidence_observe nameidx_fields "${NAMEIDX:-0}"
-evidence_observe note_count "${NOTE_COUNT:-none}"
-evidence_observe notes_lost "${NOTES_LOST:-unrecorded}"
-evidence_observe states_matched "${MATCHES:-0}"
-evidence_observe states_differed "${DIFFERS:-0}"
+evidence_observe checks_passed "$(manifest_value passed)"
+evidence_observe checks_failed "$(manifest_value failed)"
+evidence_observe kill_connectblock_height "$(manifest_value kill_connectblock_height)"
+evidence_observe kill_nameindex_height "$(manifest_value kill_nameindex_height)"
+evidence_observe kill_wallet_height "$(manifest_value kill_wallet_height)"
+evidence_observe kill_reorg_height "$(manifest_value kill_reorg_height)"
+evidence_observe names_registered "$(manifest_value names_registered)"
+evidence_observe nameidx_fields "$(manifest_value nameidx_fields)"
+evidence_observe note_count "$(manifest_value note_count)"
+evidence_observe notes_lost "$(manifest_value notes_lost)"
+evidence_observe states_matched "$(manifest_matches "$MANIFEST")"
+evidence_observe states_differed "$(manifest_differs "$MANIFEST")"
+evidence_observe scan_gaps_recorded "$(manifest_value scan_gaps_recorded)"
+evidence_observe locked_rescan_gap "$(manifest_value locked_rescan_gap)"
+evidence_observe locked_rescan_gap_after_unlock "$(manifest_value locked_rescan_gap_after_unlock)"
+evidence_observe locked_rescan_gap_close_status "$(manifest_value locked_rescan_gap_close_status)"
+evidence_observe locked_rescan_unlock_seconds "$(manifest_value locked_rescan_unlock_seconds)"
+evidence_observe locked_rescan_note_count "$(manifest_value locked_rescan_note_count)"
+evidence_observe reorg_restart_scan_gap "$(manifest_value reorg_restart_scan_gap)"
+evidence_observe reorg_scan_gap_after_unlock "$(manifest_value reorg_scan_gap_after_unlock)"
+evidence_observe reorg_note_count "$(manifest_value reorg_note_count)"
+evidence_observe reorg_notes_lost "$(manifest_value reorg_notes_lost)"
 evidence_observe boundary_b "$(manifest_value boundary_b)"
 
-# The harness fails itself on each of these, so a violation here means its exit
-# status and its manifest disagree. Both are checked: a producer that trusts
-# only the status records whatever a later edit stops failing on.
-evidence_require_zero "recovered states that differed from the control" "${DIFFERS:-0}"
-evidence_require_zero "harness checks that failed" "${FAILED:-0}"
-[ "${PASSED:-0}" -gt 0 ] || evidence_finish fail "the run recorded no passing check"
-[ "${MATCHES:-0}" -ge 3 ] || \
-    evidence_finish fail "only ${MATCHES:-0} of the 3 state comparisons ran"
-case "$KILL_CONNECT" in
-    *"mid-connect"*) ;;
-    *) evidence_finish fail "no mid-ConnectBlock kill window was reached (${KILL_CONNECT:-none})" ;;
-esac
-case "$KILL_IDNS" in
-    NONE*|"") evidence_finish fail "no mid-batch name-index kill window was reached" ;;
-esac
-case "$KILL_REORG" in
-    *"mid-reorg"*) ;;
-    *) evidence_finish fail "no mid-reorg kill window was reached (${KILL_REORG:-none})" ;;
-esac
-[ -n "$KILL_WALLET" ] || evidence_finish fail "the wallet-locator phase recorded no kill"
-[ "${NOTES_LOST:-unrecorded}" = "0" ] || \
-    evidence_finish fail "the wallet-locator phase recorded notes_lost=${NOTES_LOST:-unrecorded}"
-# Two empty indexes match trivially. The harness says so too; this refuses the
-# document rather than the run.
-[ "${NAMEIDX:-0}" -gt 0 ] || evidence_finish fail "the name index was empty, so its comparison proved nothing"
+REFUSALS="$(manifest_refusals "$MANIFEST")"
+if [ -n "$REFUSALS" ]; then
+    echo "$REFUSALS" | tail -n +2
+    evidence_finish fail "$(echo "$REFUSALS" | head -1)"
+fi
 
 evidence_pass

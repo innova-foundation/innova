@@ -2523,18 +2523,17 @@ bool AppInit2()
     // that unshield is retired.
     {
         const int nScanGap = pwalletMain->GetPrivacyVNextScanGapHeight();
-        if (nScanGap >= 0 && pwalletMain->IsLocked())
+        if (nScanGap >= 0 && !pwalletMain->IsPrivacyVNextSeedUnlocked())
         {
-            // An encrypted wallet starts locked and the rescan needs the seed, so
-            // this is the ordinary state rather than damage. Failing startup here
-            // would also strand the operator: the repair is z_rescaniv5, which
-            // needs a node that came up. Keep the gap recorded and say so.
-            printf("Wallet has an IV5 scan gap at height %d but is locked; leaving it "
-                   "recorded\n", nScanGap);
+            // No seed (locked, or no IV5 seed): not damage and not repairable in init. Keep the gap
+            // recorded and log it.
+            printf("Wallet has an IV5 scan gap at height %d and no unlocked IV5 seed; "
+                   "leaving it recorded\n", nScanGap);
             InitWarning(strprintf(_("Shielded payloads from height %d have not been "
-                "reprocessed because the wallet is locked. Notes paid to this wallet "
-                "in those blocks stay undetected until you unlock the wallet and run "
-                "z_rescaniv5."), nScanGap));
+                "reprocessed because this wallet has no unlocked IV5 seed. Unlock the "
+                "wallet with walletpassphrase and the node reprocesses them in the "
+                "background; z_getshieldedinfo reports privacy_vnext_scan_gap_close "
+                "until it is complete."), nScanGap));
         }
         else if (nScanGap >= 0)
         {
@@ -2946,6 +2945,9 @@ bool AppInit2()
     // guard above has passed.
     NewThread(ThreadCheckCollaTeralPool, NULL);
     NewThread(ThreadNullSend, NULL);
+    // Closes a recorded IV5 scan gap once a seed exists. The unlock path must not: it runs
+    // under cs_main and cs_wallet.
+    NewThread(ThreadPrivacyVNextScanGapCloser, NULL);
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
 

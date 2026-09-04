@@ -1919,6 +1919,40 @@ void ThreadCleanWalletPassphrase(void* parg)
     delete (int64_t*)parg;
 }
 
+namespace {
+// Relocks unless the unlock ran to completion. Every step after Unlock() can throw --
+// a malformed timeout, a thread that will not start, an allocation -- and a throw that
+// escapes walletpassphrase leaves an unlocked wallet with no relock timer armed.
+class CWalletUnlockRollback
+{
+public:
+    CWalletUnlockRollback()
+        : fCommitted(false), fStakingOnlyBefore(fWalletUnlockStakingOnly) {}
+    ~CWalletUnlockRollback()
+    {
+        if (fCommitted)
+            return;
+        try
+        {
+            fWalletUnlockStakingOnly = fStakingOnlyBefore;
+            LOCK(cs_nWalletUnlockTime);
+            nWalletUnlockTime = 0;
+            // Said out loud: a relock that did not take is a wallet still holding its
+            // keys with nothing scheduled to clear them.
+            if (!pwalletMain->Lock())
+                printf("walletpassphrase: the wallet could not be relocked after a "
+                       "failed unlock\n");
+        }
+        catch (...) {}
+    }
+    void Commit() { fCommitted = true; }
+
+private:
+    bool fCommitted;
+    bool fStakingOnlyBefore;
+};
+} // namespace
+
 Value walletpassphrase(const Array& params, bool fHelp)
 {
     if (pwalletMain->IsCrypted() && (fHelp || params.size() < 2 || params.size() > 3))
@@ -1946,22 +1980,34 @@ Value walletpassphrase(const Array& params, bool fHelp)
             "walletpassphrase <passphrase> <timeout>\n"
             "Stores the wallet decryption key in memory for <timeout> seconds.");
 
+    // The seed is in memory from here on; a throw below must relock the wallet.
+    CWalletUnlockRollback unlockRollback;
+
+    // Arguments are read before any side effect, so a malformed timeout cannot leave
+    // half an unlock behind. get_int64() throws on a non-integer.
+    const int64_t nSleepTime = params[1].get_int64();
+    const bool fStakingOnly = (params.size() > 2) ? params[2].get_bool() : false;
+
+    // The recorded scan gap is queued for reprocessing by CWallet::Unlock above, not
+    // here: the Qt unlock dialogs and the collateralnode RPCs unlock without ever
+    // reaching this function.
+
+    fWalletUnlockStakingOnly = fStakingOnly;
+
     NewThread(ThreadTopUpKeyPool, NULL);
-    int64_t* pnSleepTime = new int64_t(params[1].get_int64());
-	//LOCK(cs_nWalletUnlockTime);
-	//nWalletUnlockTime = GetTime() + pnSleepTime;
-    NewThread(ThreadCleanWalletPassphrase, pnSleepTime);
+    int64_t* pnSleepTime = new int64_t(nSleepTime);
+    // NewThread reports a thread it could not start rather than throwing, and without
+    // this one nothing ever relocks: a wallet left unlocked because the timer would not
+    // start is the same fail-open as one left unlocked by a throw.
+    if (!NewThread(ThreadCleanWalletPassphrase, pnSleepTime))
+    {
+        delete pnSleepTime;
+        throw JSONRPCError(RPC_WALLET_ERROR,
+            "Error: the wallet relock timer could not be started; the wallet was left "
+            "locked.");
+    }
 
-    //fWalletUnlockStakingOnly = false;
-
-    // Innova: if user OS account compromised prevent trivial sendmoney commands
-    // if (params.size() > 2 && params[2].get_bool() == true)
-        // fWalletUnlockStakingOnly = true;
-	if (params.size() > 2)
-        fWalletUnlockStakingOnly = params[2].get_bool();
-    else
-        fWalletUnlockStakingOnly = false;
-
+    unlockRollback.Commit();
     return Value::null;
 }
 

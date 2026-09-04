@@ -440,6 +440,11 @@ public:
         return Write(std::string("iv5scangap"), nHeight, true);
     }
 
+    bool ReadPrivacyVNextScanGap(int& nHeightOut)
+    {
+        return Read(std::string("iv5scangap"), nHeightOut);
+    }
+
     bool WritePrivacyVNextNote(const uint256& txhash, uint32_t nOutputIndex,
                                const CPrivacyVNextWalletNote& note)
     {

@@ -32,6 +32,10 @@ extern CHooks* hooks;
 extern bool fWalletUnlockStakingOnly;
 extern bool fConfChange;
 class CAccountingEntry;
+// Drives the IV5 scan-gap close that a wallet unlock only asks for. The work is a
+// rescan from the gap to the tip, and CWallet::Unlock runs under cs_wallet -- and,
+// from the RPC dispatcher, cs_main -- so it cannot be the thread that does it.
+void ThreadPrivacyVNextScanGapCloser(void* parg);
 // Self-pay index for one payload, derived from its sorted key images and transparent
 // binding. Always carries PRIVACY_VNEXT_INTERNAL_CHANGE_BASE, outside every issuable index.
 uint32_t PrivacyVNextChangeIndexFor(
@@ -307,9 +311,60 @@ public:
     // unshield is retired: value in an undetected note has no recovery path but a
     // rescan. -1 means every connected block was scanned.
     int nPrivacyVNextScanGapHeight;
-    void MarkPrivacyVNextScanGap(int nHeight);
+    // False once a gap was marked but its wallet write did not land; callers that degrade on
+    // a gap must fail closed instead.
+    bool fPrivacyVNextScanGapPersisted;
+    // Non-zero while a gap-covering walk runs, and the lowest height marked meanwhile. The walk
+    // holds no cs_main, so a concurrent gap it will not reach stays standing after its clear.
+    int nPrivacyVNextScanGapWalkDepth;
+    int nPrivacyVNextScanGapWalkMark;
+    // Height the walk is reading, -1 outside a walk.
+    int nPrivacyVNextScanGapWalkHeight;
+    // Bumped by every IV5 block disconnect, under cs_shielded. A walk without cs_main applies
+    // a block only if this is unchanged since it checked the block was in the main chain.
+    uint64_t nPrivacyVNextDisconnectCount;
+    // Gap-close job state. The unlock only moves IDLE -> REQUESTED; the closer thread
+    // owns every other transition.
+    enum PrivacyVNextScanGapCloseState
+    {
+        PRIVACY_VNEXT_GAP_CLOSE_IDLE = 0,
+        PRIVACY_VNEXT_GAP_CLOSE_REQUESTED,
+        PRIVACY_VNEXT_GAP_CLOSE_RUNNING,
+        PRIVACY_VNEXT_GAP_CLOSE_COMPLETE,
+        PRIVACY_VNEXT_GAP_CLOSE_FAILED,
+    };
+    int nPrivacyVNextScanGapCloseState;
+    int nPrivacyVNextScanGapCloseBlocks;
+    std::string strPrivacyVNextScanGapCloseError;
+    bool MarkPrivacyVNextScanGap(int nHeight);
     int GetPrivacyVNextScanGapHeight() const;
+    bool PrivacyVNextScanGapIsPersisted() const;
+    // Retires the gap the walk covered and no more. A gap marked while the walk ran
+    // names a block the walk never read, so it survives as the new gap.
     void ClearPrivacyVNextScanGap(int nScannedFromHeight);
+    // Opens the window a clear is judged against. Held across a whole walk, its own
+    // clear included, so a mark landing anywhere inside it is kept.
+    class CPrivacyVNextScanGapWalk
+    {
+    public:
+        explicit CPrivacyVNextScanGapWalk(CWallet& walletIn);
+        ~CPrivacyVNextScanGapWalk();
+
+    private:
+        CWallet& wallet;
+        CPrivacyVNextScanGapWalk(const CPrivacyVNextScanGapWalk&);
+        CPrivacyVNextScanGapWalk& operator=(const CPrivacyVNextScanGapWalk&);
+    };
+    bool PrivacyVNextScanGapWalkIsActive() const;
+    int GetPrivacyVNextScanGapWalkMark() const;
+    int GetPrivacyVNextScanGapWalkHeight() const;
+    uint64_t GetPrivacyVNextDisconnectCount() const;
+    // Reads the IV5 seed under cs_wallet, the lock Lock() clears it under, so the caller gets
+    // all 32 bytes or a clean refusal. Taken before cs_shielded.
+    bool ReadPrivacyVNextScanSeed(PrivacyVNextDigest& seedOut,
+                                  bool& fHasSeedRecordOut) const;
+    // True, with the reason, while a recorded gap makes the note view incomplete.
+    bool PrivacyVNextScanGapBlocksSpend(std::string& strErrorOut) const;
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
@@ -334,16 +389,32 @@ public:
     bool AssignPrivacyVNextLeafIndices(int nThroughEpoch, std::string& strErrorOut);
     bool AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
                                                std::string& strErrorOut);
-    // `setDAGSkippedTxs` is the connect-time sibling skip set. A skipped transaction
-    // spent nothing and placed nothing, so scanning it would mark live notes spent.
+    // `setDAGSkippedTxs` is the sibling skip set; `pfSeedLockedOut` flags a locked seed.
+    // If a block was disconnected since `pnDisconnectCount`, nothing is written and it fails.
     bool ApplyPrivacyVNextBlock(const CBlock& block,
                                 const std::set<uint256>& setDAGSkippedTxs,
                                 const CBlockIndex* pindex,
-                                std::string& strErrorOut);
+                                std::string& strErrorOut,
+                                bool* pfSeedLockedOut = NULL,
+                                uint64_t* pnDisconnectCount = NULL);
     // Reprocess connected blocks from `nFromHeight`. The only way back to a note the
     // connect-time scan missed, and the only use a restored seed has.
     bool RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
                                   std::string& strErrorOut);
+    // Records a gap-close request without reading blocks; Unlock may hold cs_main.
+    // ThreadPrivacyVNextScanGapCloser does the reading.
+    bool RequestPrivacyVNextScanGapClose(int& nGapOut, std::string& strErrorOut);
+    bool PrivacyVNextScanGapCloseIsPending() const;
+    // One close attempt, for the gap-closer thread. Reads blocks; never call it from
+    // an RPC that holds cs_main. A relock part way through fails the attempt, leaves
+    // the gap at its recorded height and re-arms the request for the next unlock.
+    bool RunPrivacyVNextScanGapClose(int& nGapOut, int& nBlocksOut,
+                                     std::string& strErrorOut);
+    // What an operator watches to know the close finished: idle, pending, running,
+    // complete or failed, with the block count and the last failure alongside.
+    std::string GetPrivacyVNextScanGapCloseStatus() const;
+    int GetPrivacyVNextScanGapCloseBlocks() const;
+    std::string GetPrivacyVNextScanGapCloseError() const;
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
                                      const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
@@ -467,6 +538,13 @@ public:
         nMasterKeyMaxID = 0;
         nPrivacyVNextIndexCount = 1;
         nPrivacyVNextScanGapHeight = -1;
+        fPrivacyVNextScanGapPersisted = true;
+        nPrivacyVNextScanGapWalkDepth = 0;
+        nPrivacyVNextScanGapWalkMark = -1;
+        nPrivacyVNextScanGapWalkHeight = -1;
+        nPrivacyVNextDisconnectCount = 0;
+        nPrivacyVNextScanGapCloseState = PRIVACY_VNEXT_GAP_CLOSE_IDLE;
+        nPrivacyVNextScanGapCloseBlocks = 0;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
@@ -763,7 +841,8 @@ public:
     int64_t GetShieldedBalance() const;
     bool ScanBlockForShieldedNotesChecked(const CBlock& block,
                                           const CBlockIndex* pindex,
-                                          std::string& strErrorOut);
+                                          std::string& strErrorOut,
+                                          bool* pfSeedLockedOut = NULL);
     void ScanBlockForShieldedNotes(const CBlock& block, int nHeight);
     bool DisconnectShieldedBlockChecked(const CBlock& block,
                                         const CBlockIndex* pindex,

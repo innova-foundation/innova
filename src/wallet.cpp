@@ -897,6 +897,19 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
             LockKeyStore();
             return false;
         }
+        // Every unlock path (RPC, Qt dialogs, collateralnode RPCs) reaches here, so a
+        // recorded scan gap is re-requested once a seed exists. Only the request is recorded
+        // under cs_wallet; ThreadPrivacyVNextScanGapCloser does the reading.
+        {
+            int nScanGap = -1;
+            std::string strGapError;
+            if (!RequestPrivacyVNextScanGapClose(nScanGap, strGapError))
+                printf("IV5 scan gap at height %d was not queued: %s\n",
+                       nScanGap, strGapError.c_str());
+            else if (nScanGap >= 0)
+                printf("IV5 scan gap at height %d queued for reprocessing; watch "
+                       "privacy_vnext_scan_gap_close in z_getshieldedinfo\n", nScanGap);
+        }
 		    ProcessLockedAnonOutputs(); //Process Locked Anon Outputs when unlocked, I n n o v a - v3.1
         SecureMsgWalletUnlocked();
         return true;
@@ -2421,6 +2434,7 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
         int dProgressTotal =  dProgressTop - dProgressStart;
         double dProgressShow = 0;
         double dProgressShowPrev = 0;
+        bool fLoggedLockedSeedGap = false;
 
         while (pindex && !fShutdown)
         {
@@ -2468,9 +2482,30 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
             if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
             {
                 std::string strShieldedError;
+                bool fSeedLocked = false;
                 if (!ScanBlockForShieldedNotesChecked(block, pindex,
-                                                      strShieldedError))
+                                                      strShieldedError,
+                                                      &fSeedLocked))
                 {
+                    // A locked seed at startup cannot be unlocked yet (no RPC server), so treat
+                    // it as a recorded scan gap instead of a fatal error; the gap closes on the
+                    // next unlock. Every other failure is still fatal.
+                    const int nGap = GetPrivacyVNextScanGapHeight();
+                    if (fSeedLocked && HasPrivacyVNextSeed() &&
+                        !IsPrivacyVNextSeedUnlocked() &&
+                        nGap >= 0 && nGap <= pindex->nHeight &&
+                        PrivacyVNextScanGapIsPersisted())
+                    {
+                        if (!fLoggedLockedSeedGap)
+                        {
+                            fLoggedLockedSeedGap = true;
+                            printf("startup rescan: IV5 seed is locked; payloads from "
+                                   "height %d left for z_rescaniv5\n", nGap);
+                        }
+                        pindex = pindex->pnext;
+                        if (pindex) dProgressCurrent = pindex->nHeight;
+                        continue;
+                    }
                     strErrorOut = strprintf(
                         "wallet rescan could not scan shielded payloads at height %d: %s",
                         pindex->nHeight, strShieldedError.c_str());
@@ -11802,6 +11837,11 @@ static bool PreparePrivacyVNextSpend(
         strErrorOut = "the wallet has no unlocked IV5 seed; run z_createiv5seed first";
         return false;
     }
+    // Note selection reads a note set built by a scan that skipped blocks, so it can
+    // neither see every note this wallet owns nor know which of them the unscanned
+    // span already spent. Refuse rather than sign over that.
+    if (pwallet->PrivacyVNextScanGapBlocksSpend(strErrorOut))
+        return false;
 
     const int64_t nFee = MIN_TX_FEE_SHIELDED;
     if (nAmount > MAX_MONEY - nFee)
@@ -12237,6 +12277,8 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
         strErrorOut = "the IV5 seed is locked; run walletpassphrase first";
         return false;
     }
+    if (PrivacyVNextScanGapBlocksSpend(strErrorOut))
+        return false;
     if (!note.IsComplete() ||
         note.nAmount != INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT)
     {
@@ -12657,18 +12699,47 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
 // A block whose payloads were not scanned is a block whose notes this wallet does not
 // know it owns. Unshield is retired, so an undetected note is value with no recovery
 // path other than reprocessing the block: keep the lowest such height durably.
-void CWallet::MarkPrivacyVNextScanGap(int nHeight)
+bool CWallet::MarkPrivacyVNextScanGap(int nHeight)
 {
     if (nHeight < 0)
-        return;
+        return false;
     LOCK(cs_shielded);
+    // A seedless wallet owns no IV5 note, so it records no scan gap (one it could
+    // never close).
+    if (privacyVNextSeedRecord.nGeneration == 0 &&
+        vchPrivacyVNextSeed.size() != 32)
+        return true;
+    // The walk reads blocks without cs_main and may never reach this height; hold the
+    // gap here and let the walk's final clear retire what it covered.
+    if (nPrivacyVNextScanGapWalkDepth > 0 &&
+        (nPrivacyVNextScanGapWalkMark < 0 || nHeight < nPrivacyVNextScanGapWalkMark))
+        nPrivacyVNextScanGapWalkMark = nHeight;
     if (nPrivacyVNextScanGapHeight >= 0 && nPrivacyVNextScanGapHeight <= nHeight)
-        return;
+        return fPrivacyVNextScanGapPersisted;
     nPrivacyVNextScanGapHeight = nHeight;
+    // Whether the mark survives the process is the whole of its value: a caller that
+    // keeps running on a degraded scan is safe only while a restart will still be
+    // told to reprocess the block.
+    bool fWritten = true;
     if (fFileBacked)
-        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(nHeight);
-    printf("CWallet: IV5 scan gap recorded at height %d; run z_rescaniv5 to "
-           "reprocess from there\n", nHeight);
+    {
+        try
+        {
+            fWritten = CWalletDB(strWalletFile, "r+")
+                           .WritePrivacyVNextScanGap(nHeight);
+        }
+        catch (const std::exception& e)
+        {
+            printf("CWallet: IV5 scan gap at height %d could not be persisted: %s\n",
+                   nHeight, e.what());
+            fWritten = false;
+        }
+    }
+    fPrivacyVNextScanGapPersisted = fWritten;
+    printf("CWallet: IV5 scan gap recorded at height %d%s; run z_rescaniv5 to "
+           "reprocess from there\n", nHeight,
+           fWritten ? "" : " (NOT PERSISTED)");
+    return fWritten;
 }
 
 int CWallet::GetPrivacyVNextScanGapHeight() const
@@ -12677,16 +12748,120 @@ int CWallet::GetPrivacyVNextScanGapHeight() const
     return nPrivacyVNextScanGapHeight;
 }
 
-// Only a rescan that actually covered the gap may clear it.
+bool CWallet::PrivacyVNextScanGapIsPersisted() const
+{
+    LOCK(cs_shielded);
+    return fPrivacyVNextScanGapPersisted;
+}
+
+// A recorded gap means payloads this wallet never trial-decrypted, so its note set is
+// incomplete: it may hold a note it cannot see, and it certainly cannot tell which of
+// its notes a payload in the unscanned span already spent.
+bool CWallet::PrivacyVNextScanGapBlocksSpend(std::string& strErrorOut) const
+{
+    const int nGap = GetPrivacyVNextScanGapHeight();
+    if (nGap < 0)
+        return false;
+    strErrorOut = strprintf(
+        "an IV5 scan gap is recorded at height %d; run z_rescaniv5", nGap);
+    return true;
+}
+
+// Only a rescan that actually covered the gap may clear it, and only as far as it went.
 void CWallet::ClearPrivacyVNextScanGap(int nScannedFromHeight)
 {
     LOCK(cs_shielded);
     if (nPrivacyVNextScanGapHeight < 0 ||
         nScannedFromHeight > nPrivacyVNextScanGapHeight)
         return;
-    nPrivacyVNextScanGapHeight = -1;
+    // A block connected while the walk read recorded its own gap, for a block the walk
+    // never read. Retiring that one leaves a wallet believing it scanned a block it did
+    // not, which is the failure this whole path exists to prevent.
+    const int nCarried = (nPrivacyVNextScanGapWalkDepth > 0)
+                             ? nPrivacyVNextScanGapWalkMark
+                             : -1;
+    nPrivacyVNextScanGapHeight = nCarried;
+    bool fWritten = true;
     if (fFileBacked)
-        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(-1);
+    {
+        try
+        {
+            fWritten = CWalletDB(strWalletFile, "r+")
+                           .WritePrivacyVNextScanGap(nCarried);
+        }
+        catch (const std::exception& e)
+        {
+            printf("CWallet: IV5 scan gap height %d could not be persisted: %s\n",
+                   nCarried, e.what());
+            fWritten = false;
+        }
+    }
+    // A clear that did not reach the file only costs a redundant rescan on the next
+    // start; a carried gap that did not reach the file dies with the process, so it
+    // keeps the same fail-closed marking a fresh gap gets.
+    fPrivacyVNextScanGapPersisted = (nCarried < 0) ? true : fWritten;
+    if (nCarried >= 0)
+        printf("CWallet: IV5 scan gap at height %d was recorded while the rescan ran "
+               "and stands%s\n", nCarried, fWritten ? "" : " (NOT PERSISTED)");
+}
+
+// The walk window. Marks landing inside it name blocks the walk did not cover.
+CWallet::CPrivacyVNextScanGapWalk::CPrivacyVNextScanGapWalk(CWallet& walletIn)
+    : wallet(walletIn)
+{
+    LOCK(wallet.cs_shielded);
+    if (wallet.nPrivacyVNextScanGapWalkDepth++ == 0)
+        wallet.nPrivacyVNextScanGapWalkMark = -1;
+}
+
+CWallet::CPrivacyVNextScanGapWalk::~CPrivacyVNextScanGapWalk()
+{
+    LOCK(wallet.cs_shielded);
+    if (--wallet.nPrivacyVNextScanGapWalkDepth <= 0)
+    {
+        wallet.nPrivacyVNextScanGapWalkDepth = 0;
+        wallet.nPrivacyVNextScanGapWalkMark = -1;
+        wallet.nPrivacyVNextScanGapWalkHeight = -1;
+    }
+}
+
+bool CWallet::PrivacyVNextScanGapWalkIsActive() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapWalkDepth > 0;
+}
+
+int CWallet::GetPrivacyVNextScanGapWalkMark() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapWalkMark;
+}
+
+int CWallet::GetPrivacyVNextScanGapWalkHeight() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapWalkHeight;
+}
+
+uint64_t CWallet::GetPrivacyVNextDisconnectCount() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextDisconnectCount;
+}
+
+// The one read of the seed bytes a scan makes. Check and copy happen together under
+// cs_wallet, which is what CWallet::Lock() clears them under, so a relock either lands
+// before this call -- a clean refusal -- or after it, never through it.
+bool CWallet::ReadPrivacyVNextScanSeed(PrivacyVNextDigest& seedOut,
+                                       bool& fHasSeedRecordOut) const
+{
+    seedOut.fill(0);
+    LOCK(cs_wallet);
+    fHasSeedRecordOut = privacyVNextSeedRecord.nGeneration != 0;
+    if (vchPrivacyVNextSeed.size() != seedOut.size())
+        return false;
+    std::memcpy(seedOut.data(), &vchPrivacyVNextSeed[0], seedOut.size());
+    return true;
 }
 
 bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
@@ -12726,6 +12901,10 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nThroughEpoch,
     if (nThroughEpoch < 0)
         return true;
 
+    PrivacyVNextDigest seedProbe;
+    bool fHasSeedRecord = false;
+    const bool fSeedUnlocked = ReadPrivacyVNextScanSeed(seedProbe, fHasSeedRecord);
+
     std::set<int> setEpochs;
     {
         LOCK(cs_shielded);
@@ -12738,8 +12917,7 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nThroughEpoch,
             if (nEpoch >= 0 && nEpoch <= nThroughEpoch)
                 setEpochs.insert(nEpoch);
         }
-        if (!setEpochs.empty() && vchPrivacyVNextSeed.size() != 32 &&
-            privacyVNextSeedRecord.nGeneration != 0)
+        if (!setEpochs.empty() && !fSeedUnlocked && fHasSeedRecord)
         {
             // Without the seed the epoch walk cannot recognise our own outputs, and
             // nothing else will come back to these epochs.
@@ -12796,6 +12974,12 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
         return false;
     }
 
+    // Same synchronised read as the block scan, and for the same reason: this runs on
+    // the walk's thread, so a relock can land alongside it.
+    PrivacyVNextDigest seed;
+    bool fHasSeedRecord = false;
+    const bool fSeedUnlocked = ReadPrivacyVNextScanSeed(seed, fHasSeedRecord);
+
     LOCK(cs_shielded);
     bool fWanted = false;
     for (size_t i = 0; !fWanted && i < vPrivacyVNextNotes.size(); ++i)
@@ -12803,14 +12987,12 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
     if (!fWanted || state.vVNextActiveTxIds.empty())
         return true;
 
-    if (vchPrivacyVNextSeed.size() != 32)
+    if (!fSeedUnlocked)
     {
         strErrorOut = strprintf("IV5 seed is locked; epoch %d leaf positions are "
                                 "still unassigned", nEpoch);
         return false;
     }
-    PrivacyVNextDigest seed;
-    std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
     PrivacyVNextDigest genesis;
     const uint256 hashGenesis = GetGenesisBlockHash();
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
@@ -12927,16 +13109,36 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                                      const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
-                                     std::string& strErrorOut)
+                                     std::string& strErrorOut,
+                                     bool* pfSeedLockedOut,
+                                     uint64_t* pnDisconnectCount)
 {
     strErrorOut.clear();
+    if (pfSeedLockedOut)
+        *pfSeedLockedOut = false;
     if (!pindex)
     {
         strErrorOut = "IV5 wallet scan requires a block index";
         return false;
     }
 
+    // Taken under cs_wallet (the relock lock) before cs_shielded, so a relock lands
+    // between blocks and this call refuses cleanly.
+    PrivacyVNextDigest seed;
+    bool fHasSeedRecord = false;
+    const bool fSeedUnlocked = ReadPrivacyVNextScanSeed(seed, fHasSeedRecord);
+
     LOCK(cs_shielded);
+    // Same lock the disconnect bumps the count under, so a block that left the chain
+    // after the caller's check is seen here before anything is written.
+    if (pnDisconnectCount && *pnDisconnectCount != nPrivacyVNextDisconnectCount)
+    {
+        *pnDisconnectCount = nPrivacyVNextDisconnectCount;
+        strErrorOut = strprintf(
+            "IV5 wallet scan: a block was disconnected before block %d was applied",
+            pindex->nHeight);
+        return false;
+    }
     bool fHasPayload = false;
     for (unsigned int i = 0; !fHasPayload && i < block.vtx.size(); ++i)
         fHasPayload = block.vtx[i].IsPrivacyVNext() &&
@@ -12945,13 +13147,15 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     if (!fHasPayload)
         return true;
 
-    if (vchPrivacyVNextSeed.size() != 32)
+    if (!fSeedUnlocked)
     {
         // A locked wallet cannot trial-decrypt; record the height as a scan gap instead of
         // reporting the block scanned.
-        if (privacyVNextSeedRecord.nGeneration != 0)
+        if (fHasSeedRecord)
         {
             MarkPrivacyVNextScanGap(pindex->nHeight);
+            if (pfSeedLockedOut)
+                *pfSeedLockedOut = true;
             strErrorOut = strprintf(
                 "IV5 seed is locked; block %d carries shielded payloads that were not "
                 "scanned", pindex->nHeight);
@@ -12960,8 +13164,6 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
         return true;
     }
 
-    PrivacyVNextDigest seed;
-    std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
     PrivacyVNextDigest genesis;
     const uint256 hashGenesis = GetGenesisBlockHash();
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
@@ -13140,10 +13342,18 @@ bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
     if (nFromHeight < 0)
         nFromHeight = 0;
 
+    // Open for the whole call, including the seed check, so a gap recorded by block
+    // connection meanwhile is not cleared by this walk.
+    CPrivacyVNextScanGapWalk walk(*this);
+
     if (!IsPrivacyVNextSeedUnlocked())
     {
         strErrorOut = "the IV5 seed must be unlocked to rescan";
         return false;
+    }
+    {
+        LOCK(cs_shielded);
+        nPrivacyVNextScanGapWalkHeight = nFromHeight;
     }
 
     CBlockIndex* pindex = NULL;
@@ -13161,9 +13371,38 @@ bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
             pindex = pindex->pnext;
     }
 
+    // cs_main is held per block only for the membership check and the step to pnext.
+    // A concurrent disconnect is caught by the disconnect count compared under
+    // cs_shielded; the walk then continues along the main chain.
     const int nStartHeight = pindex ? pindex->nHeight : nFromHeight;
+    int nStaleRetries = 0;
     while (pindex && !fShutdown)
     {
+        uint64_t nDisconnectCount = 0;
+        {
+            LOCK2(cs_main, cs_shielded);
+            if (!pindex->IsInMainChain())
+            {
+                const int nHeight = pindex->nHeight;
+                if (!pindexBest || nHeight > pindexBest->nHeight)
+                {
+                    // The chain is now shorter than where the walk stood; every block
+                    // from here on was connected while it ran.
+                    pindex = NULL;
+                    break;
+                }
+                CBlockIndex* pindexMain = pindexBest;
+                while (pindexMain && pindexMain->nHeight > nHeight)
+                    pindexMain = pindexMain->pprev;
+                printf("IV5 rescan: block at height %d left the main chain during "
+                       "the walk; continuing on the main chain\n", nHeight);
+                pindex = pindexMain;
+                continue;
+            }
+            nDisconnectCount = nPrivacyVNextDisconnectCount;
+            nPrivacyVNextScanGapWalkHeight = pindex->nHeight;
+        }
+
         if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
         {
             CBlock block;
@@ -13179,16 +13418,35 @@ bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
             if (!ReadConnectTimeDAGSkippedTxs(block, pindex, setDAGSkippedTxs,
                                               strErrorOut))
                 return false;
+            uint64_t nSeenCount = nDisconnectCount;
             if (!ApplyPrivacyVNextBlock(block, setDAGSkippedTxs, pindex,
-                                        strErrorOut))
-                return false;
+                                        strErrorOut, NULL, &nSeenCount))
+            {
+                if (nSeenCount == nDisconnectCount)
+                    return false;
+                // A disconnect landed between the check and the apply. Nothing was
+                // written; re-check this height. Bounded so a chain that will not
+                // hold still fails the walk instead of spinning it.
+                if (++nStaleRetries > 64)
+                {
+                    strErrorOut = strprintf(
+                        "IV5 rescan could not settle block %d: the chain kept "
+                        "reorganising under it", pindex->nHeight);
+                    return false;
+                }
+                continue;
+            }
+            nStaleRetries = 0;
             nBlocksOut++;
         }
         if ((pindex->nHeight % 1000) == 0 && nTipHeight > nStartHeight)
             uiInterface.InitMessage(strprintf(
                 "%s %d/%d %s...", _("Rescanning shielded").c_str(),
                 pindex->nHeight, nTipHeight, _("blocks").c_str()));
-        pindex = pindex->pnext;
+        {
+            LOCK(cs_main);
+            pindex = pindex->pnext;
+        }
     }
     if (fShutdown && pindex)
     {
@@ -13213,6 +13471,156 @@ bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
     return true;
 }
 
+// Records that the gap is now closable and returns. Deliberately does no reading: the
+// caller is CWallet::Unlock, which holds cs_wallet and, from the RPC dispatcher,
+// cs_main, and the span to reprocess is the gap height to the tip.
+bool CWallet::RequestPrivacyVNextScanGapClose(int& nGapOut,
+                                              std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    // Taken before cs_shielded: the seed lives under cs_wallet.
+    const bool fSeedUnlocked = IsPrivacyVNextSeedUnlocked();
+
+    LOCK(cs_shielded);
+    nGapOut = nPrivacyVNextScanGapHeight;
+    if (nGapOut < 0)
+        return true;
+    if (!fSeedUnlocked)
+    {
+        strErrorOut = "the IV5 seed must be unlocked to close a scan gap";
+        return false;
+    }
+    // A worker already holds the job; a second request would only make it run twice.
+    if (nPrivacyVNextScanGapCloseState != PRIVACY_VNEXT_GAP_CLOSE_RUNNING)
+    {
+        nPrivacyVNextScanGapCloseState = PRIVACY_VNEXT_GAP_CLOSE_REQUESTED;
+        nPrivacyVNextScanGapCloseBlocks = 0;
+        strPrivacyVNextScanGapCloseError.clear();
+    }
+    return true;
+}
+
+bool CWallet::PrivacyVNextScanGapCloseIsPending() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapCloseState == PRIVACY_VNEXT_GAP_CLOSE_REQUESTED &&
+           nPrivacyVNextScanGapHeight >= 0;
+}
+
+// The half that reads. Runs on the closer thread, holding neither cs_main nor
+// cs_wallet across the walk, exactly as z_rescaniv5 does from an unlocked RPC.
+bool CWallet::RunPrivacyVNextScanGapClose(int& nGapOut, int& nBlocksOut,
+                                          std::string& strErrorOut)
+{
+    nBlocksOut = 0;
+    strErrorOut.clear();
+    {
+        LOCK(cs_shielded);
+        if (nPrivacyVNextScanGapCloseState == PRIVACY_VNEXT_GAP_CLOSE_RUNNING)
+        {
+            nGapOut = nPrivacyVNextScanGapHeight;
+            strErrorOut = "an IV5 scan gap close is already running";
+            return false;
+        }
+        nGapOut = nPrivacyVNextScanGapHeight;
+        if (nGapOut < 0)
+        {
+            nPrivacyVNextScanGapCloseState = PRIVACY_VNEXT_GAP_CLOSE_IDLE;
+            return true;
+        }
+        nPrivacyVNextScanGapCloseState = PRIVACY_VNEXT_GAP_CLOSE_RUNNING;
+    }
+
+    // A throw would leave the job stuck RUNNING, which refuses every later request,
+    // and would take the closer thread with it.
+    bool fOk = false;
+    try
+    {
+        fOk = RescanPrivacyVNextBlocks(nGapOut, nBlocksOut, strErrorOut);
+    }
+    catch (const std::exception& e)
+    {
+        fOk = false;
+        strErrorOut = strprintf("IV5 scan gap close failed: %s", e.what());
+    }
+
+    LOCK(cs_shielded);
+    nPrivacyVNextScanGapCloseBlocks = nBlocksOut;
+    if (fOk)
+    {
+        // The walk covered its span, but a block connected while it read recorded a gap
+        // the clear kept. Ask for another pass rather than leave it for an operator to
+        // notice: each pass starts above the last, so this converges.
+        nPrivacyVNextScanGapCloseState =
+            (nPrivacyVNextScanGapHeight >= 0) ? PRIVACY_VNEXT_GAP_CLOSE_REQUESTED
+                                              : PRIVACY_VNEXT_GAP_CLOSE_COMPLETE;
+        strPrivacyVNextScanGapCloseError.clear();
+    }
+    else
+    {
+        // A relock part way through lands here: the rescan refuses without a seed and
+        // the gap keeps its recorded height, so nothing is lost and the next unlock
+        // requests the same work again.
+        nPrivacyVNextScanGapCloseState = PRIVACY_VNEXT_GAP_CLOSE_FAILED;
+        strPrivacyVNextScanGapCloseError = strErrorOut;
+    }
+    return fOk;
+}
+
+std::string CWallet::GetPrivacyVNextScanGapCloseStatus() const
+{
+    LOCK(cs_shielded);
+    switch (nPrivacyVNextScanGapCloseState)
+    {
+    case PRIVACY_VNEXT_GAP_CLOSE_REQUESTED: return "pending";
+    case PRIVACY_VNEXT_GAP_CLOSE_RUNNING:   return "running";
+    case PRIVACY_VNEXT_GAP_CLOSE_COMPLETE:  return "complete";
+    case PRIVACY_VNEXT_GAP_CLOSE_FAILED:    return "failed";
+    default:                                return "idle";
+    }
+}
+
+int CWallet::GetPrivacyVNextScanGapCloseBlocks() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapCloseBlocks;
+}
+
+std::string CWallet::GetPrivacyVNextScanGapCloseError() const
+{
+    LOCK(cs_shielded);
+    return strPrivacyVNextScanGapCloseError;
+}
+
+extern CWallet* pwalletMain;
+
+// The driver. Nothing else closes a gap on a running node: init's own close cannot
+// fire for an encrypted wallet, which always starts locked.
+void ThreadPrivacyVNextScanGapCloser(void* parg)
+{
+    (void)parg;
+    RenameThread("innova-iv5gap");
+    while (!fShutdown)
+    {
+        // A request left by an unlock that relocked at once (EncryptWallet, a rolled-
+        // back walletpassphrase) waits here as pending rather than failing.
+        if (pwalletMain && pwalletMain->PrivacyVNextScanGapCloseIsPending() &&
+            pwalletMain->IsPrivacyVNextSeedUnlocked())
+        {
+            int nGap = -1;
+            int nBlocks = 0;
+            std::string strError;
+            if (pwalletMain->RunPrivacyVNextScanGapClose(nGap, nBlocks, strError))
+                printf("IV5 scan gap closed: reprocessed %d block(s) from height %d\n",
+                       nBlocks, nGap);
+            else
+                printf("IV5 scan gap at height %d was not closed: %s\n",
+                       nGap, strError.c_str());
+        }
+        MilliSleep(1000);
+    }
+}
+
 bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
                                           const std::set<uint256>& setDAGSkippedTxs,
                                           const CBlockIndex* pindex,
@@ -13222,6 +13630,8 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
     (void)pindex;
 
     LOCK(cs_shielded);
+    // Before every early return: a walk compares this count, not the note set.
+    ++nPrivacyVNextDisconnectCount;
     if (vPrivacyVNextNotes.empty())
         return true;
 
@@ -13694,8 +14104,11 @@ bool CWallet::ReadConnectTimeDAGSkippedTxs(const CBlock& block,
 
 bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                                                const CBlockIndex* pindex,
-                                               std::string& strErrorOut)
+                                               std::string& strErrorOut,
+                                               bool* pfSeedLockedOut)
 {
+    if (pfSeedLockedOut)
+        *pfSeedLockedOut = false;
     bool fFoundOwnedOutput = false;
     if (!ApplyWalletShieldedBlock(*this, block, pindex, NULL,
                                   fFoundOwnedOutput, strErrorOut))
@@ -13845,7 +14258,8 @@ bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                 printf("ScanBlockForShieldedNotes() : imported silent payment spend key for output idx=%u\n", imp.idx);
         }
     }
-    return ApplyPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut);
+    return ApplyPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut,
+                                  pfSeedLockedOut);
 }
 
 void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)

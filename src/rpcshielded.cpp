@@ -2336,6 +2336,16 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
         // Lowest unscanned height; -1 means none (else run z_rescaniv5).
         obj.push_back(Pair("privacy_vnext_scan_gap_height",
                            pwalletMain->GetPrivacyVNextScanGapHeight()));
+        // Gap-closer status; "complete" with scan_gap_height -1 means done.
+        obj.push_back(Pair("privacy_vnext_scan_gap_close",
+                           pwalletMain->GetPrivacyVNextScanGapCloseStatus()));
+        obj.push_back(Pair("privacy_vnext_scan_gap_close_blocks",
+                           (int64_t)pwalletMain->GetPrivacyVNextScanGapCloseBlocks()));
+        // Height the running close is reading, -1 while no walk is in flight.
+        obj.push_back(Pair("privacy_vnext_scan_gap_close_height",
+                           pwalletMain->GetPrivacyVNextScanGapWalkHeight()));
+        obj.push_back(Pair("privacy_vnext_scan_gap_close_error",
+                           pwalletMain->GetPrivacyVNextScanGapCloseError()));
     }
     obj.push_back(Pair("privacy_vnext_max_inputs",
                        (int)vnextAbi.nMaxInputs));
