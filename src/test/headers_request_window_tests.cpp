@@ -175,8 +175,8 @@ BOOST_FIXTURE_TEST_CASE(batch_requests_at_most_one_window, Fixture)
     BOOST_CHECK(!receiver.node.setBlocksInFlight.count(vHeaders[MAX_BLOCKS_IN_FLIGHT_PER_PEER].GetHash()));
 }
 
-// A block already held as an orphan is not requested again; the header after it,
-// whose parent resolves through the announced chain, still is.
+// A held orphan and anything announced above it are not requested (see
+// orphan_gap_gate_tests).
 BOOST_FIXTURE_TEST_CASE(held_orphan_is_not_requested, Fixture)
 {
     CScopedOrphanTables tables;
@@ -197,8 +197,8 @@ BOOST_FIXTURE_TEST_CASE(held_orphan_is_not_requested, Fixture)
 
     BOOST_CHECK(!receiver.node.setBlocksInFlight.count(vHeaders[nHeld].GetHash()));
     BOOST_CHECK(receiver.node.setBlocksInFlight.count(vHeaders[nHeld - 1].GetHash()));
-    BOOST_CHECK(receiver.node.setBlocksInFlight.count(vHeaders[nHeld + 1].GetHash()));
-    BOOST_CHECK_EQUAL(receiver.node.setBlocksInFlight.size(), vHeaders.size() - 1);
+    BOOST_CHECK(!receiver.node.setBlocksInFlight.count(vHeaders[nHeld + 1].GetHash()));
+    BOOST_CHECK_EQUAL(receiver.node.setBlocksInFlight.size(), nHeld);
 }
 
 // A full node does not answer a full batch with another getheaders from the same locator.

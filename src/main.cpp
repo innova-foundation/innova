@@ -336,10 +336,14 @@ struct COrphanSuppression
 static CCriticalSection cs_orphanNeverFits;
 static map<uint256, COrphanSuppression> mapOrphanNeverFits;
 
-// Consecutive refusals of one hash, so the re-ask deferral grows instead of
-// settling at a fixed rate: SendMessages resets mapAlreadyAskedFor to now on
-// every getdata it sends, so that map alone cannot carry a backoff across the
-// request going out. Read and written under cs_main.
+// Per peer, the unheld ancestors that peer's orphans wait on. A gated peer is asked only
+// for those. Derived from mapOrphanBlocks at each pool mutation, never maintained. Keyed
+// by owner so one peer's gap never reaches another's request window. Leaf lock.
+static CCriticalSection cs_orphanGap;
+static map<NodeId, set<uint256> > mapOrphanGapHashesByOwner;
+
+// Consecutive refusals of one hash, so the re-ask deferral backs off. mapAlreadyAskedFor
+// is reset on every getdata and cannot carry it. Leaf lock, read outside cs_main.
 struct COrphanRefusal
 {
     int64_t nTime;
@@ -347,6 +351,7 @@ struct COrphanRefusal
     COrphanRefusal() : nTime(0), nShift(0) {}
     COrphanRefusal(int64_t nTimeIn, int nShiftIn) : nTime(nTimeIn), nShift(nShiftIn) {}
 };
+static CCriticalSection cs_orphanRefused;
 static map<uint256, COrphanRefusal> mapOrphanRefused;
 
 // Wire size plus vector overhead plus the cached merkle tree. The wire term uses the
@@ -387,20 +392,34 @@ size_t GetOrphanOwnerBucketCount()
 
 size_t GetOrphanRefusalRecordCount()
 {
+    LOCK(cs_orphanRefused);
     return mapOrphanRefused.size();
 }
 
 void ClearOrphanRefusalRecords()
 {
+    LOCK(cs_orphanRefused);
     mapOrphanRefused.clear();
 }
 
 int64_t GetOrphanRefusalBackoff(const uint256& hash)
 {
+    LOCK(cs_orphanRefused);
     map<uint256, COrphanRefusal>::const_iterator it = mapOrphanRefused.find(hash);
     if (it == mapOrphanRefused.end())
         return ORPHAN_REFUSAL_BACKOFF_SECONDS;
     return ORPHAN_REFUSAL_BACKOFF_SECONDS << it->second.nShift;
+}
+
+// Whether the last refusal's deferral still stands. Read from the refusal record, which
+// only a refusal writes, not from mapAlreadyAskedFor, which announcements advance.
+bool IsOrphanRequestDeferred(const uint256& hash, int64_t nNow)
+{
+    LOCK(cs_orphanRefused);
+    map<uint256, COrphanRefusal>::const_iterator it = mapOrphanRefused.find(hash);
+    if (it == mapOrphanRefused.end())
+        return false;
+    return nNow < it->second.nTime + (ORPHAN_REFUSAL_BACKOFF_SECONDS << it->second.nShift);
 }
 
 bool OrphanOwnerHasDeparted(NodeId owner)
@@ -495,6 +514,127 @@ void ClearOrphanBlockRequestSuppression()
 {
     LOCK(cs_orphanNeverFits);
     mapOrphanNeverFits.clear();
+}
+
+bool IsOrphanGapGatedPeer(NodeId owner)
+{
+    if (owner < 0)
+        return false;
+    LOCK(cs_orphanGap);
+    return mapOrphanGapHashesByOwner.count(owner) != 0;
+}
+
+bool IsOrphanGapHashForPeer(NodeId owner, const uint256& hash)
+{
+    if (owner < 0)
+        return false;
+    LOCK(cs_orphanGap);
+    map<NodeId, set<uint256> >::const_iterator it = mapOrphanGapHashesByOwner.find(owner);
+    return it != mapOrphanGapHashesByOwner.end() && it->second.count(hash) != 0;
+}
+
+std::vector<uint256> GetOrphanGapHashesForPeer(NodeId owner)
+{
+    if (owner < 0)
+        return std::vector<uint256>();
+    LOCK(cs_orphanGap);
+    map<NodeId, set<uint256> >::const_iterator it = mapOrphanGapHashesByOwner.find(owner);
+    if (it == mapOrphanGapHashesByOwner.end())
+        return std::vector<uint256>();
+    return std::vector<uint256>(it->second.begin(), it->second.end());
+}
+
+std::map<NodeId, std::set<uint256> > GetOrphanGapSnapshot()
+{
+    LOCK(cs_orphanGap);
+    return mapOrphanGapHashesByOwner;
+}
+
+// Distinct gap hashes over every gated peer. A reporting count only: no request
+// path reads it, since no peer is ever asked from a union.
+size_t GetOrphanGapHashCount()
+{
+    LOCK(cs_orphanGap);
+    set<uint256> setAll;
+    for (map<NodeId, set<uint256> >::const_iterator it = mapOrphanGapHashesByOwner.begin();
+         it != mapOrphanGapHashesByOwner.end(); ++it)
+        setAll.insert(it->second.begin(), it->second.end());
+    return setAll.size();
+}
+
+size_t GetOrphanGapGatedPeerCount()
+{
+    LOCK(cs_orphanGap);
+    return mapOrphanGapHashesByOwner.size();
+}
+
+void ClearOrphanGaps()
+{
+    LOCK(cs_orphanGap);
+    mapOrphanGapHashesByOwner.clear();
+}
+
+// The unheld ancestor a record ultimately waits on, following hashWaitedFor through held
+// orphans. Memoised per recompute; 0 means the walk did not terminate (a wait-edge cycle).
+static uint256 OrphanGapRootOf(const uint256& hash, map<uint256, uint256>& mapMemo)
+{
+    AssertLockHeld(cs_main);
+
+    vector<uint256> vPath;
+    uint256 hashCur = hash;
+    uint256 hashRoot = 0;
+    const size_t nLimit = mapOrphanBlocks.size() + 1;
+    while (true)
+    {
+        map<uint256, uint256>::const_iterator itMemo = mapMemo.find(hashCur);
+        if (itMemo != mapMemo.end())
+        {
+            hashRoot = itMemo->second;
+            break;
+        }
+        map<uint256, COrphanBlock>::const_iterator it = mapOrphanBlocks.find(hashCur);
+        if (it == mapOrphanBlocks.end())
+        {
+            hashRoot = hashCur;
+            break;
+        }
+        if (vPath.size() > nLimit)
+            break;
+        vPath.push_back(hashCur);
+        hashCur = it->second.hashWaitedFor;
+    }
+    for (unsigned int i = 0; i < vPath.size(); i++)
+        mapMemo[vPath[i]] = hashRoot;
+    return hashRoot;
+}
+
+// Republish the snapshot. O(pool), called at the pool's mutation boundaries:
+// every path out of ProcessBlock and the end of the sweep.
+void RecomputeOrphanGaps()
+{
+    AssertLockHeld(cs_main);
+
+    map<NodeId, set<uint256> > mapByOwner;
+    map<uint256, uint256> mapMemo;
+    for (map<uint256, COrphanBlock>::const_iterator it = mapOrphanBlocks.begin();
+         it != mapOrphanBlocks.end(); ++it)
+    {
+        // A record with no live owner gates nobody, so it publishes no gap: the
+        // hash is only ever used to decide what to ask the peer that delivered
+        // the record waiting on it.
+        map<uint256, NodeId>::const_iterator itOwner = mapOrphanBlocksByNode.find(it->first);
+        if (itOwner == mapOrphanBlocksByNode.end() || itOwner->second < 0)
+            continue;
+        const uint256 hashRoot = OrphanGapRootOf(it->first, mapMemo);
+        // A root already in the index is not a gap: the record is drainable and
+        // there is nothing left to fetch for it, so its owner is not gated.
+        if (hashRoot == 0 || mapBlockIndex.count(hashRoot))
+            continue;
+        mapByOwner[itOwner->second].insert(hashRoot);
+    }
+
+    LOCK(cs_orphanGap);
+    mapOrphanGapHashesByOwner.swap(mapByOwner);
 }
 
 void RecomputeOrphanBlocksFootprint()
@@ -4439,7 +4579,10 @@ bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWait
     nOrphanBlocksFootprint += nFootprint;
     // Parked, so the refusals that preceded it are spent, and the pool held it,
     // so no suppression of it stands.
-    mapOrphanRefused.erase(hash);
+    {
+        LOCK(cs_orphanRefused);
+        mapOrphanRefused.erase(hash);
+    }
     LiftOrphanBlockRequestSuppression(hash);
 
     if (owner >= 0)
@@ -4617,13 +4760,16 @@ size_t SweepOrphanPool(int64_t nNow)
     // can produce has passed, and nothing else drops one for a hash that is
     // never offered again.
     const int64_t nStale = (ORPHAN_REFUSAL_BACKOFF_SECONDS << ORPHAN_REFUSAL_BACKOFF_MAX_SHIFT) * 2;
-    for (map<uint256, COrphanRefusal>::iterator it = mapOrphanRefused.begin();
-         it != mapOrphanRefused.end(); )
     {
-        if (nNow - it->second.nTime > nStale)
-            mapOrphanRefused.erase(it++);
-        else
-            ++it;
+        LOCK(cs_orphanRefused);
+        for (map<uint256, COrphanRefusal>::iterator it = mapOrphanRefused.begin();
+             it != mapOrphanRefused.end(); )
+        {
+            if (nNow - it->second.nTime > nStale)
+                mapOrphanRefused.erase(it++);
+            else
+                ++it;
+        }
     }
 
     // Suppression records the same way: AskFor drops one it finds lapsed, but a
@@ -4640,7 +4786,12 @@ size_t SweepOrphanPool(int64_t nNow)
         }
     }
 
-    return ReleaseDepartedOrphanOwners() + ExpireOrphanBlocks(nNow);
+    const size_t nSwept = ReleaseDepartedOrphanOwners() + ExpireOrphanBlocks(nNow);
+    // The sweep mutates the pool outside ProcessBlock -- an expiry or a departed
+    // peer's release can be the last thing holding a gap open -- and the gate
+    // reads the snapshot, not the tables.
+    RecomputeOrphanGaps();
+    return nSwept;
 }
 
 // Sweep driver, called from the message-handler loop so it runs even with no peers
@@ -4777,6 +4928,7 @@ static void ReAskForRefusedOrphan(CNode* pfrom, const uint256& hash, size_t nFoo
     const int64_t nNow = GetTime();
     int64_t nBackoff = ORPHAN_REFUSAL_BACKOFF_SECONDS;
     {
+        LOCK(cs_orphanRefused);
         map<uint256, COrphanRefusal>::iterator it = mapOrphanRefused.find(hash);
         if (it == mapOrphanRefused.end())
         {
@@ -14096,6 +14248,14 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 {
     AssertLockHeld(cs_main);
 
+    // Every path out of here can move the pool: the two park sites, the pruning
+    // they run first, and the drain below. The gap snapshot is derived rather
+    // than maintained, so it is republished on all of them.
+    struct CGapSnapshotOnReturn
+    {
+        ~CGapSnapshotOnReturn() { RecomputeOrphanGaps(); }
+    } gapSnapshotOnReturn;
+
     BLOCK_PHASE(BP_PROCESSBLOCK);
     int64_t nStartTime = GetTimeMillis();
     // Check for duplicate
@@ -14204,6 +14364,15 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 {
                     pfrom->PushGetBlocks(pindexBest, uint256(0));
 
+                    // A gap hash this node asked for is refused on the room-refusal terms: deferred, and
+                    // unscored.
+                    if (IsOrphanGapHashForPeer(pfrom->GetId(), hash))
+                    {
+                        ReAskForRefusedOrphan(pfrom, hash, OrphanBlockFootprint(*pblock),
+                                              pfrom->GetId(), vMissingDAGParents);
+                        return error("ProcessBlock() : peer %d at the DAG orphan limit, gap block %s deferred", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
+                    }
+
                     if (IsInitialBlockDownload())
                         return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty) %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
                     pfrom->Misbehaving(1, "DAG orphan limit exceeded");
@@ -14272,6 +14441,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
             if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER) {
                 pfrom->PushGetBlocks(pindexBest, uint256(0));
+
+                // See the DAG park site: a hash the gate asked this peer for is
+                // deferred on the pool's refusal record and not scored.
+                if (IsOrphanGapHashForPeer(pfrom->GetId(), hash))
+                {
+                    ReAskForRefusedOrphan(pfrom, hash, OrphanBlockFootprint(*pblock),
+                                          pfrom->GetId(),
+                                          std::vector<uint256>(1, pblock->hashPrevBlock));
+                    return error("ProcessBlock() : peer %d at the orphan limit, gap block %s deferred", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
+                }
 
                 if (IsInitialBlockDownload()) {
                     return error("ProcessBlock() : peer %d exceeded orphan limit (IBD, no penalty) %s", pfrom->GetId(), hash.ToString().substr(0,20).c_str());
@@ -15885,6 +16064,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         uint256 hashPrevHeader;
         int nPrevHeaderHeight = -1;
         bool fHavePrevHeader = false;
+        // Headers above a block still held as an orphan are not requested: a park above the gap
+        // spends the entry budget its ancestors need. The set carries the skip down the batch.
+        std::set<uint256> setForwardOfHeldOrphan;
         for (const CBlock& header : vHeaders)
         {
             uint256 hash = header.GetHash();
@@ -15984,7 +16166,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 // window of the tip. A suppressed hash is lifted once its whole wait set is indexed.
                 if (pindexPrev)
                     LiftOrphanBlockRequestSuppressionIfConnectable(hash);
-                if (!mapOrphanBlocks.count(hash) &&
+                const bool fForwardOfHeldOrphan =
+                    mapOrphanBlocks.count(header.hashPrevBlock) ||
+                    setForwardOfHeldOrphan.count(header.hashPrevBlock);
+                if (fForwardOfHeldOrphan)
+                    setForwardOfHeldOrphan.insert(hash);
+                if (!fForwardOfHeldOrphan && !mapOrphanBlocks.count(hash) &&
                     nHeaderHeight <= nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER)
                     pfrom->AskFor(CInv(MSG_BLOCK, hash));
                 if (pindexPrev)
@@ -16849,6 +17036,24 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 else
                     pto->PushGetBlocks(pBest, uint256(0));
             }
+
+            // getblocks alone cannot recover a window this node lost: the serving
+            // peer answers an inv it has already announced with nothing, so an
+            // expired, refused or deferred hash is never offered again in the
+            // session. Headers carry no such filter, and the handler above turns
+            // them back into requests.
+            if (fPeerAhead && pBest != NULL && pto->setBlocksInFlight.empty())
+                pto->PushMessage("getheaders", CBlockLocator(pBest), uint256(0));
+
+            // A gated peer is re-asked only for the roots under orphans it delivered, bounded by
+            // one in-flight window.
+            if (pto->setBlocksInFlight.empty())
+            {
+                const std::vector<uint256> vGap = GetOrphanGapHashesForPeer(pto->GetId());
+                for (unsigned int i = 0;
+                     i < vGap.size() && i < MAX_BLOCKS_IN_FLIGHT_PER_PEER; i++)
+                    pto->AskFor(CInv(MSG_BLOCK, vGap[i]));
+            }
             if (fDebug)
                 printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds reason=%s in_flight=%u\n",
                        pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock,
@@ -17031,16 +17236,86 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         vector<CInv> vGetData;
         int64_t nNow = GetTime() * 1000000;
         pto->ExpireBlockInFlight();
-        while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)
+        // While this peer holds an orphan whose ancestors are being fetched, ask it only for
+        // those ancestors. Deferred entries keep their place. The gate is this peer's own entry.
+        const std::vector<uint256> vOwnGap = GetOrphanGapHashesForPeer(pto->GetId());
+        const std::set<uint256> setOwnGap(vOwnGap.begin(), vOwnGap.end());
+        const bool fGapGated = !setOwnGap.empty();
+
+        // The gap hashes are asked from the snapshot rather than found in the
+        // queue. Whatever the queue holds and wherever in it a gap hash happens
+        // to sit, the ancestors that drain this peer's records are requested on
+        // every pass, so the deferral cap below can only postpone a forward
+        // request. One in-flight window is the whole of it, both the work and
+        // the requests: a peer cannot hold more than a window outstanding, and a
+        // hash already in flight is not re-asked until it expires. A root past
+        // the window is reached as the ones before it are served or swept, since
+        // either removes the record that published it.
+        //
+        // Reaching a hash the queue would not is the whole of what this does. It
+        // is not an exemption from the terms the pool sets on its own refusals:
+        // a block the pool can never hold is suppressed and asked for by no
+        // path, and a block it refused for want of room carries the refusal
+        // deferral, which is read here rather than duplicated. Without them a
+        // refused root goes back out on the very next pass -- ten a second, the
+        // peer re-reading it from disk each time and scored for serving what
+        // this node asked it for. Both lapse, the deferral by a doubling backoff
+        // under a cap, so the ask returns of itself.
+        const int64_t nTimeNow = GetTime();
+        if (fGapGated)
         {
-            CInv inv = (*pto->mapAskFor.begin()).second;
+            for (unsigned int i = 0;
+                 i < vOwnGap.size() && i < MAX_BLOCKS_IN_FLIGHT_PER_PEER; i++)
+            {
+                if (pto->setBlocksInFlight.size() >= MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                    break;
+                const CInv inv(MSG_BLOCK, vOwnGap[i]);
+                if (pto->IsBlockInFlight(inv.hash) || IsOrphanBlockRequestSuppressed(inv.hash) ||
+                    IsOrphanRequestDeferred(inv.hash, nTimeNow))
+                    continue;
+                bool fHave = false;
+                {
+                    TRY_LOCK(cs_main, lockMain);
+                    if (lockMain)
+                    {
+                        CTxDB txdb("r");
+                        fHave = AlreadyHave(txdb, inv);
+                    }
+                }
+                if (fHave)
+                    continue;
+                if (fDebugNet)
+                    printf("sending getdata: %s (gap)\n", inv.ToString().c_str());
+                vGetData.push_back(inv);
+                pto->MarkBlockInFlight(inv.hash);
+                LOCK(cs_mapAlreadyAskedFor);
+                mapAlreadyAskedFor[inv] = nNow;
+            }
+        }
+
+        // Hashes already deferred in this pass. The queue does not drain while
+        // the gate holds, so a hash offered again would stack a second entry
+        // behind the first and a peer could grow the queue by re-announcing.
+        std::set<uint256> setDeferredThisPass;
+        // Gated passes step over entries they keep; cap them at MAX_GAP_DEFERRALS_PER_PASS and
+        // resume next pass.
+        size_t nDeferrals = 0;
+        bool fScanCapped = false;
+        const int64_t nScanFrom = fGapGated ? pto->nAskForScanFrom : 0;
+        if (!fGapGated)
+            pto->nAskForScanFrom = 0;
+        std::multimap<int64_t, CInv>::iterator itAsk =
+            nScanFrom > 0 ? pto->mapAskFor.lower_bound(nScanFrom) : pto->mapAskFor.begin();
+        while (itAsk != pto->mapAskFor.end() && itAsk->first <= nNow)
+        {
+            CInv inv = itAsk->second;
             bool fSkip = false;
             bool fBlockRequest = (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK);
             if (fBlockRequest)
             {
                 if (pto->IsBlockInFlight(inv.hash))
                 {
-                    pto->mapAskFor.erase(pto->mapAskFor.begin());
+                    pto->mapAskFor.erase(itAsk++);
                     continue;
                 }
                 if (pto->setBlocksInFlight.size() >= MAX_BLOCKS_IN_FLIGHT_PER_PEER)
@@ -17048,6 +17323,23 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     // Preserve queued request order at the inflight cap: the front request stays next
                     // eligible, never re-added with a postponed timestamp.
                     break;
+                }
+                if (fGapGated && !setOwnGap.count(inv.hash))
+                {
+                    // Keep the earliest entry for the hash, which carries the
+                    // queue order, and drop the later duplicate.
+                    if (!setDeferredThisPass.insert(inv.hash).second)
+                    {
+                        pto->mapAskFor.erase(itAsk++);
+                        continue;
+                    }
+                    ++itAsk;
+                    if (++nDeferrals >= MAX_GAP_DEFERRALS_PER_PASS)
+                    {
+                        fScanCapped = true;
+                        break;
+                    }
+                    continue;
                 }
             }
             {
@@ -17075,7 +17367,20 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 LOCK(cs_mapAlreadyAskedFor);
                 mapAlreadyAskedFor[inv] = nNow;
             }
-            pto->mapAskFor.erase(pto->mapAskFor.begin());
+            pto->mapAskFor.erase(itAsk++);
+        }
+        if (fScanCapped)
+        {
+            // Resume at the first entry not reached; the cursor only moves forward.
+            const int64_t nResume =
+                itAsk == pto->mapAskFor.end() ? 0 : itAsk->first;
+            pto->nAskForScanFrom = nResume > nScanFrom ? nResume : nScanFrom + 1;
+        }
+        else
+        {
+            // The pass reached the end of what is eligible: the next one starts
+            // at the front again.
+            pto->nAskForScanFrom = 0;
         }
         if (!vGetData.empty())
             pto->PushMessage("getdata", vGetData);

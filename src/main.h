@@ -1037,6 +1037,21 @@ bool LiftOrphanBlockRequestSuppressionIfConnectable(const uint256& hash);
 size_t GetOrphanBlockRequestSuppressionCount();
 void ClearOrphanBlockRequestSuppression();
 
+// Gap gate: a peer holding an orphan with unheld ancestors is asked only for those.
+// Keyed by owner; republished on every ProcessBlock exit and sweep; read under a leaf lock.
+void RecomputeOrphanGaps();
+bool IsOrphanGapGatedPeer(NodeId owner);
+bool IsOrphanGapHashForPeer(NodeId owner, const uint256& hash);
+std::vector<uint256> GetOrphanGapHashesForPeer(NodeId owner);
+std::map<NodeId, std::set<uint256> > GetOrphanGapSnapshot();
+size_t GetOrphanGapHashCount();
+size_t GetOrphanGapGatedPeerCount();
+void ClearOrphanGaps();
+
+// Deferred entries one getdata pass may skip for a gated peer before resuming on the
+// next pass, bounding per-tick work on a queue that does not drain.
+static const size_t MAX_GAP_DEFERRALS_PER_PASS = MAX_BLOCKS_IN_FLIGHT_PER_PEER;
+
 // Drop every record a departed peer owns, releasing its bytes and its entry
 // charge, so a host that reconnects under a fresh NodeId cannot accumulate a
 // permanent share of the pool. Returns the number of records dropped.
@@ -1066,6 +1081,11 @@ void ClearOrphanRefusalRecords();
 
 // The deferral the next refusal of this hash would apply, in seconds.
 int64_t GetOrphanRefusalBackoff(const uint256& hash);
+
+// Whether the deferral the last refusal of this hash set still stands at nNow.
+// Leaf-locked, so a request path outside cs_main can ask before re-requesting a
+// block the pool has already turned away.
+bool IsOrphanRequestDeferred(const uint256& hash, int64_t nNow);
 
 // Make room for one block of nIncomingFootprint bytes charged to owner (< 0 = self).
 // The byte bound (and per-peer share) refuses and never evicts and is tested first;

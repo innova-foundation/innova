@@ -483,6 +483,10 @@ public:
     std::set<CInv> setInventoryForce;
     CCriticalSection cs_inventory;
     std::multimap<int64_t, CInv> mapAskFor;
+    // Where the next getdata pass resumes while the gap gate holds for this
+    // peer. Zero means the front of the queue, which is the only value an
+    // ungated peer ever has.
+    int64_t nAskForScanFrom;
 
     std::set<uint256> setBlocksInFlight;
     std::map<uint256, int64_t> mapBlockInFlightSince;
@@ -532,6 +536,7 @@ public:
             LOCK(cs_nLastNodeId);
             id = nLastNodeId++;
         }
+        nAskForScanFrom = 0;
         nSendSize = 0;
         nSendOffset = 0;
         hashContinue = 0;
