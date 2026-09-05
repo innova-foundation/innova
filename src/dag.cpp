@@ -4232,15 +4232,22 @@ bool CDAGManager::BuildDAGKnightAnchorState(
     }
     else
     {
+        // The selected parent has no vertex. Below the DAG fork no block has
+        // one; below the prune boundary none is retained, and pruning keeps
+        // the block index. Anything else missing is corruption.
         std::map<uint256, CBlockIndex*>::const_iterator pi =
             mapBlockIndex.find(stateOut.hashSelectedParent);
-        if (pi == mapBlockIndex.end() || !pi->second)
+        const bool fParentIndexed = pi != mapBlockIndex.end() && pi->second;
+        if (fParentIndexed && pi->second->nHeight < FORK_HEIGHT_DAG)
         {
-            // Pruning retains the first surviving block's persisted cumulative
-            // score/k as an authenticated local frontier while deleting older
-            // DAG links and block indexes. Seed the disposable cache at that
-            // frontier; descendants extend it without collapsing historical
-            // work or requiring a chain/datadir reset.
+            stateOut.nScore = pi->second->nChainTrust;
+        }
+        else if (!fParentIndexed ||
+                 pi->second->nHeight < nPrunedBelowHeight)
+        {
+            // This block is the first retained vertex on its selected-parent
+            // chain. Its persisted cumulative score/k seed the disposable
+            // cache; descendants extend it.
             if (data.nDAGScore == 0 ||
                 data.nInferredK < DAGKNIGHT_K_FLOOR ||
                 data.nInferredK > DAGKNIGHT_K_CEILING)
@@ -4257,12 +4264,11 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                 std::make_pair(hashAnchor, true));
             return true;
         }
-        if (pi->second->nHeight >= FORK_HEIGHT_DAG)
+        else
         {
             strError = "DAGKNIGHT selected-parent frontier is corrupt";
             return false;
         }
-        stateOut.nScore = pi->second->nChainTrust;
     }
 
     std::vector<uint256> vCandidates;
