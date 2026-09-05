@@ -10178,8 +10178,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                     {
                                         if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                                 printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                                pnode->PushMessage("iseg", CTxIn()); //request full mn list
-                                                pnode->nLastDseg = GetTime();
+                                                PushCollateralnodeListRequest(pnode); //request full mn list
                                         }
                                     }
                             return TransientFailure(error("CheckBlock-POS() : collateralnode payee is not present in the local list yet"));
@@ -10317,8 +10316,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                 {
                                     if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
-                                            pnode->nLastDseg = GetTime();
+                                            PushCollateralnodeListRequest(pnode); //request full mn list
                                     }
                                 }
                                 return TransientFailure(error("CheckBlock-POW() : collateralnode payee is not present in the local list yet"));
@@ -15659,8 +15657,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
         }
 
-        // Ask every node for the collateralnode list straight away
-        pfrom->PushMessage("iseg", CTxIn());
+        // Ask every node for the collateralnode list straight away. The push
+        // stamps nLastDseg, so the first periodic refresh measures from this
+        // request and not from the moment the socket was created.
+        PushCollateralnodeListRequest(pfrom);
         // And for the current epoch's finality votes: pending votes live in memory only, so
         // a node that restarted inside an inclusion window has none until it asks.
         if (nBestHeight >= FORK_HEIGHT_FINALITY)

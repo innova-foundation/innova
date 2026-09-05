@@ -702,6 +702,7 @@ std::string HelpMessage()
         "  -collateralnodeprivkey=<n>     " + _("Set the collateralnode private key") + "\n" +
         "  -collateralnodeaddr=<n>        " + _("Set external address:port to get to this collateralnode (example: address:port)") + "\n" +
         "  -collateralnodeminprotocol=<n> " + _("Ignore collateralnodes less than version (example: 70007; default : 0)") + "\n" +
+        "  -cnrelaylearned            " + _("Relay a collateralnode entry learned from a list reply, not only a fresh announcement (default: 0)") + "\n" +
 
         "\n" + _("Secure messaging options:") + "\n" +
         "  -smsg                                    " + _("Enable secure messaging (default: 0, off). Also settable as smsg=1 in innova.conf.") + "\n" +

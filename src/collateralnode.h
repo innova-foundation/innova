@@ -43,6 +43,16 @@ class uint256;
 #define COLLATERALNODE_EXPIRATION_SECONDS          (120*60)
 #define COLLATERALNODE_REMOVAL_SECONDS             (130*60)
 #define COLLATERALNODE_CHECK_SECONDS               10
+// How long a served iseg suppresses the next one from the same peer, and from the
+// same outpoint; how long a peer waits before its next full-list refresh; and how
+// far ahead of the tip block time an isee sigTime may sit.
+#define COLLATERALNODE_ISEG_LIST_SECONDS           (1*60)
+#define COLLATERALNODE_ISEG_ENTRY_SECONDS          (1*60)
+#define COLLATERALNODE_ISEG_REFRESH_SECONDS        120
+#define COLLATERALNODE_SIGTIME_FUTURE_SECONDS      120
+// Hard cap on the per-outpoint pull slots. An iseep naming an unknown vin arms a
+// slot before any signature is checked, so the map needs a bound of its own.
+#define COLLATERALNODE_ASKED_ENTRY_MAX             ((size_t)1000)
 
 #define COLLATERALNODE_FAIR_PAYMENT_MINIMUM         200
 // An IV5 address is 70 bytes of components in Base58Check; the bound only has to keep a
@@ -69,6 +79,23 @@ extern unsigned int mnCount;
 void ProcessCollateralnodeConnections();
 int CountCollateralnodesAboveProtocol(int protocolVersion);
 
+// iseg rate limiting, per peer for the list and per outpoint for one entry. Record()
+// returns false for an outpoint when the cap is full; the pull must then not be sent.
+bool CollateralnodeListRequestAllowed(NodeId id, int64_t nNow);
+void CollateralnodeListRequestRecord(NodeId id, int64_t nNow);
+bool CollateralnodeEntryRequestAllowed(const COutPoint& outpoint, int64_t nNow);
+bool CollateralnodeEntryRequestRecord(const COutPoint& outpoint, int64_t nNow);
+size_t CollateralnodeAskedListSize();
+size_t CollateralnodeAskedEntrySize();
+void CollateralnodeAskedForClear();
+
+// Send a full-list request and stamp the peer's refresh clock. Every iseg-all
+// push site goes through this.
+void PushCollateralnodeListRequest(CNode* pnode);
+bool CollateralnodeRefreshDue(int64_t nLastDseg, int64_t nNow);
+
+bool CollateralnodeSigTimeTooFarAhead(int64_t sigTime, int64_t nTipBlockTime);
+bool CollateralnodeRelayOnAccept(int count, bool isLocal, bool fRelayLearned);
 
 void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
 bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);

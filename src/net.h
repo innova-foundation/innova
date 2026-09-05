@@ -189,6 +189,9 @@ extern CCriticalSection cs_nLastNodeId;
 void OrphanBlocksNodeDestroyed(NodeId owner);
 bool IsOrphanBlockRequestSuppressed(const uint256& hash);
 
+/** Collateralnode hook, defined in collateralnode.cpp: retires the peer's iseg rate-limit slot. */
+void CollateralnodeNodeDestroyed(NodeId id);
+
 struct LocalServiceInfo {
     int nScore;
     int nPort;
@@ -579,8 +582,9 @@ public:
     ~CNode()
     {
         // No thread can name this id again, so the pool may retire its
-        // departure marker.
+        // departure marker and the iseg limiter its slot.
         OrphanBlocksNodeDestroyed(id);
+        CollateralnodeNodeDestroyed(id);
         if (hSocket != INVALID_SOCKET)
         {
             closesocket(hSocket);

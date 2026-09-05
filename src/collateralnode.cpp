@@ -33,6 +33,34 @@ static CCriticalSection cs_iseeReplay;
 static std::map<uint256, int64_t> mapSeenIseeSigs;  // sig hash -> timestamp
 static const int64_t ISEE_REPLAY_WINDOW = 300;  // 5-minute replay window
 
+// A future-dated isee is dropped, and on a slow or stalled chain that is every
+// registration the node is offered. Reported outside fDebugCN, throttled so a
+// replayed flood cannot fill the log, and carrying the count it stands for.
+static CCriticalSection cs_cnDropLog;
+static const int64_t CN_DROP_LOG_SECONDS = 60;
+static int64_t nFutureSigLastLog = 0;
+static int64_t nFutureSigSuppressed = 0;
+
+static bool ReportFutureSigDrop(int64_t nNow, int64_t& nSuppressedOut)
+{
+    LOCK(cs_cnDropLog);
+    if (nFutureSigLastLog != 0 && nNow - nFutureSigLastLog < CN_DROP_LOG_SECONDS) {
+        nFutureSigSuppressed++;
+        return false;
+    }
+    nSuppressedOut = nFutureSigSuppressed;
+    nFutureSigSuppressed = 0;
+    nFutureSigLastLog = nNow;
+    return true;
+}
+
+// Off by default: it changes relay volume the moment the binary is installed,
+// which on a height-gated release is weeks before the fork.
+static bool RelayLearnedCollateralnodeEntries()
+{
+    return GetBoolArg("-cnrelaylearned", false);
+}
+
 /** The list of active collateralnodes */
 std::vector<CCollateralNode> vecCollateralnodes;
 std::vector<pair<int, CCollateralNode*> > vecCollateralnodeScores;
@@ -49,16 +77,130 @@ CCollateralnodePayments collateralnodePayments;
 map<uint256, CCollateralnodePaymentWinner> mapSeenCollateralnodeVotes;
 // keep track of the scanning errors I've seen
 map<uint256, int> mapSeenCollateralnodeScanningErrors;
-// who's asked for the collateralnode list and the last time
-std::map<CNetAddr, int64_t> askedForCollateralnodeList;
-// which collateralnodes we've asked for
-std::map<COutPoint, int64_t> askedForCollateralnodeListEntry;
+// iseg rate-limit state. The list slot is keyed by peer id, not by address: two
+// peers behind one address (a loopback fleet, anything behind NAT) each get their
+// own slot instead of silencing each other.
+static CCriticalSection cs_askedForCN;
+static std::map<NodeId, int64_t> askedForCollateralnodeList;
+static std::map<COutPoint, int64_t> askedForCollateralnodeListEntry;
+// Both maps drop expired slots on read; the outpoint map is capped by
+// COLLATERALNODE_ASKED_ENTRY_MAX and refuses new pulls when full.
 // cache block hashes as we calculate them
 std::map<int64_t, uint256> mapCacheBlockHashes;
 CMedianFilter<unsigned int> mnMedianCount(10, 0);
 unsigned int mnCount = 0;
 int64_t nAverageCNIncome;
 int64_t nAveragePayCount;
+
+// Drop every slot whose window has closed. Called on each read, so a slot costs
+// memory only for as long as it suppresses a request.
+static void PruneAskedForCN(int64_t nNow) EXCLUSIVE_LOCKS_REQUIRED(cs_askedForCN)
+{
+    for (std::map<NodeId, int64_t>::iterator it = askedForCollateralnodeList.begin();
+         it != askedForCollateralnodeList.end(); )
+    {
+        if (nNow >= it->second) askedForCollateralnodeList.erase(it++);
+        else ++it;
+    }
+    for (std::map<COutPoint, int64_t>::iterator it = askedForCollateralnodeListEntry.begin();
+         it != askedForCollateralnodeListEntry.end(); )
+    {
+        if (nNow >= it->second) askedForCollateralnodeListEntry.erase(it++);
+        else ++it;
+    }
+}
+
+bool CollateralnodeListRequestAllowed(NodeId id, int64_t nNow)
+{
+    LOCK(cs_askedForCN);
+    PruneAskedForCN(nNow);
+    std::map<NodeId, int64_t>::iterator i = askedForCollateralnodeList.find(id);
+    return i == askedForCollateralnodeList.end() || nNow >= i->second;
+}
+
+void CollateralnodeListRequestRecord(NodeId id, int64_t nNow)
+{
+    LOCK(cs_askedForCN);
+    askedForCollateralnodeList[id] = nNow + COLLATERALNODE_ISEG_LIST_SECONDS;
+}
+
+void CollateralnodeNodeDestroyed(NodeId id)
+{
+    LOCK(cs_askedForCN);
+    askedForCollateralnodeList.erase(id);
+}
+
+bool CollateralnodeEntryRequestAllowed(const COutPoint& outpoint, int64_t nNow)
+{
+    LOCK(cs_askedForCN);
+    PruneAskedForCN(nNow);
+    std::map<COutPoint, int64_t>::iterator i = askedForCollateralnodeListEntry.find(outpoint);
+    return i == askedForCollateralnodeListEntry.end() || nNow >= i->second;
+}
+
+// False when the cap is reached, in which case the caller must not pull either:
+// recording is what stops the same outpoint being pulled again next second.
+bool CollateralnodeEntryRequestRecord(const COutPoint& outpoint, int64_t nNow)
+{
+    LOCK(cs_askedForCN);
+    if (!askedForCollateralnodeListEntry.count(outpoint) &&
+        askedForCollateralnodeListEntry.size() >= COLLATERALNODE_ASKED_ENTRY_MAX)
+    {
+        PruneAskedForCN(nNow);
+        if (askedForCollateralnodeListEntry.size() >= COLLATERALNODE_ASKED_ENTRY_MAX)
+            return false;
+    }
+    askedForCollateralnodeListEntry[outpoint] = nNow + COLLATERALNODE_ISEG_ENTRY_SECONDS;
+    return true;
+}
+
+size_t CollateralnodeAskedListSize()
+{
+    LOCK(cs_askedForCN);
+    return askedForCollateralnodeList.size();
+}
+
+size_t CollateralnodeAskedEntrySize()
+{
+    LOCK(cs_askedForCN);
+    return askedForCollateralnodeListEntry.size();
+}
+
+void CollateralnodeAskedForClear()
+{
+    LOCK(cs_askedForCN);
+    askedForCollateralnodeList.clear();
+    askedForCollateralnodeListEntry.clear();
+}
+
+// The refresh measures from the last iseg we sent this peer, which is why every
+// push site stamps it. Anchoring it to the CNode instead lets the first refresh
+// land less than a full interval after the handshake request.
+void PushCollateralnodeListRequest(CNode* pnode)
+{
+    pnode->PushMessage("iseg", CTxIn());
+    pnode->nLastDseg = GetTime();
+}
+
+bool CollateralnodeRefreshDue(int64_t nLastDseg, int64_t nNow)
+{
+    return nNow - nLastDseg >= COLLATERALNODE_ISEG_REFRESH_SECONDS;
+}
+
+bool CollateralnodeSigTimeTooFarAhead(int64_t sigTime, int64_t nTipBlockTime)
+{
+    return sigTime > nTipBlockTime + COLLATERALNODE_SIGTIME_FUTURE_SECONDS;
+}
+
+// Whether a just-registered entry is relayed. count == -1 (fresh announcement) always
+// is; iseg-learned entries only with -cnrelaylearned, once per announcement, with the
+// count forwarded unchanged.
+bool CollateralnodeRelayOnAccept(int count, bool isLocal, bool fRelayLearned)
+{
+    if (isLocal) return false;
+    if (count == -1) return true;
+    return fRelayLearned;
+}
 
 // manage the collateralnode connections
 void ProcessCollateralnodeConnections(){
@@ -124,9 +266,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             }
         }
 
-        // 2-minute future timestamp tolerance
-        if (sigTime > pindexBest->GetBlockTime() + 120) {
-            if (fDebugCN) printf("isee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
+        // 2-minute future timestamp tolerance, measured against the tip block time
+        if (CollateralnodeSigTimeTooFarAhead(sigTime, pindexBest->GetBlockTime())) {
+            int64_t nSuppressed = 0;
+            if (ReportFutureSigDrop(GetTime(), nSuppressed))
+                printf("isee - rejected %s: sigTime %lld is over %ds ahead of tip time %lld (%lld further drops since the last line)\n",
+                       vin.ToString().c_str(), (long long)sigTime,
+                       COLLATERALNODE_SIGTIME_FUTURE_SECONDS,
+                       (long long)pindexBest->GetBlockTime(), (long long)nSuppressed);
             return;
         }
 
@@ -283,7 +430,9 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 }
             }
 
-            if(count == -1 && !isLocal)
+            // count is forwarded unchanged, so a peer on the current release still
+            // does not re-relay a learned entry: only upgraded nodes carry the hop.
+            if(CollateralnodeRelayOnAccept(count, isLocal, RelayLearnedCollateralnodeEntries()))
                 RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
 
             // no need to look up the payment amounts right now, they aren't eligible for payment now anyway
@@ -404,21 +553,22 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if (fDebugCN) printf("iseep - Couldn't find collateralnode entry %s\n", vin.ToString().c_str());
 
-        std::map<COutPoint, int64_t>::iterator i = askedForCollateralnodeListEntry.find(vin.prevout);
-        if (i != askedForCollateralnodeListEntry.end()){
-            int64_t t = (*i).second;
-            if (GetTime() < t) {
-                // we've asked recently
-                return;
-            }
+        const int64_t nNow = GetTime();
+        if (!CollateralnodeEntryRequestAllowed(vin.prevout, nNow)) {
+            // we've asked recently
+            return;
         }
 
-        // ask for the isee info once from the node that sent iseep
+        // ask for the isee info once from the node that sent iseep. Recording the
+        // slot is what stops the same outpoint being pulled again next second, so
+        // a full map refuses the pull rather than sending an unlimited one.
+        if (!CollateralnodeEntryRequestRecord(vin.prevout, nNow)) {
+            if (fDebugCN) printf("iseep - Entry pull slots are full, not asking for %s\n", vin.ToString().c_str());
+            return;
+        }
 
         if (fDebugCN && fDebugNet) printf("iseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
         pfrom->PushMessage("iseg", vin);
-        int64_t askAgain = GetTime()+(60*1); // only ask for each isee once per minute
-        askedForCollateralnodeListEntry[vin.prevout] = askAgain;
 
     } else if (strCommand == "iseg") { //Get collateralnode list or specific entry
         bool fIsInitialDownload = IsInitialBlockDownload();
@@ -430,27 +580,16 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         if(vin == CTxIn()) { //only should ask for this once
             //local network
             //Note tor peers show up as local proxied addrs
-            //if(!pfrom->addr.IsRFC1918())//&& !Params().MineBlocksOnDemand())
-            //{
               if(!pfrom->addr.IsRFC1918())
               {
-                std::map<CNetAddr, int64_t>::iterator i = askedForCollateralnodeList.find(pfrom->addr);
-                if (i != askedForCollateralnodeList.end())
+                // Per peer, not per address. A refused request is dropped without scoring.
+                const int64_t nNow = GetTime();
+                if (!CollateralnodeListRequestAllowed(pfrom->GetId(), nNow))
                 {
-                    int64_t t = (*i).second;
-                    if (GetTime() < t) {
-                        //Misbehaving(pfrom->GetId(), 34);
-                        //printf("iseg - peer already asked me for the list\n");
-                        //return;
-                        //Misbehaving(pfrom->GetId(), 34);
-                        printf("iseg - peer already asked me for the list\n");
-                        return;
-                    }
+                    if (fDebugCN) printf("iseg - peer already asked me for the list (peer=%d)\n", pfrom->GetId());
+                    return;
                 }
-
-                int64_t askAgain = GetTime()+(60*1); // only allow nodes to do a iseg all once per minute
-                askedForCollateralnodeList[pfrom->addr] = askAgain;
-            //}
+                CollateralnodeListRequestRecord(pfrom->GetId(), nNow);
               }
         } //else, asking for a specific node which is ok
 
