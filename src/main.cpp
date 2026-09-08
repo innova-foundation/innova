@@ -426,6 +426,103 @@ bool IsOrphanRequestDeferred(const uint256& hash, int64_t nNow)
     return nNow < it->second.nTime + (ORPHAN_REFUSAL_BACKOFF_SECONDS << it->second.nShift);
 }
 
+// Block hashes each peer answered notfound for, held off that peer for the in-flight
+// timeout. Inv/headers announcements are not gated. Leaf lock, read outside cs_main.
+struct CPeerDeclinedBlocks
+{
+    std::map<uint256, int64_t> mapDeclined;
+    int64_t nLastDecline;
+    CPeerDeclinedBlocks() : nLastDecline(0) {}
+};
+static CCriticalSection cs_blocksDeclined;
+static map<NodeId, CPeerDeclinedBlocks> mapBlocksDeclinedByPeer;
+// A memory bound, not a rate limit: past it the oldest record is dropped and
+// that hash may be re-asked from the peer sooner.
+static const size_t MAX_DECLINED_BLOCKS_PER_PEER = 2 * MAX_BLOCKS_IN_FLIGHT_PER_PEER;
+
+static int64_t BlockInFlightTimeoutSeconds()
+{
+    int64_t nTimeout = GetArg("-blockinflighttimeout", 30);
+    if (nTimeout < 5)
+        nTimeout = 5;
+    if (nTimeout > 600)
+        nTimeout = 600;
+    return nTimeout;
+}
+
+void MarkBlockDeclinedByPeer(NodeId id, const uint256& hash, int64_t nNow)
+{
+    if (id < 0)
+        return;
+    const int64_t nTimeout = BlockInFlightTimeoutSeconds();
+    LOCK(cs_blocksDeclined);
+    // Peers whose records have all lapsed are dropped here, once a second, so a
+    // departed peer holds no entry past one timeout.
+    static int64_t nLastSweep = 0;
+    if (nNow != nLastSweep)
+    {
+        nLastSweep = nNow;
+        for (map<NodeId, CPeerDeclinedBlocks>::iterator it = mapBlocksDeclinedByPeer.begin();
+             it != mapBlocksDeclinedByPeer.end(); )
+        {
+            if (it->first != id && nNow - it->second.nLastDecline >= nTimeout)
+                it = mapBlocksDeclinedByPeer.erase(it);
+            else
+                ++it;
+        }
+    }
+    CPeerDeclinedBlocks& rec = mapBlocksDeclinedByPeer[id];
+    if (!rec.mapDeclined.count(hash) && rec.mapDeclined.size() >= MAX_DECLINED_BLOCKS_PER_PEER)
+    {
+        std::map<uint256, int64_t>::iterator itOldest = rec.mapDeclined.begin();
+        for (std::map<uint256, int64_t>::iterator it = rec.mapDeclined.begin();
+             it != rec.mapDeclined.end(); ++it)
+            if (it->second < itOldest->second)
+                itOldest = it;
+        rec.mapDeclined.erase(itOldest);
+    }
+    rec.mapDeclined[hash] = nNow;
+    rec.nLastDecline = nNow;
+}
+
+bool IsBlockDeclinedByPeer(NodeId id, const uint256& hash, int64_t nNow)
+{
+    if (id < 0)
+        return false;
+    LOCK(cs_blocksDeclined);
+    map<NodeId, CPeerDeclinedBlocks>::iterator itPeer = mapBlocksDeclinedByPeer.find(id);
+    if (itPeer == mapBlocksDeclinedByPeer.end())
+        return false;
+    std::map<uint256, int64_t>::iterator it = itPeer->second.mapDeclined.find(hash);
+    if (it == itPeer->second.mapDeclined.end())
+        return false;
+    if (nNow - it->second < BlockInFlightTimeoutSeconds())
+        return true;
+    itPeer->second.mapDeclined.erase(it);
+    if (itPeer->second.mapDeclined.empty())
+        mapBlocksDeclinedByPeer.erase(itPeer);
+    return false;
+}
+
+size_t GetBlocksDeclinedByPeerCount(NodeId id)
+{
+    LOCK(cs_blocksDeclined);
+    map<NodeId, CPeerDeclinedBlocks>::const_iterator it = mapBlocksDeclinedByPeer.find(id);
+    return it == mapBlocksDeclinedByPeer.end() ? 0 : it->second.mapDeclined.size();
+}
+
+size_t GetBlockDeclinePeerCount()
+{
+    LOCK(cs_blocksDeclined);
+    return mapBlocksDeclinedByPeer.size();
+}
+
+void ClearBlockDeclineRecords()
+{
+    LOCK(cs_blocksDeclined);
+    mapBlocksDeclinedByPeer.clear();
+}
+
 bool OrphanOwnerHasDeparted(NodeId owner)
 {
     if (owner < 0)
@@ -16042,6 +16139,67 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     }
 
 
+    else if (strCommand == "notfound")
+    {
+        vector<CInv> vInv;
+        vRecv >> vInv;
+        // The inv and getdata cap, without the score: a peer that lacks a block
+        // is not misbehaving. Past the cap the message is dropped whole.
+        if (vInv.size() > MAX_INV_SZ)
+            return error("message notfound size() = %" PRIszu"", vInv.size());
+
+        // Only a hash this peer was asked for frees anything, so the work past
+        // the size check is bounded by one in-flight window.
+        const int64_t nNow = GetTime();
+        std::vector<CInv> vFreed;
+        for (const CInv& inv : vInv)
+        {
+            if (inv.type != MSG_BLOCK && inv.type != MSG_FILTERED_BLOCK)
+                continue;
+            if (!pfrom->setBlocksInFlight.count(inv.hash))
+                continue;
+            pfrom->ClearBlockInFlight(inv.hash);
+            MarkBlockDeclinedByPeer(pfrom->GetId(), inv.hash, nNow);
+            vFreed.push_back(inv);
+        }
+        if (fDebugNet)
+            printf("notfound: peer=%s items=%u freed=%u\n", pfrom->addrName.c_str(),
+                   (unsigned int)vInv.size(), (unsigned int)vFreed.size());
+
+        if (!vFreed.empty())
+        {
+            // The ask record dated the request to this peer; dropping it lets
+            // the next ask go out now rather than a second later.
+            {
+                LOCK(cs_mapAlreadyAskedFor);
+                for (const CInv& inv : vFreed)
+                    mapAlreadyAskedFor.erase(inv);
+            }
+            // Re-queue each freed hash on every peer that announced it and has
+            // not declined it within the timeout. The declining peer fails the
+            // second test, so two peers cannot pass a hash back and forth.
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+            {
+                if (pnode->nVersion == 0 || pnode->fDisconnect)
+                    continue;
+                for (const CInv& inv : vFreed)
+                {
+                    if (IsBlockDeclinedByPeer(pnode->GetId(), inv.hash, nNow))
+                        continue;
+                    bool fAnnounced;
+                    {
+                        LOCK(pnode->cs_inventory);
+                        fAnnounced = pnode->setInventoryKnown.count(CInv(MSG_BLOCK, inv.hash)) != 0;
+                    }
+                    if (fAnnounced)
+                        pnode->AskFor(inv);
+                }
+            }
+        }
+    }
+
+
     else if (strCommand == "getblocks")
     {
         CBlockLocator locator;
@@ -17080,6 +17238,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         int nPeerHeight = pto->nBestKnownHeight >= 0 ? pto->nBestKnownHeight : pto->nChainHeight;
         bool fPeerAhead = (nPeerHeight > nHeight);
         bool fWeAhead = (nPeerHeight >= 0 && nHeight > nPeerHeight);
+        bool fPeerOffChain = false;
         bool fStaleBlockInFlight = false;
         int64_t nOldestBlockInFlight = 0;
         pto->ExpireBlockInFlight(nNow);
@@ -17100,6 +17259,12 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                         nOldestBlockInFlight = it->second;
                     ++it;
                 }
+                // The peer's best-known block, when held off the main chain and not marked invalid.
+                std::map<uint256, CBlockIndex*>::const_iterator miPeerBest =
+                    mapBlockIndex.find(pto->hashBestKnownBlock);
+                fPeerOffChain = miPeerBest != mapBlockIndex.end() &&
+                                !miPeerBest->second->IsInMainChain() &&
+                                !miPeerBest->second->IsInvalid();
             }
         }
         if (nOldestBlockInFlight > 0 && nNow - nOldestBlockInFlight > 15)
@@ -17134,12 +17299,9 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     pto->PushGetBlocks(pBest, uint256(0));
             }
 
-            // getblocks alone cannot recover a window this node lost: the serving
-            // peer answers an inv it has already announced with nothing, so an
-            // expired, refused or deferred hash is never offered again in the
-            // session. Headers carry no such filter, and the handler above turns
-            // them back into requests.
-            if (fPeerAhead && pBest != NULL && pto->setBlocksInFlight.empty())
+            // getblocks cannot recover a lost window (served invs are not re-offered); headers can.
+            // A peer whose best block is off this node's main chain is asked the same way.
+            if ((fPeerAhead || fPeerOffChain) && pBest != NULL && pto->setBlocksInFlight.empty())
                 pto->PushMessage("getheaders", CBlockLocator(pBest), uint256(0));
 
             // A gated peer is re-asked only for the roots under orphans it delivered, bounded by
@@ -17156,6 +17318,17 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                        pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock,
                        fPeerAhead ? "peer-ahead" : (fWeAhead ? "we-ahead" : "stale-block-in-flight"),
                        (unsigned int)pto->setBlocksInFlight.size());
+        }
+        else if (fPeerOffChain && !fImporting && !fReindex && nTimeSinceBlock > 15 && !fThrottle &&
+                 pBest != NULL && pto->setBlocksInFlight.empty())
+        {
+            // Equal height on a different chain: ask for headers from this node's locator, with
+            // the same throttle and in-flight gate as above.
+            mapLastStallRecovery[pto->addrName] = nNow;
+            pto->PushMessage("getheaders", CBlockLocator(pBest), uint256(0));
+            if (fDebug)
+                printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds reason=peer-off-chain in_flight=0\n",
+                       pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock);
         }
     }
 
@@ -17339,25 +17512,9 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         const std::set<uint256> setOwnGap(vOwnGap.begin(), vOwnGap.end());
         const bool fGapGated = !setOwnGap.empty();
 
-        // The gap hashes are asked from the snapshot rather than found in the
-        // queue. Whatever the queue holds and wherever in it a gap hash happens
-        // to sit, the ancestors that drain this peer's records are requested on
-        // every pass, so the deferral cap below can only postpone a forward
-        // request. One in-flight window is the whole of it, both the work and
-        // the requests: a peer cannot hold more than a window outstanding, and a
-        // hash already in flight is not re-asked until it expires. A root past
-        // the window is reached as the ones before it are served or swept, since
-        // either removes the record that published it.
-        //
-        // Reaching a hash the queue would not is the whole of what this does. It
-        // is not an exemption from the terms the pool sets on its own refusals:
-        // a block the pool can never hold is suppressed and asked for by no
-        // path, and a block it refused for want of room carries the refusal
-        // deferral, which is read here rather than duplicated. Without them a
-        // refused root goes back out on the very next pass -- ten a second, the
-        // peer re-reading it from disk each time and scored for serving what
-        // this node asked it for. Both lapse, the deferral by a doubling backoff
-        // under a cap, so the ask returns of itself.
+        // Gap hashes are asked from the snapshot, every pass, bounded by one in-flight window;
+        // in-flight and notfound hashes are held off. Pool suppression and refusal deferral
+        // still apply.
         const int64_t nTimeNow = GetTime();
         if (fGapGated)
         {
@@ -17368,7 +17525,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     break;
                 const CInv inv(MSG_BLOCK, vOwnGap[i]);
                 if (pto->IsBlockInFlight(inv.hash) || IsOrphanBlockRequestSuppressed(inv.hash) ||
-                    IsOrphanRequestDeferred(inv.hash, nTimeNow))
+                    IsOrphanRequestDeferred(inv.hash, nTimeNow) ||
+                    IsBlockDeclinedByPeer(pto->GetId(), inv.hash, nTimeNow))
                     continue;
                 bool fHave = false;
                 {
