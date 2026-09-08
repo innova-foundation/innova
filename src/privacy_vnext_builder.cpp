@@ -22,6 +22,7 @@ namespace
 const uint8_t VNEXT_OPERATION_SHIELD = iv5::NOTE_SHIELD;
 const uint8_t VNEXT_OPERATION_UNSHIELD = iv5::NOTE_UNSHIELD;
 const uint8_t VNEXT_OPERATION_TRANSFER = iv5::NOTE_TRANSFER;
+const uint8_t VNEXT_OPERATION_NOTE_VOTE = iv5::NOTE_FINALITY_VOTE;
 
 void PutCompactSize(std::vector<unsigned char>& out, uint64_t nSize)
 {
@@ -184,10 +185,17 @@ static bool BuildPrivacyVNextPayload(
     const std::vector<PrivacyVNextNewOutput>& outputs,
     std::vector<unsigned char>& vchPayloadOut,
     std::string& strErrorOut,
-    const std::vector<unsigned char>* pvchChainParameterDigest)
+    const std::vector<unsigned char>* pvchChainParameterDigest,
+    // Set only for a note finality vote: the epoch boundary it names, serialized in the
+    // slot the attestations use for their registration context.
+    const PrivacyVNextDigest* pVoteBoundaryHash = NULL,
+    uint32_t nVoteBoundaryHeight = 0,
+    std::vector<PrivacyVNextDigest>* pvKeyImagesOut = NULL)
 {
     vchPayloadOut.clear();
     strErrorOut.clear();
+    if (pvKeyImagesOut != NULL)
+        pvKeyImagesOut->clear();
 
     if (nDisclosureMask > iv5::DISCLOSURE_MASK)
     {
@@ -382,6 +390,16 @@ static bool BuildPrivacyVNextPayload(
         PutBytes(prefix, vEncrypted[i].tweakEphemeral);
         PutVector(prefix, vEncrypted[i].vchRecipientCiphertext);
         PutVector(prefix, vEncrypted[i].vchOutgoingCiphertext);
+    }
+    // The vote's own two fields, in the slot an attestation uses for its registration
+    // context: after the outputs and ahead of the disclosure records, so the signing hash
+    // covers them. That is what stops a vote being replayed into another epoch.
+    if (pVoteBoundaryHash != NULL)
+    {
+        PutBytes(prefix, *pVoteBoundaryHash);
+        for (size_t i = 0; i < 4; ++i)
+            prefix.push_back(
+                static_cast<unsigned char>(nVoteBoundaryHeight >> (8 * i)));
     }
     // Disclosed records, in the order the decoder reads them: senders per input, then
     // receivers per output, then amounts per output. They sit inside the signing hash, so
@@ -580,6 +598,12 @@ static bool BuildPrivacyVNextPayload(
         return false;
     }
 
+    if (pvKeyImagesOut != NULL)
+    {
+        pvKeyImagesOut->resize(vFinal.size());
+        for (size_t i = 0; i < vFinal.size(); ++i)
+            (*pvKeyImagesOut)[i] = vFinal[i].keyImage;
+    }
     vchPayloadOut.swap(payload);
     return true;
 }
@@ -685,6 +709,85 @@ bool BuildPrivacyVNextShieldPayload(
         transparentBinding, (int64_t)nTransparentValueIn, nFee,
         std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
         strErrorOut, pvchChainParameterDigest);
+}
+
+bool BuildPrivacyVNextNoteVotePayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& voteBoundaryHash,
+    uint32_t nVoteBoundaryHeight,
+    const PrivacyVNextSpendNote& note,
+    const PrivacyVNextAddressComponents& reissueTo,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut,
+    const std::vector<unsigned char>* pvchChainParameterDigest)
+{
+    vchPayloadOut.clear();
+    keyImageOut.fill(0);
+    strErrorOut.clear();
+
+    // The decoder pins the whole shape before any proof runs, so every field it fixes is
+    // fixed here rather than taken from the caller: one input, one output, no fee, no
+    // transparent movement, nothing disclosed. What is left is which note votes, which
+    // boundary it names and where the value is reissued.
+    if (note.nAmount == 0)
+    {
+        strErrorOut = "an IV5 note finality vote needs a note carrying value";
+        return false;
+    }
+    bool fBoundary = false;
+    for (size_t i = 0; i < voteBoundaryHash.size(); ++i)
+        fBoundary = fBoundary || voteBoundaryHash[i] != 0;
+    if (!fBoundary)
+    {
+        strErrorOut = "an IV5 note finality vote must name an epoch boundary block";
+        return false;
+    }
+    if (nVoteBoundaryHeight == 0)
+    {
+        strErrorOut = "an IV5 note finality vote must name the height of its boundary";
+        return false;
+    }
+
+    // The value is preserved exactly: what the note held is what the reissue holds, so
+    // the balance proof states C_in == C_out with a zero fee and nothing crossing the
+    // transparent boundary. The reward increment is what makes this an inequality.
+    std::vector<PrivacyVNextSpendNote> vSpends(1);
+    vSpends[0].spendSecret = note.spendSecret;
+    vSpends[0].y = note.y;
+    vSpends[0].mask = note.mask;
+    vSpends[0].nAmount = note.nAmount;
+    vSpends[0].leaf = note.leaf;
+    vSpends[0].vchWitnessRecord = note.vchWitnessRecord;
+
+    std::vector<PrivacyVNextNewOutput> vOutputs(1);
+    vOutputs[0].recipient = reissueTo;
+    vOutputs[0].nAmount = note.nAmount;
+
+    std::vector<PrivacyVNextDigest> vKeyImages;
+    const bool fBuilt = BuildPrivacyVNextPayload(
+        nNetwork, VNEXT_OPERATION_NOTE_VOTE, iv5::DISCLOSURE_MASK, genesis,
+        outgoingViewSecret, finalizedRoot, nFinalizedTreeSize, transparentBinding,
+        0 /* nothing crosses the boundary */, 0 /* and no fee is taken */, vSpends,
+        vOutputs, vchPayloadOut, strErrorOut, pvchChainParameterDigest,
+        &voteBoundaryHash, nVoteBoundaryHeight, &vKeyImages);
+    for (size_t i = 0; i < vSpends.size(); ++i)
+        vSpends[i].Clear();
+    if (!fBuilt)
+        return false;
+    if (vKeyImages.size() != 1)
+    {
+        vchPayloadOut.clear();
+        strErrorOut = "IV5 note finality vote proving returned the wrong input count";
+        return false;
+    }
+    keyImageOut = vKeyImages[0];
+    return true;
 }
 
 // Attestation payload (no note, no value, no balance proof): proves the named commitment

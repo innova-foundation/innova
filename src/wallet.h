@@ -32,6 +32,7 @@ extern CHooks* hooks;
 extern bool fWalletUnlockStakingOnly;
 extern bool fConfChange;
 class CAccountingEntry;
+struct CEpochState;
 // Drives the IV5 scan-gap close that a wallet unlock only asks for. The work is a
 // rescan from the gap to the tip, and CWallet::Unlock runs under cs_wallet -- and,
 // from the RPC dispatcher, cs_main -- so it cannot be the thread that does it.
@@ -53,6 +54,24 @@ bool DerivePrivacyVNextChangeKeys(const PrivacyVNextDigest& seed,
                                   uint32_t nChangeIndex,
                                   PrivacyVNextDerivedKeys& keysOut,
                                   std::string& strErrorOut);
+
+// Anchor for an epoch-E note vote: epoch state E-1, identified by its boundary block;
+// `hashBoundaryParent` is the block at H_E - 1. Refuses a record for another branch, not
+// yet installed, or whose leaves the local tree store cannot witness.
+bool LoadPrivacyVNextNoteVoteAnchor(CTxDB& txdb,
+                                    int nEpoch,
+                                    const uint256& hashBoundaryParent,
+                                    int nBoundaryHeight,
+                                    CEpochState& anchorOut,
+                                    std::string& strErrorOut);
+
+// Build this node's vote for the epoch `pEpochBlock` opens and hand it to the mempool.
+// `nIncludingHeight` is the connect height. Inert while FORK_HEIGHT_IV5_NOTE_VOTE is unset.
+bool ProducePrivacyVNextNoteVote(CTxDB& txdb,
+                                 const CBlockIndex* pEpochBlock,
+                                 int nIncludingHeight,
+                                 uint256& keyImageOut,
+                                 std::string& strErrorOut);
 
 class CWalletTx;
 class CReserveKey;
@@ -473,11 +492,8 @@ public:
         std::vector<CPrivacyVNextWalletNote>& vSelected,
         int64_t& nSelectedValue,
         uint64_t nAnchorTreeSize = std::numeric_limits<uint64_t>::max()) const;
-    // The note this wallet would weigh a finality vote with, and the membership witness
-    // cut from the anchor the vote must prove against. The anchor is the caller's: a note
-    // vote names one exact finalized epoch, so this never falls back to an older root the
-    // way a spend does. `setSkipKeyImages` carries the notes already voted this epoch,
-    // because a second vote under one note's tag retires both.
+    // The vote note and its witness from the caller's anchor. Excludes notes spent on chain or
+    // in the mempool (the double-vote guard) and `setSkipKeyImages`.
     bool SelectPrivacyVNextVoteNote(
         CTxDB& txdb,
         const std::vector<unsigned char>& vchAnchorState,
@@ -805,6 +821,20 @@ public:
         CWalletTx& wtxNew,
         int64_t& nFeeOut,
         size_t& nNotesUsedOut,
+        std::string& strErrorOut);
+
+    // Build this node's note vote for the epoch `hashBoundaryBlock` opens; it spends its note
+    // and reissues the value. `anchor` is state E-1. Caller holds cs_main and cs_wallet.
+    bool CreatePrivacyVNextNoteVote(
+        CTxDB& txdb,
+        const CEpochState& anchor,
+        const uint256& hashBoundaryBlock,
+        int nBoundaryHeight,
+        int nSpendHeight,
+        int64_t nMinVoteWeight,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        uint256& keyImageOut,
         std::string& strErrorOut);
 
     // Carry a data stamp on a spend funded from the pool. Nothing crosses the

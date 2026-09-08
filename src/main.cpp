@@ -2585,12 +2585,20 @@ bool CheckPrivacyVNextParameterDigest(
 }
 
 static bool ValidatePrivacyVNextFinalizedContext(
-    CTxDB& txdb, int nContextHeight,
+    CTxDB& txdb, const CBlockIndex* pindexAnchorTip, int nContextHeight,
     const PrivacyVNextStateEffects& effects,
-    bool& fLocalFailure, std::string& strError)
+    bool& fLocalFailure, bool& fUnavailable, std::string& strError)
 {
     fLocalFailure = false;
+    fUnavailable = false;
     strError.clear();
+
+    // A note finality vote anchors one epoch back and must name the carrier chain's own
+    // boundary block; neither is the spend path's rule, so it is judged on its own.
+    if (effects.HasVoteBoundary())
+        return ValidatePrivacyVNextNoteVoteContext(txdb, pindexAnchorTip, nContextHeight,
+                                                   effects, fLocalFailure, fUnavailable,
+                                                   strError);
 
     // The epoch state consulted is fixed by nContextHeight, so a not-yet-produced state is
     // the chain's answer; only an unreadable record is local.
@@ -2712,8 +2720,8 @@ static bool ValidatePrivacyVNextFinalizedContext(
 
 // Whether an IV5 transaction's anchor is still inside the consensus window at a height;
 // otherwise a miner keeps selecting a transaction its own ConnectBlock rejects.
-bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
-                                      const CTransaction& tx,
+bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, const CBlockIndex* pindexAnchorTip,
+                                      int nHeight, const CTransaction& tx,
                                       std::string& strError)
 {
     strError.clear();
@@ -2732,8 +2740,351 @@ bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
     }
 
     bool fLocalFailure = false;
-    return ValidatePrivacyVNextFinalizedContext(txdb, nHeight, effects,
-                                                fLocalFailure, strError);
+    bool fUnavailable = false;
+    return ValidatePrivacyVNextFinalizedContext(txdb, pindexAnchorTip, nHeight, effects,
+                                                fLocalFailure, fUnavailable, strError);
+}
+
+bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
+                                         const CBlockIndex* pindexAnchorTip,
+                                         int nContextHeight,
+                                         const PrivacyVNextStateEffects& effects,
+                                         bool& fLocalFailure,
+                                         bool& fUnavailable,
+                                         std::string& strError)
+{
+    fLocalFailure = false;
+    fUnavailable = false;
+    strError.clear();
+
+    if (nContextHeight < 0)
+    {
+        strError = "an IV5 note finality vote is judged only in a chain context";
+        return false;
+    }
+    // Gated on the decoded effects, not the declared operation byte: the header read is
+    // not a decoder. Unset on both value networks, so every vote is refused there.
+    if (!IsIV5NoteVoteActiveAtHeight(nContextHeight))
+    {
+        strError = "IV5 note finality votes are not active at this height";
+        return false;
+    }
+    if (effects.nVoteBoundaryHeight >
+        static_cast<uint32_t>(std::numeric_limits<int>::max()))
+    {
+        strError = "IV5 note finality vote names a boundary height out of range";
+        return false;
+    }
+    const int nBoundaryHeight = static_cast<int>(effects.nVoteBoundaryHeight);
+    if (nBoundaryHeight < FORK_HEIGHT_DAG || !IsEpochBoundaryHeight(nBoundaryHeight))
+    {
+        strError = strprintf("IV5 note finality vote names height %d, which opens no "
+                             "post-DAG epoch", nBoundaryHeight);
+        return false;
+    }
+    // R1 of the transparent lane: an epoch-E vote connects only in E's own first
+    // FINALITY_VOTE_INCLUSION_WINDOW blocks.
+    if (nContextHeight < nBoundaryHeight ||
+        nContextHeight >= nBoundaryHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+    {
+        strError = strprintf("IV5 note finality vote for boundary %d is outside its "
+                             "inclusion window at height %d",
+                             nBoundaryHeight, nContextHeight);
+        return false;
+    }
+    const int nEpoch = GetEpochForHeight(nBoundaryHeight);
+    if (nEpoch < 1)
+    {
+        strError = "IV5 note finality vote names an epoch with no predecessor to anchor to";
+        return false;
+    }
+
+    // In a chain context the named block is by construction an ancestor every node has
+    // indexed, so a miss is the producer's choice, identically bad everywhere; a null
+    // entry is this node's own corruption.
+    uint256 hashBoundary;
+    memcpy(hashBoundary.begin(), effects.voteBoundaryHash.data(),
+           effects.voteBoundaryHash.size());
+    std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(hashBoundary);
+    if (mi == mapBlockIndex.end())
+    {
+        strError = "IV5 note finality vote names an unknown epoch boundary block";
+        return false;
+    }
+    if (mi->second == NULL)
+    {
+        fLocalFailure = true;
+        strError = "IV5 note finality vote boundary block index entry is corrupt";
+        return false;
+    }
+    const CBlockIndex* pBoundary = mi->second;
+    if (pBoundary->nHeight != nBoundaryHeight)
+    {
+        strError = "IV5 note finality vote boundary block is not at the height it names";
+        return false;
+    }
+    if (!pBoundary->IsProofOfWork())
+    {
+        strError = "IV5 note finality votes must name a proof-of-work boundary block";
+        return false;
+    }
+    // Presence in the index is not membership of this chain: a sibling branch's boundary
+    // is indexed too. Bind the block to the carrier's own ancestors.
+    if (pindexAnchorTip != NULL &&
+        GetFinalityAncestorOnChain(pindexAnchorTip, nBoundaryHeight,
+                                   FINALITY_ANCESTOR_MAX_WALK) != pBoundary)
+    {
+        strError = "IV5 note finality vote boundary block is not an ancestor of the carrier";
+        return false;
+    }
+    if (pBoundary->pprev == NULL)
+    {
+        strError = "IV5 note finality vote boundary block has no predecessor";
+        return false;
+    }
+
+    // The anchor is epoch state E-1, a function of blocks [H_{E-1}, H_E). A boundary-block
+    // mismatch is local state, not the vote's fault; only a root mismatch under a matching
+    // identity is.
+    const int nAnchorEpoch = nEpoch - 1;
+    CEpochState anchorState;
+    if (!txdb.ReadEpochState(nAnchorEpoch, anchorState))
+    {
+        if (txdb.ProbeEpochState(nAnchorEpoch) != TXDB_READ_NOT_FOUND)
+        {
+            fLocalFailure = true;
+            strError = strprintf("epoch state %d cannot be read; -reindex/resync required",
+                                 nAnchorEpoch);
+            return false;
+        }
+        fUnavailable = true;
+        strError = strprintf("epoch state %d is not available on this node yet",
+                             nAnchorEpoch);
+        return false;
+    }
+    if (anchorState.nEpoch != nAnchorEpoch ||
+        anchorState.nHeightEnd != nBoundaryHeight - 1 ||
+        anchorState.hashBoundaryBlock != pBoundary->pprev->GetBlockHash())
+    {
+        fUnavailable = true;
+        strError = strprintf("epoch state %d on this node is not the carrier chain's",
+                             nAnchorEpoch);
+        return false;
+    }
+    if (anchorState.nSerVersion < EPOCHSTATE_SER_VERSION_V4)
+    {
+        strError = strprintf("epoch state %d carries no IV5 root to anchor a vote to",
+                             nAnchorEpoch);
+        return false;
+    }
+    if (anchorState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+        anchorState.vchVNextParameterDigest.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+    {
+        fLocalFailure = true;
+        strError = strprintf("persisted IV5 epoch state %d is malformed", nAnchorEpoch);
+        return false;
+    }
+    if (!std::equal(effects.finalizedRoot.begin(), effects.finalizedRoot.end(),
+                    anchorState.vchVNextRoot.begin()) ||
+        effects.nFinalizedTreeSize != anchorState.nVNextTreeSize)
+    {
+        strError = strprintf("IV5 note finality vote is not anchored to epoch state %d",
+                             nAnchorEpoch);
+        return false;
+    }
+    return CheckPrivacyVNextParameterDigest(effects, anchorState.vchVNextParameterDigest,
+                                            strError);
+}
+
+bool CheckPrivacyVNextNoteVoteCarrier(const CTransaction& tx,
+                                      const PrivacyVNextStateEffects& effects,
+                                      std::string& strError)
+{
+    strError.clear();
+    if (!effects.HasVoteBoundary())
+        return true;
+    // A coinbase's single null input is refused by the same rule.
+    if (!tx.vin.empty() || !tx.vout.empty())
+    {
+        strError = "IV5 note finality vote carries a transparent side";
+        return false;
+    }
+    return true;
+}
+
+bool IsPrivacyVNextNoteVoteShape(const CTransaction& tx)
+{
+    if (!tx.IsPrivacyVNext() || tx.privacyVNext.vchPayload.empty())
+        return false;
+    if (!tx.vin.empty() || !tx.vout.empty())
+        return false;
+    uint8_t nOperation = 0;
+    uint8_t nDisclosureMask = 0;
+    if (!iv5::ReadDeclaredEnvelope(&tx.privacyVNext.vchPayload[0],
+                                   tx.privacyVNext.vchPayload.size(),
+                                   nOperation, nDisclosureMask))
+        return false;
+    return iv5::IsNoteFinalityVoteOperation(nOperation);
+}
+
+unsigned int CountPrivacyVNextNoteVoteShapes(const CBlock& block)
+{
+    unsigned int nCount = 0;
+    for (size_t i = 0; i < block.vtx.size(); ++i)
+        if (IsPrivacyVNextNoteVoteShape(block.vtx[i]))
+            ++nCount;
+    return nCount;
+}
+
+bool CountConnectedPrivacyVNextNoteVotes(const CBlockIndex* pindexFrom,
+                                         int nBoundaryHeight,
+                                         unsigned int nStopAfter,
+                                         unsigned int& nCountOut,
+                                         std::string& strError)
+{
+    nCountOut = 0;
+    strError.clear();
+    // A connected block carries only payloads ConnectBlock validated, so the operation
+    // its header declares is the operation that was proved.
+    int nSteps = 0;
+    for (const CBlockIndex* p = pindexFrom;
+         p != NULL && p->nHeight >= nBoundaryHeight &&
+         nSteps < FINALITY_VOTE_INCLUSION_WINDOW;
+         p = p->pprev, ++nSteps)
+    {
+        CBlock block;
+        if (!block.ReadFromDisk(p))
+        {
+            strError = strprintf("block %s at height %d cannot be read for the IV5 "
+                                 "note-vote count",
+                                 p->GetBlockHash().ToString().substr(0,10).c_str(),
+                                 p->nHeight);
+            return false;
+        }
+        nCountOut += CountPrivacyVNextNoteVoteShapes(block);
+        if (nCountOut > nStopAfter)
+            return true;
+    }
+    return true;
+}
+
+bool CheckPrivacyVNextNoteVoteCaps(unsigned int nBlockVotes,
+                                   unsigned int nPriorWindowVotes,
+                                   std::string& strError)
+{
+    strError.clear();
+    if (nBlockVotes > static_cast<unsigned int>(FINALITY_MAX_BLOCK_NOTE_VOTES))
+    {
+        strError = strprintf("more than %d IV5 note finality votes in one block",
+                             FINALITY_MAX_BLOCK_NOTE_VOTES);
+        return false;
+    }
+    if (nPriorWindowVotes > FINALITY_MAX_EPOCH_NOTE_VOTES ||
+        nBlockVotes > FINALITY_MAX_EPOCH_NOTE_VOTES - nPriorWindowVotes)
+    {
+        strError = strprintf("more than %u IV5 note finality votes in one epoch's "
+                             "inclusion window",
+                             FINALITY_MAX_EPOCH_NOTE_VOTES);
+        return false;
+    }
+    return true;
+}
+
+PrivacyVNextSpendResult ConnectPrivacyVNextSpentKeys(CTxDB& txdb,
+                                                     const CTransaction& tx,
+                                                     const PrivacyVNextStateEffects& effects,
+                                                     int nHeight,
+                                                     bool fJustCheck,
+                                                     std::set<uint256>& setBlockKeyImages,
+                                                     std::string& strError)
+{
+    strError.clear();
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), effects.keyImages[i].data(),
+               effects.keyImages[i].size());
+        if (!setBlockKeyImages.insert(keyImage).second)
+        {
+            strError = strprintf("duplicate IV5 spent key %s in active DAG block",
+                                 keyImage.ToString().substr(0,10).c_str());
+            return PRIVACY_VNEXT_SPEND_INVALID;
+        }
+
+        CPrivacyVNextNullifierSpent prior;
+        const TxDBReadStatus status =
+            txdb.ReadPrivacyVNextNullifierStatus(keyImage, prior);
+        if (status == TXDB_READ_ERROR)
+        {
+            strError = strprintf("corrupt IV5 spent-key index for %s; "
+                                 "-reindex/resync required",
+                                 keyImage.ToString().substr(0,10).c_str());
+            return PRIVACY_VNEXT_SPEND_INDEX_CORRUPT;
+        }
+        if (status == TXDB_READ_FOUND)
+        {
+            strError = strprintf("IV5 spent key %s was already consumed by %s",
+                                 keyImage.ToString().substr(0,10).c_str(),
+                                 prior.txnHash.ToString().substr(0,10).c_str());
+            return PRIVACY_VNEXT_SPEND_INVALID;
+        }
+
+        if (!fJustCheck)
+        {
+            // The height this key was consumed at, so a reader anchored to a settled
+            // height can ask whether the spend is inside its anchor instead of whether
+            // this node happens to hold the record.
+            CPrivacyVNextNullifierSpent spent;
+            spent.txnHash = tx.GetHash();
+            spent.nIndex = i;
+            spent.nHeight = nHeight;
+            if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
+            {
+                strError = "IV5 spent-key write failed";
+                return PRIVACY_VNEXT_SPEND_WRITE_FAILED;
+            }
+        }
+    }
+    return PRIVACY_VNEXT_SPEND_OK;
+}
+
+PrivacyVNextUndoResult DisconnectPrivacyVNextSpentKeys(CTxDB& txdb,
+                                                       const CTransaction& tx,
+                                                       const PrivacyVNextStateEffects& effects,
+                                                       int nHeight,
+                                                       std::string& strError)
+{
+    strError.clear();
+    for (size_t j = effects.keyImages.size(); j > 0; --j)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), effects.keyImages[j - 1].data(),
+               effects.keyImages[j - 1].size());
+        CPrivacyVNextNullifierSpent spent;
+        const TxDBReadStatus status =
+            txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+        // The height is part of what connecting the block wrote, so undoing it has to
+        // find the height it wrote and no other: a record placed at a different height
+        // belongs to a block this one is not.
+        if (status != TXDB_READ_FOUND ||
+            spent.txnHash != tx.GetHash() ||
+            spent.nIndex != j - 1 ||
+            spent.nHeight != nHeight)
+        {
+            strError = strprintf("IV5 spent-key undo record is %s or owned by another "
+                                 "input for %s",
+                                 status == TXDB_READ_NOT_FOUND ? "missing" :
+                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
+                                 keyImage.ToString().substr(0,10).c_str());
+            return PRIVACY_VNEXT_UNDO_MISMATCH;
+        }
+        if (!txdb.ErasePrivacyVNextNullifier(keyImage))
+        {
+            strError = "IV5 spent-key erase failed";
+            return PRIVACY_VNEXT_UNDO_ERASE_FAILED;
+        }
+    }
+    return PRIVACY_VNEXT_UNDO_OK;
 }
 
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
@@ -2852,7 +3203,11 @@ bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx)
                                    tx.privacyVNext.vchPayload.size(),
                                    nOperation, nDisclosureMask))
         return false;
-    return iv5::IsAttestationOperation(nOperation);
+    // A note finality vote is the other zero-fee shape: the decoder pins its fee to zero
+    // and its value to the note it spends, and it has no transparent side to pay from.
+    // Its lane is gated where the effects are judged, not here.
+    return iv5::IsAttestationOperation(nOperation) ||
+           iv5::IsNoteFinalityVoteOperation(nOperation);
 }
 
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
@@ -2925,16 +3280,23 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             return error("CTxMemPool::accept() : %s", strRetiredError.c_str());
 
         bool fContextLocalFailure = false;
+        bool fContextUnavailable = false;
         std::string strContextError;
         if (!ValidatePrivacyVNextFinalizedContext(
-                txdb, nEffectiveMempoolHeight, effects,
-                fContextLocalFailure, strContextError))
+                txdb, pindexBest, nEffectiveMempoolHeight, effects,
+                fContextLocalFailure, fContextUnavailable, strContextError))
         {
             if (fContextLocalFailure)
                 StartShutdown();
             return error("CTxMemPool::accept() : IV5 finalized context rejected: %s",
                          strContextError.c_str());
         }
+        // A vote rides its payload alone; a transparent side is refused before any fee
+        // rule is asked to price it.
+        std::string strCarrierError;
+        if (!CheckPrivacyVNextNoteVoteCarrier(tx, effects, strCarrierError))
+            return tx.DoS(100, error("CTxMemPool::accept() : %s",
+                                     strCarrierError.c_str()));
 
         std::set<uint256> setTransactionKeyImages;
         vPrivacyVNextKeyImages.reserve(effects.keyImages.size());
@@ -6695,10 +7057,11 @@ bool ValidatePrivacyVNextIndexPersistence(
             }
 
             bool fContextLocalFailure = false;
+            bool fContextUnavailable = false;
             std::string strContextError;
             if (!ValidatePrivacyVNextFinalizedContext(
-                    txdb, pindex->nHeight, effects,
-                    fContextLocalFailure, strContextError))
+                    txdb, pindex, pindex->nHeight, effects,
+                    fContextLocalFailure, fContextUnavailable, strContextError))
             {
                 strError = strprintf(
                     "accepted IV5 payload %s has invalid finalized context: %s",
@@ -8527,31 +8890,21 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 }
             }
 
-            for (size_t j = effects.keyImages.size(); j > 0; --j)
             {
-                uint256 keyImage;
-                memcpy(keyImage.begin(), effects.keyImages[j - 1].data(),
-                       effects.keyImages[j - 1].size());
-                CPrivacyVNextNullifierSpent spent;
-                const TxDBReadStatus status =
-                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
-                // The height is part of what connecting this block wrote, so undoing
-                // it has to find the height it wrote and no other: a record placed at
-                // a different height belongs to a block this one is not.
-                if (status != TXDB_READ_FOUND ||
-                    spent.txnHash != vtx[i].GetHash() ||
-                    spent.nIndex != j - 1 ||
-                    spent.nHeight != pindex->nHeight)
+                std::string strUndoError;
+                switch (DisconnectPrivacyVNextSpentKeys(txdb, vtx[i], effects,
+                                                        pindex->nHeight, strUndoError))
                 {
+                case PRIVACY_VNEXT_UNDO_OK:
+                    break;
+                case PRIVACY_VNEXT_UNDO_MISMATCH:
                     StartShutdown();
-                    return error("DisconnectBlock() : IV5 spent-key undo record is %s or "
-                                 "owned by another input for %s (-reindex/resync required)",
-                                 status == TXDB_READ_NOT_FOUND ? "missing" :
-                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
-                                 keyImage.ToString().substr(0,10).c_str());
+                    return error("DisconnectBlock() : %s (-reindex/resync required)",
+                                 strUndoError.c_str());
+                case PRIVACY_VNEXT_UNDO_ERASE_FAILED:
+                default:
+                    return error("DisconnectBlock() : %s", strUndoError.c_str());
                 }
-                if (!txdb.ErasePrivacyVNextNullifier(keyImage))
-                    return error("DisconnectBlock() : IV5 spent-key erase failed");
             }
 
             if (fUndoPrivacyVNextPool)
@@ -10569,6 +10922,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         std::set<uint256> setBlockPrivacyVNextNullifiers;
         std::set<uint256> setBlockPrivacyVNextOutputBases;
         std::set<uint256> setBlockPrivacyVNextAttestations;
+        unsigned int nBlockNoteVotes = 0;
+        unsigned int nPriorNoteVotes = 0;
+        bool fHavePriorNoteVotes = false;
         for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsPrivacyVNext())
@@ -10608,10 +10964,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                       tx.GetHash().ToString().substr(0,10).c_str()));
 
             bool fContextLocalFailure = false;
+            bool fContextUnavailable = false;
             std::string strContextError;
             if (!ValidatePrivacyVNextFinalizedContext(
-                    txdb, pindex->nHeight, effects,
-                    fContextLocalFailure, strContextError))
+                    txdb, pindex, pindex->nHeight, effects,
+                    fContextLocalFailure, fContextUnavailable, strContextError))
             {
                 if (fContextLocalFailure)
                 {
@@ -10620,9 +10977,40 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         "ConnectBlock() : local IV5 finalized-context failure: %s",
                         strContextError.c_str()));
                 }
+                // The epoch record a vote anchors to is not this chain's on this node
+                // yet: retried once it is, never written down as a verdict.
+                if (fContextUnavailable)
+                    return TransientFailure(error(
+                        "ConnectBlock() : IV5 context unavailable: %s",
+                        strContextError.c_str()));
                 return DoS(100, error(
                     "ConnectBlock() : IV5 finalized context rejected: %s",
                     strContextError.c_str()));
+            }
+
+            if (effects.HasVoteBoundary())
+            {
+                std::string strVoteError;
+                if (!CheckPrivacyVNextNoteVoteCarrier(tx, effects, strVoteError))
+                    return DoS(100, error("ConnectBlock() : %s for %s",
+                                          strVoteError.c_str(),
+                                          tx.GetHash().ToString().substr(0,10).c_str()));
+                ++nBlockNoteVotes;
+                // Every vote this block can carry names the one boundary whose window
+                // holds this height, so the ancestors are read once per block.
+                if (!fHavePriorNoteVotes)
+                {
+                    if (!CountConnectedPrivacyVNextNoteVotes(
+                            pindex->pprev, static_cast<int>(effects.nVoteBoundaryHeight),
+                            FINALITY_MAX_EPOCH_NOTE_VOTES,
+                            nPriorNoteVotes, strVoteError))
+                        return TransientFailure(error("ConnectBlock() : %s",
+                                                      strVoteError.c_str()));
+                    fHavePriorNoteVotes = true;
+                }
+                if (!CheckPrivacyVNextNoteVoteCaps(nBlockNoteVotes, nPriorNoteVotes,
+                                                   strVoteError))
+                    return DoS(100, error("ConnectBlock() : %s", strVoteError.c_str()));
             }
 
             int64_t nPoolDelta = 0;
@@ -10634,45 +11022,26 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                       tx.GetHash().ToString().substr(0,10).c_str(),
                                       strPoolError.c_str()));
 
-            for (size_t i = 0; i < effects.keyImages.size(); ++i)
+            // Every spend, a note finality vote's included, goes through one path: the
+            // in-block and cross-block double-spend checks, then the height-stamped write.
             {
-                uint256 keyImage;
-                memcpy(keyImage.begin(), effects.keyImages[i].data(),
-                       effects.keyImages[i].size());
-                if (!setBlockPrivacyVNextNullifiers.insert(keyImage).second)
-                    return DoS(100, error(
-                        "ConnectBlock() : duplicate IV5 spent key %s in active DAG block",
-                        keyImage.ToString().substr(0,10).c_str()));
-
-                CPrivacyVNextNullifierSpent prior;
-                const TxDBReadStatus status =
-                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, prior);
-                if (status == TXDB_READ_ERROR)
+                std::string strSpendError;
+                switch (ConnectPrivacyVNextSpentKeys(
+                            txdb, tx, effects, pindex->nHeight, fJustCheck,
+                            setBlockPrivacyVNextNullifiers, strSpendError))
                 {
+                case PRIVACY_VNEXT_SPEND_OK:
+                    break;
+                case PRIVACY_VNEXT_SPEND_INDEX_CORRUPT:
                     StartShutdown();
-                    return TransientFailure(error(
-                        "ConnectBlock() : corrupt IV5 spent-key index for %s; "
-                        "-reindex/resync required",
-                        keyImage.ToString().substr(0,10).c_str()));
-                }
-                if (status == TXDB_READ_FOUND)
-                    return DoS(100, error(
-                        "ConnectBlock() : IV5 spent key %s was already consumed by %s",
-                        keyImage.ToString().substr(0,10).c_str(),
-                        prior.txnHash.ToString().substr(0,10).c_str()));
-
-                if (!fJustCheck)
-                {
-                    // The height this key was consumed at, so a reader anchored to a
-                    // settled height can ask whether the spend is inside its anchor
-                    // instead of whether this node happens to hold the record.
-                    CPrivacyVNextNullifierSpent spent;
-                    spent.txnHash = tx.GetHash();
-                    spent.nIndex = i;
-                    spent.nHeight = pindex->nHeight;
-                    if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
-                        return TransientFailure(error(
-                            "ConnectBlock() : IV5 spent-key write failed"));
+                    return TransientFailure(error("ConnectBlock() : %s",
+                                                  strSpendError.c_str()));
+                case PRIVACY_VNEXT_SPEND_WRITE_FAILED:
+                    return TransientFailure(error("ConnectBlock() : %s",
+                                                  strSpendError.c_str()));
+                case PRIVACY_VNEXT_SPEND_INVALID:
+                default:
+                    return DoS(100, error("ConnectBlock() : %s", strSpendError.c_str()));
                 }
             }
 
@@ -12981,7 +13350,8 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
                         continue;
                     std::string strAnchorError;
                     if (!CheckPrivacyVNextFinalizedAnchor(
-                            txdb, nBestHeight + 1, it->second, strAnchorError))
+                            txdb, pindexBest, nBestHeight + 1, it->second,
+                            strAnchorError))
                         vStaleAnchors.push_back(it->second);
                 }
             }

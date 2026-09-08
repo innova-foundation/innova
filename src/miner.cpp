@@ -14,6 +14,7 @@
 #include "subsidy.h"
 #include "namecoin.h"
 
+#include <limits>
 #include <memory>
 
 using namespace std;
@@ -186,6 +187,56 @@ static bool CoinbaseStartsWithHeight(const CBlock* pblock, int nHeight)
     const CScript& scriptSig = pblock->vtx[0].vin[0].scriptSig;
     return scriptSig.size() >= expect.size() &&
            std::equal(expect.begin(), expect.end(), scriptSig.begin());
+}
+
+// The two note-vote caps ConnectBlock enforces, applied to one candidate. nBlockNoteVotes
+// counts the template, nPriorNoteVotes the branch's epoch window (walked once per
+// template). Returns false to skip a candidate that would exceed either cap.
+bool AdmitPrivacyVNextNoteVote(const CTransaction& tx,
+                               const CBlockIndex* pindexPrev,
+                               int nCandidateHeight,
+                               unsigned int nBlockNoteVotes,
+                               unsigned int& nPriorNoteVotes,
+                               bool& fHavePriorNoteVotes,
+                               bool& fIsNoteVoteOut,
+                               std::string& strErrorOut)
+{
+    fIsNoteVoteOut = false;
+    strErrorOut.clear();
+    if (!IsPrivacyVNextNoteVoteShape(tx))
+        return true;
+    if (!fHavePriorNoteVotes)
+    {
+        const int nWindowBoundary = GetEpochBoundaryHeight(
+            GetEpochForHeight(nCandidateHeight), nCandidateHeight);
+        if (!CountConnectedPrivacyVNextNoteVotes(
+                pindexPrev, nWindowBoundary, FINALITY_MAX_EPOCH_NOTE_VOTES,
+                nPriorNoteVotes, strErrorOut))
+            return false;
+        fHavePriorNoteVotes = true;
+    }
+    if (!CheckPrivacyVNextNoteVoteCaps(nBlockNoteVotes + 1, nPriorNoteVotes,
+                                       strErrorOut))
+        return false;
+    fIsNoteVoteOut = true;
+    return true;
+}
+
+// Where a note finality vote sits in the selection order.
+//
+// It pays no fee and has no input age, so on both orderings it sorts below every other
+// candidate and a full block leaves it out -- permanently, because its window is 24
+// blocks wide and the note it spends is single-shot. It cannot crowd a block out in
+// return: consensus admits at most FINALITY_MAX_BLOCK_NOTE_VOTES of them per block, and
+// each one costs its sender a note at the stake floor.
+void ApplyPrivacyVNextNoteVoteSelectionOrder(const CTransaction& tx,
+                                             double& dPriority,
+                                             double& dFeePerKb)
+{
+    if (!IsPrivacyVNextNoteVoteShape(tx))
+        return;
+    dPriority = std::numeric_limits<double>::max();
+    dFeePerKb = std::numeric_limits<double>::max();
 }
 
 static bool IsPostDAGProofOfStakeIndex(const CBlockIndex* pindex)
@@ -994,8 +1045,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 // transaction was accepted. Selecting one that has aged out builds a
                 // block this node's own ConnectBlock rejects, every round.
                 std::string strAnchorError;
-                if (!CheckPrivacyVNextFinalizedAnchor(txdb, nCandidateHeight, tx,
-                                                      strAnchorError))
+                if (!CheckPrivacyVNextFinalizedAnchor(txdb, pindexPrev, nCandidateHeight,
+                                                      tx, strAnchorError))
                 {
                     printf("CreateNewBlock: IV5 anchor no longer valid at height %d, "
                            "skipping tx %s: %s\n", nCandidateHeight,
@@ -1034,6 +1085,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nFee -= nAbsorbed;
             }
             double dFeePerKb =  double(nFee) / (double(nTxSize)/1000.0);
+            ApplyPrivacyVNextNoteVoteSelectionOrder(tx, dPriority, dFeePerKb);
 
             if (porphan)
             {
@@ -1053,6 +1105,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         uint64_t nBlockSize = 1000;
         uint64_t nBlockTx = 0;
         int nBlockSigOps = 100;
+        unsigned int nBlockNoteVotes = 0;
+        unsigned int nPriorNoteVotes = 0;
+        bool fHavePriorNoteVotes = false;
         bool fSortedByFee = (nBlockPrioritySize <= 0);
 
         TxPriorityCompare comparer(fSortedByFee);
@@ -1167,6 +1222,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // anchor; an aged-out anchor would make ConnectBlock reject the block.
             int64_t nDeclaredPayloadFee = 0;
             std::vector<uint256> vTxPrivacyVNextSpent;
+            bool fIsNoteVote = false;
             if (tx.IsPrivacyVNext())
             {
                 std::vector<uint256> vTxPrivacyVNextAttested;
@@ -1192,13 +1248,27 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     continue;
 
                 std::string strAnchorError;
-                if (!CheckPrivacyVNextFinalizedAnchor(txdb, nCandidateHeight, tx,
-                                                      strAnchorError))
+                if (!CheckPrivacyVNextFinalizedAnchor(txdb, pindexPrev, nCandidateHeight,
+                                                      tx, strAnchorError))
                 {
                     printf("CreateNewBlock: IV5 anchor no longer valid at height %d, "
                            "skipping tx %s: %s\n", nCandidateHeight,
                            tx.GetHash().ToString().substr(0,10).c_str(),
                            strAnchorError.c_str());
+                    continue;
+                }
+
+                // The caps ConnectBlock enforces on note finality votes. A block over
+                // either is one this node's own ConnectBlock refuses.
+                std::string strCapError;
+                if (!AdmitPrivacyVNextNoteVote(tx, pindexPrev, nCandidateHeight,
+                                               nBlockNoteVotes, nPriorNoteVotes,
+                                               fHavePriorNoteVotes, fIsNoteVote,
+                                               strCapError))
+                {
+                    printf("CreateNewBlock: %s, skipping tx %s\n",
+                           strCapError.c_str(),
+                           tx.GetHash().ToString().substr(0,10).c_str());
                     continue;
                 }
 
@@ -1236,6 +1306,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             // Added
             pblock->vtx.push_back(tx);
+            if (fIsNoteVote)
+                ++nBlockNoteVotes;
             for (size_t i = 0; i < vTxPrivacyVNextSpent.size(); ++i)
                 setBlockPrivacyVNextSpent.insert(vTxPrivacyVNextSpent[i]);
             nBlockSize += nTxSize;

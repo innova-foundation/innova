@@ -18,6 +18,8 @@ namespace
 {
 
 const uint64_t kTier = INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT;
+// A note at the finality stake floor (100 INN), the note a vote spends.
+const uint64_t kVoteNote = 100ULL * 100000000ULL;
 
 PrivacyVNextDigest CollateralDigest(unsigned char fill)
 {
@@ -336,6 +338,175 @@ bool BuildShapedAttestation(const FundedNote& note,
     PutSection(payload, std::vector<unsigned char>());   // no disclosures
     vchPayloadOut.swap(payload);
     return true;
+}
+
+// The contract digest this build was compiled against; the decoder carries it and never
+// judges it, so any nonzero value serves a payload that is only ever validated.
+PrivacyVNextDigest ContractDigest()
+{
+    PrivacyVNextDigest d;
+    BOOST_REQUIRE(iv5::DecodeDigestHex(iv5::PROTOCOL_CONTRACT_SHA256, d.data()));
+    return d;
+}
+
+// A note vote built from the wallet builder's primitives with the shape-pinned fields
+// left to the caller, so an off-shape payload is refused only by the shape rule.
+bool BuildShapedNoteVote(const FundedNote& note,
+                         const PrivacyVNextDigest& parameterDigest,
+                         uint64_t nReissueAmount,
+                         int64_t nTransparentValueBalance,
+                         uint64_t nFee,
+                         const PrivacyVNextDigest& boundaryHash,
+                         uint32_t nBoundaryHeight,
+                         std::vector<unsigned char>& vchPayloadOut,
+                         PrivacyVNextDigest& keyImageOut,
+                         PrivacyVNextOutputLeaf& reissueOut,
+                         std::string& error)
+{
+    vchPayloadOut.clear();
+    const PrivacyVNextDigest entropy = CollateralScalar(0x5c);
+
+    std::vector<PrivacyVNextSpendInput> vInputs(1);
+    vInputs[0].spendScalar = note.spend.spendSecret;
+    vInputs[0].commitmentScalar = note.spend.y;
+    vInputs[0].leaf = note.spend.leaf;
+    vInputs[0].vchWitnessRecord = note.spend.vchWitnessRecord;
+
+    // Pass one fixes the pseudo-output and key image the entropy determines.
+    PrivacyVNextDigest provisional;
+    provisional.fill(0);
+    provisional[0] = 1;
+    std::vector<PrivacyVNextSpendConstruction> vDraft;
+    std::vector<unsigned char> vchDraft;
+    if (!ProvePrivacyVNextMembership(note.finalizedRoot, provisional, entropy,
+                                     vInputs, vDraft, vchDraft, error))
+        return false;
+    if (vDraft.size() != 1)
+    {
+        error = "shaped vote proving returned the wrong input count";
+        return false;
+    }
+
+    // The reissue derives under the vote's context: operation 10, the binding, the key
+    // image. Unique per note, so the reissue's one-time key cannot recur.
+    std::vector<PrivacyVNextDigest> vKeyImages(1, vDraft[0].keyImage);
+    PrivacyVNextDigest context;
+    if (!DerivePrivacyVNextInputContext(iv5::NOTE_FINALITY_VOTE, NoTransparentSide(),
+                                        vKeyImages, context, error))
+        return false;
+    const PrivacyVNextDigest outputMask = CollateralScalar(0x61);
+    PrivacyVNextEncryptedOutput reissue;
+    if (!EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, LocalGenesis(),
+                                 note.keys.spendPublic, note.keys.viewPublic,
+                                 note.keys.outgoingViewSecret, CollateralScalar(0x62),
+                                 CollateralScalar(0x63), nReissueAmount,
+                                 CollateralScalar(0x64), outputMask, context, reissue,
+                                 error))
+        return false;
+
+    std::vector<unsigned char> prefix;
+    prefix.push_back((unsigned char)iv5::PROTOCOL_SCHEMA);
+    prefix.push_back(0);
+    prefix.push_back(iv5::NOTE_FINALITY_VOTE);
+    prefix.push_back(0);                         // finality profile: none
+    prefix.push_back(iv5::AUTH_OWNER);
+    prefix.push_back(iv5::DISCLOSURE_MASK);
+    prefix.push_back(0);                         // finality object: none
+    prefix.push_back(LocalNetwork());
+    prefix.push_back(0);                         // reserved
+    PutDigest(prefix, LocalGenesis());
+    PutDigest(prefix, parameterDigest);
+    PutDigest(prefix, note.finalizedRoot);
+    PutLE64(prefix, note.nTreeSize);
+    PutLE64(prefix, (uint64_t)nTransparentValueBalance);
+    PutLE64(prefix, nFee);
+    PutDigest(prefix, NoTransparentSide());
+    PutCompact(prefix, 1);
+    PutDigest(prefix, vDraft[0].pseudoOut);
+    PutDigest(prefix, vDraft[0].keyImage);
+    PutCompact(prefix, 1);
+    PutDigest(prefix, reissue.leaf.owner);
+    PutDigest(prefix, reissue.leaf.commitment);
+    PutDigest(prefix, reissue.noteEphemeral);
+    PutDigest(prefix, reissue.tweakEphemeral);
+    PutSection(prefix, reissue.vchRecipientCiphertext);
+    PutSection(prefix, reissue.vchOutgoingCiphertext);
+    PutDigest(prefix, boundaryHash);             // the vote names its boundary
+    for (size_t i = 0; i < 4; ++i)
+        prefix.push_back((unsigned char)(nBoundaryHeight >> (8 * i)));
+    PutSection(prefix, std::vector<unsigned char>());   // finality body
+
+    PrivacyVNextDigest signingHash;
+    if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                       prefix, signingHash, error))
+        return false;
+
+    std::vector<PrivacyVNextSpendConstruction> vFinal;
+    std::vector<unsigned char> vchMembership;
+    if (!ProvePrivacyVNextMembership(note.finalizedRoot, signingHash, entropy,
+                                     vInputs, vFinal, vchMembership, error))
+        return false;
+    if (vFinal.size() != 1 || vFinal[0].pseudoOut != vDraft[0].pseudoOut ||
+        vFinal[0].keyImage != vDraft[0].keyImage)
+    {
+        error = "shaped vote proving is not deterministic in its entropy";
+        return false;
+    }
+
+    // excess = (note mask + rerandomization delta) - reissue mask
+    std::vector<unsigned char> vchInputMask;
+    std::vector<unsigned char> vchNegatedOutput;
+    std::vector<unsigned char> vchExcess;
+    if (!Ed25519ScalarAdd(DigestBytes(note.spend.mask),
+                          DigestBytes(vFinal[0].pseudoOutMaskDelta), vchInputMask) ||
+        !Ed25519ScalarNeg(DigestBytes(outputMask), vchNegatedOutput) ||
+        !Ed25519ScalarAdd(vchInputMask, vchNegatedOutput, vchExcess) ||
+        vchExcess.size() != 32)
+    {
+        error = "shaped vote excess mask accumulation failed";
+        return false;
+    }
+    PrivacyVNextDigest excessMask;
+    std::memcpy(excessMask.data(), &vchExcess[0], 32);
+
+    std::vector<PrivacyVNextDigest> vPseudoOuts(1, vFinal[0].pseudoOut);
+    std::vector<PrivacyVNextValueOutput> vOutputs(1);
+    vOutputs[0].nAmount = nReissueAmount;
+    vOutputs[0].mask = outputMask;
+    PrivacyVNextValueProof valueProof;
+    if (!ProvePrivacyVNextValue(vPseudoOuts, vOutputs, nTransparentValueBalance, nFee,
+                                signingHash, CollateralScalar(0x65), excessMask,
+                                valueProof, error))
+        return false;
+    if (valueProof.vOutputCommitments.size() != 1 ||
+        valueProof.vOutputCommitments[0] != reissue.leaf.commitment)
+    {
+        error = "shaped vote value proof does not open the reissue commitment";
+        return false;
+    }
+
+    std::vector<unsigned char> payload = prefix;
+    PutSection(payload, vchMembership);
+    PutSection(payload, valueProof.vchRangeProof);
+    PutSection(payload, std::vector<unsigned char>(valueProof.balanceProof.begin(),
+                                                   valueProof.balanceProof.end()));
+    PutSection(payload, std::vector<unsigned char>());   // no operation proof
+    PutSection(payload, std::vector<unsigned char>());   // no disclosures
+    vchPayloadOut.swap(payload);
+    keyImageOut = vFinal[0].keyImage;
+    reissueOut = reissue.leaf;
+    return true;
+}
+
+// Offset of the boundary hash inside a shaped vote: the one 32-byte run of its fill byte.
+size_t BoundaryOffset(const std::vector<unsigned char>& payload,
+                      const PrivacyVNextDigest& boundaryHash)
+{
+    std::vector<unsigned char>::const_iterator it =
+        std::search(payload.begin(), payload.end(), boundaryHash.begin(),
+                    boundaryHash.end());
+    BOOST_REQUIRE(it != payload.end());
+    return (size_t)(it - payload.begin());
 }
 
 // A nine-byte v2008 envelope and nothing after it. Enough to reach every refusal the
@@ -1667,5 +1838,171 @@ BOOST_AUTO_TEST_CASE(a_v2008_payload_acts_on_no_finality_object_and_no_unbuilt_o
     }
 }
 
+
+// ---- The note finality vote (operation 10) ----
+
+// A vote spends its note and reissues the value: transfer effects, with the spent-key index
+// making the vote unrepeatable. Nothing crosses the boundary or is registered.
+BOOST_AUTO_TEST_CASE(a_note_vote_spends_its_note_and_reissues_it_whole)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xc1, kVoteNote, note, error), error);
+
+    std::vector<unsigned char> payload;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0,
+                            CollateralDigest(0x7e), 1200, payload, keyImage, reissue,
+                            error),
+        error);
+
+    uint8_t nOperation = 0;
+    uint8_t nMask = 0;
+    BOOST_REQUIRE(iv5::ReadDeclaredEnvelope(&payload[0], payload.size(), nOperation,
+                                            nMask));
+    BOOST_CHECK_EQUAL((int)nOperation, (int)iv5::NOTE_FINALITY_VOTE);
+    BOOST_CHECK_EQUAL((int)nMask, (int)iv5::DISCLOSURE_MASK);
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation extracted =
+        ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects);
+    BOOST_REQUIRE_MESSAGE(extracted.IsValid(), extracted.strError);
+
+    // Routed as a spend, never as an attestation.
+    BOOST_REQUIRE_EQUAL(effects.keyImages.size(), 1U);
+    BOOST_CHECK(effects.keyImages[0] == keyImage);
+    BOOST_CHECK_EQUAL(effects.attestationKeyImages.size(), 0U);
+    // The reissue is the one leaf, exactly as encrypted.
+    BOOST_REQUIRE_EQUAL(effects.outputLeaves.size(), 1U);
+    BOOST_CHECK(effects.outputLeaves[0].owner == reissue.owner);
+    BOOST_CHECK(effects.outputLeaves[0].nullifierBase == reissue.nullifierBase);
+    BOOST_CHECK(effects.outputLeaves[0].commitment == reissue.commitment);
+    // Nothing crosses the boundary and nothing is registered.
+    BOOST_CHECK_EQUAL(effects.nTransparentValueBalance, 0);
+    BOOST_CHECK_EQUAL(effects.nFee, 0U);
+    BOOST_CHECK_EQUAL(effects.PoolDelta(), 0);
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    BOOST_CHECK(effects.registrationContext == zero);
+    BOOST_CHECK(!effects.HasMemberKey());
+}
+
+// The decoder pins a vote's fee to zero, so IsPrivacyVNextFeeExemptShape must exempt
+// the vote shape like an attestation.
+BOOST_AUTO_TEST_CASE(a_note_vote_is_fee_exempt_like_an_attestation)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xc2, kVoteNote, note, error), error);
+
+    std::vector<unsigned char> payload;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0,
+                            CollateralDigest(0x7e), 1200, payload, keyImage, reissue,
+                            error),
+        error);
+    BOOST_REQUIRE_EQUAL(ValidationResult(payload), kValid);
+
+    const CTransaction tx = CarryingTx(payload, 1500000002);
+    BOOST_CHECK(IsPrivacyVNextFeeExemptShape(tx));
+    // Still not an attestation: the key image is a spend, never a watch-set entry.
+    BOOST_CHECK(!iv5::IsAttestationOperation(iv5::NOTE_FINALITY_VOTE));
+    // The exemption is for the bare carrier only; a transparent side prices as usual.
+    CTransaction withInput = tx;
+    withInput.vin.push_back(CTxIn(COutPoint(uint256(1), 0)));
+    BOOST_CHECK(!IsPrivacyVNextFeeExemptShape(withInput));
+}
+
+// Refusals here are the shape rule answering: the prover made every proof over the shape
+// as built. Mutation proving this: drop a clause from the vote shape check in
+// validate_payload and the matching arm validates.
+BOOST_AUTO_TEST_CASE(a_note_vote_moves_no_value_and_takes_no_fee)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xc3, kVoteNote, note, error), error);
+    const PrivacyVNextDigest digest = ContractDigest();
+    const PrivacyVNextDigest boundary = CollateralDigest(0x7e);
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+
+    // Positive control: the shape the rule requires validates.
+    std::vector<unsigned char> conforming;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, digest, kVoteNote, 0, 0, boundary, 1200, conforming,
+                            keyImage, reissue, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(conforming), kValid);
+
+    // A fee: the reissue is one atom short and the difference is declared as fee.
+    std::vector<unsigned char> paying;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, digest, kVoteNote - 1, 0, 1, boundary, 1200, paying,
+                            keyImage, reissue, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(paying), kConsensusInvalid);
+
+    // A mint: one atom enters from the transparent side.
+    std::vector<unsigned char> minting;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, digest, kVoteNote + 1, 1, 0, boundary, 1200, minting,
+                            keyImage, reissue, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(minting), kConsensusInvalid);
+
+    // A leak: one atom leaves.
+    std::vector<unsigned char> leaking;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, digest, kVoteNote - 1, -1, 0, boundary, 1200, leaking,
+                            keyImage, reissue, error),
+        error);
+    BOOST_CHECK_EQUAL(ValidationResult(leaking), kConsensusInvalid);
+}
+
+// The boundary a vote names and the operation byte it carries are both inside the signing
+// hash, so neither can be changed after proving: a vote cannot be moved to another epoch
+// and a transfer's proofs cannot be repackaged as a vote.
+BOOST_AUTO_TEST_CASE(a_note_vote_binds_its_boundary_and_its_operation)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xc4, kVoteNote, note, error), error);
+    const PrivacyVNextDigest boundary = CollateralDigest(0x7e);
+
+    std::vector<unsigned char> payload;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0, boundary, 1200,
+                            payload, keyImage, reissue, error),
+        error);
+    BOOST_REQUIRE_EQUAL(ValidationResult(payload), kValid);
+
+    const size_t nBoundaryAt = BoundaryOffset(payload, boundary);
+    std::vector<unsigned char> otherBlock = payload;
+    otherBlock[nBoundaryAt] ^= 0x01;
+    BOOST_CHECK_EQUAL(ValidationResult(otherBlock), kConsensusInvalid);
+
+    std::vector<unsigned char> otherHeight = payload;
+    otherHeight[nBoundaryAt + 32] ^= 0x01;
+    BOOST_CHECK_EQUAL(ValidationResult(otherHeight), kConsensusInvalid);
+
+    std::vector<unsigned char> relabeled = payload;
+    relabeled[2] = iv5::NOTE_TRANSFER;
+    BOOST_CHECK_NE(ValidationResult(relabeled), kValid);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

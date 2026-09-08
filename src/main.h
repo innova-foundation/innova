@@ -1345,13 +1345,14 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t* pnDeclaredFeeOut = NULL,
                                     int64_t* pnDeclaredBalanceOut = NULL);
 
-/** An IV5 attestation names a hidden note without consuming it: no transparent side,
- *  no pool flow, and so no value in the transaction to pay a fee from. Callers must
- *  still require the computed fee to be zero -- this only says the shape is one the
- *  size-based floor cannot apply to. Its bond is the 25000 INN note it proves and the
- *  single use of that note's key image, both of which relay and connect already
- *  enforce. */
+/** Fee-exempt shapes: an IV5 attestation (no transparent side or pool flow) and a note
+ *  finality vote (op 10, fee pinned to zero). Callers must still require a zero fee. */
 bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx);
+
+/** Whether a transaction declares a note finality vote: a payload whose header names
+ *  operation 10 and no transparent side. A header read, not a decoder: block assembly
+ *  counts with it, consensus acts on the decoded effects. */
+bool IsPrivacyVNextNoteVoteShape(const CTransaction& tx);
 
 /** Pool delta of a payload's effects, range-checked before the subtraction rather
  *  than after it. PoolDelta() subtracts in int64_t, so the operands have to be
@@ -1445,12 +1446,91 @@ bool GetPrivacyVNextCollateralSnapshot(
 bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,
                                       std::string& strError);
 
-/** Whether an IV5 transaction still anchors inside the consensus window at
- *  nHeight. Block assembly must apply this: the window is finite, so a mempool
- *  transaction can age out between acceptance and selection. */
-bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
-                                      const CTransaction& tx,
+/** Whether an IV5 tx still anchors inside the consensus window at nHeight. Block assembly
+ *  must apply this: a mempool tx can age out before selection. */
+bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, const CBlockIndex* pindexAnchorTip,
+                                      int nHeight, const CTransaction& tx,
                                       std::string& strError);
+
+/** Connect-time rules of a note finality vote (operation 10), judged at nContextHeight
+ *  on the chain pindexAnchorTip heads: the lane's fork gate; the boundary the vote
+ *  names is a post-DAG epoch boundary and the carrier chain's own ancestor at that
+ *  height; the carrier sits inside [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW); and the
+ *  proof anchors to epoch state E-1, which is identified by its boundary block before
+ *  its root is compared. fLocalFailure is a record this node cannot read. fUnavailable
+ *  is a record that is another branch's or not yet installed here, which the caller
+ *  retries and never scores. Neither is a verdict on the vote. */
+bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
+                                         const CBlockIndex* pindexAnchorTip,
+                                         int nContextHeight,
+                                         const PrivacyVNextStateEffects& effects,
+                                         bool& fLocalFailure,
+                                         bool& fUnavailable,
+                                         std::string& strError);
+
+/** A note finality vote is carried by its payload alone: no transparent inputs or
+ *  outputs. True for every other payload. */
+bool CheckPrivacyVNextNoteVoteCarrier(const CTransaction& tx,
+                                      const PrivacyVNextStateEffects& effects,
+                                      std::string& strError);
+
+/** The per-block and per-window caps on note finality votes, given the votes this
+ *  block carries so far and the votes already connected in the window before it. */
+bool CheckPrivacyVNextNoteVoteCaps(unsigned int nBlockVotes,
+                                   unsigned int nPriorWindowVotes,
+                                   std::string& strError);
+
+/** Declared note finality votes in one block. */
+unsigned int CountPrivacyVNextNoteVoteShapes(const CBlock& block);
+
+/** Note finality votes on pindexFrom's chain at heights >= nBoundaryHeight, walking at most
+ *  one inclusion window. False when a block cannot be read (local state, not a verdict). */
+bool CountConnectedPrivacyVNextNoteVotes(const CBlockIndex* pindexFrom,
+                                         int nBoundaryHeight,
+                                         unsigned int nStopAfter,
+                                         unsigned int& nCountOut,
+                                         std::string& strError);
+
+/** Outcome of recording one payload's spends in the spent-key index. */
+enum PrivacyVNextSpendResult
+{
+    PRIVACY_VNEXT_SPEND_OK = 0,
+    /** Refused identically everywhere: a key image repeated in the block or already consumed. */
+    PRIVACY_VNEXT_SPEND_INVALID,
+    /** The spent-key index cannot be read on this node. */
+    PRIVACY_VNEXT_SPEND_INDEX_CORRUPT,
+    /** The index write failed on this node. */
+    PRIVACY_VNEXT_SPEND_WRITE_FAILED
+};
+
+/** Record one payload's key images as consumed at nHeight: the in-block and cross-block
+ *  double-spend checks, then the height-stamped write unless fJustCheck. Every IV5
+ *  spend, a note finality vote's included, passes through here and nowhere else. */
+PrivacyVNextSpendResult ConnectPrivacyVNextSpentKeys(CTxDB& txdb,
+                                                     const CTransaction& tx,
+                                                     const PrivacyVNextStateEffects& effects,
+                                                     int nHeight,
+                                                     bool fJustCheck,
+                                                     std::set<uint256>& setBlockKeyImages,
+                                                     std::string& strError);
+
+/** Outcome of undoing one payload's spends. */
+enum PrivacyVNextUndoResult
+{
+    PRIVACY_VNEXT_UNDO_OK = 0,
+    /** A record is missing, corrupt, or not the one this transaction wrote at nHeight. */
+    PRIVACY_VNEXT_UNDO_MISMATCH,
+    /** The erase failed on this node. */
+    PRIVACY_VNEXT_UNDO_ERASE_FAILED
+};
+
+/** Exact inverse of ConnectPrivacyVNextSpentKeys: erase what it wrote, in reverse order,
+ *  after checking each record is the one this transaction wrote at nHeight. */
+PrivacyVNextUndoResult DisconnectPrivacyVNextSpentKeys(CTxDB& txdb,
+                                                       const CTransaction& tx,
+                                                       const PrivacyVNextStateEffects& effects,
+                                                       int nHeight,
+                                                       std::string& strError);
 bool GetKeyImage(CTxDB* ptxdb, ec_point& keyImage, CKeyImageSpent& keyImageSpent, bool& fInMempool);
 int GetAnonTxnPreImage(const CTransaction& tx, uint256& hashOut);
 bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash);

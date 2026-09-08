@@ -31,6 +31,7 @@
 #include "curvetree.h"
 #include "lelantus.h"
 #include "dag.h"
+#include "finality.h"
 #include <openssl/crypto.h>  
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm.hpp>
@@ -11606,6 +11607,14 @@ bool CWallet::SelectPrivacyVNextVoteNote(
         CPrivacyVNextNullifierSpent spent;
         if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
             continue;
+        // A note whose vote is still in the mempool is not yet fSpent; skip it, since
+        // the mempool refuses a second vote with the same key image.
+        {
+            LOCK(mempool.cs);
+            if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
+                mempool.mapPrivacyVNextAttestation.count(keyImage))
+                continue;
+        }
         if (!pBest || note.nAmount > pBest->nAmount ||
             (note.nAmount == pBest->nAmount &&
              (note.txhash < pBest->txhash ||
@@ -12385,6 +12394,346 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
             return false;
         }
     }
+    return true;
+}
+
+// Anchor for an epoch-E note vote: epoch state E-1, which is fixed by ancestors of
+// any block that can carry the vote. `hashBoundaryParent` (the block at H_E - 1) must
+// identify the record, as in the validator.
+bool LoadPrivacyVNextNoteVoteAnchor(CTxDB& txdb,
+                                    int nEpoch,
+                                    const uint256& hashBoundaryParent,
+                                    int nBoundaryHeight,
+                                    CEpochState& anchorOut,
+                                    std::string& strErrorOut)
+{
+    anchorOut = CEpochState();
+    strErrorOut.clear();
+
+    if (nEpoch < 1 || nBoundaryHeight < 1)
+    {
+        strErrorOut = "an IV5 note finality vote needs an epoch with a predecessor to "
+                      "anchor to";
+        return false;
+    }
+    const int nAnchorEpoch = nEpoch - 1;
+    if (!txdb.ReadEpochState(nAnchorEpoch, anchorOut))
+    {
+        strErrorOut = strprintf("epoch state %d is not available on this node",
+                                nAnchorEpoch);
+        return false;
+    }
+    if (anchorOut.nEpoch != nAnchorEpoch ||
+        anchorOut.nHeightEnd != nBoundaryHeight - 1 ||
+        anchorOut.hashBoundaryBlock != hashBoundaryParent)
+    {
+        strErrorOut = strprintf("epoch state %d on this node is not the voting chain's",
+                                nAnchorEpoch);
+        return false;
+    }
+    if (anchorOut.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+        anchorOut.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+        anchorOut.vchVNextParameterDigest.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+    {
+        strErrorOut = strprintf("epoch state %d carries no IV5 root to anchor a vote to",
+                                nAnchorEpoch);
+        return false;
+    }
+    if (anchorOut.nVNextTreeSize == 0 || anchorOut.vchVNextTreeState.empty())
+    {
+        strErrorOut = strprintf("epoch state %d carries an empty IV5 tree", nAnchorEpoch);
+        return false;
+    }
+    // Node-local, not a consensus rule: without the leaves behind the anchor no witness
+    // can be cut, and proving against a root the store cannot serve fails after the cost.
+    uint64_t nStored = 0;
+    if (!txdb.ReadPrivacyVNextTreeStoreSize(nStored) ||
+        nStored < anchorOut.nVNextTreeSize)
+    {
+        strErrorOut = strprintf(
+            "the IV5 tree store holds %" PRIu64 " leaves and epoch state %d needs %" PRIu64
+            "; wait for it to catch up",
+            nStored, nAnchorEpoch, anchorOut.nVNextTreeSize);
+        return false;
+    }
+    return true;
+}
+
+// Build the epoch's note vote: spend one note, reissue the same value to this wallet,
+// and bind the epoch boundary in the signing hash. The reissue is found by the normal
+// block scan. Caller holds cs_main and cs_wallet and supplies anchor and boundary.
+bool CWallet::CreatePrivacyVNextNoteVote(
+    CTxDB& txdb,
+    const CEpochState& anchor,
+    const uint256& hashBoundaryBlock,
+    int nBoundaryHeight,
+    int nSpendHeight,
+    int64_t nMinVoteWeight,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    uint256& keyImageOut,
+    std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    keyImageOut = 0;
+    strErrorOut.clear();
+
+    if (!HasPrivacyVNextSeed())
+    {
+        strErrorOut = "this wallet has no IV5 seed; run z_createiv5seed";
+        return false;
+    }
+    if (!IsPrivacyVNextSeedUnlocked() || vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "the IV5 seed is locked; run walletpassphrase first";
+        return false;
+    }
+    // A scan that skipped blocks can neither see every note nor know which the unscanned
+    // span already spent. A vote is a spend, so it is refused on the same terms.
+    if (PrivacyVNextScanGapBlocksSpend(strErrorOut))
+        return false;
+    if (hashBoundaryBlock == 0 || nBoundaryHeight < 1)
+    {
+        strErrorOut = "an IV5 note finality vote must name an epoch boundary block";
+        return false;
+    }
+    if (anchor.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+        anchor.vchVNextTreeState.empty() || anchor.nVNextTreeSize == 0)
+    {
+        strErrorOut = "the vote anchor carries no IV5 tree to prove against";
+        return false;
+    }
+    if (nMinVoteWeight <= 0)
+    {
+        strErrorOut = "a note finality vote needs a positive weight floor";
+        return false;
+    }
+
+    // The vote names no transparent input or output at all, and the payload commits to
+    // exactly that. Settled first: the reissue's self-pay index is drawn from this
+    // binding as well as from the key image.
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    CPrivacyVNextWalletNote note;
+    std::vector<unsigned char> vchWitnessRecord;
+    if (!SelectPrivacyVNextVoteNote(txdb, anchor.vchVNextTreeState,
+                                    anchor.vchVNextRoot, anchor.nVNextTreeSize,
+                                    nSpendHeight, nMinVoteWeight,
+                                    std::set<uint256>(), note, vchWitnessRecord,
+                                    strErrorOut))
+        return false;
+    if (!note.IsComplete() || vchWitnessRecord.empty())
+    {
+        strErrorOut = "the selected IV5 vote note is incomplete";
+        return false;
+    }
+
+    PrivacyVNextDigest seedDigest;
+    std::memcpy(seedDigest.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
+
+    // The index the reissue derives at, drawn from the one key image this vote publishes.
+    // The block scan recomputes it from the payload, so the wallet recognises its own
+    // reissue with no vote-specific code and a seed restore recovers it the same way.
+    std::vector<PrivacyVNextDigest> vKeyImages(1);
+    std::memcpy(vKeyImages[0].data(), &note.vchKeyImage[0], 32);
+    const uint32_t nReissueIndex = PrivacyVNextChangeIndexFor(
+        genesis, nNetwork, transparentBinding, vKeyImages);
+    PrivacyVNextDerivedKeys reissueKeys;
+    if (!DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, nReissueIndex,
+                                      reissueKeys, strErrorOut))
+    {
+        OPENSSL_cleanse(seedDigest.data(), seedDigest.size());
+        return false;
+    }
+    OPENSSL_cleanse(seedDigest.data(), seedDigest.size());
+
+    PrivacyVNextAddressComponents reissueTo;
+    reissueTo.nNetwork = nNetwork;
+    reissueTo.nAddressType = 0;
+    reissueTo.spendPublic = reissueKeys.spendPublic;
+    reissueTo.viewPublic = reissueKeys.viewPublic;
+
+    PrivacyVNextSpendNote spend;
+    std::memcpy(spend.spendSecret.data(), &note.vchSpendSecret[0], 32);
+    std::memcpy(spend.y.data(), &note.vchY[0], 32);
+    std::memcpy(spend.mask.data(), &note.vchMask[0], 32);
+    std::memcpy(spend.leaf.owner.data(), &note.vchOwner[0], 32);
+    std::memcpy(spend.leaf.nullifierBase.data(), &note.vchNullifierBase[0], 32);
+    std::memcpy(spend.leaf.commitment.data(), &note.vchCommitment[0], 32);
+    spend.nAmount = note.nAmount;
+    spend.vchWitnessRecord = vchWitnessRecord;
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &anchor.vchVNextRoot[0], 32);
+    PrivacyVNextDigest boundaryHash;
+    std::memcpy(boundaryHash.data(), hashBoundaryBlock.begin(), 32);
+
+    std::vector<unsigned char> vchPayload;
+    PrivacyVNextDigest keyImage;
+    const bool fBuilt = BuildPrivacyVNextNoteVotePayload(
+        nNetwork, genesis, reissueKeys.outgoingViewSecret, finalizedRoot,
+        anchor.nVNextTreeSize, transparentBinding, boundaryHash,
+        (uint32_t)nBoundaryHeight, spend, reissueTo, vchPayload, keyImage,
+        strErrorOut, &anchor.vchVNextParameterDigest);
+    if (!fBuilt)
+        return false;
+
+    // The scan-time key image must equal the one the proof publishes, or the reissue
+    // derives at an index no later scan reproduces.
+    if (std::memcmp(keyImage.data(), &note.vchKeyImage[0], 32) != 0)
+    {
+        strErrorOut = "the IV5 vote proof published a key image this wallet did not "
+                      "record for the note";
+        return false;
+    }
+
+    txNew.privacyVNext.vchPayload = vchPayload;
+    // Stamped after proving, not before: proving takes seconds and a build-time stamp
+    // would date the wallet pipeline rather than the broadcast.
+    txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
+
+    std::memcpy(keyImageOut.begin(), keyImage.data(), 32);
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the note finality vote was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether a relayed wallet tx already votes for this boundary; derived, since the
+// wallet keeps no per-epoch record.
+static bool PrivacyVNextNoteVotePending(const CWallet& wallet, int nBoundaryHeight)
+{
+    // The txids are collected under the locks and decoded outside them: a payload decode
+    // is proof work, and it has no business running under the mempool lock.
+    std::vector<uint256> vPending;
+    {
+        LOCK2(wallet.cs_shielded, mempool.cs);
+        for (size_t i = 0; i < wallet.vPrivacyVNextNotes.size(); ++i)
+        {
+            uint256 keyImage;
+            if (!PrivacyVNextNoteKeyImage(wallet.vPrivacyVNextNotes[i], keyImage))
+                continue;
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator it =
+                mempool.mapPrivacyVNextNullifier.find(keyImage);
+            if (it == mempool.mapPrivacyVNextNullifier.end())
+                continue;
+            vPending.push_back(it->second.txnHash);
+        }
+    }
+    for (size_t i = 0; i < vPending.size(); ++i)
+    {
+        CTransaction tx;
+        if (!mempool.lookup(vPending[i], tx))
+            continue;
+        if (!IsPrivacyVNextNoteVoteShape(tx))
+            continue;
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects((uint32_t)tx.nVersion,
+                                              tx.privacyVNext.vchPayload, effects);
+        if (!validation.IsValid() || !effects.HasVoteBoundary())
+            continue;
+        if ((int)effects.nVoteBoundaryHeight == nBoundaryHeight)
+            return true;
+    }
+    return false;
+}
+
+// The one entry the finality voter needs: resolve the anchor for the epoch `pEpochBlock`
+// opens, build this node's vote and hand it to the mempool.
+//
+// Inert until the lane's fork height is set. It is PRIVACY_VNEXT_HEIGHT_UNSET on mainnet
+// and testnet, so IsIV5NoteVoteActiveAtHeight is false at every height on both and this
+// returns before it reads a note.
+bool ProducePrivacyVNextNoteVote(CTxDB& txdb,
+                                 const CBlockIndex* pEpochBlock,
+                                 int nIncludingHeight,
+                                 uint256& keyImageOut,
+                                 std::string& strErrorOut)
+{
+    keyImageOut = 0;
+    strErrorOut.clear();
+
+    // The lane's gate is the outermost check: below it nothing here reads a wallet, a
+    // note or a chain record, so an unset fork height leaves the whole path unreachable.
+    if (!IsIV5NoteVoteActiveAtHeight(nIncludingHeight))
+    {
+        strErrorOut = "IV5 note finality votes are not active at this height";
+        return false;
+    }
+    if (!pwalletMain || pEpochBlock == NULL)
+    {
+        strErrorOut = "no wallet or no epoch boundary block";
+        return false;
+    }
+
+    const int nBoundaryHeight = pEpochBlock->nHeight;
+    if (nBoundaryHeight < FORK_HEIGHT_DAG || !IsEpochBoundaryHeight(nBoundaryHeight))
+    {
+        strErrorOut = "the named block opens no post-DAG epoch";
+        return false;
+    }
+    // Post-DAG block production is proof of work, and a vote may only name a proof-of-work
+    // boundary, so proving against any other kind produces something every peer rejects.
+    if (!pEpochBlock->IsProofOfWork() || pEpochBlock->pprev == NULL)
+    {
+        strErrorOut = "the named boundary block is not a proof-of-work block with a "
+                      "predecessor";
+        return false;
+    }
+    // Outside the window no block may carry the vote, so proving one only spends time.
+    // This is the rule ConnectBlock enforces, not a producer margin.
+    if (nIncludingHeight < nBoundaryHeight ||
+        nIncludingHeight >= nBoundaryHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+    {
+        strErrorOut = "the epoch's inclusion window is not open at this height";
+        return false;
+    }
+    if (PrivacyVNextNoteVotePending(*pwalletMain, nBoundaryHeight))
+    {
+        strErrorOut = "this wallet already has a note finality vote pending for this "
+                      "boundary";
+        return false;
+    }
+
+    const int nEpoch = GetEpochForHeight(nBoundaryHeight);
+    CEpochState anchor;
+    if (!LoadPrivacyVNextNoteVoteAnchor(txdb, nEpoch,
+                                        pEpochBlock->pprev->GetBlockHash(),
+                                        nBoundaryHeight, anchor, strErrorOut))
+        return false;
+
+    CWalletTx wtx;
+    if (!pwalletMain->CreatePrivacyVNextNoteVote(
+            txdb, anchor, pEpochBlock->GetBlockHash(), nBoundaryHeight,
+            nIncludingHeight - 1, FINALITY_MIN_VOTE_WEIGHT, true /* commit */, wtx,
+            keyImageOut, strErrorOut))
+        return false;
+
+    printf("ProducePrivacyVNextNoteVote: epoch=%d boundary=%d height=%d txid=%s\n",
+           nEpoch, nBoundaryHeight, nIncludingHeight,
+           wtx.GetHash().ToString().substr(0, 10).c_str());
     return true;
 }
 
