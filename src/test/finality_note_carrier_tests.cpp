@@ -1,7 +1,7 @@
-// Tests for the F2 note-vote block carrier and the two consensus rules it ships with:
-// the one-push coinbase envelope and its generational decode, the equivocation rule that
-// drops a conflicting tag instead of the block carrying it, and the minimum vote weight
-// on both the transparent and the note side.
+// Tests for the note-vote block carrier and the consensus rules it ships with: the
+// one-push coinbase envelope and its generational decode, the equivocation rule that
+// drops a conflicting tag instead of the block carrying it, the per-block and per-epoch
+// caps, and the minimum vote weight.
 
 #include <boost/test/unit_test.hpp>
 
@@ -133,13 +133,7 @@ CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
                                   int64_t nAmount = 500 * COIN)
 {
     const uint256 maskTilde = RandomScalar();
-    CNoteVoteShare share;
-    share.nEpoch = nEpoch;
-    share.committeeSetHash = config.committeeSetHash;
     std::string strError;
-    BOOST_REQUIRE_MESSAGE(
-        BuildNoteVoteShare(share, nAmount, maskTilde, 0, uint256(0), config, &strError),
-        strError);
 
     CNoteFinalityVote vote;
     vote.nEpoch = nEpoch;
@@ -157,14 +151,6 @@ CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
         BuildNoteVoteWeightFloorProof(nAmount, maskTilde, ProofEntropy(0x91),
                                       vote.vchWeightFloorProof, &strError),
         strError);
-    // R is the share's own L_0, which is the rule; the reward proof it names rides in a
-    // carrier of its own and no case here reaches a proof verifier.
-    PrivacyVNextDigest rewardCommitment;
-    rewardCommitment.fill(0);
-    BOOST_REQUIRE(share.GetRewardCommitment(rewardCommitment));
-    vote.vchRewardCommitment.assign(rewardCommitment.begin(), rewardCommitment.end());
-    vote.hashRewardProof = uint256(0x5700 + nTagSeed);
-    vote.share = share;
     BOOST_REQUIRE_MESSAGE(vote.IsValidBasic(&strError), strError);
     return vote;
 }
@@ -199,6 +185,8 @@ BOOST_AUTO_TEST_CASE(note_vote_is_one_push_in_one_output)
     const CNoteFinalityVote vote = MakeCarrierVote(config, 11, uint256(0xa1), 0x21);
     const size_t nEnvelope =
         ::GetSerializeSize(vote, SER_NETWORK, PROTOCOL_VERSION);
+    // Membership proof plus tag, sigma and the floor proof; the Shamir share and the
+    // reward commitment the F2 vote used to carry are gone.
     BOOST_CHECK_GT(nEnvelope, (size_t)7000);
     BOOST_CHECK_LT(nEnvelope, (size_t)MAX_SCRIPT_SIZE - 4);
 
@@ -500,11 +488,11 @@ BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
     };
 
     std::vector<std::pair<uint256, std::vector<CNoteFinalityVote> > > vCarriers;
-    while (nTagSeed < FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+    while (nTagSeed < FINALITY_MAX_EPOCH_NOTE_VOTES)
     {
         std::vector<CNoteFinalityVote> vBlockVotes;
         for (int i = 0; i < FINALITY_MAX_BLOCK_NOTE_VOTES &&
-                        nTagSeed < FINALITY_CANONICAL_CERT_MAX_NULLIFIERS;
+                        nTagSeed < FINALITY_MAX_EPOCH_NOTE_VOTES;
              i++, nTagSeed++)
             vBlockVotes.push_back(makeTagged(nTagSeed));
         const uint256 hashBlock(0x54540000 + (int)vCarriers.size());
@@ -513,7 +501,7 @@ BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
             txdb, hashBlock, vBlockVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
     }
     BOOST_CHECK_EQUAL(g_finalityTracker.GetEpochNoteVoteCount(nEpoch),
-                      (int)FINALITY_CANONICAL_CERT_MAX_NULLIFIERS);
+                      (int)FINALITY_MAX_EPOCH_NOTE_VOTES);
 
     const CNoteFinalityVote overflow = makeTagged(nTagSeed);
     BOOST_CHECK(!g_finalityTracker.ConnectBlockNoteVotes(
@@ -578,12 +566,7 @@ BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
     BOOST_CHECK(floorPoint != cTilde);
     BOOST_CHECK(!VerifyPrivacyVNextRange(floorPoint, ZeroDigest(), vchDustProof, error));
 
-    CNoteVoteShare share;
-    share.nEpoch = 12;
-    share.committeeSetHash = config.committeeSetHash;
     std::string strError;
-    BOOST_REQUIRE(BuildNoteVoteShare(share, nDust, maskTilde, 0, uint256(0), config,
-                                     &strError));
 
     CNoteFinalityVote vote;
     vote.nEpoch = 12;
@@ -596,12 +579,6 @@ BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
     vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0x71);
     vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
     vote.vchWeightFloorProof = vchDustProof;
-    PrivacyVNextDigest dustReward;
-    dustReward.fill(0);
-    BOOST_REQUIRE(share.GetRewardCommitment(dustReward));
-    vote.vchRewardCommitment.assign(dustReward.begin(), dustReward.end());
-    vote.hashRewardProof = uint256(0x5771);
-    vote.share = share;
     BOOST_REQUIRE(vote.IsValidBasic(&strError));
     BOOST_CHECK(!CheckNoteVoteWeightFloorProof(vote, &strError));
     BOOST_CHECK_EQUAL(strError, "note vote does not reach the minimum vote weight");
@@ -637,8 +614,9 @@ BOOST_AUTO_TEST_CASE(note_vote_binding_covers_the_weight_floor_proof)
 // oversized case rather than a surprise penalty.
 BOOST_AUTO_TEST_CASE(note_vote_carriage_is_penalty_free_at_the_generation_target)
 {
-    // Measured working size of a note-vote carrier script, from the envelope this suite
-    // builds. Update it with the prover, not with the test's expectation.
+    // Upper bound on the working size of a note-vote carrier script. The envelope this
+    // suite builds is smaller since the share came out, so this stays conservative;
+    // raise it with the prover, never to make a failing case pass.
     const unsigned int nCarrier = 8400;
     const unsigned int nOrdinaryTraffic = 30000;
     const unsigned int nMedian = ADAPTIVE_BLOCK_FLOOR;

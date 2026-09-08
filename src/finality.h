@@ -205,23 +205,28 @@ static const unsigned char FINALITY_NOTE_VOTE_TAG[4] = { 0x49, 0x46, 0x4e, 0x56 
 static const char FINALITY_CANONICAL_VOTE_COMMAND[] = "fvotea";
 static const char FINALITY_CANONICAL_TALLY_CERT_COMMAND[] = "ftcerta";
 static const char FINALITY_NOTE_VOTE_COMMAND[] = "fnvote";
-// The note tally's aggregate partial. A separate command from "ftpart" because it carries
-// a different object: mod-ell evaluations, not the legacy secp256k1 ones.
-static const char FINALITY_NOTE_TALLY_PARTIAL_COMMAND[] = "fnpart";
 static const uint32_t FINALITY_CANONICAL_VOTE_VERSION = 1;
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
-// F2 note-tally schema. Schema 1 stays byte-identical; only a certificate that
-// actually carries a note tally uses schema 2.
+// Note-leg schema. Schema 1 stays byte-identical; only a certificate that actually
+// carries a note leg uses schema 2.
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE = 2;
 // Per-block cap on note-vote carriers, mirroring FINALITY_MAX_BLOCK_VOTES for the
 // transparent path. At the envelope's working size the full set sits inside the
-// penalty-free generation target with room for ordinary traffic alongside.
+// penalty-free generation target with room for ordinary traffic alongside. 32 per block
+// over the 24-block inclusion window is 768 slots against the 256 the epoch admits, so
+// the epoch cap is what binds and no block is forced to carry the whole epoch.
 static const int FINALITY_MAX_BLOCK_NOTE_VOTES = 32;
 // LevelDB-only envelope generation, independent of network envelope versions: records
 // the decoded carrier so a restart cannot change the object's hash/signature domain.
 static const int FINALITY_DISK_ENVELOPE_GENERATION = 1;
-// Keeps the fixed canonical certificate below MAX_SCRIPT_SIZE.
+// Keeps the canonical certificate below MAX_SCRIPT_SIZE. Bounds the transparent leg only;
+// live under Boundary A, so it changes only with a flag day.
 static const unsigned int FINALITY_CANONICAL_CERT_MAX_NULLIFIERS = 128;
+// Per-epoch cap on IV5 note finality votes. Separate from the transparent bound above
+// because the certificate commits to the note leg by root and count (36 bytes) instead
+// of enumerating it, so the cap costs the carrier nothing at any size. Fork-gated by
+// FORK_HEIGHT_IV5_NOTE_VOTE, which is unset on every value network.
+static const unsigned int FINALITY_MAX_EPOCH_NOTE_VOTES = 256;
 
 enum FinalityEnvelopeDecodeResult
 {
@@ -980,13 +985,14 @@ public:
     // from FORK_HEIGHT_TALLY_GOVERNANCE.
     std::vector<uint16_t> vSignerIndexes;
     std::vector<std::vector<unsigned char> > vSignerSigs;
-    // nVersion >= 4 (F2): the note-vote side. The tags name which connected note votes the
-    // certificate counts; the complaints are the only thing that lets it leave one out.
-    // Neither aggregate point appears here: both are recomputed from the covered votes'
-    // own commitments, so a certificate can never name a sum it did not earn.
-    std::vector<uint256> vNoteVoteTags;
-    std::vector<CNoteVoteComplaint> vNoteComplaints;
-    CNoteTallyTierProofs noteTierProofs;
+    // nVersion >= 4: the note-vote side, as a commitment rather than an enumeration.
+    // hashNoteVoteRoot is the Merkle root over the epoch's counted note-vote tags, sorted
+    // ascending (ComputeNoteVoteSetRoot); nNoteVoteCount is how many leaves it has. The
+    // verifier rebuilds both from the connected counted set, so the pair is a binding on
+    // the set the certificate counted, not a list it asks to be trusted about. 36 bytes at
+    // any cap, which is what lets FINALITY_MAX_EPOCH_NOTE_VOTES move without a carrier.
+    uint256 hashNoteVoteRoot;
+    uint32_t nNoteVoteCount;
     // Runtime provenance only; never added to the legacy certificate bytes.
     bool fCanonicalEnvelope;
 
@@ -1000,6 +1006,8 @@ public:
         nTransparentActiveWeight = 0;
         nTransparentWinningWeight = 0;
         nTransparentRewardBudget = 0;
+        hashNoteVoteRoot = 0;
+        nNoteVoteCount = 0;
         fCanonicalEnvelope = false;
     }
 
@@ -1055,21 +1063,8 @@ public:
         }
         if (pthis->nVersion >= FINALITY_NOTE_CERT_VERSION)
         {
-            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vNoteVoteTags,
-                                                     FINALITY_MAX_VOTES,
-                                                     nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vNoteComplaints,
-                                                     FINALITY_MAX_VOTES,
-                                                     nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchTierSlack,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchWinningCap,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchActiveCap,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            READWRITE(pthis->hashNoteVoteRoot);
+            READWRITE(pthis->nNoteVoteCount);
         }
     )
 
@@ -1078,10 +1073,8 @@ public:
     bool IsCanonicalEnvelope() const { return fCanonicalEnvelope; }
     void MarkCanonicalEnvelope() { fCanonicalEnvelope = true; }
     bool HasPrivateWeight() const;
-    /** F2: the certificate carries a note-vote tally. Deliberately NOT folded into
-     *  HasPrivateWeight(): that predicate drives the retired-secp disable gates and
-     *  the Boundary-A miner skip, which must keep rejecting the legacy path while
-     *  admitting v4. */
+    /** The certificate carries a note-vote leg. Not folded into HasPrivateWeight(), which
+     *  drives the retired-secp gates that must keep rejecting the legacy path. */
     bool HasNoteWeight() const;
     /** nOtherLegVoters: voters a not-yet-joined leg contributes, so the voter floor
      *  applies to the whole epoch. Wire and block paths pass nothing. */
@@ -1091,10 +1084,9 @@ public:
 /** Boundary-A canonical transparent certificate schema.  Private commitments,
  * tally-share hashes, and private proof blobs are intentionally absent.
  *
- * Logical schema 2 (F2) additionally transports the note-vote tally: the covered
- * tags, the complaints that justify every omission, the tier range proofs, and the
- * committee signer-set that authorizes them. Schema 1 keeps its exact bytes, so
- * pre-F2 certificates round-trip unchanged. */
+ * Logical schema 2 additionally transports the note-vote leg -- the counted-set root and
+ * its count -- and the committee signer-set that authorizes it. Schema 1 keeps its exact
+ * bytes, so pre-note certificates round-trip unchanged. */
 class CCanonicalFinalityTallyCertificateEnvelope
 {
 public:
@@ -1115,16 +1107,15 @@ public:
     // nLogicalVersion >= 2 only.
     std::vector<uint16_t> vSignerIndexes;
     std::vector<std::vector<unsigned char> > vSignerSigs;
-    std::vector<uint256> vNoteVoteTags;
-    std::vector<CNoteVoteComplaint> vNoteComplaints;
-    CNoteTallyTierProofs noteTierProofs;
+    uint256 hashNoteVoteRoot;
+    uint32_t nNoteVoteCount;
 
     CCanonicalFinalityTallyCertificateEnvelope()
         : nLogicalVersion(FINALITY_CANONICAL_TALLY_CERT_VERSION),
           nCertificateVersion(2), nEpoch(0), nHeight(0),
           nTier(FINALITY_NONE), nConsecutiveHardCount(0),
           nTransparentActiveWeight(0), nTransparentWinningWeight(0),
-          nTransparentRewardBudget(0)
+          nTransparentRewardBudget(0), hashNoteVoteRoot(0), nNoteVoteCount(0)
     {
     }
 
@@ -1159,21 +1150,8 @@ public:
             nSerSize += ::SerReadWriteLimitedByteVectors(
                 s, pthis->vSignerSigs, FINALITY_MAX_TALLY_COMMITTEE, 80,
                 nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->vNoteVoteTags, FINALITY_MAX_VOTES,
-                nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->vNoteComplaints, FINALITY_MAX_VOTES,
-                nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchTierSlack,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchWinningCap,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
-            nSerSize += ::SerReadWriteLimitedVector(
-                s, pthis->noteTierProofs.vchActiveCap,
-                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            READWRITE(pthis->hashNoteVoteRoot);
+            READWRITE(pthis->nNoteVoteCount);
         }
     )
 
@@ -1332,6 +1310,45 @@ void ResolveNoteVoteCounting(
     std::map<uint256, const CNoteFinalityVote*>& mapCountedOut,
     std::set<uint256>& setEquivocatedOut);
 
+/** Merkle root over sorted, unique note-vote tags. Leaves and nodes use separate
+ *  domains; an odd node is promoted, never duplicated. Empty set = 0. */
+uint256 ComputeNoteVoteSetRoot(const std::vector<uint256>& vTags);
+
+/** The counted tags of vVotes, sorted ascending. False on a repeated or zero tag: the
+ *  counted view holds one identity per tag by construction, so either is a caller bug
+ *  rather than a set the root should be taken over. */
+bool GetNoteVoteSetTags(const std::vector<CNoteFinalityVote>& vVotes,
+                        std::vector<uint256>& vTagsOut);
+
+/** UNUSABLE is this node's own counted view failing (local, never a verdict);
+ *  COUNT and ROOT mean the certificate names a set the chain did not connect. */
+enum NoteVoteSetCoverage
+{
+    NOTE_VOTE_SET_OK = 0,
+    NOTE_VOTE_SET_UNUSABLE,
+    NOTE_VOTE_SET_COUNT,
+    NOTE_VOTE_SET_ROOT
+};
+
+/** Coverage equality by commitment: the certificate's root and count must equal
+ *  those of the connected counted set. */
+NoteVoteSetCoverage CheckNoteVoteSetCommitment(
+    const std::vector<CNoteFinalityVote>& vCounted,
+    const uint256& hashRoot,
+    uint32_t nCount);
+
+/** The voters the note leg contributes: every counted vote, and the subset naming
+ *  hashWinner. One counted note vote is one voter; no weight enters. */
+void GetNoteVoteCounts(const std::vector<CNoteFinalityVote>& vCounted,
+                       const uint256& hashWinner,
+                       int& nVotersOut,
+                       int& nWinnersOut);
+
+/** Whether nTier is one the (active, winning) pair supports. The transparent leg passes
+ *  weights and the note leg passes voter counts; the predicate is the same either way,
+ *  which is why the two must never be summed into one pair. */
+bool VerifyFinalityThresholdTier(int nTier, int64_t nActive, int64_t nWinning);
+
 const char* GetFinalityVoteCommandForHeight(int nHeight);
 const char* GetFinalityTallyCertificateCommandForHeight(int nHeight);
 /** P2P relay objects target tip+1.  Exposed as a pure helper so the A-1
@@ -1461,18 +1478,9 @@ public:
     /** Add a relayed encrypted committee aggregate partial. */
     bool AddTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial, bool fCheck = true);
 
-    /** Validate a relayed note-tally partial against this node's view.
-     *
-     *  Relay admission only. Every covered tag must be a counted note vote for the epoch
-     *  and every complaint must verify against the vote it names, which bounds what one
-     *  source can flood; nothing here reaches a consensus decision, so a node with a
-     *  behind-the-tip view refuses a partial rather than disagreeing about a block. */
-    bool CheckNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial,
-                                        std::string* pstrError = NULL) const;
-    bool AddNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial,
-                                      bool fCheck = true);
-    std::vector<CNoteTallyAggregatePartial> GetEpochNoteTallyPartials(int nEpoch) const;
-    int GetEpochNoteTallyPartialCount(int nEpoch) const;
+    /** Always 0: the note tally's aggregate partials are gone with the Shamir tally.
+     *  Kept only so getfinalityinfo's "tally_partials" field still compiles; delete it
+     *  and that field together. */
 
     /** Add a pending or connected tally certificate. */
     bool AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck = true, bool fRecordFinality = false);
@@ -1748,12 +1756,6 @@ private:
     // content digest that source already signed. A different digest for the same
     // key is an equivocation.
     std::map<std::pair<uint256, std::pair<int,int> >, uint256> mapTallyPartialBySource;
-    // F2 note-tally partials, relay/automation state only. The equivocation index keys on
-    // GetSourceSlot(), which folds the covered set into the slot: convergence requires a
-    // member to republish over a shrunken set, so only two contents for ONE covered set
-    // are an equivocation.
-    std::map<uint256, CNoteTallyAggregatePartial> mapNoteTallyPartials;
-    std::map<uint256, uint256> mapNoteTallyPartialBySlot;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
     // 2c-4b cert-production: candidate certs + collected member signatures keyed
     // by the candidate's GetSignatureDigest() (in-memory; relay-time only).

@@ -579,7 +579,7 @@ bool SeatFinalityCommitteeForEpochState(CTxDB& txdb, CEpochState& state,
     state.nFinalityCommitteeM = 0;
 
     if (state.nSerVersion < EPOCHSTATE_SER_VERSION_V6)
-        return true;   // below FORK_HEIGHT_IV5_NOTE_VOTE there is no committee to carry
+        return true;   // the record cannot carry a committee
 
     // Exactly one epoch per term carries the draw: the one that ends immediately
     // before it. Drawing here rather than on demand is what makes the committee a
@@ -1556,7 +1556,7 @@ bool CCanonicalFinalityTallyCertificateEnvelope::FromLogical(
         if (cert.nVersion < 1 || cert.nVersion > 2 ||
             !CanonicalCertificateHasExactEmptyOmittedFields(cert) ||
             !cert.vSignerIndexes.empty() || !cert.vSignerSigs.empty() ||
-            cert.HasNoteWeight() || !cert.vNoteComplaints.empty())
+            cert.HasNoteWeight())
             return false;
     }
 
@@ -1565,9 +1565,8 @@ bool CCanonicalFinalityTallyCertificateEnvelope::FromLogical(
     nCertificateVersion = cert.nVersion;
     vSignerIndexes = cert.vSignerIndexes;
     vSignerSigs = cert.vSignerSigs;
-    vNoteVoteTags = cert.vNoteVoteTags;
-    vNoteComplaints = cert.vNoteComplaints;
-    noteTierProofs = cert.noteTierProofs;
+    hashNoteVoteRoot = cert.hashNoteVoteRoot;
+    nNoteVoteCount = cert.nNoteVoteCount;
     nEpoch = cert.nEpoch;
     hashBlock = cert.hashBlock;
     nHeight = cert.nHeight;
@@ -1596,8 +1595,8 @@ bool CCanonicalFinalityTallyCertificateEnvelope::ToLogical(
             return false;
         // Schema 1 does not serialize these, so a non-empty one can only come from an
         // in-memory envelope; it must not smuggle a note side into a schema-1 cert.
-        if (!vSignerIndexes.empty() || !vSignerSigs.empty() || !vNoteVoteTags.empty() ||
-            !vNoteComplaints.empty() || !noteTierProofs.IsNull())
+        if (!vSignerIndexes.empty() || !vSignerSigs.empty() ||
+            hashNoteVoteRoot != 0 || nNoteVoteCount != 0)
             return false;
     }
     else if (nLogicalVersion == FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE)
@@ -1617,9 +1616,8 @@ bool CCanonicalFinalityTallyCertificateEnvelope::ToLogical(
     cert.nVersion = nCertificateVersion;
     cert.vSignerIndexes = vSignerIndexes;
     cert.vSignerSigs = vSignerSigs;
-    cert.vNoteVoteTags = vNoteVoteTags;
-    cert.vNoteComplaints = vNoteComplaints;
-    cert.noteTierProofs = noteTierProofs;
+    cert.hashNoteVoteRoot = hashNoteVoteRoot;
+    cert.nNoteVoteCount = nNoteVoteCount;
     cert.nEpoch = nEpoch;
     cert.hashBlock = hashBlock;
     cert.nHeight = nHeight;
@@ -2271,26 +2269,8 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
     // minted: not rolled forward (unbounded accrual) and not paid to the producer
     // (would reward censoring voters). The cap headroom keeps it for later blocks.
 
-    // PRIVATE-TIER PLUG-IN POINT.
-    // The note tier settles from the note votes, not from vCountedVotes: a note vote is
-    // not a CFinalityVote and its amount lives in the vote's own reward commitment R
-    // rather than in any int64 field. It adds a second output shape -- reward notes,
-    // whose value lives in a commitment -- so it contributes to the block's shielded-pool
-    // delta instead of to nTotalOut here.
-    //
-    // NOT wired. What is in place: R is authenticated (share coefficient L_0 == R, the
-    // reward evaluations check against L_k, the aggregate opens strictly to sum R_i).
-    // What is missing before any of it may mint:
-    //   - a carrier for CNoteVoteRewardProof, which the vote names by hash but cannot
-    //     hold: 4.7 KB of range proofs on top of a 7 KB membership proof does not fit
-    //     MAX_SCRIPT_SIZE. Without a carried proof, R is a number the voter chose, and
-    //     minting it would be an unbounded issue.
-    //   - a sealed payout descriptor on the vote, so a mint has an owner to pay.
-    //   - the mint itself in BOTH ConnectBlock and BuildEpochState, since the note tree
-    //     and the pool balance are epoch-state and the coinbase allowance is not.
-    // R2 also puts epoch E's certificate no earlier than H_E + 24, which is this very
-    // height, so the note leg cannot settle here at all: it belongs one settlement later,
-    // at H_{E+1} + 24, minting for E only if a v4 certificate for E connected in between.
+    // Note votes settle no output here: their reward (GetFinalityNoteVoteReward) is
+    // minted into the vote's own reissue, not paid from this coinbase.
 
     return true;
 }
@@ -2635,17 +2615,101 @@ uint256 GetNoteVoteSemanticIdentity(const CNoteFinalityVote& vote)
     ss << vote.hashNullifierRoot;
     ss << vote.committeeSetHash;
     ss << vote.vchTag;
-    ss << vote.share.GetHash();
-    // R and the proof it names decide what this tag is paid, so two carriers that
-    // disagree about either are two different votes and the tag counts for neither.
-    // Leaving them out would make a redirected payout look like a re-carry.
-    ss << vote.vchRewardCommitment;
-    ss << vote.hashRewardProof;
     PrivacyVNextDigest cTilde;
     cTilde.fill(0);
     vote.GetCTilde(cTilde);
     ss << std::vector<unsigned char>(cTilde.begin(), cTilde.end());
     return ss.GetHash();
+}
+
+uint256 ComputeNoteVoteSetRoot(const std::vector<uint256>& vTags)
+{
+    if (vTags.empty())
+        return 0;
+
+    std::vector<uint256> vLevel;
+    vLevel.reserve(vTags.size());
+    for (size_t i = 0; i < vTags.size(); i++)
+    {
+        CHashWriter leaf(SER_GETHASH, 0);
+        leaf << std::string("Innova/Finality/NoteVoteLeaf/v1");
+        leaf << vTags[i];
+        vLevel.push_back(leaf.GetHash());
+    }
+
+    while (vLevel.size() > 1)
+    {
+        std::vector<uint256> vNext;
+        vNext.reserve((vLevel.size() + 1) / 2);
+        size_t i = 0;
+        for (; i + 1 < vLevel.size(); i += 2)
+        {
+            CHashWriter node(SER_GETHASH, 0);
+            node << std::string("Innova/Finality/NoteVoteNode/v1");
+            node << vLevel[i];
+            node << vLevel[i + 1];
+            vNext.push_back(node.GetHash());
+        }
+        // Odd tail is promoted, not duplicated: duplicating it makes the n-leaf set and
+        // the (n+1)-leaf set whose last two entries are equal share a root, and the
+        // certificate would then commit to two different counted sets at once.
+        if (i < vLevel.size())
+            vNext.push_back(vLevel[i]);
+        vLevel.swap(vNext);
+    }
+    return vLevel[0];
+}
+
+bool GetNoteVoteSetTags(const std::vector<CNoteFinalityVote>& vVotes,
+                        std::vector<uint256>& vTagsOut)
+{
+    vTagsOut.clear();
+    vTagsOut.reserve(vVotes.size());
+    std::set<uint256> setSeen;
+    for (size_t i = 0; i < vVotes.size(); i++)
+    {
+        const uint256 tag = vVotes[i].GetVoteTag();
+        if (tag == 0 || !setSeen.insert(tag).second)
+        {
+            vTagsOut.clear();
+            return false;
+        }
+        vTagsOut.push_back(tag);
+    }
+    std::sort(vTagsOut.begin(), vTagsOut.end());
+    return true;
+}
+
+NoteVoteSetCoverage CheckNoteVoteSetCommitment(
+    const std::vector<CNoteFinalityVote>& vCounted,
+    const uint256& hashRoot,
+    uint32_t nCount)
+{
+    std::vector<uint256> vTags;
+    if (!GetNoteVoteSetTags(vCounted, vTags))
+        return NOTE_VOTE_SET_UNUSABLE;
+    // Count first: it is the cheap half of the same statement, and it names the failure
+    // an omitted or invented vote actually is.
+    if (nCount != (uint32_t)vTags.size())
+        return NOTE_VOTE_SET_COUNT;
+    if (hashRoot != ComputeNoteVoteSetRoot(vTags))
+        return NOTE_VOTE_SET_ROOT;
+    return NOTE_VOTE_SET_OK;
+}
+
+void GetNoteVoteCounts(const std::vector<CNoteFinalityVote>& vCounted,
+                       const uint256& hashWinner,
+                       int& nVotersOut,
+                       int& nWinnersOut)
+{
+    nVotersOut = 0;
+    nWinnersOut = 0;
+    for (size_t i = 0; i < vCounted.size(); i++)
+    {
+        nVotersOut++;
+        if (vCounted[i].hashBlock == hashWinner)
+            nWinnersOut++;
+    }
 }
 
 void ResolveNoteVoteCounting(
@@ -3153,13 +3217,10 @@ static uint256 FinalityCertificateAutomationContextHash(const CFinalityTallyCert
     ss << cert.nTransparentRewardBudget;
     ss << cert.vVoteNullifiers;
     ss << cert.vTallyShareHashes;
-    // The note side names which votes the tally counted. Two v4 certificates over
-    // different covered sets are different decisions, and only one of them can satisfy
-    // the connect-time coverage rule, so they must not dedup each other out of the
-    // pending map on arrival order.
-    ss << cert.vNoteVoteTags;
-    for (size_t i = 0; i < cert.vNoteComplaints.size(); i++)
-        ss << cert.vNoteComplaints[i].voteTag;
+    // Certificates over different counted note sets are different decisions and must not
+    // dedup each other in the pending map.
+    ss << cert.hashNoteVoteRoot;
+    ss << cert.nNoteVoteCount;
     return ss.GetHash();
 }
 
@@ -3303,7 +3364,7 @@ static std::map<NodeId, std::pair<int64_t, int> > mapNoteVotePeerBudget;
 static const size_t NOTE_VOTE_VERIFY_CACHE_MAX = 4096;
 static const int NOTE_VOTE_PEER_BUDGET_SECONDS = 60;
 static const int NOTE_VOTE_PEER_BUDGET =
-    (int)FINALITY_CANONICAL_CERT_MAX_NULLIFIERS * 2;
+    (int)FINALITY_MAX_EPOCH_NOTE_VOTES * 2;
 
 static bool NoteVotePeerBudgetAllows(NodeId id, int64_t nNow)
 {
@@ -3374,15 +3435,6 @@ static bool NoteFinalityTrafficActiveAtTip()
     return IsIV5NoteVoteActiveAtHeight(nNextHeight);
 }
 
-static void RelayNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial)
-{
-    if (!NoteFinalityTrafficActiveAtTip())
-        return;
-    LOCK(cs_vNodes);
-    for (CNode* pnode : vNodes)
-        pnode->PushMessage(FINALITY_NOTE_TALLY_PARTIAL_COMMAND, partial);
-}
-
 void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert)
 {
     if (cert.HasPrivateWeight() &&
@@ -3403,7 +3455,7 @@ static void LogAssembledNoteCertificate(const CFinalityTallyCertificate& cert)
     printf("FinalityNoteTally: epoch %d note certificate %s assembled tier=%d "
            "note_votes=%u transparent_votes=%u signers=%u\n",
            cert.nEpoch, cert.GetHash().ToString().c_str(), cert.nTier,
-           (unsigned int)cert.vNoteVoteTags.size(),
+           (unsigned int)cert.nNoteVoteCount,
            (unsigned int)cert.vVoteNullifiers.size(),
            (unsigned int)cert.vSignerIndexes.size());
 }
@@ -3731,16 +3783,16 @@ static bool FinalityBuildAndRelayCertificateForCohort(
     return true;
 }
 
-static bool VerifyFinalityThresholdTier(int nTier, int64_t nActiveWeight, int64_t nWinningWeight)
+bool VerifyFinalityThresholdTier(int nTier, int64_t nActive, int64_t nWinning)
 {
-    if (nActiveWeight <= 0 || nWinningWeight < 0 || nWinningWeight > nActiveWeight)
+    if (nActive <= 0 || nWinning < 0 || nWinning > nActive)
         return nTier == FINALITY_NONE;
     if (nTier == FINALITY_HARD)
-        return nWinningWeight * 3 >= nActiveWeight * 2;
+        return nWinning * 3 >= nActive * 2;
     if (nTier == FINALITY_SOFT)
-        return nWinningWeight * 2 > nActiveWeight;   // strict majority; see FinalityDetermineTier
+        return nWinning * 2 > nActive;   // strict majority; see FinalityDetermineTier
     if (nTier == FINALITY_TENTATIVE)
-        return nWinningWeight * 3 >= nActiveWeight;
+        return nWinning * 3 >= nActive;
     return nTier == FINALITY_NONE;
 }
 
@@ -4530,19 +4582,11 @@ bool CFinalityTallyAggregatePartial::IsValidBasic() const
 // Note-tally fields, appended to both the identity and the signed content. The
 // complaint set changes the covered set, so both must commit to it (by complaint hash).
 static void FinalityAppendNoteCertFields(CHashWriter& ss,
-                                         const std::vector<uint256>& vNoteVoteTags,
-                                         const std::vector<CNoteVoteComplaint>& vNoteComplaints,
-                                         const CNoteTallyTierProofs& noteTierProofs)
+                                         const uint256& hashNoteVoteRoot,
+                                         uint32_t nNoteVoteCount)
 {
-    ss << vNoteVoteTags;
-    std::vector<uint256> vComplaintHashes;
-    vComplaintHashes.reserve(vNoteComplaints.size());
-    for (size_t i = 0; i < vNoteComplaints.size(); i++)
-        vComplaintHashes.push_back(vNoteComplaints[i].GetHash());
-    ss << vComplaintHashes;
-    ss << noteTierProofs.vchTierSlack;
-    ss << noteTierProofs.vchWinningCap;
-    ss << noteTierProofs.vchActiveCap;
+    ss << hashNoteVoteRoot;
+    ss << nNoteVoteCount;
 }
 
 uint256 CFinalityTallyCertificate::GetSignatureDigest() const
@@ -4566,8 +4610,7 @@ uint256 CFinalityTallyCertificate::GetSignatureDigest() const
         canonical << nTransparentRewardBudget;
         canonical << vVoteNullifiers;
         if (nVersion >= FINALITY_NOTE_CERT_VERSION)
-            FinalityAppendNoteCertFields(canonical, vNoteVoteTags, vNoteComplaints,
-                                         noteTierProofs);
+            FinalityAppendNoteCertFields(canonical, hashNoteVoteRoot, nNoteVoteCount);
         return canonical.GetHash();
     }
 
@@ -4596,7 +4639,7 @@ uint256 CFinalityTallyCertificate::GetSignatureDigest() const
     ss << vchAggregateThresholdProof;
     ss << vchRewardBudgetProof;
     if (nVersion >= FINALITY_NOTE_CERT_VERSION)
-        FinalityAppendNoteCertFields(ss, vNoteVoteTags, vNoteComplaints, noteTierProofs);
+        FinalityAppendNoteCertFields(ss, hashNoteVoteRoot, nNoteVoteCount);
     return ss.GetHash();
 }
 
@@ -4622,8 +4665,7 @@ uint256 CFinalityTallyCertificate::GetHash() const
         canonical << vVoteNullifiers;
         if (nVersion >= FINALITY_NOTE_CERT_VERSION)
         {
-            FinalityAppendNoteCertFields(canonical, vNoteVoteTags, vNoteComplaints,
-                                         noteTierProofs);
+            FinalityAppendNoteCertFields(canonical, hashNoteVoteRoot, nNoteVoteCount);
             canonical << vSignerIndexes;
             canonical << vSignerSigs;
         }
@@ -4657,7 +4699,7 @@ uint256 CFinalityTallyCertificate::GetHash() const
         ss << vSignerSigs;
     }
     if (nVersion >= FINALITY_NOTE_CERT_VERSION)
-        FinalityAppendNoteCertFields(ss, vNoteVoteTags, vNoteComplaints, noteTierProofs);
+        FinalityAppendNoteCertFields(ss, hashNoteVoteRoot, nNoteVoteCount);
     return ss.GetHash();
 }
 
@@ -4671,7 +4713,7 @@ bool CFinalityTallyCertificate::HasPrivateWeight() const
 
 bool CFinalityTallyCertificate::HasNoteWeight() const
 {
-    return !vNoteVoteTags.empty() || !noteTierProofs.IsNull();
+    return nNoteVoteCount > 0 || hashNoteVoteRoot != 0;
 }
 
 bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
@@ -4696,16 +4738,10 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
         return FinalityReject(pstrError, "transparent tally value out of range");
     if (nTransparentWinningWeight > nTransparentActiveWeight)
         return FinalityReject(pstrError, "winning transparent weight exceeds active transparent weight");
-    // The nullifier set is the TRANSPARENT leg only. A v4 certificate may stand
-    // entirely on note votes: vNoteVoteTags carries the note leg and supplies the
-    // same three guarantees this set provides -- per-epoch uniqueness (the tag is a
-    // sigma-proved linking tag over the epoch and the note's spend scalar, deduped
-    // below), coverage equality against the connected counted set
-    // (ResolveNoteTallyCoverage), and resolution of every covered tag to a connected
-    // vote whose proofs were checked at connect. Requiring a nullifier here made an
-    // epoch in which every staker voted privately permanently uncertifiable.
-    const bool fNoteLeg = (nVersion >= FINALITY_NOTE_CERT_VERSION) &&
-                          !vNoteVoteTags.empty();
+    // The nullifier set is the transparent leg only; a v4 certificate may stand entirely
+    // on note votes, whose root and count CheckTallyCertificate rebuilds from the
+    // connected counted set.
+    const bool fNoteLeg = (nVersion >= FINALITY_NOTE_CERT_VERSION) && nNoteVoteCount > 0;
     if (vVoteNullifiers.size() > FINALITY_MAX_VOTES)
         return FinalityReject(pstrError, "invalid tally certificate vote set size");
     if (vVoteNullifiers.empty() && !fNoteLeg)
@@ -4716,12 +4752,10 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
         if (nf == 0 || !setNullifiers.insert(nf).second)
             return FinalityReject(pstrError, "duplicate or zero tally certificate nullifier");
     }
-    // The voter floor counts voters, not transparent voters. Note tags are deduped in
-    // the v4 block below and are disjoint from nullifiers by construction (different
-    // domains), so the sum is the unique-voter count. Checking only the transparent
-    // leg here would let a note-only certificate finalize on one voter.
+    // The floor counts unique voters: note tags and nullifiers are disjoint domains. Checking
+    // only the transparent leg would let a note-only certificate finalize on one voter.
     if (fCanonicalEnvelope &&
-        vVoteNullifiers.size() + (fNoteLeg ? vNoteVoteTags.size() : 0) + nOtherLegVoters <
+        vVoteNullifiers.size() + (fNoteLeg ? (size_t)nNoteVoteCount : 0) + nOtherLegVoters <
             (size_t)FINALITY_MIN_VOTERS)
         return FinalityReject(pstrError,
                               "canonical tally certificate has too few voters");
@@ -4759,71 +4793,25 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
         return FinalityReject(pstrError, "pre-v3 tally certificate must not carry a signer-set");
     }
 
-    // v4 (F2) carries the note-vote tally. Structural bounds only; coverage and the
-    // range proofs need the connected vote set and are checked in CheckTallyCertificate.
+    // v4 carries the note-vote leg. Structural bounds only; the root and the count are
+    // rebuilt from the connected counted set in CheckTallyCertificate.
     if (nVersion >= FINALITY_NOTE_CERT_VERSION)
     {
-        if (vNoteVoteTags.size() > FINALITY_MAX_VOTES ||
-            vNoteComplaints.size() > FINALITY_MAX_VOTES)
+        if (nNoteVoteCount > FINALITY_MAX_EPOCH_NOTE_VOTES)
             return FinalityReject(pstrError, "tally certificate note set size out of range");
 
-        std::set<uint256> setTags;
-        for (size_t i = 0; i < vNoteVoteTags.size(); i++)
-        {
-            if (vNoteVoteTags[i] == 0 || !setTags.insert(vNoteVoteTags[i]).second)
-                return FinalityReject(pstrError,
-                                      "duplicate or zero tally certificate note vote tag");
-        }
+        // The note side is wholly absent or wholly present; HasNoteWeight() relies on this.
+        if ((nNoteVoteCount == 0) != (hashNoteVoteRoot == 0))
+            return FinalityReject(pstrError,
+                                  "tally certificate note root and count disagree");
 
-        // One complaint per tag: two complaints naming one vote would let a producer
-        // pad the set without changing what it actually excludes.
-        std::set<uint256> setComplaintTags;
-        for (size_t i = 0; i < vNoteComplaints.size(); i++)
-        {
-            if (!vNoteComplaints[i].IsValidBasic(pstrError))
-                return false;
-            if (!setComplaintTags.insert(vNoteComplaints[i].voteTag).second)
-                return FinalityReject(pstrError,
-                                      "tally certificate complains of one vote twice");
-            if (setTags.count(vNoteComplaints[i].voteTag))
-                return FinalityReject(pstrError,
-                                      "tally certificate both covers and complains of a vote");
-        }
-
-        // The note side is either wholly absent or wholly present. A cert that names
-        // tags but proves no tier, or complains without proving one, would otherwise
-        // reach the tally with a claim nothing backs.
-        const bool fNoteSideEmpty = vNoteVoteTags.empty() && vNoteComplaints.empty() &&
-                                    noteTierProofs.IsNull();
-        if (!fNoteSideEmpty)
-        {
-            if (vNoteVoteTags.empty() && vNoteComplaints.empty())
-                return FinalityReject(pstrError,
-                                      "tally certificate proves a note tier over no votes");
-            const std::vector<unsigned char>* vProofs[3] = {
-                &noteTierProofs.vchTierSlack, &noteTierProofs.vchWinningCap,
-                &noteTierProofs.vchActiveCap
-            };
-            for (int i = 0; i < 3; i++)
-            {
-                if (vProofs[i]->empty() ||
-                    vProofs[i]->size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
-                    return FinalityReject(pstrError,
-                                          "tally certificate note tier proof has an unusable length");
-            }
-        }
-        // The two rules above give HasNoteWeight() its meaning: a certificate that
-        // passes here has either no note fields at all, or all three tier proofs
-        // present -- so the predicate the gates key on is true exactly when there is
-        // a note tally to gate, including for a certificate that only complains.
-
-        // The retired secp aggregate and the note tally are different tallies; one
+        // The retired secp aggregate and the note leg are different tallies; one
         // certificate must not claim both.
         if (HasNoteWeight() && HasPrivateWeight())
             return FinalityReject(pstrError,
                                   "tally certificate carries both legacy private and note weight");
     }
-    else if (!vNoteVoteTags.empty() || !vNoteComplaints.empty() || !noteTierProofs.IsNull())
+    else if (nNoteVoteCount != 0 || hashNoteVoteRoot != 0)
     {
         return FinalityReject(pstrError, "pre-v4 tally certificate must not carry note fields");
     }
@@ -4847,10 +4835,10 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
     }
     else if (HasNoteWeight())
     {
-        // A note tally's weight is in the covered votes' commitments, not in these
-        // fields, so the transparent threshold below is not its threshold. The tier
-        // claim is proved by noteTierProofs against recomputed aggregates in
-        // CheckTallyCertificate; there is nothing structural to check here.
+        // A note leg carries no weight: one counted note vote is one voter. The
+        // transparent threshold below is not its threshold, and its tier is checked
+        // against the rebuilt voter counts in CheckTallyCertificate, so there is
+        // nothing structural to check here.
         if (committeeSetHash == 0)
             return FinalityReject(pstrError, "note tally certificate missing committee set hash");
     }
@@ -5350,6 +5338,10 @@ bool CFinalityTracker::CheckTallyCertificate(
 
     int nMatchedVotes = 0;
     int nMatchedPrivateVotes = 0;
+    // Voter counts, not weights: the note leg's tier is a plaintext count and mixing a
+    // weight ratio with a vote count would compare two different units.
+    int nMatchedTransparentVoters = 0;
+    int nMatchedTransparentWinners = 0;
     int64_t nTransparentActiveWeight = 0;
     int64_t nTransparentWinningWeight = 0;
     int64_t nTransparentRewardBudget = 0;
@@ -5465,6 +5457,7 @@ bool CFinalityTracker::CheckTallyCertificate(
         }
         if (vote.hashBlock == cert.hashBlock && !vote.IsPrivate())
         {
+            nMatchedTransparentWinners++;
             if (nTransparentWinningWeight <= MAX_MONEY - vote.nVoteWeight)
                 nTransparentWinningWeight += vote.nVoteWeight;
             else
@@ -5472,6 +5465,7 @@ bool CFinalityTracker::CheckTallyCertificate(
         }
         if (!vote.IsPrivate())
         {
+            nMatchedTransparentVoters++;
             if (nTransparentActiveWeight <= MAX_MONEY - vote.nVoteWeight)
                 nTransparentActiveWeight += vote.nVoteWeight;
             else
@@ -5508,8 +5502,8 @@ bool CFinalityTracker::CheckTallyCertificate(
 
     // An all-private epoch matches no transparent vote. The note leg is counted
     // instead, and its own coverage equality is enforced against the connected
-    // counted set below; complaints alone are not a tally, so tags must be present.
-    if (nMatchedVotes == 0 && cert.vNoteVoteTags.empty())
+    // counted set below.
+    if (nMatchedVotes == 0 && !cert.HasNoteWeight())
         return reject("tally certificate matched no votes");
     if (cert.HasPrivateWeight() && nMatchedPrivateVotes == 0)
         return reject("private tally certificate has no private votes");
@@ -5544,16 +5538,12 @@ bool CFinalityTracker::CheckTallyCertificate(
         }
         CFinalityTallyCertificate expected;
         std::string strCanonicalError;
-        // The note tags count toward the rebuild's voter floor. They are deduped and
-        // bounded in IsValidBasic above, and CheckNoteTallyCertificate below resolves
-        // every one of them to a connected counted note vote and requires coverage
-        // equality with that set, so a tag cannot be invented to buy a floor. Without
-        // this an epoch with one transparent voter and the rest voting privately had
-        // no rebuildable skeleton and no certificate at all.
+        // The note count counts toward the voter floor. It is bounded in IsValidBasic and pinned
+        // to the connected counted set by the root check below.
         if (!fNoteOnly &&
             !BuildCanonicalTransparentFinalityCertificate(
                 vMatchedVotes, expected, &strCanonicalError,
-                fNoteCert ? cert.vNoteVoteTags.size() : 0))
+                fNoteCert ? (size_t)cert.nNoteVoteCount : 0))
             return reject("canonical tally certificate cannot be rebuilt: " +
                           strCanonicalError);
         if (!fNoteCert)
@@ -5632,11 +5622,9 @@ bool CFinalityTracker::CheckTallyCertificate(
     }
     else if (cert.HasNoteWeight())
     {
-        // F2 note tally. Every input below is a pure function of the connected chain
-        // plus the certificate bytes: the counted note-vote view is rebuilt in full on
-        // connect/disconnect/load, the committee is the epoch's consensus committee,
-        // and the transparent weights are the ones recomputed above -- never the
-        // values the certificate supplied.
+        // The note leg. Every input below is a pure function of the connected chain plus
+        // the certificate bytes: the counted note-vote view is rebuilt in full on
+        // connect/disconnect/load, and the committee is the epoch's consensus committee.
         std::vector<CPubKey> vNoteCommittee;
         int nNoteM = 0;
         uint256 noteSetHash;
@@ -5649,32 +5637,36 @@ bool CFinalityTracker::CheckTallyCertificate(
         if (cert.committeeSetHash != noteSetHash)
             return reject("note tally certificate does not name the canonical committee for its epoch");
 
-        CFinalityTallyConfig noteConfig;
-        noteConfig.fCommitteeValid = true;
-        noteConfig.fEnabled = true;
-        noteConfig.nThresholdM = nNoteM;
-        noteConfig.nThresholdN = (int)vNoteCommittee.size();
-        noteConfig.committeeSetHash = noteSetHash;
-        noteConfig.vCommitteePubKeys = vNoteCommittee;
-
-        // The COUNTED view, not the raw carried votes. An equivocated tag appears
-        // twice among the carried votes, and ResolveNoteTallyCoverage hard-fails on a
-        // repeated tag -- so feeding it the raw set would let one anonymous
-        // equivocator make every epoch permanently uncertifiable.
+        // The COUNTED view, not the raw carried votes. An equivocated tag appears twice
+        // among the carried votes and counts for neither instance, so the committed set
+        // has to be the one the chain actually counted.
         const std::vector<CNoteFinalityVote> vCounted =
             GetCountedEpochNoteVotes(cert.nEpoch);
-        std::vector<const CNoteFinalityVote*> vCountedPtrs;
-        vCountedPtrs.reserve(vCounted.size());
-        for (size_t i = 0; i < vCounted.size(); i++)
-            vCountedPtrs.push_back(&vCounted[i]);
 
-        std::string strNoteError;
-        if (!CheckNoteTallyCertificate(cert.nTier, cert.hashBlock, vCountedPtrs,
-                                       cert.vNoteVoteTags, cert.vNoteComplaints,
-                                       noteConfig, nTransparentActiveWeight,
-                                       nTransparentWinningWeight, cert.noteTierProofs,
-                                       &strNoteError))
-            return reject(strNoteError);
+        // Coverage equality by commitment, against this node's connected counted view.
+        switch (CheckNoteVoteSetCommitment(vCounted, cert.hashNoteVoteRoot,
+                                           cert.nNoteVoteCount))
+        {
+        case NOTE_VOTE_SET_UNUSABLE:
+            return localState("counted note-vote view for this epoch is not one tag per vote");
+        case NOTE_VOTE_SET_COUNT:
+            return reject("note tally certificate does not cover the full connected note vote set");
+        case NOTE_VOTE_SET_ROOT:
+            return reject("note tally certificate commits to a different counted note vote set");
+        case NOTE_VOTE_SET_OK:
+            break;
+        }
+
+        // Tier from the plaintext note count; the winning subset is the votes naming this block.
+        // No weight enters.
+        int nNoteVoters = 0;
+        int nNoteWinners = 0;
+        GetNoteVoteCounts(vCounted, cert.hashBlock, nNoteVoters, nNoteWinners);
+        if (!VerifyFinalityThresholdTier(
+                cert.nTier,
+                (int64_t)nMatchedTransparentVoters + (int64_t)nNoteVoters,
+                (int64_t)nMatchedTransparentWinners + (int64_t)nNoteWinners))
+            return reject("note tally certificate tier does not match the counted voters");
     }
     else
     {
@@ -5918,141 +5910,6 @@ static bool NoteTallyLocalCommitteeSeat(const CFinalityTallyConfig& config, CKey
         }
     }
     return false;
-}
-
-// Relay/automation state, so the bound that matters is how much of it one epoch can hold.
-// A committee has at most FINALITY_MAX_TALLY_COMMITTEE members, and convergence lets each
-// republish over a shrinking covered set a bounded number of times.
-static const size_t FINALITY_MAX_EPOCH_NOTE_TALLY_PARTIALS =
-    (size_t)FINALITY_MAX_TALLY_COMMITTEE * 4;
-
-bool CFinalityTracker::CheckNoteTallyAggregatePartial(
-    const CNoteTallyAggregatePartial& partial, std::string* pstrError) const
-{
-    auto reject = [&](const std::string& strReason) -> bool {
-        if (pstrError)
-            *pstrError = strReason;
-        return false;
-    };
-
-    if (!partial.IsValidBasic(pstrError))
-        return false;
-
-    int nCurrentEpoch = 0;
-    CBlockIndex* pBest = pindexBest;
-    if (pBest)
-        nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
-    if (partial.nEpoch > nCurrentEpoch + 1 ||
-        partial.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nCurrentEpoch)
-        return reject("note tally partial is outside the epochs still being tallied");
-
-    CFinalityTallyConfig config;
-    if (!GetNoteVoteCommitteeConfig(partial.nEpoch, config))
-        return reject("note tally partial names an epoch with no canonical committee");
-    if (partial.committeeSetHash != config.committeeSetHash)
-        return reject("note tally partial does not name the canonical committee for its epoch");
-    if (partial.vEncryptedRecipientPartials.size() != config.vCommitteePubKeys.size())
-        return reject("note tally partial envelope count does not match its committee");
-    if (!CheckNoteTallyAggregatePartialSignature(partial, config, pstrError))
-        return false;
-
-    LOCK(cs_finality);
-    std::map<int, std::map<uint256, uint256> >::const_iterator itEpoch =
-        mapEpochCountedNoteVotes.find(partial.nEpoch);
-    if (itEpoch == mapEpochCountedNoteVotes.end())
-        return reject("note tally partial covers an epoch with no counted note votes");
-
-    // The counted view, never the raw carried votes: an equivocated tag is absent from it
-    // by construction, so nothing a partial names can reintroduce one.
-    const auto resolve = [&](const uint256& tag) -> const CNoteFinalityVote* {
-        std::map<uint256, uint256>::const_iterator itTag = itEpoch->second.find(tag);
-        if (itTag == itEpoch->second.end())
-            return NULL;
-        std::map<uint256, CNoteFinalityVote>::const_iterator itVote =
-            mapNoteVotesByHash.find(itTag->second);
-        return itVote == mapNoteVotesByHash.end() ? NULL : &itVote->second;
-    };
-
-    for (size_t i = 0; i < partial.vAcceptedTags.size(); i++)
-    {
-        if (resolve(partial.vAcceptedTags[i]) == NULL)
-            return reject("note tally partial covers a vote this node has not counted");
-    }
-    for (size_t i = 0; i < partial.vComplaints.size(); i++)
-    {
-        const CNoteFinalityVote* pvote = resolve(partial.vComplaints[i].voteTag);
-        if (pvote == NULL)
-            return reject("note tally partial complains of a vote this node has not counted");
-        if (!CheckNoteVoteComplaint(partial.vComplaints[i], *pvote, config, pstrError))
-            return false;
-    }
-
-    std::map<uint256, uint256>::const_iterator itSlot =
-        mapNoteTallyPartialBySlot.find(partial.GetSourceSlot());
-    if (itSlot != mapNoteTallyPartialBySlot.end() &&
-        itSlot->second != partial.GetContentDigest())
-        return reject("note tally partial equivocation: source already signed this slot");
-
-    return true;
-}
-
-bool CFinalityTracker::AddNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial,
-                                                    bool fCheck)
-{
-    if (fCheck)
-    {
-        std::string strError;
-        if (!CheckNoteTallyAggregatePartial(partial, &strError))
-        {
-            if (fDebug)
-                printf("AddNoteTallyAggregatePartial: rejected partial: %s\n",
-                       strError.c_str());
-            return false;
-        }
-    }
-
-    LOCK(cs_finality);
-    const uint256 hashPartial = partial.GetHash();
-    if (mapNoteTallyPartials.count(hashPartial))
-        return false;
-
-    size_t nEpochCount = 0;
-    for (const auto& pair : mapNoteTallyPartials)
-    {
-        if (pair.second.nEpoch == partial.nEpoch)
-            nEpochCount++;
-    }
-    if (nEpochCount >= FINALITY_MAX_EPOCH_NOTE_TALLY_PARTIALS)
-        return false;
-
-    mapNoteTallyPartials[hashPartial] = partial;
-    mapNoteTallyPartialBySlot[partial.GetSourceSlot()] = partial.GetContentDigest();
-    return true;
-}
-
-std::vector<CNoteTallyAggregatePartial>
-CFinalityTracker::GetEpochNoteTallyPartials(int nEpoch) const
-{
-    LOCK(cs_finality);
-    std::vector<CNoteTallyAggregatePartial> vPartials;
-    for (const auto& pair : mapNoteTallyPartials)
-    {
-        if (pair.second.nEpoch == nEpoch)
-            vPartials.push_back(pair.second);
-    }
-    return vPartials;
-}
-
-int CFinalityTracker::GetEpochNoteTallyPartialCount(int nEpoch) const
-{
-    LOCK(cs_finality);
-    int nCount = 0;
-    for (const auto& pair : mapNoteTallyPartials)
-    {
-        if (pair.second.nEpoch == nEpoch)
-            nCount++;
-    }
-    return nCount;
 }
 
 bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck, bool fRecordFinality)
@@ -6334,11 +6191,11 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
         // ComputeDeterministicEpochTier; the vote path below decides.
         if (pBestCert && pBestCert->nTier != FINALITY_NONE)
         {
-            // Note tags are voters the certificate counted, exactly as
+            // Counted note votes are voters the certificate counted, exactly as
             // ComputeDeterministicEpochTier counts them; reading only the
             // transparent leg reports an all-private epoch as having no voters.
             int nVoterCount = (int)pBestCert->vVoteNullifiers.size() +
-                              (int)pBestCert->vNoteVoteTags.size();
+                              (int)pBestCert->nNoteVoteCount;
             return ApplyFinalityDecision(nEpoch, pBestCert->hashBlock, pBestCert->nHeight,
                                          (FinalityTier)pBestCert->nTier, nVoterCount,
                                          pBestCert->nTransparentWinningWeight,
@@ -6429,7 +6286,7 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
         // A note vote is a voter the certificate counted; leaving it out would report an
         // epoch as having fewer voters than the tier it carries was computed from.
         nVoterCountOut = (int)epochBestCert.vVoteNullifiers.size() +
-                         (int)epochBestCert.vNoteVoteTags.size();
+                         (int)epochBestCert.nNoteVoteCount;
         return nTierOut != FINALITY_NONE;
     }
 
@@ -7164,7 +7021,7 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
         return reject("note vote not anchored to last finalized epoch root");
 
     std::string strError;
-    if (!CheckNoteVote(vote, nThresholdM, (int)vCommittee.size(), &strError))
+    if (!CheckNoteVote(vote, &strError))
         return reject(strError);
 
     return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
@@ -7266,7 +7123,7 @@ bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlo
         {
             std::set<uint256>& setEpoch = mapEpochTags[vote.nEpoch];
             setEpoch.insert(vote.GetVoteTag());
-            if (setEpoch.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+            if (setEpoch.size() > FINALITY_MAX_EPOCH_NOTE_VOTES)
                 return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
         }
     }
@@ -7535,11 +7392,11 @@ std::vector<CNoteFinalityVote> CFinalityTracker::GetPendingNoteVotesForBlock(
                 if (it != mapNoteVotesByHash.end() && it->second.nEpoch == nBlockEpoch)
                     setEpochTags.insert(it->second.GetVoteTag());
             }
-        if (setEpochTags.size() >= FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+        if (setEpochTags.size() >= FINALITY_MAX_EPOCH_NOTE_VOTES)
             return vVotes;
         nMaxVotes = std::min<unsigned int>(
             nMaxVotes,
-            (unsigned int)(FINALITY_CANONICAL_CERT_MAX_NULLIFIERS - setEpochTags.size()));
+            (unsigned int)(FINALITY_MAX_EPOCH_NOTE_VOTES - setEpochTags.size()));
     }
 
     for (const auto& pair : mapPendingNoteVotes)
@@ -8374,8 +8231,6 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         setConnectedTallyShares.clear();
         mapTallyAggregatePartials.clear();
         mapTallyPartialBySource.clear();
-        mapNoteTallyPartials.clear();
-        mapNoteTallyPartialBySlot.clear();
         mapBlockConnectedTallyShares.clear();
         mapCandidateCerts.clear();
         mapCollectedCertSigs.clear();
@@ -8690,33 +8545,6 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
 
         return true;
     }
-    else if (strCommand == FINALITY_NOTE_TALLY_PARTIAL_COMMAND)
-    {
-        if (!NoteFinalityTrafficActiveAtTip())
-            return false;
-
-        CNoteTallyAggregatePartial partial;
-        try {
-            vRecv >> partial;
-        } catch (const std::exception&) {
-            return false;
-        }
-        if (!vRecv.empty())
-            return false;
-
-        if (g_finalityTracker.AddNoteTallyAggregatePartial(partial))
-        {
-            LOCK(cs_vNodes);
-            for (CNode* pnode : vNodes)
-            {
-                if (pnode == pfrom)
-                    continue;
-                pnode->PushMessage(FINALITY_NOTE_TALLY_PARTIAL_COMMAND, partial);
-            }
-        }
-
-        return true;
-    }
     else if (strCommand == "ftcert" ||
              strCommand == FINALITY_CANONICAL_TALLY_CERT_COMMAND)
     {
@@ -8928,13 +8756,6 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             for (const CFinalityTallyAggregatePartial& partial : partials)
                 pfrom->PushMessage("ftpart", partial);
         }
-        if (NoteFinalityTrafficActiveAtTip())
-        {
-            std::vector<CNoteTallyAggregatePartial> noteParts =
-                g_finalityTracker.GetEpochNoteTallyPartials(nEpoch);
-            for (const CNoteTallyAggregatePartial& partial : noteParts)
-                pfrom->PushMessage(FINALITY_NOTE_TALLY_PARTIAL_COMMAND, partial);
-        }
         std::vector<CFinalityTallyCertificate> certs = g_finalityTracker.GetEpochTallyCertificates(nEpoch);
         for (const CFinalityTallyCertificate& cert : certs)
         {
@@ -9144,266 +8965,50 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     }
     const uint256 hashWinner = skeleton.hashBlock;
 
-    std::map<uint256, const CNoteFinalityVote*> mapCountedByTag;
-    for (size_t i = 0; i < vCounted.size(); i++)
-        mapCountedByTag[vCounted[i].GetVoteTag()] = &vCounted[i];
-
-    std::vector<CNoteTallyAggregatePartial> vPartials;
-    {
-        const std::vector<CNoteTallyAggregatePartial> vAll =
-            g_finalityTracker.GetEpochNoteTallyPartials(nEpoch);
-        for (size_t i = 0; i < vAll.size(); i++)
-        {
-            if (vAll[i].committeeSetHash == config.committeeSetHash &&
-                vAll[i].hashWinner == hashWinner)
-                vPartials.push_back(vAll[i]);
-        }
-    }
-
-    // Convergence: complaints ride inside partials, so the covered set is the counted
-    // set minus the union of every valid complaint anyone has published. Complaints only
-    // ever shrink the set, so this terminates.
-    std::map<uint256, CNoteVoteComplaint> mapComplaints;
-    for (size_t i = 0; i < vPartials.size(); i++)
-    {
-        for (size_t j = 0; j < vPartials[i].vComplaints.size(); j++)
-        {
-            const CNoteVoteComplaint& complaint = vPartials[i].vComplaints[j];
-            if (mapComplaints.count(complaint.voteTag))
-                continue;
-            std::map<uint256, const CNoteFinalityVote*>::const_iterator itVote =
-                mapCountedByTag.find(complaint.voteTag);
-            if (itVote == mapCountedByTag.end())
-                continue;
-            if (!CheckNoteVoteComplaint(complaint, *itVote->second, config, NULL))
-                continue;
-            mapComplaints[complaint.voteTag] = complaint;
-        }
-    }
-
-    // Re-running the pass over the reduced set is what makes this member's summed
-    // evaluations agree with everyone else's about which votes they cover. It is cheap:
-    // one symmetric decryption per vote.
-    std::vector<const CNoteFinalityVote*> vInput;
-    for (std::map<uint256, const CNoteFinalityVote*>::const_iterator it =
-             mapCountedByTag.begin(); it != mapCountedByTag.end(); ++it)
-    {
-        if (!mapComplaints.count(it->first))
-            vInput.push_back(it->second);
-    }
-    if (vInput.empty())
+    // Coverage is the counted set itself. There is nothing to open and nothing to
+    // complain about: a counted note vote is one voter, so the certificate commits to
+    // the set by root and the validator rebuilds that root from its own connected view.
+    std::vector<uint256> vCountedTags;
+    if (!GetNoteVoteSetTags(vCounted, vCountedTags) || vCountedTags.empty())
         return false;
-
-    CNoteTallyCommitteePass pass;
-    if (!RunNoteTallyCommitteePass(vInput, hashWinner, config, keyLocal, nLocalSeat,
-                                   pass, &strError))
-    {
-        if (fDebug)
-            printf("ProcessNoteTallyCommitteeEpoch: epoch %d committee pass failed: %s\n",
-                   nEpoch, strError.c_str());
-        return false;
-    }
-    // This member's own complaints join the union. The pass already excluded the votes
-    // they name from vAcceptedTags, so the accepted set is already the covered set.
-    for (size_t i = 0; i < pass.vComplaints.size(); i++)
-        mapComplaints[pass.vComplaints[i].voteTag] = pass.vComplaints[i];
-
-    std::vector<uint256> vCoveredTags = pass.vAcceptedTags;
-    std::sort(vCoveredTags.begin(), vCoveredTags.end());
-    if (vCoveredTags.empty())
-        return false;
-    // The floor IsValidBasic applies is on the two legs together, and complaints can
-    // shrink the covered set below the counted set the skeleton was built against.
-    // Re-check it on the sets that actually go into the certificate, here rather than
-    // after the proving run, so no candidate the validator would refuse is ever emitted.
-    if (skeleton.vVoteNullifiers.size() + vCoveredTags.size() <
+    if (skeleton.vVoteNullifiers.size() + vCountedTags.size() <
         (size_t)FINALITY_MIN_VOTERS)
         return false;
 
-    bool fDidWork = false;
-
-    // Publish this member's partial for the covered set it just summed. The slot folds
-    // the covered set in, so a re-run over a shrunken set is a new slot rather than a
-    // suppressed duplicate.
-    static std::set<uint256> setProducedNotePartialSlots;
-    bool fHaveLocalPartial = false;
-    for (size_t i = 0; i < vPartials.size(); i++)
+    // Tier from the plaintext voter count, through the same helper CheckTallyCertificate
+    // runs: transparent voters plus counted note votes, against the subset naming this
+    // winner. No weight enters either side of the note leg.
+    int nNoteVoterCount = 0;
+    int nNoteWinners = 0;
+    GetNoteVoteCounts(vCounted, hashWinner, nNoteVoterCount, nNoteWinners);
+    int nTransparentVoters = 0;
+    int nTransparentWinners = 0;
+    for (size_t i = 0; i < vConnectedTransparent.size(); i++)
     {
-        if (vPartials[i].nSourceIndex == nLocalSeat &&
-            vPartials[i].vAcceptedTags == vCoveredTags)
-        {
-            fHaveLocalPartial = true;
-            break;
-        }
-    }
-    if (!fHaveLocalPartial)
-    {
-        CNoteTallyAggregatePartial mine;
-        mine.nEpoch = nEpoch;
-        mine.committeeSetHash = config.committeeSetHash;
-        mine.hashWinner = hashWinner;
-        mine.nSourceIndex = nLocalSeat;
-        if (BuildEncryptedNoteTallyAggregatePartial(mine, pass, config, keyLocal,
-                                                    &strError))
-        {
-            const uint256 slot = mine.GetSourceSlot();
-            if (!setProducedNotePartialSlots.count(slot) &&
-                g_finalityTracker.AddNoteTallyAggregatePartial(mine))
-            {
-                setProducedNotePartialSlots.insert(slot);
-                vPartials.push_back(mine);
-                RelayNoteTallyAggregatePartial(mine);
-                fDidWork = true;
-            }
-        }
-        else if (fDebug)
-        {
-            printf("ProcessNoteTallyCommitteeEpoch: epoch %d partial not built: %s\n",
-                   nEpoch, strError.c_str());
-        }
-    }
-
-    // Only partials that agree on the final covered set can be interpolated together:
-    // two members summing different sets evaluate different polynomials.
-    std::vector<const CNoteFinalityVote*> vCovered;
-    bool fWinnerHasNoteVotes = false;
-    for (size_t i = 0; i < vCoveredTags.size(); i++)
-    {
-        const CNoteFinalityVote* pvote = mapCountedByTag[vCoveredTags[i]];
-        vCovered.push_back(pvote);
-        if (pvote->hashBlock == hashWinner)
-            fWinnerHasNoteVotes = true;
-    }
-
-    std::vector<CNoteTallyPlainShare> vActiveShares;
-    std::vector<CNoteTallyPlainShare> vWinningShares;
-    std::set<int> setSeenX;
-    for (size_t i = 0; i < vPartials.size(); i++)
-    {
-        if (vPartials[i].vAcceptedTags != vCoveredTags)
+        if (vConnectedTransparent[i].nEpoch != nEpoch ||
+            vConnectedTransparent[i].IsPrivate())
             continue;
-        CNoteTallyPlainShare active, winning;
-        bool fHaveActive = false;
-        bool fHaveWinning = false;
-        if (!DecryptNoteTallyAggregatePartialForRecipient(vPartials[i], config, keyLocal,
-                                                          nLocalSeat, active, fHaveActive,
-                                                          winning, fHaveWinning))
-            continue;
-        if (!fHaveActive || fHaveWinning != fWinnerHasNoteVotes)
-            continue;
-        if (active.nX <= 0 || !setSeenX.insert(active.nX).second)
-            continue;
-        vActiveShares.push_back(active);
-        if (fHaveWinning)
-            vWinningShares.push_back(winning);
-        if ((int)vActiveShares.size() >= config.nThresholdM)
-            break;
+        nTransparentVoters++;
+        if (vConnectedTransparent[i].hashBlock == hashWinner)
+            nTransparentWinners++;
     }
-    if ((int)vActiveShares.size() < config.nThresholdM)
-        return fDidWork;
-
-    // Both aggregate points come from the covered votes' own C~, exactly as the
-    // validator recomputes them; the interpolation is only accepted if it opens them.
-    PrivacyVNextDigest activePoint;
-    PrivacyVNextDigest winningPoint;
-    PrivacyVNextDigest rewardPoint;
-    activePoint.fill(0);
-    winningPoint.fill(0);
-    rewardPoint.fill(0);
-    if (!DeriveNoteTallyAggregates(vCovered, hashWinner, activePoint, winningPoint,
-                                   rewardPoint, &strError))
-        return fDidWork;
-
-    int64_t nPrivateActive = 0;
-    int64_t nPrivateReward = 0;
-    uint256 activeBlind = 0;
-    uint256 activeRewardBlind = 0;
-    if (!OpenNoteTallyAggregate(vActiveShares, config.nThresholdM, activePoint, rewardPoint,
-                                nPrivateActive, activeBlind, nPrivateReward,
-                                activeRewardBlind, &strError))
-    {
-        if (fDebug)
-            printf("ProcessNoteTallyCommitteeEpoch: epoch %d active aggregate did not "
-                   "open: %s\n", nEpoch, strError.c_str());
-        return fDidWork;
-    }
-
-    int64_t nPrivateWinning = 0;
-    uint256 winningBlind = 0;
-    if (fWinnerHasNoteVotes)
-    {
-        // The winning subset's reward aggregate is over the same subset, which is not the
-        // set anything is paid over; derive it here so the strict open has a point to
-        // check against rather than weakening the open for one caller.
-        std::vector<const CNoteFinalityVote*> vWinnersOnly;
-        for (size_t i = 0; i < vCovered.size(); i++)
-            if (vCovered[i]->hashBlock == hashWinner)
-                vWinnersOnly.push_back(vCovered[i]);
-        PrivacyVNextDigest winningActive;
-        PrivacyVNextDigest winningWinning;
-        PrivacyVNextDigest winningReward;
-        winningActive.fill(0);
-        winningWinning.fill(0);
-        winningReward.fill(0);
-        if (!DeriveNoteTallyAggregates(vWinnersOnly, hashWinner, winningActive,
-                                       winningWinning, winningReward, &strError))
-            return fDidWork;
-
-        int64_t nWinningReward = 0;
-        uint256 winningRewardBlind = 0;
-        if (!OpenNoteTallyAggregate(vWinningShares, config.nThresholdM, winningPoint,
-                                    winningReward, nPrivateWinning, winningBlind,
-                                    nWinningReward, winningRewardBlind, &strError))
-        {
-            if (fDebug)
-                printf("ProcessNoteTallyCommitteeEpoch: epoch %d winning aggregate did "
-                       "not open: %s\n", nEpoch, strError.c_str());
-            return fDidWork;
-        }
-    }
-
-    if (nPrivateActive < 0 || nPrivateWinning < 0 ||
-        skeleton.nTransparentActiveWeight > MAX_MONEY - nPrivateActive ||
-        skeleton.nTransparentWinningWeight > MAX_MONEY - nPrivateWinning)
-        return fDidWork;
-    const int64_t nTotalActive = skeleton.nTransparentActiveWeight + nPrivateActive;
-    const int64_t nTotalWinning = skeleton.nTransparentWinningWeight + nPrivateWinning;
-    const FinalityTier tier = FinalityDetermineTier(nTotalActive, nTotalWinning);
+    const FinalityTier tier = FinalityDetermineTier(
+        (int64_t)nTransparentVoters + (int64_t)nNoteVoterCount,
+        (int64_t)nTransparentWinners + (int64_t)nNoteWinners);
     if (tier == FINALITY_NONE)
-        return fDidWork;
+        return false;
     // A note-only certificate names a winner nothing rebuilds, so consensus only takes
     // one whose share is exclusive. Mirror that floor here: a TENTATIVE candidate would
-    // be proved, signed, relayed and then rejected at connect.
+    // be signed, relayed and then rejected at connect.
     if (fNoteOnly && tier < FINALITY_SOFT)
-        return fDidWork;
-
-    PrivacyVNextDigest entropy;
-    {
-        const uint256 hashEntropy = GetRandHash();
-        memcpy(&entropy[0], hashEntropy.begin(), entropy.size());
-    }
-    CNoteTallyTierProofs proofs;
-    if (!BuildNoteTallyTierProofs((int)tier, nPrivateActive, activeBlind, nPrivateWinning,
-                                  winningBlind, skeleton.nTransparentActiveWeight,
-                                  skeleton.nTransparentWinningWeight, entropy, proofs,
-                                  &strError))
-    {
-        if (fDebug)
-            printf("ProcessNoteTallyCommitteeEpoch: epoch %d tier proofs failed: %s\n",
-                   nEpoch, strError.c_str());
-        return fDidWork;
-    }
+        return false;
 
     CFinalityTallyCertificate cert = skeleton;
     cert.nVersion = FINALITY_NOTE_CERT_VERSION;
     cert.committeeSetHash = config.committeeSetHash;
     cert.nTier = (int)tier;
-    cert.vNoteVoteTags = vCoveredTags;
-    cert.vNoteComplaints.clear();
-    for (std::map<uint256, CNoteVoteComplaint>::const_iterator it = mapComplaints.begin();
-         it != mapComplaints.end(); ++it)
-        cert.vNoteComplaints.push_back(it->second);
-    cert.noteTierProofs = proofs;
+    cert.hashNoteVoteRoot = ComputeNoteVoteSetRoot(vCountedTags);
+    cert.nNoteVoteCount = (uint32_t)vCountedTags.size();
     cert.vSignerIndexes.clear();
     cert.vSignerSigs.clear();
     if (!cert.IsValidBasic(&strError))
@@ -9411,19 +9016,19 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
         if (fDebug)
             printf("ProcessNoteTallyCommitteeEpoch: epoch %d certificate is invalid: %s\n",
                    nEpoch, strError.c_str());
-        return fDidWork;
+        return false;
     }
 
     static std::set<uint256> setProducedNoteCertContexts;
     const uint256 hashContext = FinalityCertificateAutomationContextHash(cert);
     if (setProducedNoteCertContexts.count(hashContext))
-        return fDidWork;
+        return false;
 
     CFinalityCertSignature sigMsg;
     sigMsg.candidate = cert;
     sigMsg.nSignerIndex = (uint16_t)nLocalSeat;
     if (!keyLocal.Sign(cert.GetSignatureDigest(), sigMsg.vchSig) || sigMsg.vchSig.empty())
-        return fDidWork;
+        return false;
 
     CTxDB txdb("r");
     CFinalityTallyCertificate assembled;
@@ -9435,16 +9040,11 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     RelayFinalityCertSignature(sigMsg);
     setProducedNoteCertContexts.insert(hashContext);
     if (fDebug)
-        printf("ProcessNoteTallyCommitteeEpoch: epoch %d tier=%d covered=%u "
-               "complaints=%u note_active=%s note_winning=%s transparent_active=%s "
-               "transparent_winning=%s reward=%s assembled=%d\n",
-               nEpoch, (int)tier, (unsigned int)vCoveredTags.size(),
-               (unsigned int)cert.vNoteComplaints.size(),
-               FormatMoney(nPrivateActive).c_str(),
-               FormatMoney(nPrivateWinning).c_str(),
-               FormatMoney(skeleton.nTransparentActiveWeight).c_str(),
-               FormatMoney(skeleton.nTransparentWinningWeight).c_str(),
-               FormatMoney(nPrivateReward).c_str(), fAssembled ? 1 : 0);
+        printf("ProcessNoteTallyCommitteeEpoch: epoch %d tier=%d note_votes=%u "
+               "note_winners=%d transparent_votes=%d transparent_winners=%d "
+               "assembled=%d\n",
+               nEpoch, (int)tier, (unsigned int)vCountedTags.size(), nNoteWinners,
+               nTransparentVoters, nTransparentWinners, fAssembled ? 1 : 0);
 
     if (fAssembled && g_finalityTracker.AddTallyCertificate(assembled))
     {
@@ -10303,7 +9903,7 @@ static bool GetNoteVoteCommitteeConfig(int nEpoch, CFinalityTallyConfig& configO
     if (!GetCanonicalFinalityCommittee(txdb, nEpoch, vCommittee, nThresholdM, committeeSetHash))
         return false;
     if (nThresholdM < 2 || nThresholdM > (int)vCommittee.size() ||
-        vCommittee.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS || committeeSetHash == 0)
+        vCommittee.size() > (size_t)FINALITY_COMMITTEE_SEATS || committeeSetHash == 0)
         return false;
 
     configOut = CFinalityTallyConfig();
@@ -10435,6 +10035,7 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
     memcpy(ctx.hashAnchorRoot.begin(), &anchorState.vchVNextRoot[0],
            EPOCHSTATE_VNEXT_DIGEST_SIZE);
     ctx.hashNullifierRoot = anchorState.hashNullifierRoot;
+    ctx.committeeSetHash = config.committeeSetHash;
     ctx.nAmount = (int64_t)note.nAmount;
 
     PrivacyVNextDigest noteMask;
@@ -10448,13 +10049,7 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
     input.vchWitnessRecord = vchWitnessRecord;
 
     CNoteFinalityVote vote;
-    // The reward proof does not fit the vote's script, so it comes back beside the vote.
-    // Nothing carries it yet -- the settlement leg that spends it is not wired -- so it is
-    // built and checked here and goes no further; a vote whose proof could not be built
-    // is refused rather than cast unpayable.
-    CNoteVoteRewardProof rewardProof;
-    const bool fBuilt = BuildNoteFinalityVote(ctx, input, noteMask, config, vote,
-                                              rewardProof, &strError);
+    const bool fBuilt = BuildNoteFinalityVote(ctx, input, noteMask, vote, &strError);
     OPENSSL_cleanse(noteMask.data(), noteMask.size());
     if (!fBuilt)
     {

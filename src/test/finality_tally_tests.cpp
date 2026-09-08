@@ -2626,11 +2626,8 @@ BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical
         cert.nConsecutiveHardCount = 0;
         cert.committeeSetHash = uint256(0xD612);
         cert.vVoteNullifiers.push_back(uint256(0xD613));
-        cert.vNoteVoteTags.push_back(uint256(0xD614));
-        cert.vNoteVoteTags.push_back(uint256(0xD615));
-        cert.noteTierProofs.vchTierSlack.assign(64, 0x71);
-        cert.noteTierProofs.vchWinningCap.assign(64, 0x72);
-        cert.noteTierProofs.vchActiveCap.assign(64, 0x73);
+        cert.nNoteVoteCount = 2;
+        cert.hashNoteVoteRoot = uint256(0xD614);
         std::string error;
         BOOST_REQUIRE_MESSAGE(cert.IsValidBasic(&error), error);
         BOOST_REQUIRE(cert.HasNoteWeight());
@@ -2783,7 +2780,7 @@ BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_reb
     }
 
     // The certificate under test carries both legs: the deterministic transparent
-    // skeleton, plus a note leg whose tags count toward the rebuild's voter floor.
+    // skeleton, plus a note leg whose count goes toward the rebuild's voter floor.
     const size_t nNoteTags = 2;
     CFinalityTallyCertificate skeleton;
     std::string error;
@@ -2793,12 +2790,8 @@ BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_reb
     CFinalityTallyCertificate noteCert = skeleton;
     noteCert.nVersion = FINALITY_NOTE_CERT_VERSION;
     noteCert.committeeSetHash = uint256(0xD702);
-    noteCert.vNoteVoteTags.push_back(uint256(0xD703));
-    noteCert.vNoteVoteTags.push_back(uint256(0xD704));
-    BOOST_REQUIRE_EQUAL(noteCert.vNoteVoteTags.size(), nNoteTags);
-    noteCert.noteTierProofs.vchTierSlack.assign(64, 0x71);
-    noteCert.noteTierProofs.vchWinningCap.assign(64, 0x72);
-    noteCert.noteTierProofs.vchActiveCap.assign(64, 0x73);
+    noteCert.nNoteVoteCount = (uint32_t)nNoteTags;
+    noteCert.hashNoteVoteRoot = uint256(0xD703);
     BOOST_REQUIRE_MESSAGE(noteCert.IsValidBasic(&error), error);
     BOOST_REQUIRE(noteCert.IsCanonicalEnvelope());
     BOOST_REQUIRE(noteCert.HasNoteWeight());

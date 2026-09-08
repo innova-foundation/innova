@@ -247,7 +247,6 @@ TEST_OBJS= \
     obj/test/sigopcount_tests.o \
     obj/test/bulletproof_ac_tests.o \
     obj/test/finality_tally_tests.o \
-    obj/test/finality_note_tests.o \
     obj/test/finality_note_carrier_tests.o \
     obj/test/fcmp_root_tests.o \
     obj/test/pod_tests.o \
@@ -352,7 +351,8 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/dag_merge_set_bound_tests.o \
     obj/test/sync_notfound_recovery_tests.o \
     obj/test/note_vote_connect_tests.o \
-    obj/test/note_vote_wallet_tests.o
+    obj/test/note_vote_wallet_tests.o \
+    obj/test/finality_note_cert_root_tests.o
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.
 TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
@@ -525,7 +525,7 @@ check-finality-vote-schedule: test_innova
 	./test_innova --run_test=finality_vote_schedule_tests
 
 check-finality-note: test_innova
-	./test_innova --run_test=finality_note_tests,finality_note_carrier_tests
+	./test_innova --run_test=finality_note_carrier_tests,finality_note_cert_root_tests
 
 check-privacy-vnext: test_innova
 	./test_innova --run_test=privacy_vnext_abi_tests,privacy_vnext_builder_tests,privacy_vnext_store_tests,privacy_vnext_collateral_tests,privacy_vnext_parameter_digest_tests,privacy_vnext_disclosure_tests

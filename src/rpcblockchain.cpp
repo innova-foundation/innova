@@ -2378,8 +2378,6 @@ Value getfinalityinfo(const Array& params, bool fHelp)
                             (int)g_finalityTracker.GetPendingNoteVotesForBlock(
                                 nCurrentHeight + 1).size()));
         note.push_back(Pair("deferred", (int)g_finalityTracker.GetDeferredNoteVoteCount()));
-        note.push_back(Pair("tally_partials",
-                            g_finalityTracker.GetEpochNoteTallyPartialCount(nCurrentEpoch)));
         note.push_back(Pair("tags", noteTags));
         result.push_back(Pair("note_votes", note));
     }
