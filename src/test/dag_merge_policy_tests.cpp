@@ -246,6 +246,14 @@ struct ScopedFinalizedHeights
                 state.nEpoch = nEpoch;
             state.hashCurveRoot = 0;
             state.nFinalizedHeightAsOf = vFinalized[i];
+            // The record names the tip's block at that height, as a real record would.
+            state.hashVNextFinalizedAnchor = 0;
+            if (vFinalized[i] > 0)
+            {
+                CBlockIndex* pAttested = AncestorAt(BestIndex(), vFinalized[i]);
+                BOOST_REQUIRE(pAttested && pAttested->nHeight == vFinalized[i]);
+                state.hashVNextFinalizedAnchor = pAttested->GetBlockHash();
+            }
             states[nEpoch] = state;
             trees[nEpoch] = CCurveTree();
         }

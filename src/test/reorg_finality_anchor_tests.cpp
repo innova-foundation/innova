@@ -1,40 +1,9 @@
 // Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-//
-// Coverage for R-FIN-001: the reorg finality guard in Reorganize and
-// CBlock::SetBestChain.
-//
-// The guard's anchor is the deterministic finalized height as of epoch(tip)-1, and
-// the epoch selector reads the evaluating node's own tip. Two honest nodes whose
-// tips sit apart across an epoch boundary therefore select different epochs and
-// evaluate the same candidate branch against different finalized heights. Because a
-// rejection sets pfPermanentInvalid, which AddToBlockIndex turns into
-// BLOCK_FAILED_VALID, and that flag is serialized and cleared only by
-// reconsiderblock, a disagreement here is permanent and persisted.
-//
-// The anchor cannot be moved onto the candidate or the fork point: finalization
-// evidence lives on the chain being abandoned, so an anchor taken from at or below
-// the fork point cannot condemn anything, and a candidate-derived anchor is both
-// attacker-selectable and unavailable when the candidate has crossed a boundary the
-// node has not completed. What is corrected instead is verdict severity, via a
-// second anchor REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs older that gates persistence.
-//
-// The invariant these tests pin is NOT that two skewed nodes return the same
-// verdict -- inside the band a laggard may still follow a branch its neighbour
-// transiently refuses, which self-heals because nothing is written down. It is the
-// strictly stronger-where-it-matters property:
-//
-//   no honest node PERMANENTLY condemns a branch that another honest node FOLLOWS.
-//
-// ForbiddenPair below is that property stated directly.
-//
-// The property is quantitative, and the suite states its exact limit rather than
-// filtering around it. With F(k) the finalized height as of epoch k and L the latch
-// lag, node A latches only when fork < F(e(A)-L) and node B allows only when
-// fork >= F(e(B)-1); F is non-decreasing in epoch, so a forbidden pair needs
-// e(A)-e(B) > L-1. Tolerated skew is therefore exactly L-1 epochs, and
-// tolerance_is_exactly_the_latch_lag pins both halves of "exactly".
+
+// R-FIN-001, the reorg finality guard. Invariant: no honest node grades PERMANENT a branch
+// another follows; the tolerated tip skew is exactly REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs.
 
 #include <boost/test/unit_test.hpp>
 
@@ -43,6 +12,7 @@
 #include "../dag.h"
 #include "../finality.h"
 #include "../main.h"
+#include "synthetic_chain.h"
 
 #include <fstream>
 #include <map>
@@ -96,10 +66,51 @@ struct MainNetNetwork
     }
 };
 
-// Epoch states carry nothing here but their epoch number and finalized height:
-// the guard reads only nFinalizedHeightAsOf. An empty curve tree pairs with a zero
-// curve root, which is what ValidateEpochStateBatch requires.
-void InstallFinalizedHeights(CDAGManager& dag, int nFirstEpoch,
+// Every fork height any test sweeps, comfortably above FINAL_E4.
+const int FORK_SWEEP_MAX = 1300;
+
+// One linear chain the records name blocks on, plus one candidate per fork height: a
+// block whose selected parent is the chain block at that height. Candidates are made on
+// demand and reused, so a sweep allocates once.
+struct ForkFixture
+{
+    CSyntheticChain chain;
+    std::vector<CBlockIndex*> vAt;
+    std::vector<CBlockIndex*> vCandidate;
+
+    explicit ForkFixture(unsigned int nTag, int nTip = FORK_SWEEP_MAX) : chain(nTag)
+    {
+        CBlockIndex* pTip = chain.Linear(nTip);
+        BOOST_REQUIRE(pTip != NULL);
+        vAt.assign(nTip + 1, NULL);
+        for (CBlockIndex* p = pTip; p; p = p->pprev)
+            vAt[p->nHeight] = p;
+        vCandidate.assign(nTip + 1, NULL);
+    }
+
+    // The chain block at nHeight, or zero for height 0 (nothing finalized) and for a
+    // height the chain does not reach (a record naming a block this node never saw).
+    uint256 HashAt(int nHeight) const
+    {
+        if (nHeight <= 0 || nHeight >= (int)vAt.size())
+            return 0;
+        return vAt[nHeight]->GetBlockHash();
+    }
+
+    CBlockIndex* CandidateAt(int nFork)
+    {
+        BOOST_REQUIRE(nFork >= 0 && nFork < (int)vAt.size());
+        if (!vCandidate[nFork])
+            vCandidate[nFork] = chain.Add(vAt[nFork], nFork + 1);
+        BOOST_REQUIRE(vCandidate[nFork] != NULL);
+        return vCandidate[nFork];
+    }
+};
+
+// Epoch states carry nothing here but their epoch number, finalized height and the
+// chain block at that height: the guard reads only those. An empty curve tree pairs
+// with a zero curve root, which is what ValidateEpochStateBatch requires.
+void InstallFinalizedHeights(CDAGManager& dag, const ForkFixture& fx, int nFirstEpoch,
                              const std::vector<int>& vFinalized)
 {
     std::map<int, CEpochState> states;
@@ -111,23 +122,33 @@ void InstallFinalizedHeights(CDAGManager& dag, int nFirstEpoch,
         state.nEpoch = nEpoch;
         state.hashCurveRoot = 0;
         state.nFinalizedHeightAsOf = vFinalized[i];
+        state.hashVNextFinalizedAnchor = fx.HashAt(vFinalized[i]);
         states[nEpoch] = state;
         trees[nEpoch] = CCurveTree();
     }
     BOOST_REQUIRE(dag.InstallEpochStateBatch(nFirstEpoch, states, trees));
 }
 
-ReorgFinalityVerdict Verdict(const CDAGManager& dag, int nBestHeight, int nForkHeight)
+ReorgFinalityVerdict Verdict(const CDAGManager& dag, ForkFixture& fx, int nBestHeight,
+                             int nForkHeight)
 {
     int nCur = 0, nLatch = 0, nEpoch = 0;
-    return CheckReorgAgainstFinality(dag, nBestHeight, nForkHeight, nCur, nLatch, nEpoch);
+    return CheckReorgAgainstFinality(dag, nBestHeight, fx.CandidateAt(nForkHeight),
+                                     nCur, nLatch, nEpoch);
+}
+
+// Anchors only, for the tips whose verdict is not under test.
+void Anchors(const CDAGManager& dag, ForkFixture& fx, int nBestHeight,
+             int& nCur, int& nLatch, int& nEpoch)
+{
+    CheckReorgAgainstFinality(dag, nBestHeight, fx.CandidateAt(0), nCur, nLatch, nEpoch);
 }
 
 bool IsPermanent(ReorgFinalityVerdict v) { return v == REORG_FINALITY_REJECT_PERMANENT; }
 bool IsAllow(ReorgFinalityVerdict v) { return v == REORG_FINALITY_ALLOW; }
 
-// The one thing that must never happen between two honest nodes: one writes a
-// permanent condemnation of a branch the other extends.
+// The one thing that must never happen between two honest nodes: one grades permanent
+// a branch the other extends.
 bool ForbiddenPair(ReorgFinalityVerdict a, ReorgFinalityVerdict b)
 {
     return (IsPermanent(a) && IsAllow(b)) || (IsPermanent(b) && IsAllow(a));
@@ -135,10 +156,11 @@ bool ForbiddenPair(ReorgFinalityVerdict a, ReorgFinalityVerdict b)
 
 // Is there ANY fork height on which the two tips form a forbidden pair? Sweeping the
 // fork axis turns "these two verdicts agree" into "no input separates them".
-bool ForbiddenPairExists(const CDAGManager& dag, int nTipA, int nTipB, int nForkMax)
+bool ForbiddenPairExists(const CDAGManager& dag, ForkFixture& fx, int nTipA, int nTipB,
+                         int nForkMax)
 {
     for (int nFork = 0; nFork <= nForkMax; nFork++)
-        if (ForbiddenPair(Verdict(dag, nTipA, nFork), Verdict(dag, nTipB, nFork)))
+        if (ForbiddenPair(Verdict(dag, fx, nTipA, nFork), Verdict(dag, fx, nTipB, nFork)))
             return true;
     return false;
 }
@@ -165,20 +187,17 @@ const int FINAL_E2 = 600;
 const int FINAL_E3 = 900;
 const int FINAL_E4 = 1200;
 
-// Every fork height any test sweeps, comfortably above FINAL_E4.
-const int FORK_SWEEP_MAX = 1300;
-
 // Installs epochs 1..4 so that, at L = 3:
 //   leader (tip 1211) cur 1200 latch 600; laggard (1210) 900/300;
 //   laggard_2 (910) 600/0; laggard_3 (610) 300/0
-void InstallStraddleFixture(CDAGManager& dag)
+void InstallStraddleFixture(CDAGManager& dag, const ForkFixture& fx)
 {
     std::vector<int> finalized;
     finalized.push_back(FINAL_E1);
     finalized.push_back(FINAL_E2);
     finalized.push_back(FINAL_E3);
     finalized.push_back(FINAL_E4);
-    InstallFinalizedHeights(dag, 1, finalized);
+    InstallFinalizedHeights(dag, fx, 1, finalized);
 }
 
 // Tips for which the fixture holds the epoch record the rejection anchor needs.
@@ -234,6 +253,15 @@ BOOST_AUTO_TEST_CASE(fixture_tips_sit_where_the_layout_says)
     BOOST_REQUIRE(TIP_LEADER - TIP_LAGGARD == 1);
     BOOST_REQUIRE(TIP_LEADER >= FORK_HEIGHT_EPOCH_STATE_V3);
     BOOST_REQUIRE(SWEEP_TIP_MIN >= FORK_HEIGHT_EPOCH_STATE_V3);
+
+    // A candidate forking at f carries the chain block at h iff f >= h.
+    ForkFixture fx(0xA0F10000U);
+    BOOST_CHECK(fx.CandidateAt(FINAL_E4)->GetAncestor(FINAL_E4) == fx.vAt[FINAL_E4]);
+    // The candidate forking below h sits at h itself, so its ancestor at h is the
+    // candidate, not the chain block.
+    BOOST_CHECK(fx.CandidateAt(FINAL_E4 - 1)->GetAncestor(FINAL_E4) != fx.vAt[FINAL_E4]);
+    BOOST_CHECK(fx.HashAt(FINAL_E4) == fx.vAt[FINAL_E4]->GetBlockHash());
+    BOOST_CHECK(fx.HashAt(0) == 0);
 }
 
 // The lag is the guard's only tuning knob; check the arithmetic behind its stated
@@ -241,7 +269,7 @@ BOOST_AUTO_TEST_CASE(fixture_tips_sit_where_the_layout_says)
 BOOST_AUTO_TEST_CASE(latch_lag_constant_matches_the_documented_tolerance)
 {
     BOOST_CHECK_EQUAL(REORG_LATCH_ANCHOR_LAG_EPOCHS, 3);
-    BOOST_REQUIRE_GE(REORG_LATCH_ANCHOR_LAG_EPOCHS, 2);   // L = 1 latches its own anchor
+    BOOST_REQUIRE_GE(REORG_LATCH_ANCHOR_LAG_EPOCHS, 2);   // L = 1 grades on its own anchor
 
     const int nToleratedEpochs = REORG_LATCH_ANCHOR_LAG_EPOCHS - 1;
     BOOST_CHECK_EQUAL(nToleratedEpochs * FINALITY_EPOCH_INTERVAL_POST_DAG, 600);
@@ -256,15 +284,16 @@ BOOST_AUTO_TEST_CASE(latch_lag_constant_matches_the_documented_tolerance)
 BOOST_AUTO_TEST_CASE(skewed_tips_select_different_anchors)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F20000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     int nCurA = 0, nLatchA = 0, nEpochA = 0;
-    CheckReorgAgainstFinality(dag, TIP_LEADER, 0, nCurA, nLatchA, nEpochA);
+    Anchors(dag, fx, TIP_LEADER, nCurA, nLatchA, nEpochA);
     int nCurB = 0, nLatchB = 0, nEpochB = 0;
-    CheckReorgAgainstFinality(dag, TIP_LAGGARD, 0, nCurB, nLatchB, nEpochB);
+    Anchors(dag, fx, TIP_LAGGARD, nCurB, nLatchB, nEpochB);
     int nCurC = 0, nLatchC = 0, nEpochC = 0;
-    CheckReorgAgainstFinality(dag, TIP_LAGGARD_2, 0, nCurC, nLatchC, nEpochC);
+    Anchors(dag, fx, TIP_LAGGARD_2, nCurC, nLatchC, nEpochC);
 
     BOOST_CHECK_EQUAL(nEpochA, 4);
     BOOST_CHECK_EQUAL(nEpochB, 3);
@@ -279,46 +308,44 @@ BOOST_AUTO_TEST_CASE(skewed_tips_select_different_anchors)
     BOOST_CHECK_EQUAL(nLatchC, 0);
 }
 
-// Why L-1 epochs of skew are safe and L are not, in one identity: the leader's
-// permanence anchor is the rejection anchor of a node exactly L-1 epochs behind. At
-// that skew the thresholds touch -- everything the leader latches is strictly below
-// everything that laggard would accept -- and one epoch further back the laggard's
-// rejection anchor drops below the leader's latch, opening the gap.
+// The leader's severity anchor is the rejection anchor of a node L-1 epochs behind, so
+// L-1 epochs of skew is safe and L is not.
 BOOST_AUTO_TEST_CASE(max_skew_pair_anchors_touch_exactly)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F30000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     int nCurLead = 0, nLatchLead = 0, nEpochLead = 0;
-    CheckReorgAgainstFinality(dag, TIP_LEADER, 0, nCurLead, nLatchLead, nEpochLead);
-
+    Anchors(dag, fx, TIP_LEADER, nCurLead, nLatchLead, nEpochLead);
     int nCurEdge = 0, nLatchEdge = 0, nEpochEdge = 0;
-    CheckReorgAgainstFinality(dag, TIP_LAGGARD_2, 0, nCurEdge, nLatchEdge, nEpochEdge);
+    Anchors(dag, fx, TIP_LAGGARD_2, nCurEdge, nLatchEdge, nEpochEdge);
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(TIP_LEADER) - GetEpochForHeight(TIP_LAGGARD_2),
                         REORG_LATCH_ANCHOR_LAG_EPOCHS - 1);
     BOOST_CHECK_EQUAL(nLatchLead, nCurEdge);
 
     int nCurPast = 0, nLatchPast = 0, nEpochPast = 0;
-    CheckReorgAgainstFinality(dag, TIP_LAGGARD_3, 0, nCurPast, nLatchPast, nEpochPast);
+    Anchors(dag, fx, TIP_LAGGARD_3, nCurPast, nLatchPast, nEpochPast);
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(TIP_LEADER) - GetEpochForHeight(TIP_LAGGARD_3),
                         REORG_LATCH_ANCHOR_LAG_EPOCHS);
     BOOST_CHECK_LT(nCurPast, nLatchLead);
 }
 
 // R-FIN-001, the property under test. One block of honest tip skew across an epoch
-// boundary must never produce a permanent condemnation on one node and an acceptance
-// on the other.
+// boundary must never produce a permanent grade on one node and an acceptance on the
+// other.
 BOOST_AUTO_TEST_CASE(no_permanent_condemnation_of_a_branch_the_peer_follows)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F40000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork++)
     {
-        const ReorgFinalityVerdict a = Verdict(dag, TIP_LEADER, nFork);
-        const ReorgFinalityVerdict b = Verdict(dag, TIP_LAGGARD, nFork);
+        const ReorgFinalityVerdict a = Verdict(dag, fx, TIP_LEADER, nFork);
+        const ReorgFinalityVerdict b = Verdict(dag, fx, TIP_LAGGARD, nFork);
         BOOST_REQUIRE_MESSAGE(!ForbiddenPair(a, b),
                               "fork height " << nFork << ": leader verdict " << (int)a
                               << " vs laggard verdict " << (int)b);
@@ -331,8 +358,9 @@ BOOST_AUTO_TEST_CASE(no_permanent_condemnation_of_a_branch_the_peer_follows)
 BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_epoch_skew)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F50000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     int nPairsChecked = 0;
     int nMaxSkewChecked = 0;
@@ -348,8 +376,8 @@ BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_epoch_skew)
             nPairsChecked++;
             for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork += 13)
             {
-                const ReorgFinalityVerdict a = Verdict(dag, nTipA, nFork);
-                const ReorgFinalityVerdict b = Verdict(dag, nTipB, nFork);
+                const ReorgFinalityVerdict a = Verdict(dag, fx, nTipA, nFork);
+                const ReorgFinalityVerdict b = Verdict(dag, fx, nTipB, nFork);
                 BOOST_REQUIRE_MESSAGE(!ForbiddenPair(a, b),
                                       "tips " << nTipA << "/" << nTipB << " (epoch skew "
                                       << nAbsSkew << ") fork " << nFork);
@@ -366,8 +394,9 @@ BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_epoch_skew)
 BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_height_skew)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F60000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     const int nMaxHeightSkew =
         (REORG_LATCH_ANCHOR_LAG_EPOCHS - 1) * FINALITY_EPOCH_INTERVAL_POST_DAG;
@@ -384,7 +413,8 @@ BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_height_skew)
 
             for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork += 13)
                 BOOST_REQUIRE_MESSAGE(
-                    !ForbiddenPair(Verdict(dag, nTipA, nFork), Verdict(dag, nTipB, nFork)),
+                    !ForbiddenPair(Verdict(dag, fx, nTipA, nFork),
+                                   Verdict(dag, fx, nTipB, nFork)),
                     "tips " << nTipA << "/" << nTipB << " fork " << nFork);
         }
 
@@ -394,7 +424,7 @@ BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_height_skew)
     BOOST_CHECK_EQUAL(TIP_LEADER - TIP_LAGGARD_2, FINALITY_EPOCH_INTERVAL_POST_DAG + 1);
     BOOST_CHECK_EQUAL(GetEpochForHeight(TIP_LEADER) - GetEpochForHeight(TIP_LAGGARD_2),
                       REORG_LATCH_ANCHOR_LAG_EPOCHS - 1);
-    BOOST_CHECK(!ForbiddenPairExists(dag, TIP_LEADER, TIP_LAGGARD_2, FORK_SWEEP_MAX));
+    BOOST_CHECK(!ForbiddenPairExists(dag, fx, TIP_LEADER, TIP_LAGGARD_2, FORK_SWEEP_MAX));
 }
 
 // Tightness: at L-1 epochs no fork height separates the two nodes, at L one does. The
@@ -402,39 +432,40 @@ BOOST_AUTO_TEST_CASE(no_forbidden_pair_across_the_tolerated_height_skew)
 BOOST_AUTO_TEST_CASE(tolerance_is_exactly_the_latch_lag)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F70000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(TIP_LEADER) - GetEpochForHeight(TIP_LAGGARD_2),
                         REORG_LATCH_ANCHOR_LAG_EPOCHS - 1);
-    BOOST_CHECK(!ForbiddenPairExists(dag, TIP_LEADER, TIP_LAGGARD_2, FORK_SWEEP_MAX));
+    BOOST_CHECK(!ForbiddenPairExists(dag, fx, TIP_LEADER, TIP_LAGGARD_2, FORK_SWEEP_MAX));
 
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(TIP_LEADER) - GetEpochForHeight(TIP_LAGGARD_3),
                         REORG_LATCH_ANCHOR_LAG_EPOCHS);
-    BOOST_CHECK(ForbiddenPairExists(dag, TIP_LEADER, TIP_LAGGARD_3, FORK_SWEEP_MAX));
+    BOOST_CHECK(ForbiddenPairExists(dag, fx, TIP_LEADER, TIP_LAGGARD_3, FORK_SWEEP_MAX));
 
-    // Where it reopens: the leader latches below its own latch anchor, the node L
-    // epochs back accepts from its own rejection anchor up, and between the two the
-    // verdicts are condemn-versus-follow.
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, FINAL_E1),
+    // Where it reopens: the leader grades permanent below its own severity anchor, the
+    // node L epochs back accepts from its own rejection anchor up, and between the two
+    // the verdicts are condemn-versus-follow.
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, FINAL_E1),
                       (int)REORG_FINALITY_REJECT_PERMANENT);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LAGGARD_3, FINAL_E1),
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LAGGARD_3, FINAL_E1),
                       (int)REORG_FINALITY_ALLOW);
 }
 
 // The band case, stated concretely: a fork between the two nodes' rejection anchors.
-// The leader refuses it, the laggard follows it, and crucially NOTHING is written
-// down, so the disagreement resolves as soon as the laggard crosses the boundary.
-// This is the exact input that produced a persisted split before the fix.
+// The leader refuses it, the laggard follows it, and NOTHING is written down, so the
+// disagreement resolves as soon as the laggard crosses the boundary.
 BOOST_AUTO_TEST_CASE(fork_inside_the_hysteresis_band_is_refused_but_never_latched)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F80000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     const int nFork = 1000;   // FINAL_E3 (900) <= 1000 < FINAL_E4 (1200)
-    const ReorgFinalityVerdict a = Verdict(dag, TIP_LEADER, nFork);
-    const ReorgFinalityVerdict b = Verdict(dag, TIP_LAGGARD, nFork);
+    const ReorgFinalityVerdict a = Verdict(dag, fx, TIP_LEADER, nFork);
+    const ReorgFinalityVerdict b = Verdict(dag, fx, TIP_LAGGARD, nFork);
 
     BOOST_CHECK_EQUAL((int)a, (int)REORG_FINALITY_REJECT_TRANSIENT);
     BOOST_CHECK_EQUAL((int)b, (int)REORG_FINALITY_ALLOW);
@@ -443,53 +474,57 @@ BOOST_AUTO_TEST_CASE(fork_inside_the_hysteresis_band_is_refused_but_never_latche
     BOOST_CHECK(!ForbiddenPair(a, b));
 
     // Once the laggard crosses the boundary it holds the leader's anchors and the two
-    // agree exactly; the verdict hardens on its own once the latch advances.
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, nFork),
-                      (int)Verdict(dag, TIP_LEADER + 5, nFork));
+    // agree exactly.
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, nFork),
+                      (int)Verdict(dag, fx, TIP_LEADER + 5, nFork));
 }
 
-// The guard must still bite. A fork below every node's lagged anchor is condemned
-// permanently by both, which is the case the persisted flag exists for.
+// The guard must still bite. A fork below every node's lagged anchor is graded
+// permanent by both, which is the grade the miner refuses to merge.
 BOOST_AUTO_TEST_CASE(deep_fork_below_the_lagged_anchor_is_permanent_on_both_nodes)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0F90000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     const int nFork = 100;   // below FINAL_E1
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, nFork),
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, nFork),
                       (int)REORG_FINALITY_REJECT_PERMANENT);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LAGGARD, nFork),
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LAGGARD, nFork),
                       (int)REORG_FINALITY_REJECT_PERMANENT);
 }
 
-// A fork at or above the rejection anchor is a normal reorg and must be allowed.
+// A fork at or above the rejection anchor keeps the attested block and must be allowed.
 BOOST_AUTO_TEST_CASE(fork_at_or_above_the_rejection_anchor_is_allowed)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FA0000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, FINAL_E4), (int)REORG_FINALITY_ALLOW);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, FINAL_E4 + 1), (int)REORG_FINALITY_ALLOW);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LEADER, FINAL_E4 - 1),
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, FINAL_E4), (int)REORG_FINALITY_ALLOW);
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, FINAL_E4 + 1),
+                      (int)REORG_FINALITY_ALLOW);
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LEADER, FINAL_E4 - 1),
                       (int)REORG_FINALITY_REJECT_TRANSIENT);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, TIP_LAGGARD, FINAL_E3), (int)REORG_FINALITY_ALLOW);
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, TIP_LAGGARD, FINAL_E3), (int)REORG_FINALITY_ALLOW);
 }
 
-// The permanence anchor may never exceed the rejection anchor: a branch can never be
-// condemned permanently without also being rejected.
+// The severity anchor may never exceed the rejection anchor: a branch can never be
+// graded permanent without also being refused.
 BOOST_AUTO_TEST_CASE(lagged_anchor_never_exceeds_the_rejection_anchor)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FB0000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     for (int nTip = FORK_HEIGHT_EPOCH_STATE_V3; nTip <= 1800; nTip += 3)
     {
         int nCur = 0, nLatch = 0, nEpoch = 0;
-        const ReorgFinalityVerdict v =
-            CheckReorgAgainstFinality(dag, nTip, 0, nCur, nLatch, nEpoch);
+        const ReorgFinalityVerdict v = CheckReorgAgainstFinality(
+            dag, nTip, fx.CandidateAt(0), nCur, nLatch, nEpoch);
         if (v == REORG_FINALITY_STATE_MISSING)
             continue;
         BOOST_REQUIRE_MESSAGE(nLatch <= nCur,
@@ -499,64 +534,65 @@ BOOST_AUTO_TEST_CASE(lagged_anchor_never_exceeds_the_rejection_anchor)
 
 // Even with a non-monotone record on disk -- which LoadEpochStates rejects, but the
 // clamp must not depend on that -- the latch cannot outrun the rejection anchor and
-// produce a permanent verdict on a fork that is otherwise allowed.
+// produce a permanent grade on a fork that is otherwise allowed.
 BOOST_AUTO_TEST_CASE(non_monotone_records_cannot_invert_the_two_anchors)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FC0000U);
     CDAGManager dag;
     std::vector<int> finalized;
     finalized.push_back(1200);   // epoch 1: higher than its successors
     finalized.push_back(900);    // epoch 2
     finalized.push_back(600);    // epoch 3
     finalized.push_back(300);    // epoch 4
-    InstallFinalizedHeights(dag, 1, finalized);
+    InstallFinalizedHeights(dag, fx, 1, finalized);
 
     for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork += 11)
     {
         int nCur = 0, nLatch = 0, nEpoch = 0;
-        const ReorgFinalityVerdict v =
-            CheckReorgAgainstFinality(dag, TIP_LEADER, nFork, nCur, nLatch, nEpoch);
+        const ReorgFinalityVerdict v = CheckReorgAgainstFinality(
+            dag, TIP_LEADER, fx.CandidateAt(nFork), nCur, nLatch, nEpoch);
         BOOST_REQUIRE(nLatch <= nCur);
+        BOOST_REQUIRE(v != REORG_FINALITY_STATE_MISSING);
         if (v == REORG_FINALITY_REJECT_PERMANENT)
             BOOST_REQUIRE_MESSAGE(nFork < nCur,
-                                  "permanent verdict on an allowed fork " << nFork);
+                                  "permanent grade on an allowed fork " << nFork);
     }
 }
 
-// Bottom edge of epoch-state history. LoadEpochStates permits a non-zero lowest epoch
-// (pre-fork epochs never had records) while rejecting interior holes, so an absent
-// lagged record means "nothing latchable yet", not corruption. Failing closed here
-// would brick every node for the first epochs after the V3 gate.
+// An absent lagged record at the bottom of epoch-state history means "nothing gradable
+// yet", not corruption; failing closed would brick nodes after the V3 gate.
 BOOST_AUTO_TEST_CASE(missing_lagged_record_degrades_instead_of_failing_closed)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FD0000U);
     CDAGManager dag;
     // Only epoch 4 exists; epoch 2, the lagged anchor for tip 1211, is absent.
     std::vector<int> finalized;
     finalized.push_back(FINAL_E4);
-    InstallFinalizedHeights(dag, 4, finalized);
+    InstallFinalizedHeights(dag, fx, 4, finalized);
 
     int nCur = 0, nLatch = 0, nEpoch = 0;
-    const ReorgFinalityVerdict v =
-        CheckReorgAgainstFinality(dag, TIP_LEADER, 100, nCur, nLatch, nEpoch);
+    const ReorgFinalityVerdict v = CheckReorgAgainstFinality(
+        dag, TIP_LEADER, fx.CandidateAt(100), nCur, nLatch, nEpoch);
 
     BOOST_CHECK(v != REORG_FINALITY_STATE_MISSING);
     BOOST_CHECK_EQUAL(nCur, FINAL_E4);
     BOOST_CHECK_EQUAL(nLatch, 0);
-    // Rejected, but with no lagged anchor nothing may be persisted.
+    // Refused, but with no lagged anchor the grade cannot be permanent.
     BOOST_CHECK_EQUAL((int)v, (int)REORG_FINALITY_REJECT_TRANSIENT);
 
-    // The widened lag reaches one epoch further back, so a run of records that would
-    // have satisfied the pre-widening anchor must still degrade rather than latch.
+    // The lag reaches back L-1 epochs, so records covering only F(nAsOf-1) must still
+    // degrade rather than grade.
     CDAGManager dagNearEdge;
     std::vector<int> nearEdge;
     nearEdge.push_back(FINAL_E3);
     nearEdge.push_back(FINAL_E4);
-    InstallFinalizedHeights(dagNearEdge, 3, nearEdge);   // epochs 3 and 4 only
+    InstallFinalizedHeights(dagNearEdge, fx, 3, nearEdge);   // epochs 3 and 4 only
 
     int nCur2 = 0, nLatch2 = 0, nEpoch2 = 0;
-    const ReorgFinalityVerdict v2 =
-        CheckReorgAgainstFinality(dagNearEdge, TIP_LEADER, 100, nCur2, nLatch2, nEpoch2);
+    const ReorgFinalityVerdict v2 = CheckReorgAgainstFinality(
+        dagNearEdge, TIP_LEADER, fx.CandidateAt(100), nCur2, nLatch2, nEpoch2);
     BOOST_CHECK_EQUAL(nCur2, FINAL_E4);
     BOOST_CHECK_EQUAL(nLatch2, 0);
     BOOST_CHECK_EQUAL((int)v2, (int)REORG_FINALITY_REJECT_TRANSIENT);
@@ -566,10 +602,12 @@ BOOST_AUTO_TEST_CASE(missing_lagged_record_degrades_instead_of_failing_closed)
 BOOST_AUTO_TEST_CASE(missing_current_record_still_fails_closed)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FE0000U);
     CDAGManager dag;   // no epoch states at all
     int nCur = 0, nLatch = 0, nEpoch = 0;
     BOOST_CHECK_EQUAL(
-        (int)CheckReorgAgainstFinality(dag, TIP_LEADER, 100, nCur, nLatch, nEpoch),
+        (int)CheckReorgAgainstFinality(dag, TIP_LEADER, fx.CandidateAt(100), nCur, nLatch,
+                                       nEpoch),
         (int)REORG_FINALITY_STATE_MISSING);
     BOOST_CHECK_EQUAL(nEpoch, 4);
 }
@@ -580,16 +618,17 @@ BOOST_AUTO_TEST_CASE(missing_current_record_still_fails_closed)
 BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_finality_gate)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0FF0000U);
     CDAGManager dag;   // deliberately empty
 
-    BOOST_CHECK_EQUAL((int)Verdict(dag, FORK_HEIGHT_FINALITY - 1, 0),
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, FORK_HEIGHT_FINALITY - 1, 0),
                       (int)REORG_FINALITY_ALLOW);
-    BOOST_CHECK_EQUAL((int)Verdict(dag, 0, 0), (int)REORG_FINALITY_ALLOW);
+    BOOST_CHECK_EQUAL((int)Verdict(dag, fx, 0, 0), (int)REORG_FINALITY_ALLOW);
 
     // Finality gate reached, epoch-state V3 not yet: the pre-V3 lookup scans down and
     // returns 0, which must read as "nothing finalized", not as an error.
     for (int nTip = FORK_HEIGHT_FINALITY; nTip < FORK_HEIGHT_EPOCH_STATE_V3; nTip += 17)
-        BOOST_REQUIRE_EQUAL((int)Verdict(dag, nTip, 0), (int)REORG_FINALITY_ALLOW);
+        BOOST_REQUIRE_EQUAL((int)Verdict(dag, fx, nTip, 0), (int)REORG_FINALITY_ALLOW);
 }
 
 // The pre-V3 lookup scans down from the requested epoch and must apply the same lag.
@@ -598,6 +637,7 @@ BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_finality_gate)
 BOOST_AUTO_TEST_CASE(pre_v3_scanning_path_uses_the_same_lag)
 {
     MainNetNetwork net;
+    ForkFixture fx(0xA0E00000U);
 
     const int nTip = FORK_HEIGHT_EPOCH_STATE_V3 - 1;
     BOOST_REQUIRE_GE(nTip, FORK_HEIGHT_FINALITY);
@@ -610,128 +650,91 @@ BOOST_AUTO_TEST_CASE(pre_v3_scanning_path_uses_the_same_lag)
     finalized.push_back(1000);   // epoch nAsOf-2, the lagged anchor
     finalized.push_back(2000);   // epoch nAsOf-1, the pre-widening anchor
     finalized.push_back(3000);   // epoch nAsOf, the rejection anchor
-    InstallFinalizedHeights(dag, nAsOf - 2, finalized);
+    InstallFinalizedHeights(dag, fx, nAsOf - 2, finalized);
 
     int nCur = 0, nLatch = 0, nEpoch = 0;
-    CheckReorgAgainstFinality(dag, nTip, 0, nCur, nLatch, nEpoch);
+    Anchors(dag, fx, nTip, nCur, nLatch, nEpoch);
     BOOST_CHECK_EQUAL(nEpoch, nAsOf);
     BOOST_CHECK_EQUAL(nCur, 3000);
     BOOST_CHECK_EQUAL(nLatch, 1000);   // not 2000, which is F(nAsOf-1)
 
-    // The scan itself, with the lagged epoch below the lowest record: it walks down,
-    // finds nothing, and reports nothing latchable. The pre-widening lag would have
-    // stopped on epoch nAsOf-1 and latched 2000 here, so this pins the reach.
+    // Lagged epoch below the lowest record: the scan walks down, finds nothing, and
+    // reports nothing gradable (a lag of 1 would stop at nAsOf-1 and latch 2000).
     CDAGManager dagEdge;
     std::vector<int> edge;
     edge.push_back(2000);   // epoch nAsOf-1
     edge.push_back(3000);   // epoch nAsOf
-    InstallFinalizedHeights(dagEdge, nAsOf - 1, edge);
+    InstallFinalizedHeights(dagEdge, fx, nAsOf - 1, edge);
 
     int nCurE = 0, nLatchE = 0, nEpochE = 0;
-    CheckReorgAgainstFinality(dagEdge, nTip, 0, nCurE, nLatchE, nEpochE);
+    Anchors(dagEdge, fx, nTip, nCurE, nLatchE, nEpochE);
     BOOST_CHECK_EQUAL(nCurE, 3000);
     BOOST_CHECK_EQUAL(nLatchE, 0);
 }
 
-// The persistence rule itself. Both reorg sites delegate to ApplyReorgFinalityGuard
-// rather than deciding for themselves, because a site that persisted the transient
-// verdict would rebuild R-FIN-001 on its own: a fork inside the band would be written
-// down as BLOCK_FAILED_VALID on the leader while the laggard extends it.
-BOOST_AUTO_TEST_CASE(only_the_permanent_verdict_is_persisted)
+// Nothing is persisted: both reorg sites delegate to ApplyReorgFinalityGuard, which
+// never sets pfPermanentInvalid. A persisted grade is tip-relative, and
+// BLOCK_FAILED_VALID survives restart until reconsiderblock.
+BOOST_AUTO_TEST_CASE(no_verdict_is_persisted)
 {
     RegTestNetwork net;
+    ForkFixture fx(0xA0E10000U);
     CDAGManager dag;
-    InstallStraddleFixture(dag);
+    InstallStraddleFixture(dag, fx);
 
     int nCur = 0, nLatch = 0, nEpoch = 0;
 
-    // Deep fork: condemned, and written down.
+    // Deep fork: graded permanent, and nothing written down.
     bool fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, 100, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
+    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, fx.CandidateAt(100),
+                                                   &fPermanent, nCur, nLatch, nEpoch),
                       (int)REORG_FINALITY_REJECT_PERMANENT);
-    BOOST_CHECK(fPermanent);
+    BOOST_CHECK_MESSAGE(!fPermanent, "a permanent grade was persisted");
 
-    // Inside the band: refused, but nothing may be written down.
+    // Inside the band: refused, nothing written down.
     fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, 1000, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
-                      (int)REORG_FINALITY_REJECT_TRANSIENT);
-    BOOST_CHECK(!fPermanent);
-
-    // The widened part of the band: a fork the pre-widening latch (F(nAsOf-1) =
-    // FINAL_E3) would have written down must now be refused without latching.
-    fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, FINAL_E2, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
-                      (int)REORG_FINALITY_REJECT_TRANSIENT);
-    BOOST_CHECK(!fPermanent);
-    fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, FINAL_E3 - 1, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
+    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, fx.CandidateAt(1000),
+                                                   &fPermanent, nCur, nLatch, nEpoch),
                       (int)REORG_FINALITY_REJECT_TRANSIENT);
     BOOST_CHECK(!fPermanent);
 
     // Allowed, and a missing current record: neither may latch.
     fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, FINAL_E4, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
+    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, fx.CandidateAt(FINAL_E4),
+                                                   &fPermanent, nCur, nLatch, nEpoch),
                       (int)REORG_FINALITY_ALLOW);
     BOOST_CHECK(!fPermanent);
 
     CDAGManager empty;
     fPermanent = false;
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(empty, TIP_LEADER, 100, &fPermanent,
-                                                   nCur, nLatch, nEpoch),
+    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(empty, TIP_LEADER, fx.CandidateAt(100),
+                                                   &fPermanent, nCur, nLatch, nEpoch),
                       (int)REORG_FINALITY_STATE_MISSING);
     BOOST_CHECK(!fPermanent);
 
+    // A flag already set by an earlier failure is not cleared either: the guard does not
+    // own it.
+    fPermanent = true;
+    ApplyReorgFinalityGuard(dag, TIP_LEADER, fx.CandidateAt(FINAL_E4), &fPermanent,
+                            nCur, nLatch, nEpoch);
+    BOOST_CHECK(fPermanent);
+
     // A null flag pointer is the Reorganize-without-a-caller case; it must not crash.
-    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, 100, NULL,
+    BOOST_CHECK_EQUAL((int)ApplyReorgFinalityGuard(dag, TIP_LEADER, fx.CandidateAt(100), NULL,
                                                    nCur, nLatch, nEpoch),
                       (int)REORG_FINALITY_REJECT_PERMANENT);
-}
 
-// Every verdict the guard persists must also be a verdict no node inside the band
-// accepts -- restated over the persist flag rather than the enum, since the flag is
-// the half that survives a restart.
-BOOST_AUTO_TEST_CASE(nothing_is_persisted_that_a_skewed_peer_would_accept)
-{
-    RegTestNetwork net;
-    CDAGManager dag;
-    InstallStraddleFixture(dag);
-
-    const int vTips[3] = { TIP_LAGGARD, TIP_LAGGARD_2, TIP_LEADER };
-
-    for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork++)
-    {
-        int nCur = 0, nLatch = 0, nEpoch = 0;
-        bool fPermanentLeader = false;
-        ApplyReorgFinalityGuard(dag, TIP_LEADER, nFork, &fPermanentLeader,
-                                nCur, nLatch, nEpoch);
-
-        for (int i = 0; i < 3; i++)
+    // Over the whole fork axis and every fixture tip: the flag never moves.
+    const int vTips[4] = { TIP_LAGGARD_3, TIP_LAGGARD_2, TIP_LAGGARD, TIP_LEADER };
+    for (int i = 0; i < 4; i++)
+        for (int nFork = 0; nFork <= FORK_SWEEP_MAX; nFork++)
         {
-            bool fPermanentPeer = false;
-            const ReorgFinalityVerdict peer = ApplyReorgFinalityGuard(
-                dag, vTips[i], nFork, &fPermanentPeer, nCur, nLatch, nEpoch);
-
-            if (fPermanentLeader)
-                BOOST_REQUIRE_MESSAGE(peer != REORG_FINALITY_ALLOW,
-                                      "fork " << nFork << " persisted on the leader but "
-                                      "accepted by tip " << vTips[i]);
-            if (fPermanentPeer)
-            {
-                bool fUnused = false;
-                int a = 0, b = 0, c = 0;
-                BOOST_REQUIRE_MESSAGE(
-                    ApplyReorgFinalityGuard(dag, TIP_LEADER, nFork, &fUnused, a, b, c)
-                        != REORG_FINALITY_ALLOW,
-                    "fork " << nFork << " persisted on tip " << vTips[i]
-                            << " but accepted by the leader");
-            }
+            bool f = false;
+            ApplyReorgFinalityGuard(dag, vTips[i], fx.CandidateAt(nFork), &f, nCur, nLatch,
+                                    nEpoch);
+            BOOST_REQUIRE_MESSAGE(!f, "tip " << vTips[i] << " fork " << nFork
+                                            << " persisted a verdict");
         }
-    }
 }
 
 // Mainnet parameters: the finality gate sits far from epoch 0, so this is the only place
@@ -739,6 +742,7 @@ BOOST_AUTO_TEST_CASE(nothing_is_persisted_that_a_skewed_peer_would_accept)
 BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_mainnet_finality_gate)
 {
     MainNetNetwork net;
+    ForkFixture fx(0xA0E20000U);
 
     const int nGate = FORK_HEIGHT_FINALITY;
     const int nTip = nGate - 1;
@@ -746,7 +750,7 @@ BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_mainnet_finality_gate)
 
     // The fixture must be non-trivial, or the assertion below proves nothing: on
     // regtest this same tip sits in epoch 0 and the lookup returns 0 regardless.
-    BOOST_REQUIRE_EQUAL(nGate, 8215000);
+    BOOST_REQUIRE_EQUAL(nGate, 8275000);
     BOOST_REQUIRE_GT(nAsOf, 0);
 
     CDAGManager dag;
@@ -754,25 +758,26 @@ BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_mainnet_finality_gate)
     finalized.push_back(nGate - 300000);
     finalized.push_back(nGate - 200000);
     finalized.push_back(nGate - 100000);
-    InstallFinalizedHeights(dag, nAsOf - 2, finalized);
+    InstallFinalizedHeights(dag, fx, nAsOf - 2, finalized);
 
     int nCur = 0, nLatch = 0, nEpoch = 0;
-    const ReorgFinalityVerdict v =
-        CheckReorgAgainstFinality(dag, nTip, 0, nCur, nLatch, nEpoch);
+    const ReorgFinalityVerdict v = CheckReorgAgainstFinality(
+        dag, nTip, fx.CandidateAt(0), nCur, nLatch, nEpoch);
 
     BOOST_CHECK_EQUAL((int)v, (int)REORG_FINALITY_ALLOW);
     BOOST_CHECK_EQUAL(nCur, 0);
 
-    // One block above the gate the same records are read, on production fork heights:
-    // the latch must land REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs behind the rejection
-    // anchor, not one. The gate and the block below it share an epoch, so the anchors
-    // are the ones installed above.
+    // One block above the gate, on production fork heights: the latch lands
+    // REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs behind the rejection anchor. The records
+    // name blocks the fixture does not hold, so only the anchors are checked.
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(nGate) - 1, nAsOf);
     int nCurAt = 0, nLatchAt = 0, nEpochAt = 0;
-    CheckReorgAgainstFinality(dag, nGate, 0, nCurAt, nLatchAt, nEpochAt);
+    const ReorgFinalityVerdict vAt = CheckReorgAgainstFinality(
+        dag, nGate, fx.CandidateAt(0), nCurAt, nLatchAt, nEpochAt);
     BOOST_CHECK_EQUAL(nEpochAt, nAsOf);
     BOOST_CHECK_EQUAL(nCurAt, nGate - 100000);
     BOOST_CHECK_EQUAL(nLatchAt, nGate - 300000);
+    BOOST_CHECK_EQUAL((int)vAt, (int)REORG_FINALITY_STATE_MISSING);
 }
 
 
@@ -794,9 +799,9 @@ BOOST_AUTO_TEST_CASE(both_reorg_sites_still_route_through_the_shared_guard)
     BOOST_CHECK_EQUAL(
         CountOccurrences(strMain, "if (verdict != REORG_FINALITY_ALLOW)"), 2u);
 
-    // One comparison of a fork point against the anchor, inside the guard. A
-    // second copy at a call site is how the two sites drift apart.
-    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "nForkHeight >= nFinalCurOut"), 1u);
+    // The fork point's height is never compared against an anchor, anywhere.
+    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "nForkHeight >= nFinalCur"), 0u);
+    BOOST_CHECK_EQUAL(CountOccurrences(strMain, "nForkHeight < nFinal"), 0u);
 
     // Selection sites read the verdict through BestChainSwitchVerdict, which must stay
     // persistence-free.
@@ -811,10 +816,9 @@ BOOST_AUTO_TEST_CASE(both_reorg_sites_still_route_through_the_shared_guard)
                         strSwitch.find("ApplyReorgFinalityGuard") == std::string::npos,
                         "BestChainSwitchVerdict persists or latches a verdict");
 
-    // The node-local live streak must not reach the decision. It stalls below the
-    // deterministic value on out-of-order vote arrival and differs between nodes,
-    // so folding it in puts path-dependent state back into a consensus reorg --
-    // which is the defect the deterministic anchor was introduced to close.
+    // The guard body: ancestry against the attested block for both anchors, latch epoch
+    // from the lag, and no node-local live streak (it is path-dependent and differs
+    // between nodes).
     const size_t nGuard = strMain.find("ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,");
     BOOST_REQUIRE(nGuard != std::string::npos);
     const size_t nGuardEnd = strMain.find("\nReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight,", nGuard);
@@ -824,6 +828,18 @@ BOOST_AUTO_TEST_CASE(both_reorg_sites_still_route_through_the_shared_guard)
                         "the guard reads the node-local live finalized height");
     BOOST_CHECK_MESSAGE(strBody.find("REORG_LATCH_ANCHOR_LAG_EPOCHS") != std::string::npos,
                         "the guard no longer derives the latch epoch from the lag");
+    BOOST_CHECK_EQUAL(CountOccurrences(strBody, "->GetAncestor("), 2u);
+    BOOST_CHECK_MESSAGE(strBody.find("nForkHeight") == std::string::npos,
+                        "the guard reads a fork height");
+
+    // ApplyReorgFinalityGuard sets nothing.
+    const size_t nApply = strMain.find("ReorgFinalityVerdict ApplyReorgFinalityGuard(const CDAGManager& dag,");
+    BOOST_REQUIRE(nApply != std::string::npos);
+    const size_t nApplyEnd = strMain.find("\n}\n", nApply);
+    BOOST_REQUIRE(nApplyEnd != std::string::npos);
+    const std::string strApply = strMain.substr(nApply, nApplyEnd - nApply);
+    BOOST_CHECK_MESSAGE(strApply.find("*pfPermanentInvalid = true") == std::string::npos,
+                        "ApplyReorgFinalityGuard persists a verdict");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

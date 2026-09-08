@@ -499,6 +499,17 @@ public:
      *  an error, distinct from the valid finalized height zero. */
     bool TryGetDeterministicFinalizedHeight(int nUpToEpoch, int& nHeightOut) const;
 
+    /** The finalized height and the attested block (CEpochState::FinalizedAnchorHash) as of
+     *  the exact requested completed epoch. Same contract as
+     *  TryGetDeterministicFinalizedHeight; the hash is zero when the height is zero. */
+    bool TryGetDeterministicFinalizedAnchor(int nUpToEpoch, int& nHeightOut,
+                                            uint256& hashOut) const;
+
+    /** Scanning form of the above, for the pre-V3 path: the nearest complete epoch at or
+     *  below nUpToEpoch. Zero height and hash when there is none. */
+    void GetDeterministicFinalizedAnchor(int nUpToEpoch, int& nHeightOut,
+                                         uint256& hashOut) const;
+
     /** Transaction-aware variant used while a best-chain/reorg WriteBatch contains staged
      *  epoch records that must be visible to ConnectBlock without installing global cache state. */
     bool TryGetDeterministicFinalizedHeight(CTxDB& txdb, int nUpToEpoch,

@@ -3634,6 +3634,40 @@ bool CDAGManager::TryGetDeterministicFinalizedHeight(int nUpToEpoch, int& nHeigh
     return true;
 }
 
+bool CDAGManager::TryGetDeterministicFinalizedAnchor(int nUpToEpoch, int& nHeightOut,
+                                                     uint256& hashOut) const
+{
+    LOCK(cs_dag);
+    nHeightOut = 0;
+    hashOut = 0;
+    if (nUpToEpoch < 0)
+        return true;
+    std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nUpToEpoch);
+    if (it == mapEpochState.end())
+        return false;
+    nHeightOut = it->second.nFinalizedHeightAsOf;
+    hashOut = it->second.FinalizedAnchorHash();
+    return true;
+}
+
+void CDAGManager::GetDeterministicFinalizedAnchor(int nUpToEpoch, int& nHeightOut,
+                                                  uint256& hashOut) const
+{
+    LOCK(cs_dag);
+    nHeightOut = 0;
+    hashOut = 0;
+    for (int nEpoch = nUpToEpoch; nEpoch >= 0; --nEpoch)
+    {
+        std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nEpoch);
+        if (it != mapEpochState.end())
+        {
+            nHeightOut = it->second.nFinalizedHeightAsOf;
+            hashOut = it->second.FinalizedAnchorHash();
+            return;
+        }
+    }
+}
+
 bool CDAGManager::TryGetDeterministicFinalizedHeight(CTxDB& txdb, int nUpToEpoch,
                                                      int& nHeightOut) const
 {

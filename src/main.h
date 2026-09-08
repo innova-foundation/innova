@@ -1226,60 +1226,50 @@ bool LoadExternalBlockFile(FILE* fileIn);
 
 //void PushGetBlocks(CNode* pnode, CBlockIndex* pindexBegin, uint256 hashEnd);
 
-// Age of the permanence anchor, in epochs behind the evaluating node's epoch. The
-// rejection anchor is epoch(tip)-1, the newest completed epoch; the latch that gates
-// BLOCK_FAILED_VALID sits this many epochs back. Since the deterministic finalized
-// height is non-decreasing in epoch, one node can latch a fork another allows only
-// when their epochs differ by more than LAG-1, so tolerated honest tip skew is
-// LAG-1 epochs: 600 blocks / 10 min post-DAG, 120 blocks / 30 min pre-DAG. Raising
-// it widens that tolerance and delays hardening by the same amount.
+// Age of the severity anchor, in epochs behind the evaluating node's epoch. Tolerated
+// honest tip skew is LAG-1 epochs (600 blocks post-DAG, 120 pre-DAG). The grade only
+// decides DAG merging; nothing is persisted.
 static const int REORG_LATCH_ANCHOR_LAG_EPOCHS = 3;
 
-// Verdict of the reorg finality guard (R-FIN-001).
+// Verdict of the reorg finality guard (R-FIN-001). No verdict is persisted: a refusal
+// is re-evaluated against the tip in force whenever a switch is next considered.
 enum ReorgFinalityVerdict
 {
     REORG_FINALITY_ALLOW = 0,
-    // Fork point is below the current anchor but not below the lagged one: reject
-    // this attempt without condemning the branch, so a node inside the tolerated
-    // skew that still accepts it does not disagree permanently.
+    // The attested block as of the current anchor is not an ancestor of the candidate,
+    // but the lagged anchor's is: refuse this attempt without condemning the branch.
     REORG_FINALITY_REJECT_TRANSIENT,
-    // Fork point is below the lagged anchor, which every node inside the tolerated
-    // skew also computes: safe to persist BLOCK_FAILED_VALID.
+    // Neither anchor's attested block is an ancestor of the candidate: a branch every
+    // node inside the tolerated skew also refuses. The miner will not merge its tip.
     REORG_FINALITY_REJECT_PERMANENT,
-    // Required epoch state is absent; the caller fails closed.
+    // Required epoch state is absent, or names a block this node cannot resolve; the
+    // caller fails closed.
     REORG_FINALITY_STATE_MISSING,
 };
 
-// Reorg finality guard, shared by Reorganize and CBlock::SetBestChain so the two
-// sites cannot drift apart. The rejection anchor is the deterministic finalized
-// height as of epoch(nBestHeight)-1; the permanence anchor is
-// REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs older.
-// Both are derived from the evaluating node's tip because the finalization
-// evidence lives on the chain being abandoned -- an anchor taken from the
-// candidate or the fork point cannot see it. Splitting the verdict by anchor age
-// is what keeps the persisted half of it identical across nodes whose tips
-// straddle an epoch boundary.
-//
-// Out-params carry the anchors and the epoch used, for the caller's error text.
-// The first form takes the epoch-state source explicitly so the decision can be
-// exercised against a standalone manager; the second reads the global one.
+// Reorg finality guard for Reorganize and SetBestChain: a candidate is refused iff the
+// block attested finalized at epoch(nBestHeight)-1 is not on its pprev chain.
 class CDAGManager;
+class CBlockIndex;
 ReorgFinalityVerdict CheckReorgAgainstFinality(const CDAGManager& dag,
-                                               int nBestHeight, int nForkHeight,
+                                               int nBestHeight, const CBlockIndex* pCandidate,
                                                int& nFinalCurOut, int& nFinalLatchOut,
-                                               int& nAsOfEpochOut);
-ReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight, int nForkHeight,
+                                               int& nAsOfEpochOut,
+                                               uint256* phashFinalCurOut = NULL,
+                                               uint256* phashFinalLatchOut = NULL);
+ReorgFinalityVerdict CheckReorgAgainstFinality(int nBestHeight, const CBlockIndex* pCandidate,
                                                int& nFinalCurOut, int& nFinalLatchOut,
-                                               int& nAsOfEpochOut);
+                                               int& nAsOfEpochOut,
+                                               uint256* phashFinalCurOut = NULL,
+                                               uint256* phashFinalLatchOut = NULL);
 
-// Reaches the verdict and records it. Both reorg sites call this rather than acting on
-// the verdict themselves, so the rule for which verdicts persist exists once.
+// Reaches the verdict for both reorg sites; never sets pfPermanentInvalid.
 ReorgFinalityVerdict ApplyReorgFinalityGuard(const CDAGManager& dag,
-                                             int nBestHeight, int nForkHeight,
+                                             int nBestHeight, const CBlockIndex* pCandidate,
                                              bool* pfPermanentInvalid,
                                              int& nFinalCurOut, int& nFinalLatchOut,
                                              int& nAsOfEpochOut);
-ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, int nForkHeight,
+ReorgFinalityVerdict ApplyReorgFinalityGuard(int nBestHeight, const CBlockIndex* pCandidate,
                                              bool* pfPermanentInvalid,
                                              int& nFinalCurOut, int& nFinalLatchOut,
                                              int& nAsOfEpochOut);

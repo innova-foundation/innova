@@ -202,6 +202,10 @@ struct CVerdictAnchor
     int nFinalCur;
     int nFinalLatch;
     int nAsOfEpoch;
+    // The attested blocks, not just their heights: the verdict is ancestry against these,
+    // and two record sets can name different blocks at the same heights.
+    uint256 hashFinalCur;
+    uint256 hashFinalLatch;
     // The probe's own verdict. Without it an epoch-state gap is indistinguishable from a
     // chain with no finalized height yet: both report anchors of zero, so verdicts reached
     // before the gap would survive into it.
@@ -209,26 +213,29 @@ struct CVerdictAnchor
 
     CVerdictAnchor()
         : hashTip(0), nFinalCur(0), nFinalLatch(0), nAsOfEpoch(0),
+          hashFinalCur(0), hashFinalLatch(0),
           nProbeVerdict((int)REORG_FINALITY_ALLOW) {}
     bool operator==(const CVerdictAnchor& o) const
     {
         return hashTip == o.hashTip && nFinalCur == o.nFinalCur &&
                nFinalLatch == o.nFinalLatch && nAsOfEpoch == o.nAsOfEpoch &&
+               hashFinalCur == o.hashFinalCur && hashFinalLatch == o.hashFinalLatch &&
                nProbeVerdict == o.nProbeVerdict;
     }
     bool operator!=(const CVerdictAnchor& o) const { return !(*this == o); }
 };
 
-// Requires cs_main. A fork height equal to the tip's cannot be rejected, so this reads the
-// anchors out of the same function the verdict itself uses rather than deriving them again.
+// Requires cs_main. The tip is judged as its own candidate, so this reads the anchors out
+// of the same function the verdict itself uses rather than deriving them again.
 static CVerdictAnchor CurrentVerdictAnchor()
 {
     CVerdictAnchor anchor;
     anchor.hashTip = hashBestChain;
     if (pindexBest)
         anchor.nProbeVerdict = (int)CheckReorgAgainstFinality(
-            pindexBest->nHeight, pindexBest->nHeight,
-            anchor.nFinalCur, anchor.nFinalLatch, anchor.nAsOfEpoch);
+            pindexBest->nHeight, pindexBest,
+            anchor.nFinalCur, anchor.nFinalLatch, anchor.nAsOfEpoch,
+            &anchor.hashFinalCur, &anchor.hashFinalLatch);
     return anchor;
 }
 

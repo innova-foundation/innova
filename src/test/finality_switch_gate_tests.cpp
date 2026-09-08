@@ -1,24 +1,6 @@
-// A heavier chain this node may not switch to.
-//
-// The reorg finality guard refuses a switch whose fork with the tip lies below the
-// deterministic finalized height. The verdict is relative to this node's tip: a node
-// further along reaches a different one for the same block, and a synced node never
-// evaluates it at all because its tip outweighs the block. So it cannot become a
-// statement about the block. AddToBlockIndex decides eligibility before it attempts
-// SetBestChain and keeps an ineligible heavier block as a side block -- not erased
-// (re-requested forever), not flagged (condemned on one node only). The selection
-// sites -- ReselectBestValidChain and the miner's template parent -- pass such a
-// block over instead of failing on it or building on it.
-//
-// The heavier branch is built with the node's own machinery: the tip's next block is
-// solved and held, the tip is rolled back with InvalidateBlock, a sibling branch of
-// equal length is mined and its next block held too, then both branches are restored.
-// Block trust carries a small hash-dependent term, so the two equal-length branches
-// never tie: the heavier one is the tip and the held block that extends the other is
-// heavier than the tip by one block. Finality anchors are then installed above the
-// fork, and that held block arrives.
-//
-// Mines past Boundary A on the shared regtest fixture; linked last in TEST_OBJS.
+// A heavier chain forking below the finalized height stays a side block, and neither
+// ReselectBestValidChain nor the miner builds on it. Mines past Boundary A; linked last
+// in TEST_OBJS; synthetic g_dagManager anchors are restored by the last case.
 
 #include <boost/test/unit_test.hpp>
 
@@ -123,26 +105,139 @@ bool Reconsider(CBlockIndex* pindex)
     return fOK;
 }
 
-// Finalized heights for consecutive epochs from nFirstEpoch, over the records the
-// chain produced (the fixture never votes, so they say 0). Only the finalized height
-// changes; the curve root is emptied to match the empty tree installed with it.
-void InstallFinalizedHeights(int nFirstEpoch, const std::vector<int>& vFinalized)
+// The tip a node would hold. With the anchors gone, a held block that outweighs the tip
+// is eligible and the next reselection switches to it; later suites inherit that tip.
+void ReselectTip()
 {
-    std::map<int, CEpochState> states;
-    std::map<int, CCurveTree> trees;
-    for (size_t i = 0; i < vFinalized.size(); i++)
+    CBlockIndex* pTip = BestIndex();
+    BOOST_REQUIRE(Invalidate(pTip));
+    BOOST_REQUIRE(Reconsider(pTip));
+}
+
+// The epoch builder carries the previous record's finalized height into the next record
+// and persists it, so an epoch must not complete while a synthetic anchor is in force.
+// Mines to the next boundary when fewer than nBlocks remain before it.
+void KeepEpochClearFor(int nBlocks)
+{
+    const int nTip = BestIndex()->nHeight;
+    const int nNext = GetEpochBoundaryHeight(GetEpochForHeight(nTip) + 1, nTip);
+    if (nNext - nTip < nBlocks)
+        MineTo(nNext);
+}
+
+// Finalized heights for consecutive epochs from nFirstEpoch, over the chain's own records.
+// Only the finalized height and its block change; the curve root is emptied to match the
+// empty tree. Restore puts back the displaced records and any above them.
+struct InstalledFinalizedHeights
+{
+    int nFirstEpoch;
+    std::map<int, CEpochState> saved;
+    std::map<int, CCurveTree> savedTrees;
+
+    InstalledFinalizedHeights() : nFirstEpoch(-1) {}
+
+    void Install(int nFirst, const std::vector<int>& vFinalized)
     {
-        const int nEpoch = nFirstEpoch + (int)i;
-        CEpochState state;
-        if (!g_dagManager.GetEpochState(nEpoch, state))
-            state.nEpoch = nEpoch;
-        state.hashCurveRoot = 0;
-        state.nFinalizedHeightAsOf = vFinalized[i];
-        states[nEpoch] = state;
-        trees[nEpoch] = CCurveTree();
+        Restore();
+        nFirstEpoch = nFirst;
+        const int nLast = GetEpochForHeight(BestIndex()->nHeight) + 1;
+        CTxDB txdb("r");
+        for (int e = nFirst; e <= nLast; e++)
+        {
+            CEpochState state;
+            if (!g_dagManager.GetEpochState(e, state))
+                continue;
+            // The tree the record was written with, so the root goes back as it was.
+            CCurveTree tree;
+            if (txdb.ReadCurveTreeAtEpoch(e, tree) && tree.nLeafCount != 0)
+                savedTrees[e] = tree;
+            else
+            {
+                state.hashCurveRoot = 0;
+                savedTrees[e] = CCurveTree();
+            }
+            saved[e] = state;
+        }
+
+        std::map<int, CEpochState> states;
+        std::map<int, CCurveTree> trees;
+        for (size_t i = 0; i < vFinalized.size(); i++)
+        {
+            const int nEpoch = nFirst + (int)i;
+            CEpochState state;
+            if (!g_dagManager.GetEpochState(nEpoch, state))
+                state.nEpoch = nEpoch;
+            state.hashCurveRoot = 0;
+            state.nFinalizedHeightAsOf = vFinalized[i];
+            state.hashVNextFinalizedAnchor = 0;
+            if (vFinalized[i] > 0)
+            {
+                CBlockIndex* pAttested = AncestorAt(BestIndex(), vFinalized[i]);
+                BOOST_REQUIRE(pAttested && pAttested->nHeight == vFinalized[i]);
+                state.hashVNextFinalizedAnchor = pAttested->GetBlockHash();
+            }
+            states[nEpoch] = state;
+            trees[nEpoch] = CCurveTree();
+        }
+        BOOST_REQUIRE_MESSAGE(g_dagManager.InstallEpochStateBatch(nFirst, states, trees),
+                              "could not install the finalized-height records");
     }
-    BOOST_REQUIRE_MESSAGE(g_dagManager.InstallEpochStateBatch(nFirstEpoch, states, trees),
-                          "could not install the finalized-height records");
+
+    void Restore()
+    {
+        if (nFirstEpoch < 0)
+            return;
+        BOOST_CHECK_MESSAGE(g_dagManager.InstallEpochStateBatch(nFirstEpoch, saved, savedTrees),
+                            "could not put the displaced epoch records back");
+        nFirstEpoch = -1;
+        saved.clear();
+        savedTrees.clear();
+    }
+};
+
+// For a single case: put back on exit, including an aborted one.
+struct ScopedFinalizedHeights : public InstalledFinalizedHeights
+{
+    ~ScopedFinalizedHeights() { Restore(); }
+};
+
+// Every epoch record in memory is one the chain could have built, and the disk copy agrees.
+// Catches an anchor this suite installed and did not restore.
+void CheckEpochRecordsAreTheChains(const char* pszWhen)
+{
+    CBlockIndex* pTip = BestIndex();
+    const int nLast = GetEpochForHeight(pTip->nHeight) + 1;
+    CTxDB txdb("r");
+    int nSeen = 0;
+    for (int e = 0; e <= nLast; e++)
+    {
+        CEpochState state;
+        if (!g_dagManager.GetEpochState(e, state))
+        {
+            BOOST_CHECK_MESSAGE(txdb.ProbeEpochState(e) == TXDB_READ_NOT_FOUND,
+                                pszWhen << ": epoch " << e << " is on disk but not in memory");
+            continue;
+        }
+        nSeen++;
+        const int nFin = state.nFinalizedHeightAsOf;
+        BOOST_CHECK_MESSAGE(nFin == 0 || (IsEpochBoundaryHeight(nFin) && nFin <= state.nHeightEnd),
+                            pszWhen << ": epoch " << e << " names finalized height " << nFin
+                            << ", which is not a boundary at or below its end " << state.nHeightEnd);
+        if (nFin != 0)
+        {
+            const CBlockIndex* pAt = AncestorAt(pTip, nFin);
+            BOOST_CHECK_MESSAGE(pAt && pAt->nHeight == nFin &&
+                                pAt->GetBlockHash() == state.FinalizedAnchorHash(),
+                                pszWhen << ": epoch " << e << " names a finalized block at "
+                                << nFin << " that the tip's chain does not carry");
+        }
+        CEpochState onDisk;
+        BOOST_CHECK_MESSAGE(txdb.ReadEpochState(e, onDisk) && onDisk.nEpoch == e &&
+                            onDisk.nFinalizedHeightAsOf == nFin &&
+                            onDisk.hashBoundaryBlock == state.hashBoundaryBlock,
+                            pszWhen << ": epoch " << e << " differs between memory and disk");
+    }
+    BOOST_CHECK_MESSAGE(nSeen > 0, pszWhen << ": no epoch record in memory");
 }
 
 struct HeavierSideBranch
@@ -215,6 +310,8 @@ void CheckHeldBlockIsKeptAsSideBlock(HeavierSideBranch& s, ReorgFinalityVerdict 
 }
 
 HeavierSideBranch g_transient;
+// The anchors the first three cases share; the third puts them back.
+InstalledFinalizedHeights g_anchors;
 
 } // namespace
 
@@ -223,10 +320,13 @@ BOOST_AUTO_TEST_CASE(a_heavier_branch_below_the_anchor_is_kept_as_a_side_block)
 {
     BOOST_REQUIRE(fRegTest);
     MineTo(FORK_HEIGHT_EPOCH_STATE_V3 + 20);
+    // The branches, the held block and the two blocks the third case mines all stay
+    // inside the current epoch.
+    KeepEpochClearFor(20);
     BuildBranches(g_transient, 13);
 
     const int nAsOf = GetEpochForHeight(g_transient.pTipA->nHeight) - 1;
-    InstallFinalizedHeights(nAsOf, std::vector<int>(1, g_transient.pFork->nHeight + 3));
+    g_anchors.Install(nAsOf, std::vector<int>(1, g_transient.pFork->nHeight + 3));
     CheckHeldBlockIsKeptAsSideBlock(g_transient, REORG_FINALITY_REJECT_TRANSIENT);
 }
 
@@ -256,6 +356,7 @@ BOOST_AUTO_TEST_CASE(the_miner_builds_on_the_switchable_tip)
     CBlockIndex* pindexAfter = MineOne();
     BOOST_CHECK(BestIndex() == pindexAfter);
     BOOST_CHECK(AncestorAt(pindexAfter, g_transient.pTipA->nHeight) == g_transient.pTipA);
+    g_anchors.Restore();
 }
 
 // Fork below the latch anchor: the verdict is permanent on this node. Before the gate
@@ -263,10 +364,12 @@ BOOST_AUTO_TEST_CASE(the_miner_builds_on_the_switchable_tip)
 BOOST_AUTO_TEST_CASE(a_permanently_refused_branch_is_kept_as_a_side_block_too)
 {
     BOOST_REQUIRE(fRegTest);
+    g_anchors.Restore(); // in case the third case did not reach it
     // The latch epoch has to be a V3 epoch with a record of its own.
     const int nV3Epoch = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3);
     while (GetEpochForHeight(BestIndex()->nHeight) - REORG_LATCH_ANCHOR_LAG_EPOCHS <= nV3Epoch)
         MineTo(BestIndex()->nHeight + 50);
+    KeepEpochClearFor(20);
     HeavierSideBranch s;
     BuildBranches(s, 13);
 
@@ -275,10 +378,20 @@ BOOST_AUTO_TEST_CASE(a_permanently_refused_branch_is_kept_as_a_side_block_too)
     std::vector<int> vFinalized;
     for (int e = nLatch; e <= nAsOf; e++)
         vFinalized.push_back(s.pFork->nHeight + 1 + (e - nLatch));
-    InstallFinalizedHeights(nLatch, vFinalized);
+    ScopedFinalizedHeights anchors;
+    anchors.Install(nLatch, vFinalized);
     CheckHeldBlockIsKeptAsSideBlock(s, REORG_FINALITY_REJECT_PERMANENT);
     BOOST_CHECK(Reconsider(s.pTipA));
     BOOST_CHECK(BestIndex() == s.pTipA);
+}
+
+// Whatever ran above, the records this suite leaves are the chain's.
+BOOST_AUTO_TEST_CASE(epoch_records_leave_as_the_chain_built_them)
+{
+    BOOST_REQUIRE(fRegTest);
+    g_anchors.Restore();
+    ReselectTip();
+    CheckEpochRecordsAreTheChains("on exit");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
