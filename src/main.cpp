@@ -303,6 +303,10 @@ multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 map<uint256, NodeId> mapOrphanBlocksByNode;
 map<NodeId, int> mapOrphanCountByNode;
 static const int MAX_ORPHAN_BLOCKS_PER_PEER = 750;
+// A joiner fetching a merge set holds the merging block, one in-flight window of blocks
+// behind it and the set itself, one orphan each, inside this allowance.
+static_assert(1 + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER + DAG_MERGE_SET_BOUND <= MAX_ORPHAN_BLOCKS_PER_PEER,
+              "DAG_MERGE_SET_BOUND does not fit a joiner's per-peer orphan allowance");
 set<pair<COutPoint, unsigned int> > setStakeSeenOrphan;
 
 // Bytes charged for the held orphans. Written only by AddOrphanBlock and
@@ -4978,6 +4982,99 @@ static std::vector<uint256> GetDAGParentsFromBlock(const CBlock& block, int nHei
         vDAGParents.clear();
 
     return vDAGParents;
+}
+
+// ---------------------------------------------------------------------------
+// Merge-set bound
+// ---------------------------------------------------------------------------
+
+CDAGMergeSetWalk::CDAGMergeSetWalk(const CBlockIndex* pindexPrevIn)
+    : pindexPrev(pindexPrevIn),
+      nFloorHeight(pindexPrevIn ? pindexPrevIn->nHeight - DAG_MERGE_SET_BOUND : 0),
+      pindexRoot(NULL), pindexChainScan(pindexPrevIn), nCounted(0)
+{
+    if (pindexPrev && nFloorHeight >= 0)
+        pindexRoot = pindexPrev->GetAncestor(nFloorHeight);
+}
+
+// Whether a primary-chain block committed pindex as a merge parent. The primary chain is
+// scanned top-down only as far as needed (a merge parent is within DAG_MERGE_DEPTH + 1
+// of its child). A chain block without a vertex commits nothing.
+bool CDAGMergeSetWalk::IsMergedByPrimaryChain(const CBlockIndex* pindex)
+{
+    while (pindexChainScan && pindexChainScan->nHeight > pindex->nHeight)
+    {
+        CBlockDAGData data;
+        if (g_dagManager.GetDAGData(pindexChainScan->GetBlockHash(), data))
+            for (size_t i = 1; i < data.vDAGParents.size(); i++)
+                setChainMerged.insert(data.vDAGParents[i]);
+        pindexChainScan = pindexChainScan->pprev;
+    }
+    return setChainMerged.count(pindex->GetBlockHash()) != 0;
+}
+
+// Both cuts come before the root test: blocks in past(primary parent) were already
+// measured when the primary chain committed them.
+bool CDAGMergeSetWalk::AddMergeParent(const uint256& hashMergeParent, std::string& strError)
+{
+    if (!pindexPrev)
+    {
+        strError = "has no primary parent to measure against";
+        return false;
+    }
+    if (nFloorHeight >= 0 && (!pindexRoot || pindexRoot->nHeight != nFloorHeight))
+    {
+        strError = strprintf("has no primary-chain block at height %d to root its merge set",
+                             nFloorHeight);
+        return false;
+    }
+
+    std::vector<uint256> vWork(1, hashMergeParent);
+    while (!vWork.empty())
+    {
+        const uint256 hash = vWork.back();
+        vWork.pop_back();
+        if (!setVisited.insert(hash).second)
+            continue;
+
+        std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(hash);
+        if (mi == mapBlockIndex.end() || !mi->second)
+        {
+            strError = strprintf("commits %s, which is not indexed",
+                                 hash.ToString().substr(0,20).c_str());
+            return false;
+        }
+        const CBlockIndex* pindex = mi->second;
+
+        if (pindex->nHeight <= pindexPrev->nHeight &&
+            pindexPrev->GetAncestor(pindex->nHeight) == pindex)
+            continue;
+        if (IsMergedByPrimaryChain(pindex))
+            continue;
+
+        if (pindexRoot &&
+            (pindex->nHeight < nFloorHeight || pindex->GetAncestor(nFloorHeight) != pindexRoot))
+        {
+            strError = strprintf("merge set reaches %s at height %d, which does not descend from "
+                                 "the primary chain's block at height %d (bound %d)",
+                                 hash.ToString().substr(0,20).c_str(), pindex->nHeight,
+                                 nFloorHeight, DAG_MERGE_SET_BOUND);
+            return false;
+        }
+        if (++nCounted > DAG_MERGE_SET_BOUND)
+        {
+            strError = strprintf("merge set exceeds %d blocks", DAG_MERGE_SET_BOUND);
+            return false;
+        }
+
+        if (pindex->pprev)
+            vWork.push_back(pindex->pprev->GetBlockHash());
+        CBlockDAGData data;
+        if (g_dagManager.GetDAGData(hash, data))
+            for (size_t i = 1; i < data.vDAGParents.size(); i++)
+                vWork.push_back(data.vDAGParents[i]);
+    }
+    return true;
 }
 
 static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
@@ -14100,6 +14197,7 @@ bool CBlock::AcceptBlock()
                                    hashPrevBlock.ToString().substr(0, 20).c_str()));
 
         // Validate merge parents
+        CDAGMergeSetWalk mergeSetWalk(pindexPrev);
         for (unsigned int i = 1; i < vDAGParents.size(); i++)
         {
             // No self-reference
@@ -14126,6 +14224,15 @@ bool CBlock::AcceptBlock()
             if (pindexPrev->nHeight - pMergeParent->nHeight > DAG_MERGE_DEPTH)
                 return DoS(50, error("AcceptBlock() : DAG merge parent[%d] too deep (%d below primary)",
                                       i, pindexPrev->nHeight - pMergeParent->nHeight));
+
+            // Merge set bounded by DAG_MERGE_SET_BOUND in depth and count, refused before the block
+            // is written, so every served merge set fits a joiner's orphan allowance.
+            {
+                std::string strMergeSetError;
+                if (!mergeSetWalk.AddMergeParent(vDAGParents[i], strMergeSetError))
+                    return DoS(50, error("AcceptBlock() : DAG merge parent[%d] %s",
+                                          i, strMergeSetError.c_str()));
+            }
 
             // No duplicate parents
             for (unsigned int j = 0; j < i; j++)

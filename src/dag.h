@@ -34,6 +34,13 @@ static const int GHOSTDAG_K = 18;               // anticone tolerance for blue c
 static const int DAG_MERGE_DEPTH = 64;          // merge parents within this depth of primary (~64s at 1s blocks)
 static const int DAG_PRUNE_DEPTH = 100000;      // prune DAG data older than this (~28h at 1s blocks)
 
+// Max blocks in past(B) minus past(primary parent). Must satisfy 1 +
+// MAX_BLOCKS_IN_FLIGHT_PER_PEER + DAG_MERGE_SET_BOUND <= MAX_ORPHAN_BLOCKS_PER_PEER
+// (static_assert in main.cpp).
+static const int DAG_MERGE_SET_BOUND = 576;
+static_assert(DAG_MERGE_SET_BOUND > 2 * DAG_MERGE_DEPTH,
+              "a policy-compliant merge parent's own merge parents must fit inside the bound");
+
 // DAGKNIGHT adaptive ordering constants
 static const int DAGKNIGHT_MAX_ANTICONE_WINDOW = 64;  // max window for adaptive k estimation
 static const int DAGKNIGHT_MIN_CONFIDENCE = 3;         // min supporting mass difference for confident ordering
@@ -107,6 +114,28 @@ unsigned int MaxDAGParentsAtHeight(int nHeight);
 /** Build a coinbase OP_RETURN script committing to DAG parents.
  *  Format: OP_RETURN <IDAG tag(4) || count(1) || hash1(32) || hash2(32) || ...> */
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents);
+
+/** Consensus walk over a block's merge set. Feed merge parents in commitment order.
+ *  Fails closed on unindexed history. Caller holds cs_main. */
+class CDAGMergeSetWalk
+{
+public:
+    explicit CDAGMergeSetWalk(const CBlockIndex* pindexPrev);
+    bool AddMergeParent(const uint256& hashMergeParent, std::string& strError);
+    int GetCount() const { return nCounted; }
+    int GetFloorHeight() const { return nFloorHeight; }
+
+private:
+    bool IsMergedByPrimaryChain(const CBlockIndex* pindex);
+
+    const CBlockIndex* pindexPrev;
+    int nFloorHeight;                    // primary parent height - DAG_MERGE_SET_BOUND
+    const CBlockIndex* pindexRoot;       // primary chain at nFloorHeight; NULL when that is below genesis
+    const CBlockIndex* pindexChainScan;  // lowest primary-chain block folded into setChainMerged
+    std::set<uint256> setChainMerged;
+    std::set<uint256> setVisited;
+    int nCounted;
+};
 
 
 // ---------------------------------------------------------------------------
