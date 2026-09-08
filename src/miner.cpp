@@ -482,7 +482,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
     if (!fProofOfStake)
     {
-        // Height first in coinbase required for block.version=2.
+        // Height first in coinbase required for block.version=2. Set before the fee
+        // note is built: its binding folds this push in.
         txNew.vin[0].scriptSig = CoinbaseHeightScript(nHeight);
         if (txNew.vin[0].scriptSig.size() > 100)
         {
@@ -1505,13 +1506,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         // failing its own binding check on every node that receives it.
         StampMsTimestampCommitment(pblock.get(), nHeight);
 
-        // The payload binds the output vector, which only settles above. Rebuild it
-        // against the final coinbase; anything that changes its size invalidates the
-        // penalty already applied, so drop the note rather than publish a claim
-        // computed over a block that no longer exists.
-        //
-        // Last thing here that may touch vout. IncrementExtraNonce runs after this
-        // and edits vin[0].scriptSig only, which the binding excludes.
+        // The payload binds vout, so rebuild it against the final coinbase; drop the note
+        // if its size changes. Last vout edit: IncrementExtraNonce touches only
+        // vin[0].scriptSig past the height push.
         if (fFeeNote)
         {
             std::string strDrop;

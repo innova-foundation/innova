@@ -2148,32 +2148,19 @@ void PrivacyVNextLocalGenesis(unsigned char out[32])
     std::memcpy(out, GetGenesisBlockHash().begin(), 32);
 }
 
-// What an IV5 payload commits its transaction's transparent side to.
-//
-// The payload's signing hash covers the payload prefix, so anything placed in the prefix
-// is covered by every proof the payload carries. This digest goes there, and consensus
-// holds it against the transaction the payload arrives in.
-//
-// Scope is the input prevouts, the output vector and the lock time. A spend has no
-// transparent input, so no SignatureHash covers it and its whole transparent surface is
-// mutable: retargeting a scriptPubKey, restating an amount, appending an output or an
-// input, or dropping either vector must all break this.
-//
-// Only the prevouts of vin, never the scriptSigs. A shield's inputs are signed over the
-// whole serialized transaction, which already contains this payload, so binding a
-// scriptSig would make the signature depend on a digest that depends on the signature.
-// Prevouts carry no such cycle: the wallet fixes them before it proves, and signs after.
-// A spend binds an empty vector, which is what makes it a spend -- an appended transparent
-// input would otherwise let a third party attribute a private transfer to an address of
-// their choosing.
-//
-// nTime is excluded on purpose: it is stamped at broadcast, after proving, so that the
-// wallet's proving time does not become a fingerprint. It is inside the txid, so a spend's
-// txid stays third-party mutable and nothing may key on it; the wallet retires notes by
-// key image for that reason.
-//
-// An empty vector is not a special case; it hashes as a zero-length vector, which is what
-// a shield's outputs and a spend's inputs commit to.
+// What an IV5 payload commits of its transaction's transparent side: vin prevouts, vout,
+// nLockTime, and a coinbase's BIP34 height push. scriptSigs and nTime are excluded, so a
+// spend's txid stays mutable; key on key image.
+static std::vector<unsigned char> CoinbaseHeightPush(const CScript& scriptSig)
+{
+    CScript::const_iterator pc = scriptSig.begin();
+    opcodetype opcode;
+    std::vector<unsigned char> vchData;
+    if (!scriptSig.GetOp(pc, opcode, vchData))
+        return std::vector<unsigned char>();
+    return std::vector<unsigned char>(scriptSig.begin(), pc);
+}
+
 uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
 {
     static const char* pszDomain = "Innova/IV5/TransparentBinding/v2";
@@ -2184,6 +2171,8 @@ uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
         ss << tx.vin[i].prevout;
     ss << tx.vout;
     ss << tx.nLockTime;
+    if (tx.IsCoinBase())
+        ss << CoinbaseHeightPush(tx.vin[0].scriptSig);
     return ss.GetHash();
 }
 
