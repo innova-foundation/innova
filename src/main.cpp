@@ -6139,15 +6139,9 @@ int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev,
 // The block subsidy schedule: height in, issuance out. No fees, supply clamp or size
 // penalty, so the finality reserve can be a share of it at any height.
 
-// One rung of the post-DAG proof-of-work ladder: the last height it pays,
-// counted in PRE-DAG-cadence blocks past FORK_HEIGHT_DAG, and the reward the
-// pre-DAG cadence assigns it.
-//
-// GetPostDagProofOfWorkSubsidy stretches the boundary by the block-spacing ratio
-// and divides the reward by the same ratio, so a rung keeps the wall-clock span
-// and the total payout the pre-DAG schedule promised. Storing the offset rather
-// than the absolute height makes the ladder shift-invariant: moving
-// MAINNET_V5_ACTIVATION_SHIFT moves every boundary with the fork.
+// One rung of the post-DAG PoW ladder: last height it pays, in pre-DAG-cadence blocks
+// past FORK_HEIGHT_DAG, and its pre-DAG reward. Offsets are (15s rung end -
+// FORK_HEIGHT_DAG), so they must be re-derived whenever MAINNET_V5_ACTIVATION_SHIFT moves.
 struct PoWPostDagTier
 {
     int nOffsetLast;    // last height, in pre-DAG-cadence blocks past the fork
@@ -6155,18 +6149,18 @@ struct PoWPostDagTier
 };
 
 // Mainnet. Every rung the 15s schedule placed above the DAG fork, as an offset
-// from it. Re-derived for FORK_HEIGHT_DAG = 8,220,000: the 8,250,000 and
-// 8,500,000 rungs now sit above the gate, so they belong here rather than in the
-// pre-DAG ladder. Stretched, they end at 8,670,000 and 12,420,000.
+// from it. Derived for FORK_HEIGHT_DAG = 8,280,000, which lands inside the
+// 8,500,000 rung; the 8,250,000 rung is wholly pre-DAG and stays in the pre-DAG
+// ladder. Stretched, the first rung ends at 11,580,000 and the last at
+// 34,080,000.
 static const PoWPostDagTier vPoWPostDagMainnet[] = {
-    {   30000,  20000000 },   // 0.2  INN (was <= 8,250,000)
-    {  280000,  15000000 },   // 0.15     (was <= 8,500,000)
-    {  530000,  10000000 },   // 0.1      (was <= 8,750,000)
-    {  780000,   5000000 },   // 0.05     (was <= 9,000,000)
-    { 1030000,   1000000 },   // 0.01     (was <= 9,250,000)
-    { 1280000,   5000000 },   // 0.05     (was <= 9,500,000)
-    { 1530000,  10000000 },   // 0.1      (was <= 9,750,000)
-    { 1780000,  20000000 },   // 0.2      (was <= 10,000,000)
+    {  220000,  15000000 },   // 0.15 INN (was <= 8,500,000)
+    {  470000,  10000000 },   // 0.1      (was <= 8,750,000)
+    {  720000,   5000000 },   // 0.05     (was <= 9,000,000)
+    {  970000,   1000000 },   // 0.01     (was <= 9,250,000)
+    { 1220000,   5000000 },   // 0.05     (was <= 9,500,000)
+    { 1470000,  10000000 },   // 0.1      (was <= 9,750,000)
+    { 1720000,  20000000 },   // 0.2      (was <= 10,000,000)
 };
 static const int64_t nPoWPostDagTailMainnet = 10000;      // 0.0001
 
@@ -6383,10 +6377,8 @@ int64_t GetBlockSubsidySchedule(int nHeight)
     else if (nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
     else
-      // Unreachable at the current fork height: the post-DAG path above
-      // intercepts everything from 8,130,000 on, so this ladder is only ever
-      // asked for heights the 8,250,000 rung already covers. Left as the 15s
-      // schedule's next rung so it stays correct if the fork moves up.
+      // Unreachable at the current fork height (the post-DAG path takes 8,280,000 on); kept
+      // as the 15s schedule's next rung in case the fork moves.
       nSubsidy = 10000000; // 0.1 INN
 
       return nSubsidy;

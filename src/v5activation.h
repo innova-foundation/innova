@@ -16,8 +16,8 @@
 //
 // Set against tip 7,917,298 (2026-08-16 02:15 UTC), established by a
 // self-verifying getheaders walk from the hardcoded 7,750,000 checkpoint and
-// cross-checked against two further peers. First gate 8,070,000 leads that tip
-// by 152,702 blocks: ~25.8 days at the measured 14.6-second spacing, ~26.5 days
+// cross-checked against two further peers. First gate 8,130,000 leads that tip
+// by 212,702 blocks: ~35.9 days at the measured 14.6-second spacing, ~36.9 days
 // at 15 seconds. Gates after the DAG gate (base 7,950,000) arrive at 1-second
 // spacing, so the whole tail lands within ~14 hours of DAG activation rather
 // than months later: DAGKNIGHT at base 8,000,000 is the last rung, 50,000
@@ -26,10 +26,11 @@
 //
 // Recheck before tagging: the tip advances ~5,900 blocks a day, so this lead
 // decays by a day for every day it sits unreleased. The release policy enforces
-// a 50,000-block floor, which the recorded lead clears by 102,702 blocks (~17
-// days). Re-run the preflight at tag time and step the shift by one granule if
-// it has decayed; the figures above are arithmetic on the recorded tip, not a
-// fresh measurement.
+// a 50,000-block floor, which the recorded lead clears by 162,702 blocks (~27.5
+// days), and a 250,000-block ceiling, which it sits 37,298 blocks under. Re-run
+// the preflight at tag time and step the shift by one granule if it has
+// decayed; the figures above are arithmetic on the recorded tip, not a fresh
+// measurement.
 //
 // SHIFT is constrained three ways, and only multiples of 30,000 satisfy all of
 // them:
@@ -38,10 +39,13 @@
 //     so the fork is itself an epoch boundary and the first post-DAG epoch is
 //     votable immediately. The bases are multiples of 60, so SHIFT must be too.
 //  2. The release policy works in 10,000-block granules.
-//  3. The gate must stay strictly between the last unstretched emission rung
-//     and the first stretched rung's 15s height -- currently (8,000,000,
-//     8,250,000), i.e. SHIFT in (50,000, 300,000). Re-basing anywhere in that
-//     range needs no further emission-literal changes.
+//  3. The gate must sit strictly between two consecutive rung ends of the 15s
+//     emission schedule -- currently (8,250,000, 8,500,000), i.e. SHIFT in
+//     (300,000, 550,000). A gate on a rung end makes the fork block a one-block
+//     rung. Every re-base re-derives the post-DAG offsets in main.cpp
+//     (vPoWPostDagMainnet): they are 15s rung ends minus the gate, not
+//     shift-invariant. Crossing a rung end also moves that rung between the
+//     pre-DAG ladder and the post-DAG table.
 //
 // Changing SHIFT moves the DAG gate, and the PoW tier boundaries in
 // GetProofOfWorkReward are derived from it: every boundary above the gate is
@@ -51,7 +55,7 @@
 // literals behind, which silently pays whole tiers on the wrong side of the
 // divisor. emission_curve_tests pins both halves.
 static const int MAINNET_V5_ACTIVATION_BASE = 7800000;
-static const int MAINNET_V5_ACTIVATION_SHIFT = 270000;    // first gate 8,070,000
+static const int MAINNET_V5_ACTIVATION_SHIFT = 330000;    // first gate 8,130,000
 
 inline int ShiftMainnetV5Activation(int nBaseHeight)
 {

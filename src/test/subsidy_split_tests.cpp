@@ -325,7 +325,7 @@ BOOST_AUTO_TEST_CASE(epoch_budget_accrues_over_the_preceding_epoch_where_it_is_v
     BOOST_REQUIRE(nFirstRung > 0);
 
     int nStep = -1;
-    for (int h = nFork + 1; h <= nFork + 2500000; h++)
+    for (int h = nFork + 1; h <= nFork + 4000000; h++)
     {
         if (GetBlockSubsidySchedule(h) != nFirstRung)
         {

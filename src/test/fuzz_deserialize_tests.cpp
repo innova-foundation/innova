@@ -2314,7 +2314,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8220300);
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8280300);
 
     // Boundary B is an alias of A, so the ladder carries both on one flag day.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());
@@ -2468,8 +2468,8 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
     BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 10000, 0);
 
     // 3. Emission-literal window on the gate.
-    BOOST_CHECK(GetForkHeightDAG() > 8000000);
-    BOOST_CHECK(GetForkHeightDAG() < 8250000);
+    BOOST_CHECK(GetForkHeightDAG() > 8250000);
+    BOOST_CHECK(GetForkHeightDAG() < 8500000);
 
     // The ladder must start above the top hardened checkpoint, or a gate would
     // land inside history already pinned against reorg.
