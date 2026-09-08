@@ -353,6 +353,23 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
     PutLE64(encryptRequest + 200, 9);
     encryptRequest[208] = 5;
     encryptRequest[240] = 3;
+    // The carrying payload's input context, from the raw export: a transfer over one
+    // key image. The same value has to reach the scan request below.
+    uint8_t contextRequest[INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE + 32] =
+        {0};
+    contextRequest[0] = 1;
+    contextRequest[2] = 2;
+    contextRequest[3] = 1;
+    std::memset(contextRequest + 4, 0x5a, 32);
+    std::memset(contextRequest + INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE,
+                0x6b, 32);
+    uint8_t inputContext[INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE] = {0};
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_input_context(contextRequest, sizeof(contextRequest),
+                                           inputContext, sizeof(inputContext)),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    std::memcpy(encryptRequest + PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET,
+                inputContext, sizeof(inputContext));
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -379,8 +396,10 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
     // O, then C and both ephemeral keys: the scanner rederives I from O.
     std::memcpy(&scanRequest[108], encrypted + 8, 32);
     std::memcpy(&scanRequest[140], encrypted + 72, 96);
-    std::memcpy(&scanRequest[236], encrypted + 168,
-                INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+    std::memcpy(&scanRequest[PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET],
+                inputContext, sizeof(inputContext));
+    std::memcpy(&scanRequest[PRIVACY_VNEXT_NOTE_SCAN_CIPHERTEXT_OFFSET],
+                encrypted + 168, INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
 
     uint8_t fullScan[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE] = {0};
     size_t fullScanWritten = 0;
@@ -395,6 +414,19 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
                                   keys + 168, keys + 232);
     BOOST_CHECK_EQUAL(fullScan[116], 5U);
     BOOST_CHECK_EQUAL(fullScan[148], 3U);
+
+    // The context is in the note's associated data, so any other value fails the tag.
+    {
+        std::vector<uint8_t> otherPayload = scanRequest;
+        otherPayload[PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET] ^= 1;
+        uint8_t misplaced[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE] = {0};
+        size_t misplacedWritten = 0;
+        BOOST_CHECK_EQUAL(
+            innova_privacy_vnext_note_scan(
+                &otherPayload[0], otherPayload.size(), misplaced,
+                sizeof(misplaced), &misplacedWritten),
+            INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID);
+    }
 
     scanRequest[2] = 1;
     std::memset(&scanRequest[76], 0, 32);
@@ -416,8 +448,8 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
                        INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     scanRequest[2] = 2;
     std::memcpy(&scanRequest[44], keys + 72, 32);
-    std::memcpy(&scanRequest[236], encrypted + 345,
-                INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+    std::memcpy(&scanRequest[PRIVACY_VNEXT_NOTE_SCAN_CIPHERTEXT_OFFSET],
+                encrypted + 345, INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     uint8_t outgoingScan[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE] = {0};
     size_t outgoingScanWritten = 0;
     BOOST_REQUIRE_EQUAL(
@@ -482,6 +514,101 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
                       static_cast<size_t>(40 + rangeSize + 64));
 }
 
+// The C++ input-context wrapper and the raw export agree byte for byte, refuse the same
+// inputs, and use the contract's sizes.
+BOOST_AUTO_TEST_CASE(cpp_input_context_matches_the_raw_export)
+{
+    PrivacyVNextDigest binding;
+    for (size_t i = 0; i < 32; ++i)
+        binding[i] = static_cast<unsigned char>(0xa0 + i);
+    std::string error;
+    std::vector<PrivacyVNextDigest> vKeyImages;
+    for (size_t nImages = 0; nImages <= 2; ++nImages)
+    {
+        vKeyImages.resize(nImages);
+        for (size_t k = 0; k < nImages; ++k)
+            vKeyImages[k].fill(static_cast<unsigned char>(0x10 * (k + 1)));
+
+        std::vector<uint8_t> request(
+            INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE + (nImages * 32), 0);
+        request[0] = 1;
+        request[2] = iv5::NOTE_TRANSFER;
+        request[3] = static_cast<uint8_t>(nImages);
+        std::memcpy(&request[4], binding.data(), 32);
+        for (size_t k = 0; k < nImages; ++k)
+            std::memcpy(&request[INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE +
+                                 (k * 32)],
+                        vKeyImages[k].data(), 32);
+        uint8_t raw[INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE] = {0};
+        BOOST_REQUIRE_EQUAL(
+            innova_privacy_vnext_input_context(&request[0], request.size(), raw,
+                                               sizeof(raw)),
+            INNOVA_PRIVACY_VNEXT_VALID);
+
+        PrivacyVNextDigest wrapped;
+        BOOST_REQUIRE_MESSAGE(
+            DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, binding, vKeyImages,
+                                           wrapped, error),
+            error);
+        BOOST_CHECK_EQUAL_COLLECTIONS(wrapped.begin(), wrapped.end(), raw,
+                                      raw + sizeof(raw));
+    }
+
+    // The operation and the key-image order both enter.
+    PrivacyVNextDigest transfer;
+    PrivacyVNextDigest shield;
+    PrivacyVNextDigest reordered;
+    BOOST_REQUIRE(DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, binding,
+                                                 vKeyImages, transfer, error));
+    BOOST_REQUIRE(DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, binding,
+                                                 vKeyImages, shield, error));
+    std::vector<PrivacyVNextDigest> vReversed(2);
+    vReversed[0] = vKeyImages[1];
+    vReversed[1] = vKeyImages[0];
+    BOOST_REQUIRE(DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, binding,
+                                                 vReversed, reordered, error));
+    BOOST_CHECK(transfer != shield);
+    BOOST_CHECK(transfer != reordered);
+
+    // The input bound is enforced before a request is framed, and a refusal leaves no
+    // value behind.
+    std::vector<PrivacyVNextDigest> vTooMany(INNOVA_PRIVACY_VNEXT_MAX_INPUTS + 1);
+    PrivacyVNextDigest refused;
+    refused.fill(0xff);
+    BOOST_CHECK(!DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, binding, vTooMany,
+                                                refused, error));
+    BOOST_CHECK(!error.empty());
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    BOOST_CHECK(refused == zero);
+
+    // The sizes the C++ framing is pinned to are the sizes the contract records.
+    size_t nRequired = 0;
+    BOOST_REQUIRE_EQUAL(innova_privacy_vnext_protocol_contract(NULL, 0, &nRequired),
+                        INNOVA_PRIVACY_VNEXT_VALID);
+    std::vector<uint8_t> contract(nRequired);
+    size_t nWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_protocol_contract(&contract[0], contract.size(), &nWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    json_spirit::Value parsed;
+    BOOST_REQUIRE(json_spirit::read_string(
+        std::string(contract.begin(), contract.end()), parsed));
+    const json_spirit::Object& root = parsed.get_obj();
+    const json_spirit::Object& noteEncryption =
+        json_spirit::find_value(root, "note_encryption").get_obj();
+    BOOST_CHECK_EQUAL(
+        json_spirit::find_value(noteEncryption, "scan_request_prefix_bytes").get_int(),
+        (int)INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE);
+    BOOST_CHECK_EQUAL(
+        json_spirit::find_value(noteEncryption, "encrypt_request_bytes").get_int(),
+        (int)INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE);
+    const json_spirit::Object& inputContext =
+        json_spirit::find_value(root, "input_context").get_obj();
+    BOOST_CHECK_EQUAL(json_spirit::find_value(inputContext, "output_bytes").get_int(),
+                      (int)INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE);
+}
+
 // The wrappers own the request framing, so a note encrypted through the raw ABI
 // must scan back through the C++ surface with the same fields the raw scan
 // produced. Anything else means the framing drifted.
@@ -513,6 +640,20 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     PutLE64(encryptRequest + 200, 9);
     encryptRequest[208] = 5;
     encryptRequest[240] = 3;
+    // The carrying payload's context, through the C++ surface: a transfer over two key
+    // images.
+    PrivacyVNextDigest binding;
+    binding.fill(0x33);
+    std::vector<PrivacyVNextDigest> vKeyImages(2);
+    vKeyImages[0].fill(0x44);
+    vKeyImages[1].fill(0x45);
+    PrivacyVNextDigest inputContext;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, binding, vKeyImages,
+                                       inputContext, error),
+        error);
+    std::memcpy(encryptRequest + PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET,
+                inputContext.data(), 32);
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -529,6 +670,7 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     std::memcpy(note.leafC.data(), encrypted + 72, 32);
     std::memcpy(note.noteEphemeral.data(), encrypted + 104, 32);
     std::memcpy(note.tweakEphemeral.data(), encrypted + 136, 32);
+    note.inputContext = inputContext;
     note.vchCiphertext.assign(
         encrypted + 168,
         encrypted + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
@@ -597,6 +739,19 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     BOOST_CHECK_EQUAL(rejected.nAmount, 0U);
     BOOST_CHECK(rejected.spendSecret == zero);
     BOOST_CHECK(rejected.keyImage == zero);
+
+    // Under another payload's context the note is not this payload's, and the miss
+    // leaves nothing behind either.
+    PrivacyVNextEncryptedNote elsewhere = note;
+    elsewhere.inputContext[0] ^= 1;
+    PrivacyVNextScannedNote misplaced;
+    BOOST_CHECK(!ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 1, 0, elsewhere,
+                                      keys.viewSecret, keys.spendSecret,
+                                      misplaced, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK_EQUAL(misplaced.nAmount, 0U);
+    BOOST_CHECK(misplaced.spendSecret == zero);
+    BOOST_CHECK(misplaced.keyImage == zero);
 
     // A ciphertext sized for the wrong scan kind is rejected before the ABI.
     PrivacyVNextScannedNote mismatched;
@@ -891,6 +1046,19 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     PutLE64(encryptRequest + 200, 99);
     encryptRequest[208] = 17;
     encryptRequest[240] = 19;
+    // The context of the payload built below: a shield over this binding, no key images.
+    // payload_scan rederives it from the prefix it reads, so the note opens only if the
+    // C++ wrapper and the archive's decoder derive the same value.
+    PrivacyVNextDigest binding;
+    binding.fill(0x5a);
+    PrivacyVNextDigest inputContext;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, binding,
+                                       std::vector<PrivacyVNextDigest>(), inputContext,
+                                       error),
+        error);
+    std::memcpy(encryptRequest + PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET,
+                inputContext.data(), 32);
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -934,8 +1102,9 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     uint8_t fee[8] = {0};
     PutLE64(fee, 1);
     payload.insert(payload.end(), fee, fee + 8);
-    // Transparent binding: opaque to the decoder, so any 32 bytes parse.
-    payload.insert(payload.end(), 32, 0x5a);
+    // Transparent binding: opaque to the decoder, but the input context covers it.
+    const size_t nBindingAt = payload.size();
+    payload.insert(payload.end(), binding.begin(), binding.end());
     payload.push_back(0);
     payload.push_back(1);
     // O, then C and both ephemeral keys: the leaf's I is derived, not serialized.
@@ -961,8 +1130,8 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
                                 vKeys, matches, keyImages, nOutputCount, error),
         error);
-    BOOST_CHECK_EQUAL(matches[0].nKeyIndex, 0);
     BOOST_REQUIRE_EQUAL(matches.size(), 1U);
+    BOOST_CHECK_EQUAL(matches[0].nKeyIndex, 0);
     BOOST_CHECK(keyImages.empty());
     BOOST_CHECK_EQUAL(matches[0].nOutputIndex, 0U);
     BOOST_CHECK_EQUAL(matches[0].nAmount, 99U);
@@ -1012,6 +1181,18 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
                                 vStranger, missed, missedKeyImages, nOutputCount, error),
         error);
     BOOST_CHECK(missed.empty());
+
+    // The same output under another binding is another payload's: the scanner derives
+    // a different context, the tag fails, and that is a miss rather than an error.
+    std::vector<unsigned char> rebound = payload;
+    rebound[nBindingAt] ^= 1;
+    std::vector<PrivacyVNextScanMatch> foreign;
+    std::vector<PrivacyVNextDigest> foreignKeyImages;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, rebound,
+                                vKeys, foreign, foreignKeyImages, nOutputCount, error),
+        error);
+    BOOST_CHECK(foreign.empty());
 
     // A wallet holding several indices must be told which one opened the note.
     std::vector<PrivacyVNextScanKey> vMany(3);
@@ -1287,11 +1468,11 @@ BOOST_AUTO_TEST_CASE(the_envelope_table_is_the_same_table_on_both_sides)
     size_t nCompared = 0;
     for (uint32_t nVersion = 1999; nVersion <= 2010; ++nVersion)
     {
-        for (int nOperationIndex = 0; nOperationIndex <= 11; ++nOperationIndex)
+        for (int nOperationIndex = 0; nOperationIndex <= 12; ++nOperationIndex)
         {
             // Every known operation, one past the last, and the reserved sentinel.
             const uint8_t nOperation =
-                nOperationIndex == 11
+                nOperationIndex == 12
                     ? iv5::NOTE_OPERATION_NONE
                     : static_cast<uint8_t>(nOperationIndex);
             for (uint8_t nProfile = 0; nProfile <= iv5::FINALITY_NULLSTAKE_V3 + 1;
@@ -1339,10 +1520,63 @@ BOOST_AUTO_TEST_CASE(the_envelope_table_is_the_same_table_on_both_sides)
                                      iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
                                      iv5::DISCLOSURE_MASK));
     BOOST_CHECK(iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER));
-    BOOST_CHECK(!iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER + 1));
+    BOOST_CHECK(iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_VOTE));
+    BOOST_CHECK(!iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_VOTE + 1));
     BOOST_CHECK(iv5::IsAttestationOperation(iv5::NOTE_COLLATERAL_REGISTER));
     BOOST_CHECK(iv5::IsAttestationOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER));
     BOOST_CHECK(!iv5::IsAttestationOperation(iv5::NOTE_TRANSFER));
+    // A vote consumes its note: a spend, never an attestation.
+    BOOST_CHECK(!iv5::IsAttestationOperation(iv5::NOTE_FINALITY_VOTE));
+    BOOST_CHECK(iv5::IsNoteFinalityVoteOperation(iv5::NOTE_FINALITY_VOTE));
+    BOOST_CHECK(!iv5::IsNoteFinalityVoteOperation(iv5::NOTE_TRANSFER));
+    BOOST_CHECK(!iv5::IsNoteFinalityVoteOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER));
+}
+
+// A vote may be only fully private, owner-authorized, in the 2008 envelope, and never a
+// finality object; the linked decoder must agree.
+BOOST_AUTO_TEST_CASE(a_note_vote_is_admitted_only_fully_private_at_2008)
+{
+    BOOST_CHECK(iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_VOTE, iv5::FINALITY_NONE,
+                                    iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                    iv5::DISCLOSURE_MASK));
+    BOOST_CHECK_EQUAL(
+        innova_privacy_vnext_envelope_allows(2008, iv5::NOTE_FINALITY_VOTE,
+                                             iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                             iv5::FINALITY_OBJECT_NONE,
+                                             iv5::DISCLOSURE_MASK),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    for (uint8_t nMask = 0; nMask < iv5::DISCLOSURE_MASK; ++nMask)
+    {
+        BOOST_CHECK_MESSAGE(
+            !iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_VOTE, iv5::FINALITY_NONE,
+                                 iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE, nMask),
+            strprintf("mask %u must not carry a note vote", (unsigned)nMask));
+        BOOST_CHECK_MESSAGE(
+            innova_privacy_vnext_envelope_allows(
+                2008, iv5::NOTE_FINALITY_VOTE, iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                iv5::FINALITY_OBJECT_NONE, nMask) != INNOVA_PRIVACY_VNEXT_VALID,
+            strprintf("the linked decoder admits a note vote at mask %u",
+                      (unsigned)nMask));
+    }
+    const uint8_t vOtherModes[3] = {iv5::AUTH_COLD_STAKER,
+                                    iv5::AUTH_M_OF_N_PUBLIC_SIGNERS,
+                                    iv5::AUTH_M_OF_N_HIDDEN_SIGNERS};
+    for (size_t i = 0; i < 3; ++i)
+        BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_VOTE,
+                                         iv5::FINALITY_NONE, vOtherModes[i],
+                                         iv5::FINALITY_OBJECT_NONE,
+                                         iv5::DISCLOSURE_MASK));
+    for (int nVersion = 2000; nVersion < 2008; ++nVersion)
+        BOOST_CHECK_MESSAGE(
+            !iv5::EnvelopeAllows(nVersion, iv5::NOTE_FINALITY_VOTE, iv5::FINALITY_NONE,
+                                 iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                 iv5::DISCLOSURE_MASK),
+            strprintf("wire version %d must not carry a note vote", nVersion));
+    for (uint8_t nObject = iv5::FINALITY_OBJECT_VOTE;
+         nObject <= iv5::FINALITY_OBJECT_COMMITTEE_ROTATION; ++nObject)
+        BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_VOTE,
+                                         iv5::FINALITY_NONE, iv5::AUTH_OWNER, nObject,
+                                         iv5::DISCLOSURE_MASK));
 }
 
 // Only owner authorization is enforced by a proof, so envelopes admit only that mode;
@@ -1476,6 +1710,7 @@ BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_operation_the_decoder_ad
     BOOST_CHECK(setAllowed == setNamed);
     BOOST_CHECK_EQUAL(setAllowed.count(iv5::NOTE_COLLATERAL_REGISTER), 1U);
     BOOST_CHECK_EQUAL(setAllowed.count(iv5::NOTE_FINALITY_MEMBER_REGISTER), 1U);
+    BOOST_CHECK_EQUAL(setAllowed.count(iv5::NOTE_FINALITY_VOTE), 1U);
 
     // The contract pins the ABI schema it was written against; a build where the two
     // drift is a contract describing a different interface than the one linked in.

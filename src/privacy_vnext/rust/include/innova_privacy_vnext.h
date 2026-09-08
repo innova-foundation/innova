@@ -27,11 +27,16 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_KEY_DERIVATION_OUTPUT_SIZE 232u
 #define INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE 300u
 #define INNOVA_PRIVACY_VNEXT_TREE_ROOT_SIZE 44u
-#define INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE 236u
+#define INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE 268u
 #define INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE 212u
 #define INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE 177u
 #define INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE 241u
-#define INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE 272u
+#define INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE 304u
+/* Per-payload value every output's one-time key and note tag are derived under. */
+#define INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE 32u
+/* schema_u16 || operation_u8 || key_image_count_u8 || transparent_binding_32, then the
+ * key images, 32 each, in payload order. */
+#define INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE 36u
 #define INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE 586u
 #define INNOVA_PRIVACY_VNEXT_FCMP_PROVE_RESPONSE_HEADER_SIZE 4u
 #define INNOVA_PRIVACY_VNEXT_FCMP_PROVE_RESPONSE_RECORD_SIZE 256u
@@ -40,17 +45,17 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_PROOF_OFFSET 128u
 #define INNOVA_PRIVACY_VNEXT_SENDER_DISCLOSURE_PROOF_SIZE 128u
 #define INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE 160u
-#define INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_REQUEST_SIZE 264u
+#define INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_REQUEST_SIZE 296u
 #define INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_REQUEST_SIZE 140u
 #define INNOVA_PRIVACY_VNEXT_VALUE_PROVE_HEADER_SIZE 116u
 #define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE 124u
 /* Compressed secp256k1 tally-encryption key of one finality-committee member. */
 #define INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE 33u
-/*
- * Attestation count, registration context and member key, after the key images and
- * output leaves. Fixed width and always present.
- */
-#define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE 66u
+/* Boundary block hash (32) and u32 LE boundary height a note finality vote names. */
+#define INNOVA_PRIVACY_VNEXT_FINALITY_VOTE_CONTEXT_SIZE 36u
+/* Attestation count, registration context, member key and vote boundary, after the key
+ * images and output leaves. Fixed width and always present. */
+#define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE 102u
 /* Atomic units one collateralnode attests to; proved, never published. */
 #define INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT 2500000000000ull
 #define INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_PROOF_SIZE 64u
@@ -300,6 +305,14 @@ int32_t innova_privacy_vnext_note_encrypt(
     uint8_t *out,
     size_t out_capacity,
     size_t *out_written);
+/* Derive a payload's input context (INPUT_CONTEXT_SIZE bytes) from its operation,
+ * transparent binding and key images. Feeds note_encrypt, note_scan and
+ * receiver_disclosure_prove. */
+int32_t innova_privacy_vnext_input_context(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_len);
 int32_t innova_privacy_vnext_value_prove(
     const uint8_t *request,
     size_t request_len,

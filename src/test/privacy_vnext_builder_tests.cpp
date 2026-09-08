@@ -45,6 +45,20 @@ PrivacyVNextDigest NoTransparentSideBinding()
 
 const PrivacyVNextDigest kNoTransparentSide = NoTransparentSideBinding();
 
+// Input context of a shield with no transparent side; hand-funded notes only need
+// encrypt and scan to agree on it.
+PrivacyVNextDigest FundingContext()
+{
+    PrivacyVNextDigest context;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, kNoTransparentSide,
+                                       std::vector<PrivacyVNextDigest>(), context,
+                                       error),
+        error);
+    return context;
+}
+
 // Payloads must declare the chain this binary runs on.
 PrivacyVNextDigest LocalGenesis()
 {
@@ -79,7 +93,8 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(13), BuilderScalar(14), nAmount,
-                                BuilderScalar(17), BuilderScalar(19), note,
+                                BuilderScalar(17), BuilderScalar(19), FundingContext(),
+                                note,
                                 error),
         error);
     BOOST_CHECK_EQUAL(note.vchRecipientCiphertext.size(),
@@ -96,6 +111,7 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     onChain.noteEphemeral = note.noteEphemeral;
     onChain.tweakEphemeral = note.tweakEphemeral;
     onChain.vchCiphertext = note.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
 
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
@@ -227,7 +243,8 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(29), BuilderScalar(30), nAmount,
-                                BuilderScalar(31), BuilderScalar(37), funding,
+                                BuilderScalar(31), BuilderScalar(37), FundingContext(),
+                                funding,
                                 error),
         error);
 
@@ -273,6 +290,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,
@@ -347,7 +365,8 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), BuilderScalar(42), nAmount,
-                                BuilderScalar(43), BuilderScalar(47), funding,
+                                BuilderScalar(43), BuilderScalar(47), FundingContext(),
+                                funding,
                                 error),
         error);
 
@@ -387,6 +406,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,
@@ -937,7 +957,8 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), BuilderScalar(42), nAmount,
-                                BuilderScalar(43), BuilderScalar(47), funding,
+                                BuilderScalar(43), BuilderScalar(47), FundingContext(),
+                                funding,
                                 error),
         error);
 
@@ -977,6 +998,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,
@@ -1266,7 +1288,8 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
                                 funded.keys.outgoingViewSecret,
                                 BuilderScalar(29), BuilderScalar(30),
                                 funded.nAmount, BuilderScalar(31),
-                                BuilderScalar(37), funding, error),
+                                BuilderScalar(37), FundingContext(),
+                                funding, error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -1305,6 +1328,7 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,
@@ -1703,7 +1727,8 @@ BOOST_AUTO_TEST_CASE(reused_output_material_yields_one_owner_for_two_notes)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(31), tweakEphemeral, 1000, y,
-                                BuilderScalar(37), first, error),
+                                BuilderScalar(37), FundingContext(),
+                                first, error),
         error);
 
     PrivacyVNextEncryptedOutput second;
@@ -1711,7 +1736,8 @@ BOOST_AUTO_TEST_CASE(reused_output_material_yields_one_owner_for_two_notes)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), tweakEphemeral, 7000, y,
-                                BuilderScalar(43), second, error),
+                                BuilderScalar(43), FundingContext(),
+                                second, error),
         error);
 
     BOOST_CHECK(first.leaf.owner == second.leaf.owner);

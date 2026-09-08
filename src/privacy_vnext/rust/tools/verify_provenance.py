@@ -143,6 +143,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_key_derive",
             "innova_privacy_vnext_note_scan",
             "innova_privacy_vnext_note_encrypt",
+            "innova_privacy_vnext_input_context",
             "innova_privacy_vnext_value_prove",
             "innova_privacy_vnext_receiver_disclosure_prove",
             "innova_privacy_vnext_amount_equality_prove",

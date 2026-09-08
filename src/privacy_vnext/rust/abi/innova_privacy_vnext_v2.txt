@@ -33,6 +33,7 @@ functions:
   innova_privacy_vnext_key_derive(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_note_scan(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_note_encrypt(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_input_context(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_len)
   innova_privacy_vnext_value_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_receiver_disclosure_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_amount_equality_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -64,7 +65,7 @@ capabilities:
   bit-9 address-codec
   bit-10 key-derivation
   bit-11 note-scanning
-  bit-12 note-encryption
+  bit-12 note-encryption and input-context derivation
   bit-13 value-proof-construction
   bit-14 validated-payload-state-effects
   bit-15 nullifier-accumulator-update-and-root
@@ -148,8 +149,10 @@ value-prove-response:
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
   behavior: prove and independently verify range and signed public/private balance before returning
 receiver-disclosure-prove-request:
-  exact-size: 264
-  fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, tweak-ephemeral-public-32, tweak-ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32
+  exact-size: 296
+  fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, tweak-ephemeral-public-32, tweak-ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32, input-context-32
+  input-context: of the payload the output sits in; the tweak the proof opens O against is derived under it, and
+    validation derives the same value from the payload prefix
   ephemeral-rule: the tweak ephemeral only; supplying the note ephemeral proves nothing about O and
     would publish the key the ciphertext is under
   behavior: prove and then independently verify the receiver disclosure before returning
@@ -234,8 +237,11 @@ note-ephemeral-keys:
   note-ephemeral: R1 = G*r1; its shared point V*r1 keys the recipient ciphertext and is never published
   tweak-ephemeral: R2 = G*r2; its shared point V*r2 derives the address tweak and is what a receiver
     disclosure publishes
-  address-tweak: blake2b-512-to-scalar(Innova/IV5/ReceiverTweak/v1, V*r2, R2, spend, view, output-index)
+  address-tweak: blake2b-512-to-scalar(Innova/IV5/ReceiverTweak/v2, V*r2, R2, spend, view, output-index, input-context)
   owner-key: O = spend + tweak-times-Ed25519-G + y-times-Monero-T
+  uniqueness: the input context differs between any two accepted payloads, so O is unique per payload
+    by construction and no payload can re-issue a one-time key already on chain; a second leaf under an
+    existing O would share its key image and strand whichever is spent second
   separation-rule: the point a disclosure opens keys nothing, so disclosing an output proves which
     address it pays without exposing the amount, y, or the commitment mask
   equal-ephemerals: consensus-invalid in the payload and rejected by note encryption
@@ -244,7 +250,11 @@ note-ciphertext:
   outgoing-exact-size: 241
   construction: unique-key ChaCha20 stream from pinned rand_chacha ChaCha20Rng, then keyed BLAKE2b-256 encrypt-then-MAC
   kdf: BLAKE2b-512 over a domain, secret material, and length-prefixed associated data; first 32 bytes encrypt and last 32 bytes authenticate
-  associated-data: schema, network, address-type, output-index, genesis, O, I, C, note-ephemeral, and tweak-ephemeral, with I derived from O by note-key-image-base
+  associated-data-domain: Innova/IV5/NoteAssociatedData/v2
+  associated-data: schema, network, address-type, output-index, genesis, O, I, C, note-ephemeral, tweak-ephemeral, and input-context, with I derived from O by note-key-image-base
+  copy-rule: the input context is the only transaction-unique field in the associated data; without it an output
+    record copied verbatim into another payload authenticates and scans as the recipient's under a one-time key it
+    then shares with the original
   recipient-secret: note-ephemeral-DH shared point from recipient view key
   outgoing-secret: wallet outgoing-view secret scalar bytes
   recipient-plaintext: schema, network, address-type, output-index, recipient spend/view public keys, amount, y, and commitment mask
@@ -257,23 +267,44 @@ note-key-image-base:
   rule: I is never carried on the wire in any request or in the payload; every producer and
     every validator recomputes it from O, so a sender cannot choose it and it can carry no
     owner material that would link the notes paid to one address
+input-context:
+  derivation: first-32-bytes(blake2b-512(Innova/IV5/InputContext/v1, u64le(1), operation-u8, u64le(32), transparent-binding-32, u64le(32*n), key-images-32-each))
+  field-prefix: every field is preceded by its byte length as u64-le, as in the disclosure transcripts
+  key-image-order: payload order, exactly as the input records carry them; never sorted
+  inputs: the payload's operation byte, transparent binding and key images and nothing else; no height, anchor,
+    mempool or other chain-local value enters
+  uniqueness: outputs require retiring inputs -- a key image the spent-key index retires, or transparent value
+    behind a prevout the binding names and the UTXO rule retires -- so the triple occurs in at most one accepted
+    payload; a coinbase carries no prevout and its binding covers the coinbase height push instead
+  consumers: the address tweak of every output, the associated data of every note ciphertext, and the receiver
+    disclosure of every output
+  request: schema-u16-le, operation-u8, key-image-count-u8, transparent-binding-32, key-images-32-each
+  request-size: 36 plus 32 per key image; key-image-count above 16 is resource-limit
+  output: exactly 32 bytes
+  leaf-only-scan-constraint: the context is derivable only from the payload prefix, so a leaf (O, I, C) alone
+    cannot be scanned or spent-checked; any sync that ships leaves without payloads -- collateralnode-served
+    sync, path-mode witnesses, a light wallet -- must ship (operation, transparent binding, key images) per
+    payload, or the derived context itself per output, or its recipients cannot derive their owner keys
+  storage-rule: a wallet that stores a note for a later single-note scan stores its input context with it
 note-encrypt-request:
-  exact-size: 272
-  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, note-ephemeral-secret-32, tweak-ephemeral-secret-32, amount-u64-le, y-32, mask-32
+  exact-size: 304
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, note-ephemeral-secret-32, tweak-ephemeral-secret-32, amount-u64-le, y-32, mask-32, input-context-32
+  input-context: of the payload the output will be carried in, from innova_privacy_vnext_input_context
   ephemeral-secrets: both nonzero canonical scalars, independently drawn, and distinct
 note-encrypt-result:
   exact-size: 586
   fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, O-I-C-160 with note-ephemeral and tweak-ephemeral, recipient-ciphertext-177, outgoing-ciphertext-241
   self-check: outgoing ciphertext is independently authenticated, decrypted, and matched to every input and public output component before return
 note-scan-request:
-  prefix-exact-size: 236
-  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-C-note-ephemeral-tweak-ephemeral-128, ciphertext-to-eof
+  prefix-exact-size: 268
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-C-note-ephemeral-tweak-ephemeral-128, input-context-32, ciphertext-to-eof
+  input-context: of the payload that carried the output; a wrong context fails the tag and is consensus-invalid
   scan-kinds: 0 full-spend, 1 view-only, 2 outgoing
   spend-material: base spend secret for full-spend; all zero for view-only and outgoing
 note-scan-result:
   exact-size: 212
   fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, amount-u64-le, recipient-spend-32, recipient-view-32, derived-spend-secret-or-zero-32, y-32, mask-32, key-image-or-zero-32
-  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, both ephemeral relations for outgoing scans, and I-times-derived-spend-secret key image for full scans, with I derived from O by note-key-image-base
+  validation: authenticate before decrypting; verify all context fields, address linkage, O opening under the input context, C opening, both ephemeral relations for outgoing scans, and I-times-derived-spend-secret key image for full scans, with I derived from O by note-key-image-base
   scan-cost: a recipient scan derives only the note shared point to authenticate; the tweak shared point is derived after the tag passes, so a candidate that is not the caller's costs one scalar multiplication as before
 tree-state:
   exact-size: 300
@@ -399,18 +430,24 @@ payload-scan-response:
   behavior: reads the header, inputs and outputs with the same decoder validation uses, and verifies no proof; results are meaningful only for a payload consensus has accepted
   key-images: every key image the payload spends, so a caller can retire its own notes without a second decode
   authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
+  input-context: derived by the scanner from the prefix it reads, so a full-payload scan needs nothing extra; a
+    caller that keeps a matched note for a later note-scan must keep the payload's input context with it
 payload-effects-response:
   header-exact-size: 124
   header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32, transparent-value-balance-i64-le, fee-u64-le, transparent-binding-32
   pool-delta: transparent-value-balance minus fee, for every operation; the caller tracks the
     running total so no more value can leave the pool than entered it
   trailing-fields: input-count key-images-32 followed by output-count O-I-C leaves-96
-  trailer-exact-size: 33
-  trailer-fields: attestation-count-u8, registration-context-32, attestation-count key-images-32
+  trailer-exact-size: 102
+  trailer-fields: attestation-count-u8, registration-context-32, finality-member-key-33, vote-boundary-hash-32, vote-boundary-height-u32-le, attestation-count key-images-32
   attestation-key-images: key images a collateral attestation published without spending
     anything; reported apart from the spends because the caller's spend path records what
     it is handed, and a note recorded as spent can never move again
   registration-context: what an attestation bound its off-chain node context to; zero otherwise
+  finality-member-key: the compressed secp256k1 key a finality-member registration published; zero otherwise
+  vote-boundary: the epoch boundary block hash and height a note finality vote names; zero
+    otherwise, and the hash is never zero for a vote, so it is the one discriminator of a vote
+    in the effects
   behavior: rerun complete payload validation before returning ordered state effects; no C++ payload re-decoding is permitted
 payload-validation:
   strict canonical CompactSize and no trailing bytes
@@ -427,6 +464,13 @@ payload-validation:
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
   output-record-points: owner-O-32, commitment-C-32, note-ephemeral-32, tweak-ephemeral-32, which must differ; the leaf's I is derived from O by note-key-image-base and is absent from the record
+  output-leaves: no two outputs of one payload may derive the same I; the mirror of the key-image rule on inputs,
+    since two leaves sharing I share a key image and spending either strands the other
+  output-shape: a payload with at least one output must consume at least one key image or carry a positive
+    transparent value balance; with neither its input context is constant and an identical payload would
+    re-derive every one-time key it created
+  input-context: derived once from the operation, transparent binding and key images of the prefix and applied
+    to every output's disclosure check; see input-context
   membership: exact upstream proof size and full FCMP++ verification against finalized-root, signing-hash, pseudo-outs, and key-images
   exposed-amount: C equals opening-times-Ed25519-G plus value-times-Monero-H
   hidden-amount-range: canonical aggregate Monero Bulletproof+ over all output commitments; deterministic verifier weights bind signing-hash, commitments, and proof
@@ -442,4 +486,11 @@ payload-validation:
     one node's attestation cannot be replayed under another node's identity; the balance
     proof section is empty and the operation proof carries the 64-byte amount-equality
     proof over the payload's own pseudo-output at 2500000000000 atomic units
+  note-finality-vote: outer version 2008 operation 10, disclosure mask 7 and owner
+    authorization only; exactly one input and one output, zero transparent value balance and
+    zero fee; a nonzero 32-byte boundary block hash and a u32 LE boundary height follow the
+    outputs, inside the signing hash, so a transfer's proofs cannot be repackaged as a vote
+    and a vote cannot be replayed into another epoch; the key image is a spend and the
+    output an ordinary leaf, so the effects are a transfer's plus the two vote fields in the
+    trailer; which boundary is votable is the caller's rule
   remaining-inactive-work: none

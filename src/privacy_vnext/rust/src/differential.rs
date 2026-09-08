@@ -15,14 +15,16 @@ use rand_core::{RngCore, SeedableRng};
 use sha2::Sha256;
 
 use crate::{
-    disclosure, fcmp, note, payload, tree, value, ResultCode, FINALITY_OBJECT_NONE, NOTE_SHIELD,
-    NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, PRODUCT_CONTRACT,
+    disclosure, fcmp, note, payload, tree, value, ResultCode, FINALITY_OBJECT_NONE,
+    NOTE_FINALITY_VOTE, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
+    PRODUCT_CONTRACT,
 };
 
 const WIRE_VERSION: u32 = 2008;
 const NETWORK: u8 = 1;
 const GENESIS: [u8; 32] = [0x11; 32];
 const ADDRESS_TYPE: u8 = 0;
+const TRANSPARENT_BINDING: [u8; 32] = [0x5a; 32];
 /// Enough leaves that the level-1 branch has a real sibling rather than only padding.
 const FILLER_LEAVES: usize = 45;
 
@@ -114,6 +116,57 @@ struct Note {
     /// `O = x*G + y*T`; the spend witness.
     x: Scalar,
     y: Scalar,
+    /// The context of the payload this note was encrypted for.
+    input_context: [u8; 32],
+}
+
+impl Note {
+    /// The linking tag any spend of this note publishes: `x * I`.
+    fn key_image(&self) -> [u8; 32] {
+        (CompressedEdwardsY(self.output_i)
+            .decompress()
+            .expect("a leaf I decompresses")
+            * self.x)
+            .compress()
+            .to_bytes()
+    }
+
+    /// Whether `O` is the address tweaked under `context`, as a scanner would recompute it.
+    fn derives_under(&self, context: &[u8; 32]) -> bool {
+        let tweak_shared = (CompressedEdwardsY(self.address.view)
+            .decompress()
+            .expect("view key decompresses")
+            * self.tweak_ephemeral_secret)
+            .compress()
+            .to_bytes();
+        let tweak = disclosure::receiver_tweak(
+            &tweak_shared,
+            &self.tweak_ephemeral,
+            &self.address.spend,
+            &self.address.view,
+            self.output_index,
+            context,
+        );
+        let expected = CompressedEdwardsY(self.address.spend)
+            .decompress()
+            .expect("spend key decompresses")
+            + (ED25519_BASEPOINT_POINT * tweak)
+            + (monero_t() * self.y);
+        expected.compress().to_bytes() == self.output_o
+    }
+}
+
+/// The context a shield with this harness's binding derives its outputs under. Every note
+/// that only ever sits in the tree as an input or a filler is minted under it.
+fn shield_context() -> [u8; 32] {
+    note::input_context(NOTE_SHIELD, &TRANSPARENT_BINDING, &[])
+}
+
+/// The context a payload of `operation` spending `inputs`, in that order, derives its
+/// outputs under.
+fn context_of(operation: u8, inputs: &[Note]) -> [u8; 32] {
+    let key_images = inputs.iter().map(Note::key_image).collect::<Vec<_>>();
+    note::input_context(operation, &TRANSPARENT_BINDING, &key_images)
 }
 
 // Field offsets in a canonical note-encryption result.
@@ -131,12 +184,19 @@ fn field32(bytes: &[u8], range: core::ops::Range<usize>) -> [u8; 32] {
     out
 }
 
-/// Build a real note through the shipped encryptor, and recover its spend witness.
-fn make_note(
+/// A note that enters the tree as an input or a filler: a shield's output.
+fn make_note(rng: &mut ChaCha20Rng, address: &Address, output_index: u32, amount: u64) -> Note {
+    make_output(rng, address, output_index, amount, &shield_context())
+}
+
+/// Build a real note through the shipped encryptor under the context of the payload that
+/// will carry it, and recover its spend witness.
+fn make_output(
     rng: &mut ChaCha20Rng,
     address: &Address,
     output_index: u32,
     amount: u64,
+    input_context: &[u8; 32],
 ) -> Note {
     let outgoing_secret = nonzero_scalar(rng);
     let note_ephemeral_secret = nonzero_scalar(rng);
@@ -161,6 +221,7 @@ fn make_note(
     request.extend_from_slice(&amount.to_le_bytes());
     request.extend_from_slice(&y.to_bytes());
     request.extend_from_slice(&mask.to_bytes());
+    request.extend_from_slice(input_context);
     assert_eq!(request.len(), note::ENCRYPT_REQUEST_BYTES);
     let encrypted = note::encrypt_request(&request).expect("note encryption must succeed");
 
@@ -178,6 +239,7 @@ fn make_note(
         &address.spend,
         &address.view,
         output_index,
+        input_context,
     );
 
     let note = Note {
@@ -195,6 +257,7 @@ fn make_note(
         mask,
         x: address.spend_secret + tweak,
         y,
+        input_context: *input_context,
     };
     // The witness must actually open the note, or every spend below is vacuous.
     assert_eq!(
@@ -393,6 +456,8 @@ struct Spec {
     declared_authorization: u8,
     /// A registration context, which turns the payload into an attestation.
     registration_context: Option<[u8; 32]>,
+    /// The boundary block hash and height a note finality vote names.
+    vote_boundary: Option<([u8; 32], u32)>,
 }
 
 impl Spec {
@@ -407,7 +472,16 @@ impl Spec {
             declared_tree_size: None,
             declared_authorization: 0,
             registration_context: None,
+            vote_boundary: None,
         }
+    }
+
+    /// A note finality vote: one note spent, its whole value reissued to one output, naming
+    /// one epoch boundary. Nothing crosses the boundary and no fee is paid.
+    fn note_vote(input: Note, output: Note, boundary_hash: [u8; 32], boundary_height: u32) -> Self {
+        let mut spec = Self::base(NOTE_FINALITY_VOTE, vec![input], vec![output], 0, 0);
+        spec.vote_boundary = Some((boundary_hash, boundary_height));
+        spec
     }
 
     /// A shield: transparent value enters the pool, no inputs.
@@ -508,6 +582,15 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
         .as_ref()
         .map_or_else(Vec::new, |(proofs, _)| proofs.iter().map(|p| p.key_image).collect::<Vec<_>>());
 
+    // Every output is derived under the context of the payload that carries it.
+    let context = note::input_context(spec.operation, &TRANSPARENT_BINDING, &provisional_images);
+    for (index, output) in spec.outputs.iter().enumerate() {
+        assert!(
+            output.derives_under(&context),
+            "output {index} was not encrypted under this payload's input context"
+        );
+    }
+
     let mut regions = Vec::new();
     let mut payload = Vec::new();
     let mark = |regions: &mut Vec<Region>, name: &'static str, start: usize, end: usize| {
@@ -559,7 +642,7 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     payload.extend_from_slice(&spec.fee.to_le_bytes());
     mark(&mut regions, "fee", start, payload.len());
     let start = payload.len();
-    payload.extend_from_slice(&[0x5a; 32]);
+    payload.extend_from_slice(&TRANSPARENT_BINDING);
     mark(&mut regions, "transparent_binding", start, payload.len());
 
     let start = payload.len();
@@ -602,6 +685,14 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
         let start = payload.len();
         payload.extend_from_slice(&context);
         mark(&mut regions, "registration_context", start, payload.len());
+    }
+    if let Some((boundary_hash, boundary_height)) = spec.vote_boundary {
+        let start = payload.len();
+        payload.extend_from_slice(&boundary_hash);
+        mark(&mut regions, "vote_boundary_hash", start, payload.len());
+        let start = payload.len();
+        payload.extend_from_slice(&boundary_height.to_le_bytes());
+        mark(&mut regions, "vote_boundary_height", start, payload.len());
     }
 
     // Sender authorities: published when mask bit 0 is clear.
@@ -752,6 +843,7 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
                 &note.y.to_bytes(),
                 &signing_hash,
                 u32::try_from(index).expect("bounded"),
+                &context,
                 &receiver_entropy,
             )
             .expect("receiver disclosure must be provable");
@@ -812,7 +904,7 @@ fn cases(seed: u64) -> Vec<(String, Spec, ChaCha20Rng)> {
             let address = Address::new(&mut rng);
             let spec = match shape {
                 0 => {
-                    let outputs = vec![make_note(&mut rng, &address, 0, 900)];
+                    let outputs = vec![make_output(&mut rng, &address, 0, 900, &shield_context())];
                     Spec::shield(outputs, 7)
                 }
                 1 => {
@@ -820,15 +912,17 @@ fn cases(seed: u64) -> Vec<(String, Spec, ChaCha20Rng)> {
                         make_note(&mut rng, &address, 0, 500),
                         make_note(&mut rng, &address, 1, 700),
                     ];
+                    let context = context_of(NOTE_TRANSFER, &inputs);
                     let outputs = vec![
-                        make_note(&mut rng, &address, 0, 400),
-                        make_note(&mut rng, &address, 1, 795),
+                        make_output(&mut rng, &address, 0, 400, &context),
+                        make_output(&mut rng, &address, 1, 795, &context),
                     ];
                     Spec::transfer(inputs, outputs, 5)
                 }
                 _ => {
                     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
-                    let outputs = vec![make_note(&mut rng, &address, 0, 250)];
+                    let context = context_of(NOTE_UNSHIELD, &inputs);
+                    let outputs = vec![make_output(&mut rng, &address, 0, 250, &context)];
                     Spec::unshield(inputs, outputs, 3)
                 }
             }
@@ -844,6 +938,20 @@ fn cases(seed: u64) -> Vec<(String, Spec, ChaCha20Rng)> {
             built.push((label, spec, rng));
         }
     }
+    // The vote has one shape and one mask, so it sits outside the grid.
+    let mut rng = ChaCha20Rng::from_seed({
+        let mut bytes = [0_u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        bytes[8] = 7;
+        bytes[9] = 3;
+        bytes
+    });
+    let address = Address::new(&mut rng);
+    let input = make_note(&mut rng, &address, 0, 1_000);
+    let context = context_of(NOTE_FINALITY_VOTE, std::slice::from_ref(&input));
+    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let spec = Spec::note_vote(input, output, [0x7e; 32], 1_200);
+    built.push(("mask=7 shape=note_vote".to_string(), spec, rng));
     built
 }
 
@@ -863,7 +971,7 @@ fn every_shape_and_mask_round_trips() {
         );
         count += 1;
     }
-    assert_eq!(count, 24, "24 (mask, shape) combinations must be covered");
+    assert_eq!(count, 25, "the 24 grid cases plus the note vote");
     println!("round-trip: {count} payloads proved and validated");
 }
 
@@ -876,10 +984,11 @@ fn first_spend_pays_lazy_generator_setup() {
     let address = Address::new(&mut rng);
 
     // Build both payloads before timing anything, so proving is not counted.
-    let shield_outputs = vec![make_note(&mut rng, &address, 0, 500)];
+    let shield_outputs = vec![make_output(&mut rng, &address, 0, 500, &shield_context())];
     let shield = build(&mut rng, &Spec::shield(shield_outputs, 5));
     let inputs = vec![make_note(&mut rng, &address, 1, 1_000)];
-    let outputs = vec![make_note(&mut rng, &address, 2, 990)];
+    let context = context_of(NOTE_TRANSFER, &inputs);
+    let outputs = vec![make_output(&mut rng, &address, 2, 990, &context)];
     let spend = build(&mut rng, &Spec::transfer(inputs, outputs, 10));
 
     // Proving warmed the generators, so these are warm numbers; re-measure cold with the
@@ -1280,9 +1389,10 @@ fn value_is_conserved() {
             make_note(&mut case_rng, &address, 0, in_a),
             make_note(&mut case_rng, &address, 1, in_b),
         ];
+        let context = context_of(NOTE_TRANSFER, &inputs);
         let outputs = vec![
-            make_note(&mut case_rng, &address, 0, out_a),
-            make_note(&mut case_rng, &address, 1, out_b),
+            make_output(&mut case_rng, &address, 0, out_a, &context),
+            make_output(&mut case_rng, &address, 1, out_b, &context),
         ];
         let spec = Spec::transfer(inputs, outputs, fee);
         let built = build(&mut case_rng, &spec);
@@ -1327,7 +1437,7 @@ fn value_is_conserved() {
 fn transparent_balance_and_fee_are_not_interchangeable() {
     let mut rng = ChaCha20Rng::from_seed([0x33; 32]);
     let address = Address::new(&mut rng);
-    let outputs = vec![make_note(&mut rng, &address, 0, 500)];
+    let outputs = vec![make_output(&mut rng, &address, 0, 500, &shield_context())];
     let spec = Spec::shield(outputs, 10);
     let built = build(&mut rng, &spec);
     assert_eq!(validate(&built.request), Ok(()));
@@ -1371,7 +1481,8 @@ fn a_proof_verifies_only_against_its_own_root() {
     let mut rng = ChaCha20Rng::from_seed([0x44; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 900)];
-    let outputs = vec![make_note(&mut rng, &address, 0, 890)];
+    let context = context_of(NOTE_TRANSFER, &inputs);
+    let outputs = vec![make_output(&mut rng, &address, 0, 890, &context)];
     let spec = Spec::transfer(inputs, outputs, 10);
     let built = build(&mut rng, &spec);
     assert_eq!(validate(&built.request), Ok(()));
@@ -1410,7 +1521,8 @@ fn a_key_image_is_unique_per_note() {
     let spent = make_note(&mut rng, &address, 0, 1_000);
 
     let image_for = |fee: u64, rng: &mut ChaCha20Rng| -> [u8; 32] {
-        let outputs = vec![make_note(rng, &address, 0, 1_000 - fee)];
+        let context = context_of(NOTE_TRANSFER, std::slice::from_ref(&spent));
+        let outputs = vec![make_output(rng, &address, 0, 1_000 - fee, &context)];
         let spec = Spec::transfer(vec![spent.clone()], outputs, fee);
         let built = build(rng, &spec);
         assert_eq!(validate(&built.request), Ok(()));
@@ -1431,7 +1543,8 @@ fn a_key_image_is_unique_per_note() {
 
     // And a different note must produce a different image.
     let other = make_note(&mut rng, &address, 1, 1_000);
-    let outputs = vec![make_note(&mut rng, &address, 0, 990)];
+    let context = context_of(NOTE_TRANSFER, std::slice::from_ref(&other));
+    let outputs = vec![make_output(&mut rng, &address, 0, 990, &context)];
     let spec = Spec::transfer(vec![other], outputs, 10);
     let built = build(&mut rng, &spec);
     let region = built
@@ -1581,9 +1694,10 @@ fn a_disclosed_amount_binds_to_its_own_output() {
     let mut rng = ChaCha20Rng::from_seed([0x88; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
+    let context = context_of(NOTE_TRANSFER, &inputs);
     let outputs = vec![
-        make_note(&mut rng, &address, 0, 400),
-        make_note(&mut rng, &address, 1, 590),
+        make_output(&mut rng, &address, 0, 400, &context),
+        make_output(&mut rng, &address, 1, 590, &context),
     ];
     // Mask bit 2 clear: amounts are published with their openings.
     let spec = Spec::transfer(inputs, outputs, 10).with_mask(3);
@@ -1632,9 +1746,10 @@ fn disclosure_proofs_bind_to_their_own_index() {
         make_note(&mut rng, &address, 0, 600),
         make_note(&mut rng, &address, 1, 600),
     ];
+    let context = context_of(NOTE_TRANSFER, &inputs);
     let outputs = vec![
-        make_note(&mut rng, &address, 0, 500),
-        make_note(&mut rng, &address, 1, 690),
+        make_output(&mut rng, &address, 0, 500, &context),
+        make_output(&mut rng, &address, 1, 690, &context),
     ];
     // Mask 4: sender and receiver both published, amounts hidden.
     let spec = Spec::transfer(inputs, outputs, 10).with_mask(4);
@@ -1682,14 +1797,18 @@ fn proofs_do_not_transplant_between_payloads() {
     let address_a = Address::new(&mut first_rng);
     let address_b = Address::new(&mut second_rng);
 
+    let inputs_a = vec![make_note(&mut first_rng, &address_a, 0, 1_000)];
+    let context_a = context_of(NOTE_TRANSFER, &inputs_a);
     let spec_a = Spec::transfer(
-        vec![make_note(&mut first_rng, &address_a, 0, 1_000)],
-        vec![make_note(&mut first_rng, &address_a, 0, 990)],
+        inputs_a,
+        vec![make_output(&mut first_rng, &address_a, 0, 990, &context_a)],
         10,
     );
+    let inputs_b = vec![make_note(&mut second_rng, &address_b, 0, 1_000)];
+    let context_b = context_of(NOTE_TRANSFER, &inputs_b);
     let spec_b = Spec::transfer(
-        vec![make_note(&mut second_rng, &address_b, 0, 1_000)],
-        vec![make_note(&mut second_rng, &address_b, 0, 990)],
+        inputs_b,
+        vec![make_output(&mut second_rng, &address_b, 0, 990, &context_b)],
         10,
     );
     let a = build(&mut first_rng, &spec_a);
@@ -2057,6 +2176,7 @@ fn note_ciphertext_is_authenticated() {
         request.extend_from_slice(&note.output_c);
         request.extend_from_slice(&note.note_ephemeral);
         request.extend_from_slice(&note.tweak_ephemeral);
+        request.extend_from_slice(&note.input_context);
         request.extend_from_slice(ciphertext);
         request
     };
@@ -2141,7 +2261,8 @@ fn declared_tree_size_is_checked_by_the_caller_not_the_validator() {
     let mut rng = ChaCha20Rng::from_seed([0xf1; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
-    let outputs = vec![make_note(&mut rng, &address, 0, 990)];
+    let context = context_of(NOTE_TRANSFER, &inputs);
+    let outputs = vec![make_output(&mut rng, &address, 0, 990, &context)];
 
     let honest = Spec::transfer(inputs.clone(), outputs.clone(), 10);
     let built = build(&mut rng, &honest);
@@ -2179,7 +2300,8 @@ fn the_authorization_byte_is_narrowed_to_owner_on_this_envelope() {
     let mut rng = ChaCha20Rng::from_seed([0xf3; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
-    let outputs = vec![make_note(&mut rng, &address, 0, 990)];
+    let context = context_of(NOTE_TRANSFER, &inputs);
+    let outputs = vec![make_output(&mut rng, &address, 0, 990, &context)];
 
     let mut accepted = Vec::new();
     for authorization in 0_u8..=4 {
@@ -2252,7 +2374,15 @@ fn only_attestation_operations_are_bound_to_a_shape() {
     let mut rng = ChaCha20Rng::from_seed([0xf5; 32]);
     let address = Address::new(&mut rng);
     let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
-    let outputs = vec![make_note(&mut rng, &address, 0, 250)];
+    // The operation byte is part of the context, so the outputs are derived under the
+    // label the payload will carry, whatever value direction that label suggests.
+    let outputs = vec![make_output(
+        &mut rng,
+        &address,
+        0,
+        250,
+        &context_of(NOTE_SHIELD, &inputs),
+    )];
 
     // Value leaves the pool: outgoing 250 plus fee 3 against incoming 1,000.
     let mut spec = Spec::unshield(inputs.clone(), outputs.clone(), 3);
@@ -2272,6 +2402,13 @@ fn only_attestation_operations_are_bound_to_a_shape() {
 
     // The attestation operations are bound, and that binding is what the caller's
     // fee exemption rests on: declaring one forces one input, no output, no value, no fee.
+    let outputs = vec![make_output(
+        &mut rng,
+        &address,
+        0,
+        250,
+        &context_of(crate::NOTE_COLLATERAL_REGISTER, &inputs),
+    )];
     let mut spec = Spec::unshield(inputs, outputs, 3);
     spec.operation = crate::NOTE_COLLATERAL_REGISTER;
     spec.registration_context = Some([0x4e; 32]);
@@ -2347,6 +2484,162 @@ fn an_attestation_round_trips_and_pins_its_amount() {
     );
 }
 
+/// A note vote spends one key image and creates one leaf with nothing crossing the
+/// boundary; every other shape is refused on shape alone.
+#[test]
+fn a_note_vote_spends_one_note_and_reissues_it_whole() {
+    let mut rng = ChaCha20Rng::from_seed([0xd0; 32]);
+    let address = Address::new(&mut rng);
+    let boundary = [0x7e_u8; 32];
+
+    let input = make_note(&mut rng, &address, 0, 1_000);
+    let inputs = vec![input.clone()];
+    let context = context_of(NOTE_FINALITY_VOTE, &inputs);
+    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let spec = Spec::note_vote(input.clone(), output.clone(), boundary, 1_200);
+    let built = build(&mut rng, &spec);
+    assert_eq!(validate(&built.request), Ok(()), "a vote validates");
+
+    // Effects: header 124, one key image, one 96-byte leaf, the 102-byte trailer.
+    let effects = payload::effects(&built.request).expect("effects of a valid vote");
+    assert_eq!(effects.len(), 124 + 32 + 96 + 102);
+    assert_eq!(effects[2], 1, "one spend");
+    assert_eq!(effects[3], 1, "one leaf");
+    assert_eq!(&effects[76..84], &0_i64.to_le_bytes(), "nothing crosses");
+    assert_eq!(&effects[84..92], &0_u64.to_le_bytes(), "no fee");
+    assert_eq!(&effects[124..156], &input.key_image(), "spent not watched");
+    assert_eq!(&effects[156..188], &output.output_o, "an ordinary leaf");
+    assert_eq!(effects[252], 0, "no attestation key image");
+    let trailer = &effects[253..318];
+    assert!(trailer.iter().all(|byte| *byte == 0), "no registration");
+    // The boundary the vote names is reported after the member key, so the connect rules
+    // read it from the effects and never re-decode the payload.
+    assert_eq!(&effects[318..350], &boundary, "the named boundary block");
+    assert_eq!(&effects[350..354], &1_200_u32.to_le_bytes(), "the named boundary height");
+
+    // Each refusal below is on shape: the prover made every proof over the shape as built.
+    let refused = |label: &str, spec: Spec| {
+        let mut case_rng = ChaCha20Rng::from_seed([0xd1; 32]);
+        let built = build(&mut case_rng, &spec);
+        assert_eq!(
+            validate(&built.request),
+            Err(ResultCode::ConsensusInvalid),
+            "{label} must be refused on shape"
+        );
+    };
+    let vote_like = |inputs: Vec<Note>, outputs: Vec<Note>, tvb: i64, fee: u64| {
+        let mut spec = Spec::base(NOTE_FINALITY_VOTE, inputs, outputs, tvb, fee);
+        spec.vote_boundary = Some((boundary, 1_200));
+        spec
+    };
+
+    let two = vec![
+        make_note(&mut rng, &address, 0, 500),
+        make_note(&mut rng, &address, 1, 500),
+    ];
+    let merged_context = context_of(NOTE_FINALITY_VOTE, &two);
+    let merged = make_output(&mut rng, &address, 0, 1_000, &merged_context);
+    refused(
+        "a vote merging two notes",
+        vote_like(two, vec![merged], 0, 0),
+    );
+
+    let split = vec![
+        make_output(&mut rng, &address, 0, 500, &context),
+        make_output(&mut rng, &address, 1, 500, &context),
+    ];
+    refused(
+        "a vote splitting its note",
+        vote_like(vec![input.clone()], split, 0, 0),
+    );
+
+    let short = make_output(&mut rng, &address, 0, 999, &context);
+    refused(
+        "a vote paying a fee",
+        vote_like(vec![input.clone()], vec![short.clone()], 0, 1),
+    );
+    refused(
+        "a vote unshielding",
+        vote_like(vec![input.clone()], vec![short], -1, 0),
+    );
+
+    let grown = make_output(&mut rng, &address, 0, 1_001, &context);
+    refused(
+        "a vote minting",
+        vote_like(vec![input.clone()], vec![grown], 1, 0),
+    );
+
+    refused(
+        "a vote disclosing its sender",
+        Spec::note_vote(input.clone(), output.clone(), boundary, 1_200).with_mask(6),
+    );
+
+    // The operation byte is inside the signing hash. Relabeling a vote as a transfer puts
+    // the vote fields where a transfer has none; relabeling a transfer as a vote and adding
+    // the fields leaves every proof bound to the wrong hash.
+    let mut relabeled = built.request.clone();
+    relabeled[built.payload_at + 2] = NOTE_TRANSFER;
+    assert!(
+        validate(&relabeled).is_err(),
+        "a vote relabeled as a transfer is refused"
+    );
+
+    let transfer_context = context_of(NOTE_TRANSFER, &inputs);
+    let transfer_output = make_output(&mut rng, &address, 0, 1_000, &transfer_context);
+    let transfer = Spec::transfer(vec![input], vec![transfer_output], 0);
+    let built_transfer = build(&mut rng, &transfer);
+    let transfer_verdict = validate(&built_transfer.request);
+    assert_eq!(transfer_verdict, Ok(()), "a fee-free transfer");
+    let outputs_end = built_transfer
+        .regions
+        .iter()
+        .filter(|region| region.name == "outgoing_ciphertext")
+        .map(|region| region.end)
+        .max()
+        .expect("the transfer has an output");
+    let at = built_transfer.payload_at + outputs_end;
+    let mut repackaged = built_transfer.request[..at].to_vec();
+    repackaged.extend_from_slice(&boundary);
+    repackaged.extend_from_slice(&1_200_u32.to_le_bytes());
+    repackaged.extend_from_slice(&built_transfer.request[at..]);
+    repackaged[built_transfer.payload_at + 2] = NOTE_FINALITY_VOTE;
+    assert!(
+        validate(&repackaged).is_err(),
+        "a transfer's proofs cannot be repackaged as a vote"
+    );
+}
+
+/// The boundary a vote names is bound by the spend authorization: a vote cannot be moved to
+/// another block or another height after it is proved.
+#[test]
+fn a_note_vote_binds_its_boundary() {
+    let mut rng = ChaCha20Rng::from_seed([0xd2; 32]);
+    let address = Address::new(&mut rng);
+    let input = make_note(&mut rng, &address, 0, 1_000);
+    let context = context_of(NOTE_FINALITY_VOTE, std::slice::from_ref(&input));
+    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let built = build(&mut rng, &Spec::note_vote(input, output, [0x7e; 32], 1_200));
+    assert_eq!(validate(&built.request), Ok(()));
+
+    let mut checked = 0_usize;
+    for region in &built.regions {
+        if !matches!(region.name, "vote_boundary_hash" | "vote_boundary_height") {
+            continue;
+        }
+        for offset in region.start..region.end {
+            let mut moved = built.request.clone();
+            moved[built.payload_at + offset] ^= 0x01;
+            assert!(
+                validate(&moved).is_err(),
+                "changing byte {offset} of {} left the vote valid",
+                region.name
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 36, "both vote fields are covered");
+}
+
 /// One collateral note must not be able to back two different registrations. If it can, the
 /// caller alone stands between one deposit and any number of identities.
 #[test]
@@ -2393,7 +2686,7 @@ fn one_collateral_note_backs_one_identity() {
 fn a_balance_proof_is_not_replayable_under_a_new_message() {
     let mut rng = ChaCha20Rng::from_seed([0xe1; 32]);
     let address = Address::new(&mut rng);
-    let outputs = vec![make_note(&mut rng, &address, 0, 700)];
+    let outputs = vec![make_output(&mut rng, &address, 0, 700, &shield_context())];
     let spec = Spec::shield(outputs, 5);
     let built = build(&mut rng, &spec);
     assert_eq!(validate(&built.request), Ok(()));

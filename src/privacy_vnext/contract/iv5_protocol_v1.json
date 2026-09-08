@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "8b924b68b905ae0dd3c4e7b488c008df62ba36036f27f4110c9c2bb348f24629",
+    "abi_schema_sha256": "31e9434b2514985901e82e006ee79ba6dba670aa31965f8ae091fbeb8361b6d6",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
@@ -127,6 +127,7 @@
     "conditional_migration": 7,
     "collateral_register": 8,
     "finality_member_register": 9,
+    "finality_vote": 10,
     "none": 255
   },
   "collateral_attestation": {
@@ -141,6 +142,17 @@
       "the-published-key-image-is-watched-and-never-recorded-as-spent",
       "one-registration-per-note-for-ever-across-both-operations",
       "operation-9-additionally-publishes-a-canonical-compressed-secp256k1-tally-encryption-key-inside-the-signed-prefix"
+    ]
+  },
+  "note_finality_vote": {
+    "operation": 10,
+    "rules": [
+      "exactly-one-input-and-exactly-one-output",
+      "transparent-value-balance-and-fee-are-zero",
+      "disclosure-mask-is-seven-and-authorization-is-owner",
+      "a-nonzero-32-byte-boundary-block-hash-and-a-u32-le-boundary-height-follow-the-outputs-inside-the-signing-hash",
+      "the-key-image-is-a-spend-and-the-output-is-an-ordinary-leaf-so-the-effects-are-a-transfers",
+      "which-boundary-is-votable-is-the-callers-rule-and-unspent-ness-is-the-callers-spent-key-index"
     ]
   },
   "finality_profiles": {
@@ -230,13 +242,15 @@
       "finality_objects": [0]
     },
     "2008": {
-      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
+      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 255],
       "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
       "finality_profiles": [0, 1, 2, 3],
       "authorization_modes": [0],
       "finality_objects": [0, 1, 2, 3, 4],
       "note_operation_8_and_9_disclosure_masks": [7],
-      "note_operation_8_and_9_authorization_modes": [0]
+      "note_operation_8_and_9_authorization_modes": [0],
+      "note_operation_10_disclosure_masks": [7],
+      "note_operation_10_authorization_modes": [0]
     }
   },
   "payload": {
@@ -262,6 +276,7 @@
       "outputs",
       "registration_context_32_for_note_operations_8_and_9",
       "finality_member_key_33_for_note_operation_9",
+      "vote_boundary_hash_32_and_vote_boundary_height_u32_for_note_operation_10",
       "sender_disclosures",
       "receiver_disclosures",
       "amount_disclosures",
@@ -314,6 +329,9 @@
       "finalized-root-must-be-a-canonical-nonidentity-helios-point",
       "pseudo-out-key-image-output-address-and-both-ephemeral-points-must-be-canonical-nonidentity-torsion-free-ed25519-points",
       "an-outputs-note-ephemeral-and-tweak-ephemeral-must-differ",
+      "no-two-outputs-of-one-payload-derive-the-same-leaf-i-mirroring-the-repeated-key-image-rule-on-inputs",
+      "a-payload-with-at-least-one-output-must-consume-at-least-one-key-image-or-carry-a-positive-transparent-value-balance",
+      "the-input-context-is-derived-once-from-the-operation-transparent-binding-and-payload-ordered-key-images-and-every-output-address-tweak-note-tag-and-receiver-disclosure-is-derived-under-it",
       "only-the-tweak-ephemeral-shared-point-is-published-by-a-receiver-disclosure-so-a-disclosed-output-keeps-its-amount-y-and-mask",
       "source-leaves-never-appear-in-hidden-base-input-records",
       "output-leaf-i-is-derived-from-that-output-own-o-and-never-appears-on-the-wire",
@@ -329,7 +347,9 @@
       "registration-context-is-present-and-nonzero-only-for-note-operations-8-and-9-and-is-32-opaque-bytes-inside-the-signing-hash",
       "finality-member-key-is-present-only-for-note-operation-9-and-is-33-bytes-whose-first-byte-is-2-or-3-and-whose-x-coordinate-is-nonzero-and-below-the-secp256k1-field-prime-with-the-on-curve-test-left-to-the-caller",
       "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
-      "operation-section-is-empty-for-shield-unshield-and-transfer",
+      "operation-section-is-empty-for-shield-unshield-transfer-and-note-operation-10",
+      "note-operation-10-has-exactly-one-input-one-output-zero-transparent-value-balance-and-zero-fee-pinned-before-any-proof-runs",
+      "vote-boundary-hash-and-height-are-present-only-for-note-operation-10-the-hash-is-nonzero-and-both-sit-inside-the-signing-hash",
       "operation-section-for-note-operations-8-and-9-is-the-exact-64-byte-amount-equality-proof-and-the-value-balance-section-is-empty",
       "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
       "disclosure-section-is-exactly-128-bytes-per-sender-record-followed-by-160-bytes-per-receiver-record-and-empty-when-neither-dimension-is-exposed",
@@ -344,6 +364,42 @@
       "optional-disclosure-presence-is-derived-only-from-disclosure-mask",
       "no-trailing-bytes"
     ]
+  },
+  "input_context": {
+    "hash": "first-32-bytes-of-blake2b-512",
+    "domain": "Innova/IV5/InputContext/v1",
+    "field_encoding": "each-field-preceded-by-its-byte-length-as-u64-le",
+    "field_order": [
+      "domain",
+      "operation_u8",
+      "transparent_binding_32",
+      "key_images_32_each_in_payload_order"
+    ],
+    "key_image_order": "payload-order-never-sorted",
+    "excluded": "height-anchor-mempool-state-and-every-other-chain-local-value",
+    "uniqueness_invariant": "outputs-require-retiring-inputs-a-key-image-the-spent-key-index-retires-or-transparent-value-behind-a-prevout-the-utxo-rule-retires-so-the-triple-occurs-in-at-most-one-accepted-payload",
+    "coinbase": "carries-no-prevout-so-its-transparent-binding-covers-the-coinbase-height-push",
+    "consumers": [
+      "receiver_tweak",
+      "note_associated_data",
+      "receiver_disclosure"
+    ],
+    "leaf_only_scan_constraint": "derivable-only-from-the-payload-prefix-so-any-sync-shipping-leaves-without-payloads-must-ship-operation-transparent-binding-and-key-images-per-payload-or-the-context-per-output",
+    "request_field_order": [
+      "schema_u16_le",
+      "operation_u8",
+      "key_image_count_u8",
+      "transparent_binding_32",
+      "key_images_32_each"
+    ],
+    "output_bytes": 32
+  },
+  "one_time_address": {
+    "tweak": "blake2b-512-to-scalar(Innova/IV5/ReceiverTweak/v2, V*r2, R2, spend, view, output_index_u32_le, input_context)",
+    "owner_key": "O = spend + tweak*G + y*T",
+    "key_image_base": "I = Elligator2(first-32-bytes(blake2b-512(Innova/IV5/NoteKeyImageBase/v1, O)))",
+    "key_image_base_rule": "a-function-of-o-alone-so-the-linking-tag-is-determined-by-the-one-time-address-as-in-seraphis-and-recomputable-from-the-leaf",
+    "uniqueness": "o-is-unique-per-accepted-payload-by-construction-because-the-input-context-is"
   },
   "note_encryption": {
     "construction": "unique-key-chacha20-stream-then-keyed-blake2b-256-encrypt-then-mac",
@@ -366,16 +422,18 @@
       "leaf_i",
       "leaf_c",
       "note_ephemeral_public",
-      "tweak_ephemeral_public"
+      "tweak_ephemeral_public",
+      "input_context"
     ],
+    "associated_data_domain": "Innova/IV5/NoteAssociatedData/v2",
     "scan_kinds": {
       "0": "full-spend",
       "1": "view-only",
       "2": "outgoing"
     },
-    "scan_request_prefix_bytes": 236,
+    "scan_request_prefix_bytes": 268,
     "scan_result_bytes": 212,
-    "encrypt_request_bytes": 272,
+    "encrypt_request_bytes": 304,
     "encrypt_result_bytes": 586,
     "encrypt_result_fields": [
       "schema",
@@ -416,7 +474,7 @@
   },
   "payload_state_effects": {
     "header_bytes": 124,
-    "trailer_bytes": 66,
+    "trailer_bytes": 102,
     "header_fields": [
       "schema_u16_le",
       "input_count_u8",
@@ -434,6 +492,8 @@
       "attestation_key_image_count_u8",
       "registration_context_32",
       "finality_member_key_33",
+      "vote_boundary_hash_32",
+      "vote_boundary_height_u32_le",
       "ordered_attestation_key_images_32_each"
     ],
     "attestation_rule": "an-attestation-key-image-is-reported-apart-from-the-spends-and-the-spend-list-stays-empty-so-the-callers-spent-key-index-never-sees-it",
@@ -484,12 +544,13 @@
     "disclosure_sender_authority_challenge": "Innova/IV5/Disclosure/Sender/AuthorityChallenge/v1",
     "disclosure_sender_rerandomization_nonce": "Innova/IV5/Disclosure/Sender/RerandomizationNonce/v1",
     "disclosure_sender_rerandomization_challenge": "Innova/IV5/Disclosure/Sender/RerandomizationChallenge/v1",
-    "disclosure_receiver_tweak": "Innova/IV5/ReceiverTweak/v1",
+    "disclosure_receiver_tweak": "Innova/IV5/ReceiverTweak/v2",
+    "input_context": "Innova/IV5/InputContext/v1",
     "disclosure_receiver_dleq_nonce": "Innova/IV5/Disclosure/Receiver/DleqNonce/v1",
     "disclosure_receiver_dleq_challenge": "Innova/IV5/Disclosure/Receiver/DleqChallenge/v1",
     "disclosure_receiver_output_nonce": "Innova/IV5/Disclosure/Receiver/OutputNonce/v1",
     "disclosure_receiver_output_challenge": "Innova/IV5/Disclosure/Receiver/OutputChallenge/v1",
-    "note_associated_data": "Innova/IV5/NoteAssociatedData/v1",
+    "note_associated_data": "Innova/IV5/NoteAssociatedData/v2",
     "note_key_image_base": "Innova/IV5/NoteKeyImageBase/v1",
     "note_recipient_encryption": "Innova/IV5/NoteEncryption/Recipient/v1",
     "note_outgoing_encryption": "Innova/IV5/NoteEncryption/Outgoing/v1",

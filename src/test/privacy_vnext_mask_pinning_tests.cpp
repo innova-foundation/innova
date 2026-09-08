@@ -46,6 +46,21 @@ PrivacyVNextDigest NoTransparentSide()
     return d;
 }
 
+// The input context of a shield with no transparent side. The notes funded by hand below
+// are grown straight into the tree, never carried by a payload, so encrypt and scan only
+// have to agree on it.
+PrivacyVNextDigest FundingContext()
+{
+    PrivacyVNextDigest context;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, NoTransparentSide(),
+                                       std::vector<PrivacyVNextDigest>(), context,
+                                       error),
+        error);
+    return context;
+}
+
 PrivacyVNextDigest LocalGenesis()
 {
     PrivacyVNextDigest d;
@@ -150,7 +165,8 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
                                 funded.keys.spendPublic, funded.keys.viewPublic,
                                 funded.keys.outgoingViewSecret, MaskScalar(29),
                                 MaskScalar(30), funded.nAmount, MaskScalar(31),
-                                MaskScalar(37), funding, error),
+                                MaskScalar(37), FundingContext(),
+                                funding, error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -189,6 +205,7 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,

@@ -270,6 +270,40 @@ static bool BuildPrivacyVNextPayload(
     if (!RandomScalar(entropy, strErrorOut))
         return false;
 
+    std::vector<PrivacyVNextSpendInput> vProveInputs(spends.size());
+    for (size_t i = 0; i < spends.size(); ++i)
+    {
+        vProveInputs[i].spendScalar = spends[i].spendSecret;
+        vProveInputs[i].commitmentScalar = spends[i].y;
+        vProveInputs[i].leaf = spends[i].leaf;
+        vProveInputs[i].vchWitnessRecord = spends[i].vchWitnessRecord;
+    }
+
+    // The prefix names pseudo-outputs and key images that exist only after proving.
+    // Rerandomization depends only on the caller's entropy, so prove once to learn them and
+    // again against the resulting hash; proof nonces are hash-dependent.
+    PrivacyVNextDigest provisional;
+    provisional.fill(0);
+    provisional[0] = 1;
+    std::vector<PrivacyVNextSpendConstruction> vDraft;
+    RetainedBytes draftProof;
+    if (!vProveInputs.empty() &&
+        !ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
+                                     vProveInputs, vDraft, draftProof.v,
+                                     strErrorOut))
+        return false;
+
+    // The input context every output is derived under covers the key images, so the
+    // draft pass above precedes encryption. Derived by the archive from the same three
+    // fields the prefix below carries, in the same order.
+    std::vector<PrivacyVNextDigest> vKeyImages(vDraft.size());
+    for (size_t i = 0; i < vDraft.size(); ++i)
+        vKeyImages[i] = vDraft[i].keyImage;
+    PrivacyVNextDigest inputContext;
+    if (!DerivePrivacyVNextInputContext(nOperation, transparentBinding, vKeyImages,
+                                        inputContext, strErrorOut))
+        return false;
+
     // Encrypt every output. Openings survive the loop for the receiver disclosure and
     // are wiped when the builder returns.
     std::vector<PrivacyVNextEncryptedOutput> vEncrypted(outputs.size());
@@ -298,8 +332,8 @@ static bool BuildPrivacyVNextPayload(
             static_cast<uint32_t>(i), genesis,
             outputs[i].recipient.spendPublic, outputs[i].recipient.viewPublic,
             outgoingViewSecret, noteEphemeralSecret, tweakEphemeralSecret,
-            outputs[i].nAmount, outY, vOutputMasks[i], vEncrypted[i],
-            strErrorOut);
+            outputs[i].nAmount, outY, vOutputMasks[i], inputContext,
+            vEncrypted[i], strErrorOut);
         if (fEncrypted && fDiscloseReceiver)
         {
             tweakEphemeralSecrets.v[i] = tweakEphemeralSecret;
@@ -311,32 +345,6 @@ static bool BuildPrivacyVNextPayload(
         if (!fEncrypted)
             return false;
     }
-
-    std::vector<PrivacyVNextSpendInput> vProveInputs(spends.size());
-    for (size_t i = 0; i < spends.size(); ++i)
-    {
-        vProveInputs[i].spendScalar = spends[i].spendSecret;
-        vProveInputs[i].commitmentScalar = spends[i].y;
-        vProveInputs[i].leaf = spends[i].leaf;
-        vProveInputs[i].vchWitnessRecord = spends[i].vchWitnessRecord;
-    }
-
-    // The prefix the proofs bind to already names each input's pseudo-output, but those
-    // only exist once the prover has run. Rerandomization is deterministic in the caller's
-    // entropy and independent of the signing hash, so the prover is run twice with the same
-    // entropy: once to learn the pseudo-outputs and key images, and again to prove against
-    // the hash they produce. Proof nonces are drawn from a hash-dependent stream, so the
-    // two passes share none of them.
-    PrivacyVNextDigest provisional;
-    provisional.fill(0);
-    provisional[0] = 1;
-    std::vector<PrivacyVNextSpendConstruction> vDraft;
-    RetainedBytes draftProof;
-    if (!vProveInputs.empty() &&
-        !ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
-                                     vProveInputs, vDraft, draftProof.v,
-                                     strErrorOut))
-        return false;
 
     std::vector<unsigned char> prefix;
     prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
@@ -536,8 +544,8 @@ static bool BuildPrivacyVNextPayload(
                 static_cast<uint32_t>(i), outputs[i].recipient.spendPublic,
                 outputs[i].recipient.viewPublic, vEncrypted[i].leaf.owner,
                 vEncrypted[i].tweakEphemeral, tweakEphemeralSecrets.v[i],
-                outputYs.v[i], signingHash, receiverEntropy, vchReceiverProof,
-                strErrorOut);
+                outputYs.v[i], signingHash, receiverEntropy, inputContext,
+                vchReceiverProof, strErrorOut);
             OPENSSL_cleanse(receiverEntropy.data(), receiverEntropy.size());
             if (!fProved)
                 return false;

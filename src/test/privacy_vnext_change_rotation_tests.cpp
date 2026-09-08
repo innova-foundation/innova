@@ -57,6 +57,21 @@ PrivacyVNextDigest NoTransparentSide()
     return d;
 }
 
+// The input context of a shield with no transparent side. The notes funded by hand below
+// are grown straight into the tree, never carried by a payload, so encrypt and scan only
+// have to agree on it.
+PrivacyVNextDigest FundingContext()
+{
+    PrivacyVNextDigest context;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, NoTransparentSide(),
+                                       std::vector<PrivacyVNextDigest>(), context,
+                                       error),
+        error);
+    return context;
+}
+
 // The 64 bytes a receiver disclosure publishes for one output: the recipient's spend
 // key then its view key, in the order the payload carries them.
 std::vector<unsigned char> AddressBytes(const PrivacyVNextDerivedKeys& keys)
@@ -121,7 +136,8 @@ void FundNotes(CTxDB& txdb, size_t nCount, FundedNotes& funded,
                 RotationScalar((unsigned char)(29 + i)),
                 RotationScalar((unsigned char)(59 + i)), funded.nAmount,
                 RotationScalar((unsigned char)(89 + i)),
-                RotationScalar((unsigned char)(113 + i)), vFunding[i], error),
+                RotationScalar((unsigned char)(113 + i)), FundingContext(),
+                vFunding[i], error),
             error);
         vLeaves.push_back(vFunding[i].leaf);
     }
@@ -168,6 +184,7 @@ void FundNotes(CTxDB& txdb, size_t nCount, FundedNotes& funded,
         onChain.noteEphemeral = vFunding[i].noteEphemeral;
         onChain.tweakEphemeral = vFunding[i].tweakEphemeral;
         onChain.vchCiphertext = vFunding[i].vchRecipientCiphertext;
+        onChain.inputContext = FundingContext();
         PrivacyVNextScannedNote scanned;
         BOOST_REQUIRE_MESSAGE(
             ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,

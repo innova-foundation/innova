@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "1319b908108c7a4ba82bbf215487c35cdac57b1eb7ab927c56506923309052d4";
+    "9a4ffc7ce6aa0805adc64baeb07fe3d16c3044fa6ccef54b1d11e7bb1e16538d";
 // Contract texts this build's lineage has published, besides the current one.
 //
 // Provenance only. No consensus rule may branch on this list: a payload is judged against
@@ -27,10 +27,14 @@ static const char PROTOCOL_CONTRACT_SHA256[] =
 // the text still declared all four authorization modes on 2005 and 2008 after the decoders
 // were narrowed to owner. The digest selects no rule, so a payload carrying it is judged by
 // the narrowed table like any other.
+// 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
+// trailer is the decoder's answer to this binary, never a consensus payload, so no rule
+// moved and no payload's verdict changes.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
     "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
     "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b",
-    "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280"
+    "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280",
+    "07c5f16b0da26d5f201a24039dc7eb0c00b4ff57d161ed6c7896586cc50163f1"
 };
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
@@ -39,7 +43,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "47fa2ccb5ae2a2c8187844e3dc313251ee56e929c2bcb775e80a2d10031284a1";
+    "96b1dab51ace9661ce248b3f378f80fe36bd1ff76fd87f97e5d85864489088c0";
 // The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
 // payload is judged against below that epoch.
 //
@@ -79,17 +83,30 @@ enum NoteOperation
     // Collateral attestation plus the key other voters seal tally shares to. A separate
     // operation because an operation code fixes its own layout.
     NOTE_FINALITY_MEMBER_REGISTER = 9,
+    // Spends one note as a finality vote for an epoch boundary and reissues its value to
+    // one fresh output. The key image goes to the spent-key index, never the watch set.
+    NOTE_FINALITY_VOTE = 10,
     NOTE_OPERATION_NONE = 255
 };
 
 // Compressed secp256k1 encoding length of a committee member's tally-encryption key.
 static const size_t FINALITY_MEMBER_KEY_BYTES = 33;
+// The two fields a note finality vote carries after its outputs: boundary block hash (32)
+// and boundary height (u32 LE).
+static const size_t FINALITY_VOTE_CONTEXT_BYTES = 32 + 4;
 
 // Operations that name a hidden note without consuming it.
 inline bool IsAttestationOperation(uint8_t operation)
 {
     return operation == NOTE_COLLATERAL_REGISTER ||
            operation == NOTE_FINALITY_MEMBER_REGISTER;
+}
+
+// The one operation that spends a note as a finality vote. Not an attestation: it
+// consumes the note it names.
+inline bool IsNoteFinalityVoteOperation(uint8_t operation)
+{
+    return operation == NOTE_FINALITY_VOTE;
 }
 
 enum FinalityProfile
@@ -131,7 +148,7 @@ static const uint8_t COINBASE_FEE_NOTE_DISCLOSURE_MASK =
 
 inline bool IsKnownNoteOperation(uint8_t operation)
 {
-    return operation <= NOTE_FINALITY_MEMBER_REGISTER ||
+    return operation <= NOTE_FINALITY_VOTE ||
            operation == NOTE_OPERATION_NONE;
 }
 
@@ -218,12 +235,11 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
     case 2007:
         return operation == NOTE_RECLAIM && authorization == AUTH_OWNER;
     case 2008:
-        // No verifier dispatches on the authorization field, so owner is the only mode any
-        // proof actually enforces; admitting a mode nothing verifies would take a fork to
-        // withdraw. An attestation also publishes a persistent per-node pseudonym by
-        // design, so the fully private mask is the only one it may carry.
+        // Only owner authorization is enforced by any proof. Attestations and note votes must
+        // be fully private: any disclosure would link a node or voter across epochs.
         return authorization == AUTH_OWNER &&
-               (!IsAttestationOperation(operation) ||
+               (!(IsAttestationOperation(operation) ||
+                  IsNoteFinalityVoteOperation(operation)) ||
                 disclosureMask == DISCLOSURE_MASK);
     default:
         return false;

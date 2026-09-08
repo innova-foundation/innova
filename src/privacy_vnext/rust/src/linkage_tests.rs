@@ -136,6 +136,13 @@ struct Note {
     tweak_ephemeral_secret: Scalar,
     /// The note's one-time spend authority secret: `O = x*G + y*T`.
     x: Scalar,
+    /// The context of the payload this note was encrypted for.
+    input_context: [u8; 32],
+}
+
+/// The context a shield with this harness's binding derives its outputs under.
+fn shield_context() -> [u8; 32] {
+    note::input_context(NOTE_SHIELD, &TRANSPARENT_BINDING, &[])
 }
 
 impl Note {
@@ -207,14 +214,15 @@ impl Note {
     }
 }
 
-/// Encrypt one note to `address` with the production note encoder.
-fn mint(address: &Address, index: u32, amount: u64, seed: u64) -> Note {
+/// Encrypt one note to `address` with the production note encoder, under the context of
+/// the payload that will carry it.
+fn mint(address: &Address, index: u32, amount: u64, seed: u64, input_context: &[u8; 32]) -> Note {
     let note_ephemeral_secret = Scalar::from(seed.wrapping_mul(5_003).wrapping_add(17));
     let tweak_ephemeral_secret = Scalar::from(seed.wrapping_mul(6_007).wrapping_add(19));
     let y = Scalar::from(seed.wrapping_mul(7_013).wrapping_add(23));
     let mask = Scalar::from(seed.wrapping_mul(8_017).wrapping_add(29));
 
-    let mut request = Vec::with_capacity(272);
+    let mut request = Vec::with_capacity(note::ENCRYPT_REQUEST_BYTES);
     request.extend_from_slice(&1_u16.to_le_bytes());
     request.push(NETWORK);
     request.push(ADDRESS_TYPE);
@@ -228,6 +236,8 @@ fn mint(address: &Address, index: u32, amount: u64, seed: u64) -> Note {
     request.extend_from_slice(&amount.to_le_bytes());
     request.extend_from_slice(&y.to_bytes());
     request.extend_from_slice(&mask.to_bytes());
+    request.extend_from_slice(input_context);
+    assert_eq!(request.len(), note::ENCRYPT_REQUEST_BYTES);
     let encrypted = note::encrypt_request(&request).expect("the note encoder must accept");
     assert_eq!(encrypted.len(), ENCRYPTED_NOTE_BYTES);
 
@@ -240,6 +250,7 @@ fn mint(address: &Address, index: u32, amount: u64, seed: u64) -> Note {
         &address.spend,
         &address.view,
         index,
+        input_context,
     );
 
     let built = Note {
@@ -250,6 +261,7 @@ fn mint(address: &Address, index: u32, amount: u64, seed: u64) -> Note {
         mask,
         tweak_ephemeral_secret,
         x: address.spend_secret + tweak,
+        input_context: *input_context,
     };
     assert_eq!(
         ((ED25519_BASEPOINT_POINT * built.x) + (monero_t() * y))
@@ -446,12 +458,21 @@ fn build(spec: &Spec<'_>) -> Built {
         prefix.extend_from_slice(&construction.pseudo_out);
         prefix.extend_from_slice(&construction.key_image);
     }
+    let key_images = draft
+        .iter()
+        .map(|construction| construction.key_image)
+        .collect::<Vec<_>>();
+    let input_context = note::input_context(spec.operation, &TRANSPARENT_BINDING, &key_images);
     compact_size(&mut prefix, spec.outputs.len());
     for (index, (output, _)) in spec.outputs.iter().enumerate() {
         assert_eq!(
             output.index,
             u32::try_from(index).expect("a bounded output count"),
             "a note is bound to the output index it was encrypted at"
+        );
+        assert_eq!(
+            output.input_context, input_context,
+            "a note is encrypted under the context of the payload that carries it"
         );
         prefix.extend_from_slice(&output.owner());
         prefix.extend_from_slice(&output.commitment());
@@ -585,6 +606,7 @@ fn build(spec: &Spec<'_>) -> Built {
                 &output.y.to_bytes(),
                 &signing_hash,
                 u32::try_from(index).expect("a bounded output count"),
+                &input_context,
                 &entropy,
             )
             .expect("a valid receiver disclosure");
@@ -619,6 +641,7 @@ fn validation_request(payload: &[u8]) -> Vec<u8> {
 /// A payload read the way an observer reads it: from the bytes, with no help from the
 /// wallet that made it and none from the decoder that judged it.
 struct Wire {
+    operation: u8,
     mask: u8,
     pseudo_outs: Vec<[u8; 32]>,
     key_images: Vec<[u8; 32]>,
@@ -671,8 +694,9 @@ impl<'a> Reader<'a> {
 }
 
 fn read_wire(payload: &[u8]) -> Wire {
+    let operation = payload[2];
     let mask = payload[MASK_OFFSET];
-    let is_attestation = is_attestation_operation(payload[2]);
+    let is_attestation = is_attestation_operation(operation);
     let mut reader = Reader {
         bytes: payload,
         at: CHAIN_CONTEXT_BYTES,
@@ -750,6 +774,7 @@ fn read_wire(payload: &[u8]) -> Wire {
         .collect();
 
     Wire {
+        operation,
         mask,
         pseudo_outs,
         key_images,
@@ -764,19 +789,17 @@ fn read_wire(payload: &[u8]) -> Wire {
     }
 }
 
-/// The authority a receiver-disclosed output pins, computed from chain bytes alone.
-///
-/// The tweak is a hash of values the payload publishes -- the disclosure's shared point,
-/// the output's tweak ephemeral, the address it names and the output index -- and the
-/// one-time key is the address's spend key shifted by it. No secret enters this.
+/// The authority a receiver-disclosed output pins, computed from public chain bytes only.
 fn authority_from_chain(wire: &Wire, index: usize) -> [u8; 32] {
     let (spend, view) = wire.receiver_addresses[index];
+    let input_context = note::input_context(wire.operation, &TRANSPARENT_BINDING, &wire.key_images);
     let tweak = disclosure::receiver_tweak(
         &wire.receiver_shared_points[index],
         &wire.tweak_ephemerals[index],
         &spend,
         &view,
         u32::try_from(index).expect("a bounded output index"),
+        &input_context,
     );
     (point(&spend) + (ED25519_BASEPOINT_POINT * tweak))
         .compress()
@@ -818,8 +841,8 @@ fn build_lineage() -> Lineage {
     let second_amount = 7_000_u64;
     let fee = 1_000_u64;
 
-    let to_wallet = mint(&wallet, 0, amount, 101);
-    let to_payee = mint(&payee, 1, second_amount, 102);
+    let to_wallet = mint(&wallet, 0, amount, 101, &shield_context());
+    let to_payee = mint(&payee, 1, second_amount, 102, &shield_context());
     // Mask 0 is the fully transparent end of the range: recipients and amounts both
     // published, which is the strongest thing a creation can hand an observer.
     let creation = build(&Spec {
@@ -914,12 +937,14 @@ fn mask_sweep() -> &'static [MaskCase; 8] {
                 0,
                 4_100,
                 200 + u64::try_from(mask).expect("bounded"),
+                &shield_context(),
             );
             let second = mint(
                 &address,
                 1,
                 900,
                 300 + u64::try_from(mask).expect("bounded"),
+                &shield_context(),
             );
             let built = build(&Spec {
                 operation: NOTE_SHIELD,
@@ -1132,7 +1157,7 @@ fn one_note_spent_twice_recurs_only_in_its_key_image() {
     assert_ne!(disclosed.pseudo_outs[0], private.pseudo_outs[0]);
 
     // Positive control: another note of the same wallet carries a different tag.
-    let other = mint(&lineage.wallet, 0, 5_000, 909);
+    let other = mint(&lineage.wallet, 0, 5_000, 909, &shield_context());
     assert_ne!(other.key_image(), private.key_images[0]);
 
     // Positive control: the sweep finds the tag the two payloads really do share.
@@ -1183,7 +1208,7 @@ fn an_attestation_and_a_later_spend_publish_one_key_image() {
 
     // Positive control: the recurrence is the tag, not the whole payload.
     assert_ne!(attestation.pseudo_outs[0], private.pseudo_outs[0]);
-    let other = mint(&lineage.wallet, 0, 1_234, 911);
+    let other = mint(&lineage.wallet, 0, 1_234, 911, &shield_context());
     assert_ne!(other.key_image(), attestation.key_images[0]);
 
     let left = windows_from(&lineage.attestation, CHAIN_CONTEXT_BYTES);
@@ -1327,7 +1352,7 @@ fn a_published_address_does_not_find_later_private_payments_to_it() {
 
     // A second note to the same address under mask 7. Its one-time key is predictable only
     // with the tweak ephemeral's shared point (wallet and payer).
-    let later = mint(&lineage.wallet, 0, 3_000, 707);
+    let later = mint(&lineage.wallet, 0, 3_000, 707, &shield_context());
     let hidden = build(&Spec {
         operation: NOTE_SHIELD,
         mask: 7,
@@ -1398,7 +1423,7 @@ fn a_finished_payload_has_no_room_for_a_record_its_mask_does_not_declare() {
 
 /// Ask the note scanner to open one output's outgoing ciphertext under `secret`.
 fn scan_outgoing(note: &Note, secret: &[u8; 32]) -> Option<Vec<u8>> {
-    let mut request = Vec::with_capacity(236 + OUTGOING_CIPHERTEXT_BYTES);
+    let mut request = Vec::with_capacity(note::SCAN_PREFIX_BYTES + OUTGOING_CIPHERTEXT_BYTES);
     request.extend_from_slice(&1_u16.to_le_bytes());
     request.extend_from_slice(&[2, NETWORK, ADDRESS_TYPE, 0, 0, 0]);
     request.extend_from_slice(&note.index.to_le_bytes());
@@ -1409,6 +1434,7 @@ fn scan_outgoing(note: &Note, secret: &[u8; 32]) -> Option<Vec<u8>> {
     request.extend_from_slice(&note.commitment());
     request.extend_from_slice(&note.note_ephemeral());
     request.extend_from_slice(&note.tweak_ephemeral());
+    request.extend_from_slice(&note.input_context);
     request.extend_from_slice(note.outgoing_ciphertext());
     note::scan(&request).ok()
 }

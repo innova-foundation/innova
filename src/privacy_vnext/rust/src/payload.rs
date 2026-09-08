@@ -8,11 +8,12 @@ use sha2::Digest;
 use zeroize::Zeroize;
 
 use crate::{
-    disclosure, envelope_allows, fcmp, is_attestation_operation, validate_public_key, value,
-    ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
-    COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE, MAX_INPUTS,
-    MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD,
-    NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, TREE_LAYERS,
+    disclosure, envelope_allows, fcmp, is_attestation_operation, is_note_vote_operation,
+    validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
+    COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE,
+    FINALITY_VOTE_CONTEXT_BYTES, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX,
+    NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
+    TREE_LAYERS,
 };
 
 /// `[wire version u32][network u8][reserved 3][genesis 32]`.
@@ -24,10 +25,10 @@ const MAX_PROOF_SECTION_BYTES: usize = 65_536;
 const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
 const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
 const EFFECTS_HEADER_BYTES: usize = 124;
-/// Attestation count, registration context and member key, after the key images and
-/// output leaves. Fixed width and always present: an optional trailer would make the
-/// encoded length depend on a field the caller has not parsed yet.
-const EFFECTS_TRAILER_BYTES: usize = 1 + 32 + FINALITY_MEMBER_KEY_BYTES;
+/// Attestation count, registration context, member key and vote boundary (hash, height).
+/// Fixed width and always present, so the encoded length never depends on an unparsed field.
+const EFFECTS_TRAILER_BYTES: usize =
+    1 + 32 + FINALITY_MEMBER_KEY_BYTES + FINALITY_VOTE_CONTEXT_BYTES;
 /// secp256k1's field prime, big-endian, for the canonical-encoding check on a member key.
 const SECP256K1_FIELD_PRIME: [u8; 32] = [
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -52,6 +53,10 @@ struct PayloadEffects {
     registration_context: [u8; 32],
     /// The tally-encryption key a finality-member registration published; zero otherwise.
     member_key: [u8; FINALITY_MEMBER_KEY_BYTES],
+    /// The epoch boundary block a note finality vote names, and its height; zero for every
+    /// other operation. The caller's connect rules judge them; nothing here does.
+    vote_boundary_hash: [u8; 32],
+    vote_boundary_height: u32,
 }
 
 impl PayloadEffects {
@@ -91,6 +96,8 @@ impl PayloadEffects {
         );
         encoded.extend_from_slice(&self.registration_context);
         encoded.extend_from_slice(&self.member_key);
+        encoded.extend_from_slice(&self.vote_boundary_hash);
+        encoded.extend_from_slice(&self.vote_boundary_height.to_le_bytes());
         for key_image in &self.attestation_key_images {
             encoded.extend_from_slice(key_image);
         }
@@ -265,6 +272,8 @@ struct PayloadPrefix<'a> {
     transparent_binding: [u8; 32],
     pseudo_outs: Vec<[u8; 32]>,
     key_images: Vec<[u8; 32]>,
+    /// Derived from the operation, binding and key images above, never read from the wire.
+    input_context: [u8; 32],
     output_owners: Vec<[u8; 32]>,
     /// Derived from each owner key, never read from the wire.
     output_nullifier_bases: Vec<[u8; 32]>,
@@ -282,6 +291,10 @@ struct PayloadPrefix<'a> {
     /// Present only for a finality-member registration: the compressed secp256k1 key other
     /// voters seal their VSS evaluations to. Zero for every other operation.
     member_key: [u8; FINALITY_MEMBER_KEY_BYTES],
+    /// Note finality vote only: the named epoch boundary block and height, zero otherwise.
+    /// Inside the signed prefix, after the outputs; reported in the effects trailer.
+    vote_boundary_hash: [u8; 32],
+    vote_boundary_height: u32,
 }
 
 /// Read the header, inputs and outputs of a canonical payload. Shared by validation
@@ -327,7 +340,8 @@ fn parse_payload_prefix<'a>(
     // verifier exist.
     if finality_object != FINALITY_OBJECT_NONE
         || !(matches!(operation, NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER)
-            || is_attestation_operation(operation))
+            || is_attestation_operation(operation)
+            || is_note_vote_operation(operation))
     {
         return Err(ResultCode::UnsupportedFormat);
     }
@@ -370,6 +384,9 @@ fn parse_payload_prefix<'a>(
         }
         key_images.push(key_image);
     }
+    // Every output's one-time key and note tag are derived under this, so a scanner needs
+    // exactly the prefix up to here and nothing chain-local.
+    let input_context = crate::note::input_context(operation, &transparent_binding, &key_images);
 
     let output_count = bounded_count(&mut cursor, MAX_OUTPUTS)?;
     let mut output_owners = Vec::with_capacity(output_count);
@@ -382,15 +399,17 @@ fn parse_payload_prefix<'a>(
     for _ in 0..output_count {
         let owner = cursor.array()?;
         validate_ed25519_point(owner)?;
-        // I = Hp(O), so two leaves that share O share a key image: whichever is spent
-        // first consumes both, and the value behind the other is unrecoverable.
-        if output_owners.contains(&owner) {
-            return Err(ResultCode::ConsensusInvalid);
-        }
         output_owners.push(owner);
         // I is derived, not declared: a sender that could choose it could publish owner
         // material and link every note paid to one address.
-        output_nullifier_bases.push(crate::note::key_image_base_checked(&owner)?);
+        let nullifier_base = crate::note::key_image_base_checked(&owner)?;
+        // Mirrors the key-image guard above. Two leaves sharing a base share a key image,
+        // so spending either strands the other; a sender can still build that shape, and
+        // it is refused rather than admitted as value no one can recover.
+        if output_nullifier_bases.contains(&nullifier_base) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        output_nullifier_bases.push(nullifier_base);
         let commitment = cursor.array()?;
         validate_ed25519_point(commitment)?;
         output_commitments.push(commitment);
@@ -429,6 +448,15 @@ fn parse_payload_prefix<'a>(
             validate_compressed_secp256k1(&member_key)?;
         }
     }
+    // The vote binds its epoch boundary so it cannot be replayed into another epoch.
+    // The height is carried, not derived; which boundary is votable is a chain rule.
+    let mut vote_boundary_hash = [0_u8; 32];
+    let mut vote_boundary_height = 0_u32;
+    if is_note_vote_operation(operation) {
+        vote_boundary_hash = cursor.array()?;
+        validate_nonzero(&vote_boundary_hash)?;
+        vote_boundary_height = cursor.u32()?;
+    }
 
     Ok(PayloadPrefix {
         cursor,
@@ -444,6 +472,7 @@ fn parse_payload_prefix<'a>(
         transparent_binding,
         pseudo_outs,
         key_images,
+        input_context,
         output_owners,
         output_nullifier_bases,
         output_commitments,
@@ -453,6 +482,8 @@ fn parse_payload_prefix<'a>(
         output_outgoing_ciphertexts,
         registration_context,
         member_key,
+        vote_boundary_hash,
+        vote_boundary_height,
     })
 }
 
@@ -489,12 +520,15 @@ fn validate_payload(
         transparent_binding,
         pseudo_outs,
         key_images,
+        input_context,
         output_owners,
         output_nullifier_bases,
         output_commitments,
         output_tweak_ephemerals,
         registration_context,
         member_key,
+        vote_boundary_hash,
+        vote_boundary_height,
         ..
     } = parse_payload_prefix(
         wire_version,
@@ -516,6 +550,21 @@ fn validate_payload(
             || fee != 0
             || disclosure_mask != 7)
     {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    // A vote spends one note and reissues it whole: one input, one output, nothing crossing
+    // the boundary and no fee, so value is preserved exactly and a producer has nothing to
+    // select on. Splitting and merging stay ordinary transfers. Pinned before any proof
+    // runs, like the attestation shape. The mask is pinned by the envelope.
+    if is_note_vote_operation(operation)
+        && (input_count != 1 || output_count != 1 || transparent_value_balance != 0 || fee != 0)
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    // A leaf is paid for by something the ledger retires once: a key image, or transparent
+    // value behind a prevout. With neither, the input context is a constant and a second
+    // identical payload would re-issue every one-time key the first created.
+    if output_count != 0 && input_count == 0 && transparent_value_balance <= 0 {
         return Err(ResultCode::ConsensusInvalid);
     }
 
@@ -680,6 +729,7 @@ fn validate_payload(
             &output_tweak_ephemerals[output_index],
             &signing_hash,
             u32::try_from(output_index).map_err(|_| ResultCode::ResourceLimit)?,
+            &input_context,
             &disclosure_proof[disclosure_offset..end],
         )
         .map_err(|_| ResultCode::ConsensusInvalid)?
@@ -718,6 +768,8 @@ fn validate_payload(
         attestation_key_images,
         registration_context,
         member_key,
+        vote_boundary_hash,
+        vote_boundary_height,
     })
 }
 
@@ -764,7 +816,6 @@ const SCAN_REQUEST_HEADER_BYTES: usize = 16;
 const SCAN_KEY_BYTES: usize = 64;
 const MAX_SCAN_KEYS: usize = 1024;
 const SCAN_RESPONSE_HEADER_BYTES: usize = 6;
-const NOTE_SCAN_PREFIX_BYTES: usize = 236;
 const NOTE_SCAN_RESULT_BYTES: usize = 212;
 const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + NOTE_SCAN_RESULT_BYTES;
 const SCAN_OUTGOING: u8 = 2;
@@ -841,7 +892,8 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         // search for this output.
         for key in 0..key_count {
             let key_at = SCAN_REQUEST_HEADER_BYTES + (key * SCAN_KEY_BYTES);
-            let mut scan_request = Vec::with_capacity(NOTE_SCAN_PREFIX_BYTES + ciphertext.len());
+            let mut scan_request =
+                Vec::with_capacity(crate::note::SCAN_PREFIX_BYTES + ciphertext.len());
             scan_request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
             scan_request.push(scan_kind);
             scan_request.push(network);
@@ -855,6 +907,7 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             scan_request.extend_from_slice(&prefix.output_commitments[index]);
             scan_request.extend_from_slice(&prefix.output_note_ephemerals[index]);
             scan_request.extend_from_slice(&prefix.output_tweak_ephemerals[index]);
+            scan_request.extend_from_slice(&prefix.input_context);
             scan_request.extend_from_slice(ciphertext);
 
             // Bytes here are peer-chosen: an output this key cannot open is simply not
@@ -954,8 +1007,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        parameter_digest_is_accepted, tree, NOTE_COLLATERAL_REGISTER, PRIOR_PARAMETER_DIGESTS,
-        PRODUCT_CONTRACT,
+        parameter_digest_is_accepted, tree, NOTE_COLLATERAL_REGISTER, NOTE_FINALITY_VOTE,
+        PRIOR_PARAMETER_DIGESTS, PRODUCT_CONTRACT,
     };
 
     // Stands in for whatever the caller commits its transparent side to; the payload
@@ -963,6 +1016,11 @@ mod tests {
     const TEST_TRANSPARENT_BINDING: [u8; 32] = [0x5a; 32];
     const TEST_NETWORK: u8 = 1;
     const TEST_GENESIS: [u8; 32] = [0x11; 32];
+
+    // The context every shield-shaped test payload here derives its outputs under.
+    fn shield_context() -> [u8; 32] {
+        crate::note::input_context(NOTE_SHIELD, &TEST_TRANSPARENT_BINDING, &[])
+    }
 
     fn validation_request(payload: &[u8]) -> Vec<u8> {
         validation_request_for(TEST_NETWORK, &TEST_GENESIS, payload)
@@ -1273,6 +1331,7 @@ mod tests {
             &output_y,
             &signing_hash,
             0,
+            &shield_context(),
             &[0x44; 32],
         )
         .expect("the true address always has a proof");
@@ -1404,8 +1463,7 @@ mod tests {
         };
         assert_eq!(published, view_point(&tweak_ephemeral));
 
-        // The owner opens the note, so the ciphertext really does carry the amount.
-        assert_eq!(
+        let open_with = |candidate: &[u8; 32]| {
             crate::note::try_open_recipient(
                 1,
                 0,
@@ -1415,45 +1473,23 @@ mod tests {
                 &commitment,
                 &note_ephemeral,
                 &tweak_ephemeral,
+                &shield_context(),
                 &ciphertext,
-                &view_point(&note_ephemeral),
-            ),
-            Some(99)
-        );
-
+                candidate,
+            )
+        };
+        // The owner opens the note, so the ciphertext really does carry the amount.
+        assert_eq!(open_with(&view_point(&note_ephemeral)), Some(99));
         // The observer holding the published point must not.
         assert_eq!(
-            crate::note::try_open_recipient(
-                1,
-                0,
-                0,
-                &genesis,
-                &owner,
-                &commitment,
-                &note_ephemeral,
-                &tweak_ephemeral,
-                &ciphertext,
-                &published,
-            ),
+            open_with(&published),
             None,
             "the disclosed shared point decrypted the note"
         );
-
         // Nor may the raw ephemerals or the disclosed address stand in for it.
         for candidate in [note_ephemeral, tweak_ephemeral, named_spend, named_view] {
             assert_eq!(
-                crate::note::try_open_recipient(
-                    1,
-                    0,
-                    0,
-                    &genesis,
-                    &owner,
-                    &commitment,
-                    &note_ephemeral,
-                    &tweak_ephemeral,
-                    &ciphertext,
-                    &candidate,
-                ),
+                open_with(&candidate),
                 None,
                 "a public payload field decrypted the note"
             );
@@ -1466,7 +1502,17 @@ mod tests {
         ephemeral_secret: u64,
         mask: u64,
     ) -> Vec<u8> {
-        let mut request = vec![0_u8; 272];
+        encrypted_output_under(genesis, index, ephemeral_secret, mask, &shield_context())
+    }
+
+    fn encrypted_output_under(
+        genesis: &[u8; 32],
+        index: u32,
+        ephemeral_secret: u64,
+        mask: u64,
+        input_context: &[u8; 32],
+    ) -> Vec<u8> {
+        let mut request = vec![0_u8; crate::note::ENCRYPT_REQUEST_BYTES];
         request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
         request[2] = 1;
         request[4..8].copy_from_slice(&index.to_le_bytes());
@@ -1487,6 +1533,7 @@ mod tests {
         request[200..208].copy_from_slice(&99_u64.to_le_bytes());
         request[208..240].copy_from_slice(&Scalar::from(17_u64).to_bytes());
         request[240..272].copy_from_slice(&Scalar::from(mask).to_bytes());
+        request[272..304].copy_from_slice(input_context);
         crate::note::encrypt_request(&request).expect("canonical note")
     }
 
@@ -1499,22 +1546,202 @@ mod tests {
     }
 
     fn payload_with_output(genesis: &[u8; 32], encrypted: &[u8]) -> Vec<u8> {
+        payload_with_output_as(genesis, encrypted, NOTE_SHIELD, &TEST_TRANSPARENT_BINDING)
+    }
+
+    // The same one-output prefix under another operation byte or transparent binding.
+    fn payload_with_output_as(
+        genesis: &[u8; 32],
+        encrypted: &[u8],
+        operation: u8,
+        transparent_binding: &[u8; 32],
+    ) -> Vec<u8> {
         let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
         let root = tree::root(&state).expect("empty canonical tree root");
         let mut payload = Vec::new();
         payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
-        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(&[operation, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
         payload.extend_from_slice(genesis);
         payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
         payload.extend_from_slice(&root[12..44]);
         payload.extend_from_slice(&0_u64.to_le_bytes());
         payload.extend_from_slice(&100_i64.to_le_bytes());
         payload.extend_from_slice(&1_u64.to_le_bytes());
-        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+        payload.extend_from_slice(transparent_binding);
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
         put_output(&mut payload, encrypted);
         payload
+    }
+
+    // A record copied into a payload whose prefix differs only in binding or operation
+    // parses, but must not scan as paid: the tag binds the original context.
+    #[test]
+    fn a_copied_output_record_does_not_scan_in_another_payload() {
+        let genesis = TEST_GENESIS;
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let outgoing_secret = Scalar::from(7_u64);
+        let original = payload_with_output(&genesis, &encrypted);
+        let other_binding = payload_with_output_as(&genesis, &encrypted, NOTE_SHIELD, &[0x5b; 32]);
+        let other_operation = payload_with_output_as(
+            &genesis,
+            &encrypted,
+            NOTE_TRANSFER,
+            &TEST_TRANSPARENT_BINDING,
+        );
+
+        // The wire record: O, C, both ephemerals. I is derived and never serialized.
+        let mut record = Vec::new();
+        record.extend_from_slice(&encrypted[ENCRYPTED_O]);
+        record.extend_from_slice(&encrypted[ENCRYPTED_C]);
+        record.extend_from_slice(&encrypted[ENCRYPTED_EPHEMERALS]);
+        for payload in [&original, &other_binding, &other_operation] {
+            assert!(
+                payload.windows(record.len()).any(|window| window == record),
+                "every payload carries the identical output record"
+            );
+            assert!(
+                parse_payload_prefix(2008, payload, TEST_NETWORK, Some(&genesis)).is_ok(),
+                "the copy is a well-formed payload prefix"
+            );
+        }
+
+        let matches = |payload: &[u8]| -> [u8; 3] {
+            [
+                scan_outputs(&scan_request(0, &view_secret, &spend_secret, payload))
+                    .expect("a scan reports, it does not fail")[2],
+                scan_outputs(&scan_request(1, &view_secret, &Scalar::ZERO, payload))
+                    .expect("a scan reports, it does not fail")[2],
+                scan_outputs(&scan_request(2, &outgoing_secret, &Scalar::ZERO, payload))
+                    .expect("a scan reports, it does not fail")[2],
+            ]
+        };
+        assert_eq!(matches(&original), [1, 1, 1]);
+        assert_eq!(matches(&other_binding), [0, 0, 0]);
+        assert_eq!(matches(&other_operation), [0, 0, 0]);
+    }
+
+    // One output, no inputs, nothing entering from the transparent side: every proof holds
+    // (a zero amount balances a zero inflow) and only the shape rule stands in the way. The
+    // same shape with one unit entering is the ordinary shield and must pass.
+    #[test]
+    fn an_output_bearing_payload_must_retire_an_input_or_carry_positive_balance() {
+        let output_only = |balance: i64, amount: u64| -> Vec<u8> {
+            let output_mask = Scalar::from(3_u64).to_bytes();
+            let output_commitment =
+                value::commitment(amount, &output_mask).expect("valid commitment");
+            let state =
+                tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+            let root = tree::root(&state).expect("empty canonical tree root");
+            let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+            let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
+                .compress()
+                .to_bytes();
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+            payload.extend_from_slice(&TEST_GENESIS);
+            payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+            payload.extend_from_slice(&root[12..44]);
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&balance.to_le_bytes());
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+            compact_size(&mut payload, 0);
+            compact_size(&mut payload, 1);
+            payload.extend_from_slice(&point);
+            payload.extend_from_slice(&output_commitment);
+            payload.extend_from_slice(&point);
+            payload.extend_from_slice(&second_point);
+            vector(
+                &mut payload,
+                &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES),
+            );
+            vector(
+                &mut payload,
+                &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES),
+            );
+            vector(&mut payload, &[]);
+            let signing_hash = signable_hash(2008, &payload);
+            let (range_commitments, range_proof) =
+                value::prove_range(&[amount], &[output_mask], &[0x41; 32])
+                    .expect("valid range proof");
+            assert_eq!(range_commitments, vec![output_commitment]);
+            let excess = (-Scalar::from(3_u64)).to_bytes();
+            let balance_proof = value::prove_balance(
+                &[],
+                &[output_commitment],
+                balance,
+                0,
+                &excess,
+                &signing_hash,
+                &[0x42; 32],
+            )
+            .expect("the statement balances, so the proof exists");
+            vector(&mut payload, &[]);
+            vector(&mut payload, &range_proof);
+            vector(&mut payload, &balance_proof);
+            vector(&mut payload, &[]);
+            vector(&mut payload, &[]);
+            payload
+        };
+
+        assert_eq!(
+            validate(&validation_request(&output_only(0, 0))),
+            Err(ResultCode::ConsensusInvalid),
+            "an output with no retiring input and no inflow must be refused"
+        );
+        assert_eq!(
+            validate(&validation_request(&output_only(1, 1))),
+            Ok(()),
+            "one unit entering from the transparent side is a shield"
+        );
+
+        // The rule is on the shape, not the operation byte.
+        let mut relabeled = output_only(0, 0);
+        relabeled[2] = NOTE_TRANSFER;
+        assert_eq!(
+            validate(&validation_request(&relabeled)),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // The rule is on outputs. A payload that creates no leaf derives no key and is exempt
+    // with no inputs and no balance: the empty statement balances under a zero excess.
+    #[test]
+    fn a_payload_without_outputs_is_exempt_from_the_shape_rule() {
+        let mut empty = Vec::new();
+        empty.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        empty.extend_from_slice(&[NOTE_TRANSFER, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+        empty.extend_from_slice(&TEST_GENESIS);
+        empty.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        empty.extend_from_slice(&root[12..44]);
+        empty.extend_from_slice(&0_u64.to_le_bytes());
+        empty.extend_from_slice(&0_i64.to_le_bytes());
+        empty.extend_from_slice(&0_u64.to_le_bytes());
+        empty.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+        compact_size(&mut empty, 0);
+        compact_size(&mut empty, 0);
+        vector(&mut empty, &[]);
+        let signing_hash = signable_hash(2008, &empty);
+        let balance_proof = value::prove_balance(
+            &[],
+            &[],
+            0,
+            0,
+            &Scalar::ZERO.to_bytes(),
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("an empty statement balances");
+        vector(&mut empty, &[]);
+        vector(&mut empty, &[]);
+        vector(&mut empty, &balance_proof);
+        vector(&mut empty, &[]);
+        vector(&mut empty, &[]);
+        assert_eq!(validate(&validation_request(&empty)), Ok(()));
     }
 
     fn scan_request_keys(scan_kind: u8, keys: &[(Scalar, Scalar)], payload: &[u8]) -> Vec<u8> {
@@ -1815,12 +2042,12 @@ mod tests {
             state_effects.len(),
             EFFECTS_HEADER_BYTES + 96 + EFFECTS_TRAILER_BYTES
         );
-        // Nothing was attested, so the trailer is an empty count, a zero context and a
-        // zero member key.
+        // Nothing was attested and nothing voted, so the trailer is an empty count, a
+        // zero context, a zero member key and a zero vote boundary.
         assert_eq!(state_effects[EFFECTS_HEADER_BYTES + 96], 0);
         assert_eq!(
             &state_effects[EFFECTS_HEADER_BYTES + 97..],
-            &[0_u8; 32 + FINALITY_MEMBER_KEY_BYTES]
+            &[0_u8; 32 + FINALITY_MEMBER_KEY_BYTES + FINALITY_VOTE_CONTEXT_BYTES]
         );
         assert_eq!(&state_effects[..2], &PAYLOAD_SCHEMA_U16.to_le_bytes());
         assert_eq!(state_effects[2], 0);
@@ -2313,15 +2540,174 @@ mod tests {
             }
         }
 
+        // A vote consumes its note, so it is not an attestation: its key image goes to
+        // the spent index, never the watch set.
+        assert!(!is_attestation_operation(NOTE_FINALITY_VOTE));
+
         // Nothing past the last operation is known.
         assert!(!envelope_allows(
             2008,
-            NOTE_FINALITY_MEMBER_REGISTER + 1,
+            NOTE_FINALITY_VOTE + 1,
             0,
             0,
             FINALITY_OBJECT_NONE,
             7
         ));
+    }
+
+    // Where the vote fields sit in a payload with `inputs` inputs and `outputs` outputs of
+    // the shape `vote_shaped` builds: after the last output record.
+    const VOTE_FIELDS_BYTES: usize = 36;
+
+    /// A vote-shaped prefix followed by an oversized membership section. A shape
+    /// refusal is `ConsensusInvalid`; passing shape yields `ResourceLimit`. Returns the
+    /// payload and the offset of the vote fields.
+    fn vote_shaped(
+        operation: u8,
+        inputs: usize,
+        outputs: usize,
+        transparent_value_balance: i64,
+        fee: u64,
+        boundary_hash: [u8; 32],
+    ) -> (Vec<u8>, usize) {
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+        let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
+            .compress()
+            .to_bytes();
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        payload.extend_from_slice(&[operation, 0, 0, 7, FINALITY_OBJECT_NONE, TEST_NETWORK, 0]);
+        payload.extend_from_slice(&TEST_GENESIS);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&transparent_value_balance.to_le_bytes());
+        payload.extend_from_slice(&fee.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+        compact_size(&mut payload, inputs);
+        for index in 0..inputs {
+            payload.extend_from_slice(&point);
+            let scalar = Scalar::from(5 + u64::try_from(index).expect("bounded"));
+            let key_image = (ED25519_BASEPOINT_POINT * scalar).compress().to_bytes();
+            payload.extend_from_slice(&key_image);
+        }
+        compact_size(&mut payload, outputs);
+        for index in 0..outputs {
+            let scalar = Scalar::from(11 + u64::try_from(index).expect("bounded"));
+            let owner = (ED25519_BASEPOINT_POINT * scalar).compress().to_bytes();
+            let commitment =
+                value::commitment(9, &Scalar::from(3_u64).to_bytes()).expect("valid commitment");
+            payload.extend_from_slice(&owner);
+            payload.extend_from_slice(&commitment);
+            payload.extend_from_slice(&point);
+            payload.extend_from_slice(&second_point);
+            vector(
+                &mut payload,
+                &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES),
+            );
+            vector(
+                &mut payload,
+                &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES),
+            );
+        }
+        let vote_fields_at = payload.len();
+        if operation == NOTE_FINALITY_VOTE {
+            payload.extend_from_slice(&boundary_hash);
+            payload.extend_from_slice(&1200_u32.to_le_bytes());
+        }
+        vector(&mut payload, &[]); // finality body
+        compact_size(&mut payload, MAX_PROOF_SECTION_BYTES + 1); // membership: over the bound
+        (payload, vote_fields_at)
+    }
+
+    // The other extended operations are refused before their fields are read. A vote is
+    // admitted past that gate and judged by its shape: the same bytes under operation 10
+    // reach the shape rule, and under operation 3 do not.
+    #[test]
+    fn a_note_vote_passes_the_gate_that_holds_the_other_extended_operations() {
+        let mut request = valid_request();
+        request[VALIDATION_PREFIX_SIZE + 2] = NOTE_FINALITY_VOTE;
+        assert_eq!(
+            validate(&request),
+            Err(ResultCode::ConsensusInvalid),
+            "a shield relabeled as a vote is refused by the vote shape, not by the gate"
+        );
+        request[VALIDATION_PREFIX_SIZE + 2] = crate::NOTE_NULLSEND;
+        assert_eq!(validate(&request), Err(ResultCode::UnsupportedFormat));
+    }
+
+    // The vote fields are read only under operation 10, sit after the outputs, and are
+    // inside the region the signing hash covers, so the spend authorization binds them.
+    #[test]
+    fn a_note_vote_carries_its_boundary_inside_the_signed_prefix() {
+        let boundary = [0x7e_u8; 32];
+        let (payload, vote_fields_at) = vote_shaped(NOTE_FINALITY_VOTE, 1, 1, 0, 0, boundary);
+        let prefix = parse_payload_prefix(2008, &payload, TEST_NETWORK, Some(&TEST_GENESIS))
+            .expect("a vote-shaped prefix parses");
+        assert_eq!(prefix.vote_boundary_hash, boundary);
+        assert_eq!(prefix.vote_boundary_height, 1200);
+        assert_eq!(
+            prefix.cursor.position(),
+            vote_fields_at + VOTE_FIELDS_BYTES,
+            "the prefix ends after the vote fields, so the signing hash covers them"
+        );
+        assert_eq!(prefix.registration_context, [0_u8; 32]);
+        assert_eq!(prefix.member_key, [0_u8; FINALITY_MEMBER_KEY_BYTES]);
+        assert_eq!(prefix.key_images.len(), 1);
+        assert_eq!(prefix.output_owners.len(), 1);
+
+        // Flipping the operation byte moves the slot: a transfer reads no vote fields.
+        let mut relabeled = payload.clone();
+        relabeled[2] = NOTE_TRANSFER;
+        let transfer = parse_payload_prefix(2008, &relabeled, TEST_NETWORK, Some(&TEST_GENESIS))
+            .expect("the same bytes parse as a transfer prefix");
+        assert_eq!(transfer.cursor.position(), vote_fields_at);
+        assert_eq!(transfer.vote_boundary_hash, [0_u8; 32]);
+        assert_eq!(transfer.vote_boundary_height, 0);
+
+        // A zero boundary names no block.
+        let (zeroed, _) = vote_shaped(NOTE_FINALITY_VOTE, 1, 1, 0, 0, [0_u8; 32]);
+        assert_eq!(
+            parse_payload_prefix(2008, &zeroed, TEST_NETWORK, Some(&TEST_GENESIS)).err(),
+            Some(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // One input, one output, no value crossing, no fee. Each is refused before any proof
+    // section is read; the shape that holds reaches the sections.
+    #[test]
+    fn a_note_vote_is_pinned_to_one_input_one_output_no_value_no_fee() {
+        const INVALID: Result<(), ResultCode> = Err(ResultCode::ConsensusInvalid);
+        let boundary = [0x7e_u8; 32];
+        let verdict = |operation: u8, inputs: usize, outputs: usize, tvb: i64, fee: u64| {
+            let (payload, _) = vote_shaped(operation, inputs, outputs, tvb, fee, boundary);
+            let request = validation_request_for(TEST_NETWORK, &TEST_GENESIS, &payload);
+            validate(&request)
+        };
+        let vote = NOTE_FINALITY_VOTE;
+        assert_eq!(
+            verdict(vote, 1, 1, 0, 0),
+            Err(ResultCode::ResourceLimit),
+            "the vote shape passes the shape rule and reaches the proof sections"
+        );
+        assert_eq!(verdict(vote, 2, 1, 0, 0), INVALID, "two inputs");
+        assert_eq!(verdict(vote, 0, 1, 0, 0), INVALID, "no input");
+        assert_eq!(verdict(vote, 1, 2, 0, 0), INVALID, "two outputs");
+        assert_eq!(verdict(vote, 1, 0, 0, 0), INVALID, "no output");
+        assert_eq!(verdict(vote, 1, 1, 0, 1), INVALID, "a fee");
+        assert_eq!(verdict(vote, 1, 1, 1, 0), INVALID, "value entering");
+        assert_eq!(verdict(vote, 1, 1, -1, 0), INVALID, "value leaving");
+
+        // The rule is on the operation: the same shapes under a transfer reach the sections.
+        for (inputs, outputs, tvb, fee) in [(2, 1, 0, 0), (1, 2, 0, 0), (1, 1, 0, 1)] {
+            assert_eq!(
+                verdict(NOTE_TRANSFER, inputs, outputs, tvb, fee),
+                Err(ResultCode::ResourceLimit),
+                "a transfer of shape ({inputs}, {outputs}, {tvb}, {fee}) is not pinned"
+            );
+        }
     }
 
     // A member key is consensus data, so no two byte strings may name one key and a

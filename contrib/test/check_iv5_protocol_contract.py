@@ -46,13 +46,14 @@ expected_note = {
     "conditional_migration": 7,
     "collateral_register": 8,
     "finality_member_register": 9,
+    "finality_vote": 10,
     "none": 255,
 }
 # Consensus-defined but not surfaced to callers yet, so the RPC/release-schema checks
 # below skip them. Registration cannot go live while the attestation tag is the note's
-# own key image; remove an entry here when its operation is exposed, and this set must
-# be empty before release.
-not_yet_surfaced = {"collateral_register", "finality_member_register"}
+# own key image; the note vote has no connect path, producer or RPC yet. Remove an
+# entry here when its operation is exposed, and this set must be empty before release.
+not_yet_surfaced = {"collateral_register", "finality_member_register", "finality_vote"}
 expected_profiles = {"none": 0, "nullstake_v1": 1, "nullstake_v2": 2, "nullstake_v3": 3}
 expected_auth = {"owner": 0, "cold_staker": 1, "m_of_n_public_signers": 2, "m_of_n_hidden_signers": 3}
 expected_objects = {"none": 0, "vote": 1, "tally_share": 2, "certificate": 3, "committee_rotation": 4}
@@ -75,6 +76,7 @@ mapping = {
     "NOTE_CONDITIONAL_MIGRATION": 7,
     "NOTE_COLLATERAL_REGISTER": 8,
     "NOTE_FINALITY_MEMBER_REGISTER": 9,
+    "NOTE_FINALITY_VOTE": 10,
     "NOTE_OPERATION_NONE": 255,
     "FINALITY_NONE": 0,
     "FINALITY_NULLSTAKE_V1": 1,

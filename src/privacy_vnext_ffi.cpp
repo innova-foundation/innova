@@ -1089,6 +1089,14 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
                       INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE,
                   effects.memberKey.begin());
         offset += INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE;
+        std::copy(encoded.begin() + offset, encoded.begin() + offset + 32,
+                  effects.voteBoundaryHash.begin());
+        offset += 32;
+        effects.nVoteBoundaryHeight = 0;
+        for (size_t i = 0; i < 4; ++i)
+            effects.nVoteBoundaryHeight |=
+                static_cast<uint32_t>(encoded[offset + i]) << (8 * i);
+        offset += 4;
         effects.attestationKeyImages.resize(attestationCount);
         for (size_t i = 0; i < attestationCount; ++i)
         {
@@ -1276,6 +1284,70 @@ void PrivacyVNextValueProof::Clear()
     balanceProof.fill(0);
 }
 
+// The hand-framed requests below end at the size the ABI header declares. A request the
+// archive widens without a matching change here stops compiling, instead of going out
+// with a zero tail the archive reads as a field.
+static_assert(PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET +
+                      INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE ==
+                  INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE,
+              "IV5 note-scan framing does not end where the ABI prefix does");
+static_assert(PRIVACY_VNEXT_NOTE_SCAN_CIPHERTEXT_OFFSET ==
+                  INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE,
+              "IV5 note-scan ciphertext does not start where the ABI prefix ends");
+static_assert(PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET +
+                      INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE ==
+                  INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE,
+              "IV5 note-encrypt framing does not fill the ABI request");
+static_assert(PRIVACY_VNEXT_RECEIVER_DISCLOSURE_INPUT_CONTEXT_OFFSET +
+                      INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE ==
+                  INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_REQUEST_SIZE,
+              "IV5 receiver-disclosure framing does not fill the ABI request");
+static_assert(INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_SIZE ==
+                  INNOVA_PRIVACY_VNEXT_DIGEST_SIZE,
+              "IV5 input context is carried as a PrivacyVNextDigest");
+static_assert(2 + 1 + 1 + INNOVA_PRIVACY_VNEXT_DIGEST_SIZE ==
+                  INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE,
+              "IV5 input-context request header framing disagrees with the ABI");
+
+bool DerivePrivacyVNextInputContext(
+    uint8_t nOperation,
+    const PrivacyVNextDigest& transparentBinding,
+    const std::vector<PrivacyVNextDigest>& vKeyImages,
+    PrivacyVNextDigest& contextOut,
+    std::string& error)
+{
+    contextOut.fill(0);
+    error.clear();
+    if (vKeyImages.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
+    {
+        error = "an IV5 input context covers at most sixteen key images";
+        return false;
+    }
+
+    std::vector<uint8_t> request(
+        INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE +
+            (vKeyImages.size() * 32), 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = nOperation;
+    request[3] = static_cast<uint8_t>(vKeyImages.size());
+    std::memcpy(&request[4], transparentBinding.data(), 32);
+    for (size_t i = 0; i < vKeyImages.size(); ++i)
+        std::memcpy(&request[INNOVA_PRIVACY_VNEXT_INPUT_CONTEXT_REQUEST_HEADER_SIZE +
+                             (i * 32)],
+                    vKeyImages[i].data(), 32);
+
+    const int32_t rc = innova_privacy_vnext_input_context(
+        &request[0], request.size(), contextOut.data(), contextOut.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        contextOut.fill(0);
+        error = ResultError("IV5 input context", rc);
+        return false;
+    }
+    return true;
+}
+
 bool ScanPrivacyVNextNote(
     uint8_t scanKind,
     uint8_t network,
@@ -1324,7 +1396,9 @@ bool ScanPrivacyVNextNote(
     std::memcpy(&request[140], note.leafC.data(), 32);
     std::memcpy(&request[172], note.noteEphemeral.data(), 32);
     std::memcpy(&request[204], note.tweakEphemeral.data(), 32);
-    std::memcpy(&request[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE],
+    std::memcpy(&request[PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET],
+                note.inputContext.data(), 32);
+    std::memcpy(&request[PRIVACY_VNEXT_NOTE_SCAN_CIPHERTEXT_OFFSET],
                 &note.vchCiphertext[0], nExpectedCiphertext);
 
     std::array<uint8_t, INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE> response = {};
@@ -1609,6 +1683,7 @@ bool EncryptPrivacyVNextNote(
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& inputContext,
     PrivacyVNextEncryptedOutput& noteOut,
     std::string& error)
 {
@@ -1630,6 +1705,8 @@ bool EncryptPrivacyVNextNote(
     PutLE64(request + 200, nAmount);
     std::memcpy(request + 208, y.data(), 32);
     std::memcpy(request + 240, mask.data(), 32);
+    std::memcpy(request + PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET,
+                inputContext.data(), 32);
 
     uint8_t result[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t written = 0;
@@ -2224,6 +2301,7 @@ bool ProvePrivacyVNextReceiverDisclosure(
     const PrivacyVNextDigest& outputY,
     const PrivacyVNextDigest& signableHash,
     const PrivacyVNextDigest& entropy,
+    const PrivacyVNextDigest& inputContext,
     std::vector<unsigned char>& vchProofOut,
     std::string& error)
 {
@@ -2243,6 +2321,8 @@ bool ProvePrivacyVNextReceiverDisclosure(
     std::memcpy(&request[168], outputY.data(), 32);
     std::memcpy(&request[200], signableHash.data(), 32);
     std::memcpy(&request[232], entropy.data(), 32);
+    std::memcpy(&request[PRIVACY_VNEXT_RECEIVER_DISCLOSURE_INPUT_CONTEXT_OFFSET],
+                inputContext.data(), 32);
 
     std::vector<uint8_t> response(
         INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE, 0);

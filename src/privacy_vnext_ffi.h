@@ -135,15 +135,22 @@ struct PrivacyVNextStateEffects
     // Tally-encryption key a finality-member registration published (raw, since voters
     // encrypt to it); all-zero for every other operation.
     PrivacyVNextMemberKey memberKey;
+    // The epoch boundary block a note finality vote names, and its height. The decoder
+    // refuses a zero hash under operation 10 and reports zero for every other operation,
+    // so a nonzero hash is the one discriminator of a vote in the effects.
+    PrivacyVNextDigest voteBoundaryHash;
+    uint32_t nVoteBoundaryHeight;
 
     PrivacyVNextStateEffects()
-        : nFinalizedTreeSize(0), nTransparentValueBalance(0), nFee(0)
+        : nFinalizedTreeSize(0), nTransparentValueBalance(0), nFee(0),
+          nVoteBoundaryHeight(0)
     {
         finalizedRoot.fill(0);
         parameterDigest.fill(0);
         transparentBinding.fill(0);
         registrationContext.fill(0);
         memberKey.fill(0);
+        voteBoundaryHash.fill(0);
     }
 
     // Whether this payload registered a finality-committee member.
@@ -151,6 +158,15 @@ struct PrivacyVNextStateEffects
     {
         for (size_t i = 0; i < memberKey.size(); ++i)
             if (memberKey[i] != 0)
+                return true;
+        return false;
+    }
+
+    // Whether this payload is a note finality vote: it names an epoch boundary.
+    bool HasVoteBoundary() const
+    {
+        for (size_t i = 0; i < voteBoundaryHash.size(); ++i)
+            if (voteBoundaryHash[i] != 0)
                 return true;
         return false;
     }
@@ -281,12 +297,27 @@ static const uint8_t PRIVACY_VNEXT_SCAN_FULL = 0;
 static const uint8_t PRIVACY_VNEXT_SCAN_VIEW_ONLY = 1;
 static const uint8_t PRIVACY_VNEXT_SCAN_OUTGOING = 2;
 
-// The public part of one IV5 output, as it appears on chain. The leaf's I point is
-// derived from O by the scanner, so it is not carried here.
-//
-// Two ephemeral keys: noteEphemeral keys the ciphertext and tweakEphemeral fixes the
-// address tweak. A receiver disclosure opens the second one's shared point, so the first
-// is what keeps the note closed to everyone but its owner.
+// Where the input context sits in the fixed-layout requests this side frames by hand.
+// privacy_vnext_ffi.cpp pins each tail to the size the ABI header declares, so a request
+// the archive widens fails to compile until the framing carries the new field.
+static const size_t PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET = 236;
+static const size_t PRIVACY_VNEXT_NOTE_SCAN_CIPHERTEXT_OFFSET =
+    PRIVACY_VNEXT_NOTE_SCAN_INPUT_CONTEXT_OFFSET + 32;
+static const size_t PRIVACY_VNEXT_NOTE_ENCRYPT_INPUT_CONTEXT_OFFSET = 272;
+static const size_t PRIVACY_VNEXT_RECEIVER_DISCLOSURE_INPUT_CONTEXT_OFFSET = 264;
+
+// Per-payload input context for output keys, note tags and receiver disclosures,
+// derived by the archive exactly as its decoder does. At most sixteen key images.
+bool DerivePrivacyVNextInputContext(
+    uint8_t nOperation,
+    const PrivacyVNextDigest& transparentBinding,
+    const std::vector<PrivacyVNextDigest>& vKeyImages,
+    PrivacyVNextDigest& contextOut,
+    std::string& error);
+
+// Public part of one IV5 output (I is derived from O by the scanner). noteEphemeral
+// keys the ciphertext; tweakEphemeral fixes the address tweak and is the one a receiver
+// disclosure opens. inputContext is the carrying payload's.
 struct PrivacyVNextEncryptedNote
 {
     uint32_t nOutputIndex;
@@ -295,6 +326,7 @@ struct PrivacyVNextEncryptedNote
     PrivacyVNextDigest leafC;
     PrivacyVNextDigest noteEphemeral;
     PrivacyVNextDigest tweakEphemeral;
+    PrivacyVNextDigest inputContext;
     std::vector<unsigned char> vchCiphertext;
 
     PrivacyVNextEncryptedNote()
@@ -305,6 +337,7 @@ struct PrivacyVNextEncryptedNote
         leafC.fill(0);
         noteEphemeral.fill(0);
         tweakEphemeral.fill(0);
+        inputContext.fill(0);
     }
 };
 
@@ -450,12 +483,9 @@ struct PrivacyVNextEncryptedOutput
     }
 };
 
-// Encrypt one output to a recipient address.
-//
-// `y` and `mask` are the note's openings; the caller keeps them to spend the note later.
-// The leaf's I point is derived from the note's own O and never supplied. The two
-// ephemeral secrets must be independently drawn and distinct: only the tweak one is ever
-// opened by a disclosure.
+// Encrypt one output to a recipient address. The caller keeps `y` and `mask` to spend
+// the note. The two ephemeral secrets must be independent and distinct. `inputContext`
+// must match the carrying payload's or the recipient cannot open the note.
 bool EncryptPrivacyVNextNote(
     uint8_t nNetwork,
     uint8_t nAddressType,
@@ -469,6 +499,7 @@ bool EncryptPrivacyVNextNote(
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& inputContext,
     PrivacyVNextEncryptedOutput& noteOut,
     std::string& error);
 
@@ -579,6 +610,8 @@ bool ProvePrivacyVNextAmountEquality(
     std::vector<unsigned char>& vchProofOut,
     std::string& error);
 
+// `inputContext` is the carrying payload's: the tweak the proof opens O against is
+// derived under it, and validation derives the same value from the prefix.
 bool ProvePrivacyVNextReceiverDisclosure(
     uint32_t nOutputIndex,
     const PrivacyVNextDigest& recipientSpend,
@@ -589,6 +622,7 @@ bool ProvePrivacyVNextReceiverDisclosure(
     const PrivacyVNextDigest& outputY,
     const PrivacyVNextDigest& signableHash,
     const PrivacyVNextDigest& entropy,
+    const PrivacyVNextDigest& inputContext,
     std::vector<unsigned char>& vchProofOut,
     std::string& error);
 

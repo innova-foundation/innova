@@ -10,13 +10,9 @@
 #include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext_ffi.h"
 
-// Assembles a canonical IV5 payload from a wallet's notes.
-//
-// The payload's proofs bind to a hash of everything serialized before them, so the order
-// here is fixed: encrypt the outputs, learn the inputs' pseudo-outputs, serialize the
-// prefix, hash it, then prove against that hash. The result is validated with the same
-// decoder consensus uses before it is returned, so a payload that would be rejected never
-// leaves the builder.
+// Assembles a canonical IV5 payload from a wallet's notes. Proofs bind to the prefix hash,
+// so the prefix is fully serialized before proving; the result is checked with the
+// consensus decoder before it is returned.
 
 // One note being spent, with the material needed to prove and re-open it.
 struct PrivacyVNextSpendNote

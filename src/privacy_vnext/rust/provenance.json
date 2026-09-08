@@ -3,7 +3,7 @@
     "ownership": "caller_owned_outputs_only",
     "panic_strategy": "unwind_and_catch_unwind",
     "schema_path": "abi/innova_privacy_vnext_v2.txt",
-    "schema_sha256": "8b924b68b905ae0dd3c4e7b488c008df62ba36036f27f4110c9c2bb348f24629",
+    "schema_sha256": "31e9434b2514985901e82e006ee79ba6dba670aa31965f8ae091fbeb8361b6d6",
     "version": 2
   },
   "consensus_enabled": true,
@@ -59,7 +59,7 @@
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
     "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
-    "contract_sha256": "1319b908108c7a4ba82bbf215487c35cdac57b1eb7ab927c56506923309052d4",
+    "contract_sha256": "9a4ffc7ce6aa0805adc64baeb07fe3d16c3044fa6ccef54b1d11e7bb1e16538d",
     "scope": "normative inactive IV5 protocol contract; not activation"
   },
   "product_contract": {
@@ -189,7 +189,7 @@
       },
       "abi": {
         "file_count": 2,
-        "sha256_tree": "2a416467a6d9d953df34d6733a27e0125fce61300104847b395a956037283541"
+        "sha256_tree": "31b25b4d6872b64a188619cf675e41108674ddce23debcd5608c3cdb8f1aa4f2"
       },
       "contract": {
         "file_count": 1,
@@ -197,11 +197,11 @@
       },
       "include": {
         "file_count": 1,
-        "sha256_tree": "c7e01c3ec96edfeceafb7d59010c6fd48cfdada542e6e73edb283072f991a24d"
+        "sha256_tree": "c52b5c505edef53351cf42f5d9aa333345e57de3087080b2ac6c8c5230a6a87b"
       },
       "src": {
         "file_count": 12,
-        "sha256_tree": "59ca44e016b11e6e914b268d04cdcc8abd9b2842bf230b18206da8e414be3c44"
+        "sha256_tree": "42eeb9a72d11b21025fc3b417e5b8aecd656bcfb6c0d38db9a6d072de082b08d"
       },
       "tests": {
         "file_count": 1,

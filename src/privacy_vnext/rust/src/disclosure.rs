@@ -217,24 +217,25 @@ pub(crate) fn verify_sender(
 }
 
 /// Derive the address tweak from the shared point a receiver disclosure may publish.
-///
-/// The output's second ephemeral key feeds this and nothing else. The first keys the
-/// note ciphertext, so a disclosure proves who an output pays without opening it.
+/// Keyed by the second ephemeral only, and by the input context so a one-time key is
+/// unique to its payload.
 pub(crate) fn receiver_tweak(
     tweak_shared: &[u8; 32],
     tweak_ephemeral: &[u8; 32],
     spend: &[u8; 32],
     view: &[u8; 32],
     output_index: u32,
+    input_context: &[u8; 32],
 ) -> Scalar {
     hash_to_scalar(
-        b"Innova/IV5/ReceiverTweak/v1",
+        b"Innova/IV5/ReceiverTweak/v2",
         &[
             tweak_shared,
             tweak_ephemeral,
             spend,
             view,
             &output_index.to_le_bytes(),
+            input_context,
         ],
     )
 }
@@ -249,6 +250,7 @@ pub(crate) fn prove_receiver(
     output_y_bytes: &[u8; 32],
     signable_hash: &[u8; 32],
     output_index: u32,
+    input_context: &[u8; 32],
     entropy: &[u8; 32],
 ) -> Result<[u8; RECEIVER_PROOF_BYTES], DisclosureError> {
     let spend = canonical_point(spend_bytes)?;
@@ -268,6 +270,7 @@ pub(crate) fn prove_receiver(
         spend_bytes,
         view_bytes,
         output_index,
+        input_context,
     );
     let t_component = output_o - spend - (ED25519_BASEPOINT_POINT * tweak);
     if t_component != monero_t() * output_y {
@@ -335,6 +338,7 @@ pub(crate) fn prove_receiver(
     Ok(proof)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_receiver(
     spend_bytes: &[u8; 32],
     view_bytes: &[u8; 32],
@@ -342,6 +346,7 @@ pub(crate) fn verify_receiver(
     tweak_ephemeral_bytes: &[u8; 32],
     signable_hash: &[u8; 32],
     output_index: u32,
+    input_context: &[u8; 32],
     proof: &[u8],
 ) -> Result<bool, DisclosureError> {
     if proof.len() != RECEIVER_PROOF_BYTES {
@@ -388,6 +393,7 @@ pub(crate) fn verify_receiver(
         spend_bytes,
         view_bytes,
         output_index,
+        input_context,
     );
     let t_component = output_o - spend - (ED25519_BASEPOINT_POINT * tweak);
     if t_component.is_identity() || !t_component.is_torsion_free() {
@@ -462,7 +468,8 @@ mod tests {
         let shared = (ED25519_BASEPOINT_POINT * (view_secret * ephemeral_secret))
             .compress()
             .to_bytes();
-        let tweak = receiver_tweak(&shared, &ephemeral, &spend, &view, 1);
+        let context = [0x63_u8; 32];
+        let tweak = receiver_tweak(&shared, &ephemeral, &spend, &view, 1, &context);
         let output_o = ((ED25519_BASEPOINT_POINT * (spend_secret + tweak))
             + (monero_t() * output_y))
             .compress()
@@ -477,11 +484,48 @@ mod tests {
             &output_y.to_bytes(),
             &hash,
             1,
+            &context,
             &[0x62; 32],
         )
         .unwrap();
-        assert!(verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 1, &proof,).unwrap());
-        assert!(!verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 0, &proof,).unwrap());
+        assert!(
+            verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 1, &context, &proof)
+                .unwrap()
+        );
+        assert!(
+            !verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 0, &context, &proof)
+                .unwrap()
+        );
+
+        // The tweak is a function of the input context, so the same output under another
+        // context is a different one-time key: proving and verifying both refuse it.
+        let other_context = [0x64_u8; 32];
+        assert!(!verify_receiver(
+            &spend,
+            &view,
+            &output_o,
+            &ephemeral,
+            &hash,
+            1,
+            &other_context,
+            &proof
+        )
+        .unwrap());
+        assert_eq!(
+            prove_receiver(
+                &spend,
+                &view,
+                &output_o,
+                &ephemeral,
+                &ephemeral_secret.to_bytes(),
+                &output_y.to_bytes(),
+                &hash,
+                1,
+                &other_context,
+                &[0x62; 32],
+            ),
+            Err(DisclosureError::InvalidProof)
+        );
 
         // The address is checked, not merely carried: substituting either half of a
         // different, perfectly valid address must fail.
@@ -491,11 +535,27 @@ mod tests {
         let other_view = (ED25519_BASEPOINT_POINT * Scalar::from(29_u64))
             .compress()
             .to_bytes();
-        assert!(
-            !verify_receiver(&other_spend, &view, &output_o, &ephemeral, &hash, 1, &proof).unwrap()
-        );
-        assert!(
-            !verify_receiver(&spend, &other_view, &output_o, &ephemeral, &hash, 1, &proof).unwrap()
-        );
+        assert!(!verify_receiver(
+            &other_spend,
+            &view,
+            &output_o,
+            &ephemeral,
+            &hash,
+            1,
+            &context,
+            &proof
+        )
+        .unwrap());
+        assert!(!verify_receiver(
+            &spend,
+            &other_view,
+            &output_o,
+            &ephemeral,
+            &hash,
+            1,
+            &context,
+            &proof
+        )
+        .unwrap());
     }
 }

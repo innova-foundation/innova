@@ -55,7 +55,9 @@ const NETWORK_ID_MAX: u8 = 2;
 const ADDRESS_COMPONENT_SIZE: usize = 70;
 const KEY_DERIVATION_REQUEST_SIZE: usize = 72;
 const KEY_DERIVATION_OUTPUT_SIZE: usize = 232;
-const RECEIVER_DISCLOSURE_REQUEST_SIZE: usize = 264;
+const RECEIVER_DISCLOSURE_REQUEST_SIZE: usize = 296;
+// schema_u16 || operation_u8 || key_image_count_u8 || transparent_binding_32.
+const INPUT_CONTEXT_REQUEST_HEADER_SIZE: usize = 36;
 const AMOUNT_EQUALITY_REQUEST_SIZE: usize = 140;
 // One definition only: a second copy of this length silently rejected every
 // request when the note format changed.
@@ -136,12 +138,19 @@ pub const NOTE_COLLATERAL_REGISTER: u8 = 8;
 /// long-lived encryption key other voters seal their VSS evaluations to. A separate
 /// operation because each operation's layout is frozen.
 pub const NOTE_FINALITY_MEMBER_REGISTER: u8 = 9;
+/// Note finality vote: spends one note and reissues its value to one fresh output, naming
+/// the epoch boundary it votes for. The operation byte is bound by the signing hash, so a
+/// transfer's proofs cannot be repackaged as a vote.
+pub const NOTE_FINALITY_VOTE: u8 = 10;
 pub const NOTE_OPERATION_NONE: u8 = 255;
 /// Atomic units one collateralnode must attest to. Single tier; the value is proved against
 /// the re-randomized commitment and never appears on the wire.
 pub const COLLATERAL_ATTESTATION_AMOUNT: u64 = 25_000 * 100_000_000;
 /// Compressed secp256k1 encoding length of a committee member's tally-encryption key.
 pub const FINALITY_MEMBER_KEY_BYTES: usize = 33;
+/// The two fields a note finality vote carries after its outputs: the hash of the epoch
+/// boundary block it names (32) and that block's height (u32 LE).
+pub const FINALITY_VOTE_CONTEXT_BYTES: usize = 32 + 4;
 pub const FINALITY_NONE: u8 = 0;
 pub const FINALITY_NULLSTAKE_V1: u8 = 1;
 pub const FINALITY_NULLSTAKE_V2: u8 = 2;
@@ -192,6 +201,13 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
     )
 }
 
+/// The one operation that spends a note as a finality vote. Shared by the parser and the
+/// shape rule.
+#[must_use]
+pub const fn is_note_vote_operation(operation: u8) -> bool {
+    operation == NOTE_FINALITY_VOTE
+}
+
 /// Contract texts this binary's lineage has published, besides the current one.
 ///
 /// Provenance only. No consensus rule may branch on this list: the decoder sees a payload
@@ -216,7 +232,11 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
 /// 4313419b: the vote membership prover began reporting r_i and r_r_i, widening its FFI
 /// response record. That record is prover-side construction material, never a consensus
 /// payload, so no rule moved and no payload's verdict changes.
-const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 3] = [
+///
+/// 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
+/// trailer is the decoder's answer to the caller, never a consensus payload, so no rule
+/// moved and no payload's verdict changes.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 4] = [
     [
         0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
         0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
@@ -231,6 +251,11 @@ const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 3] = [
         0x43, 0x13, 0x41, 0x9b, 0x35, 0x1b, 0x5c, 0x9b, 0xa6, 0xa2, 0x5b, 0xb9, 0x4c, 0x5b, 0xf2,
         0xb3, 0x17, 0x84, 0x3d, 0x23, 0x8d, 0x23, 0x76, 0xb5, 0xcc, 0x18, 0x1d, 0xfb, 0x61, 0x46,
         0xa2, 0x80,
+    ],
+    [
+        0x07, 0xc5, 0xf1, 0x6b, 0x0d, 0xa2, 0x6d, 0x5f, 0x20, 0x1a, 0x24, 0x03, 0x9d, 0xc7, 0xeb,
+        0x0c, 0x00, 0xb4, 0xff, 0x57, 0xd1, 0x61, 0xed, 0x6c, 0x78, 0x96, 0x58, 0x6c, 0xc5, 0x01,
+        0x63, 0xf1,
     ],
 ];
 
@@ -261,8 +286,7 @@ pub const fn envelope_allows(
     finality_object: u8,
     disclosure_mask: u8,
 ) -> bool {
-    let known_operation =
-        operation <= NOTE_FINALITY_MEMBER_REGISTER || operation == NOTE_OPERATION_NONE;
+    let known_operation = operation <= NOTE_FINALITY_VOTE || operation == NOTE_OPERATION_NONE;
     if !known_operation
         || profile > FINALITY_NULLSTAKE_V3
         || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
@@ -302,15 +326,13 @@ pub const fn envelope_allows(
                 )
         }
         2007 => operation == NOTE_RECLAIM && authorization == AUTH_OWNER,
-        // No verifier dispatches on the authorization field, so owner is the only mode any
-        // proof actually enforces; admitting a mode nothing verifies would take a fork to
-        // withdraw. An attestation also publishes a persistent per-node pseudonym by
-        // design, so the fully private mask is the only one it may carry. Both attestation
-        // operations are bound by it: a member registration is an attestation that also
-        // publishes an encryption key, and exposing its sender would name the collateral.
+        // Owner is the only mode any proof enforces. Attestations (including member
+        // registrations) and note votes publish persistent per-node or per-note
+        // identifiers, so they must carry the fully private mask.
         2008 => {
             authorization == AUTH_OWNER
-                && (!is_attestation_operation(operation) || disclosure_mask == 7)
+                && (!(is_attestation_operation(operation) || is_note_vote_operation(operation))
+                    || disclosure_mask == 7)
         }
         _ => false,
     }
@@ -970,6 +992,61 @@ pub unsafe extern "C" fn innova_privacy_vnext_note_encrypt(
     })
 }
 
+/// Derive the input context a payload's outputs are encrypted under.
+///
+/// Request: `schema_u16 || operation_u8 || key_image_count_u8 || transparent_binding_32 ||
+/// key_images_32_each`, the key images in the order the payload will carry them. One
+/// definition for builders and scanners alike; a caller holding only leaves cannot call
+/// this, which is the point.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_input_context(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_len: usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        if out.is_null() || out_len != DIGEST_SIZE {
+            return Err(ResultCode::BadLength);
+        }
+        if request_len < INPUT_CONTEXT_REQUEST_HEADER_SIZE {
+            return Err(ResultCode::BadLength);
+        }
+        // SAFETY: request validation and the minimum length check precede this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
+            return Err(ResultCode::UnsupportedFormat);
+        }
+        let operation = request[2];
+        let count = usize::from(request[3]);
+        if count > MAX_INPUTS as usize {
+            return Err(ResultCode::ResourceLimit);
+        }
+        if request_len != INPUT_CONTEXT_REQUEST_HEADER_SIZE + (count * 32) {
+            return Err(ResultCode::BadLength);
+        }
+        let mut transparent_binding = [0_u8; 32];
+        transparent_binding.copy_from_slice(&request[4..36]);
+        let key_images: Vec<[u8; 32]> = request[INPUT_CONTEXT_REQUEST_HEADER_SIZE..]
+            .chunks_exact(32)
+            .map(|chunk| {
+                let mut image = [0_u8; 32];
+                image.copy_from_slice(chunk);
+                image
+            })
+            .collect();
+        let context = note::input_context(operation, &transparent_binding, &key_images);
+        // SAFETY: null and exact length were checked above.
+        unsafe { ptr::copy_nonoverlapping(context.as_ptr(), out, DIGEST_SIZE) };
+        Ok(())
+    })
+}
+
 /// Construct and self-verify the canonical IV5 range proof and value balance proof.
 ///
 /// # Safety
@@ -1337,6 +1414,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
         let mut output_y = field(168);
         let signable_hash = field(200);
         let entropy = field(232);
+        let input_context = field(264);
         let proved = disclosure::prove_receiver(
             &spend,
             &view,
@@ -1346,6 +1424,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
             &output_y,
             &signable_hash,
             output_index,
+            &input_context,
             &entropy,
         );
         tweak_ephemeral_secret.zeroize();
@@ -1359,6 +1438,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
             &tweak_ephemeral,
             &signable_hash,
             output_index,
+            &input_context,
             &proof,
         )
         .map_err(|_| ResultCode::InternalLocalStateFailure)?
@@ -1829,6 +1909,93 @@ mod tests {
         }
     }
 
+    // A vote is one note acting once per epoch for as long as it stays online, so any
+    // disclosure on it links the voter across epochs. Only the fully private mask, only
+    // owner authorization, only the 2008 envelope; and it is not an attestation.
+    #[test]
+    fn a_note_finality_vote_is_admitted_only_fully_private_at_2008() {
+        assert!(!is_attestation_operation(NOTE_FINALITY_VOTE));
+        assert!(is_note_vote_operation(NOTE_FINALITY_VOTE));
+        for operation in 0..=NOTE_FINALITY_MEMBER_REGISTER {
+            assert!(!is_note_vote_operation(operation));
+        }
+        assert!(!is_note_vote_operation(NOTE_OPERATION_NONE));
+
+        assert!(envelope_allows(
+            2008,
+            NOTE_FINALITY_VOTE,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+        for mask in 0..7 {
+            assert!(
+                !envelope_allows(
+                    2008,
+                    NOTE_FINALITY_VOTE,
+                    FINALITY_NONE,
+                    AUTH_OWNER,
+                    FINALITY_OBJECT_NONE,
+                    mask
+                ),
+                "mask {mask} must not carry a note vote"
+            );
+        }
+        for authorization in [
+            AUTH_COLD_STAKER,
+            AUTH_M_OF_N_PUBLIC_SIGNERS,
+            AUTH_M_OF_N_HIDDEN_SIGNERS,
+        ] {
+            assert!(!envelope_allows(
+                2008,
+                NOTE_FINALITY_VOTE,
+                FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7
+            ));
+        }
+        for wire_version in [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007] {
+            assert!(
+                !envelope_allows(
+                    wire_version,
+                    NOTE_FINALITY_VOTE,
+                    FINALITY_NONE,
+                    AUTH_OWNER,
+                    FINALITY_OBJECT_NONE,
+                    7
+                ),
+                "wire version {wire_version} must not carry a note vote"
+            );
+        }
+        // A vote is an operation, never a finality object.
+        for finality_object in [
+            FINALITY_OBJECT_VOTE,
+            FINALITY_OBJECT_TALLY_SHARE,
+            FINALITY_OBJECT_CERTIFICATE,
+            FINALITY_OBJECT_COMMITTEE_ROTATION,
+        ] {
+            assert!(!envelope_allows(
+                2008,
+                NOTE_FINALITY_VOTE,
+                FINALITY_NONE,
+                AUTH_OWNER,
+                finality_object,
+                7
+            ));
+        }
+        // Nothing past it is known.
+        assert!(!envelope_allows(
+            2008,
+            NOTE_FINALITY_VOTE + 1,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+    }
+
     #[test]
     fn panic_is_contained() {
         let result = ffi_boundary(|| -> Result<(), ResultCode> { panic!("test panic") });
@@ -2263,6 +2430,95 @@ mod tests {
         assert_eq!(
             ADDRESS_TYPE_MAX, SCANNED,
             "the accepted address type must be the one every scan derives"
+        );
+    }
+
+    // The export is the one definition builders use; it must agree byte for byte with the
+    // derivation the payload parser and the note encoder share, and refuse every request
+    // whose declared count, length, schema or output size is off.
+    #[test]
+    fn the_input_context_export_matches_the_note_derivation() {
+        let binding = [0x5a_u8; 32];
+        let images = [[0x21_u8; 32], [0x22_u8; 32]];
+        let call = |request: &[u8], out: *mut u8, out_len: usize| -> i32 {
+            unsafe {
+                innova_privacy_vnext_input_context(request.as_ptr(), request.len(), out, out_len)
+            }
+        };
+        let request_for = |operation: u8, count: u8, images: &[[u8; 32]]| -> Vec<u8> {
+            let mut request = PAYLOAD_SCHEMA_U16.to_le_bytes().to_vec();
+            request.push(operation);
+            request.push(count);
+            request.extend_from_slice(&binding);
+            for image in images {
+                request.extend_from_slice(image);
+            }
+            request
+        };
+
+        let mut out = [0_u8; 32];
+        // Operation and count differ in every spending case below, so a wrapper that read
+        // one byte for the other could not reproduce the derivation.
+        let transfer = request_for(NOTE_TRANSFER, 1, &images[..1]);
+        assert_eq!(
+            call(&transfer, out.as_mut_ptr(), out.len()),
+            ResultCode::Valid as i32
+        );
+        assert_eq!(
+            out,
+            note::input_context(NOTE_TRANSFER, &binding, &images[..1])
+        );
+        assert_ne!(
+            out,
+            note::input_context(NOTE_SHIELD, &binding, &images[..1])
+        );
+        let unshield = request_for(NOTE_UNSHIELD, 2, &images);
+        assert_eq!(
+            call(&unshield, out.as_mut_ptr(), out.len()),
+            ResultCode::Valid as i32
+        );
+        assert_eq!(out, note::input_context(NOTE_UNSHIELD, &binding, &images));
+
+        let shield = request_for(NOTE_SHIELD, 0, &[]);
+        assert_eq!(
+            call(&shield, out.as_mut_ptr(), out.len()),
+            ResultCode::Valid as i32
+        );
+        assert_eq!(out, note::input_context(NOTE_SHIELD, &binding, &[]));
+
+        // Declared count and actual length must agree, in both directions.
+        assert_eq!(
+            call(&transfer[..transfer.len() - 1], out.as_mut_ptr(), out.len()),
+            ResultCode::BadLength as i32
+        );
+        assert_eq!(
+            call(
+                &request_for(NOTE_TRANSFER, 1, &images),
+                out.as_mut_ptr(),
+                out.len()
+            ),
+            ResultCode::BadLength as i32
+        );
+        // The count is bounded by the input cap.
+        let over = request_for(NOTE_TRANSFER, 17, &[[0_u8; 32]; 17]);
+        assert_eq!(
+            call(&over, out.as_mut_ptr(), out.len()),
+            ResultCode::ResourceLimit as i32
+        );
+        let mut wrong_schema = transfer.clone();
+        wrong_schema[0] = 2;
+        assert_eq!(
+            call(&wrong_schema, out.as_mut_ptr(), out.len()),
+            ResultCode::UnsupportedFormat as i32
+        );
+        // Exactly 32 caller-owned bytes, or nothing is written.
+        assert_eq!(
+            call(&transfer, out.as_mut_ptr(), out.len() - 1),
+            ResultCode::BadLength as i32
+        );
+        assert_eq!(
+            call(&transfer, ptr::null_mut(), out.len()),
+            ResultCode::BadLength as i32
         );
     }
 }

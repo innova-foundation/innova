@@ -231,30 +231,38 @@ PrivacyVNextDigest BindingOf(const CTransaction& tx)
     return d;
 }
 
-// A shield payload moving nValueIn into the pool and charging nFee, bound to tx
-// as it stands. The recipient is a key this process derives, so the payload is
-// one a wallet could actually have produced.
-std::vector<unsigned char> BuildShieldPayload(const CTransaction& tx,
-                                              uint64_t nValueIn,
-                                              uint64_t nFee,
-                                              uint8_t nDisclosureMask = 7,
-                                              unsigned char nSeed = 0x31)
+// The anchor a validator reads before any epoch has carried the pool, and the
+// parameter digest that belongs to it.
+void LoadSeedAnchor(PrivacyVNextEpochSeed& epochSeed, PrivacyVNextDigest& root)
 {
     std::string error;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    BOOST_REQUIRE_EQUAL(epochSeed.vchRoot.size(), 32U);
+    std::memcpy(root.data(), &epochSeed.vchRoot[0], 32);
+}
+
+// A shield payload moving nValueIn into the pool and charging nFee, bound to tx
+// as it stands, returning the builder's own verdict. The recipient is a key this
+// process derives, so the payload is one a wallet could actually have produced.
+bool TryBuildShieldPayload(const CTransaction& tx,
+                           uint64_t nValueIn,
+                           uint64_t nFee,
+                           uint8_t nDisclosureMask,
+                           unsigned char nSeed,
+                           std::vector<unsigned char>& payload,
+                           std::string& error)
+{
+    payload.clear();
+    error.clear();
     const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextKeys(FillDigest(nSeed), genesis, 0, LocalNetwork(), 0,
                                keys, error), error);
 
-    // The same anchor a validator reads before any epoch has carried the pool,
-    // and the parameter digest that belongs to it.
     PrivacyVNextEpochSeed epochSeed;
-    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
-    BOOST_REQUIRE_EQUAL(epochSeed.vchRoot.size(), 32U);
     PrivacyVNextDigest root;
-    std::memcpy(root.data(), &epochSeed.vchRoot[0], 32);
-    const uint64_t nTreeSize = epochSeed.nTreeSize;
+    LoadSeedAnchor(epochSeed, root);
 
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
@@ -264,16 +272,95 @@ std::vector<unsigned char> BuildShieldPayload(const CTransaction& tx,
     outs[0].recipient.viewPublic = keys.viewPublic;
     outs[0].nAmount = nValueIn - nFee;
 
+    return BuildPrivacyVNextShieldPayload(LocalNetwork(), nDisclosureMask, genesis,
+                                          keys.outgoingViewSecret, root,
+                                          epochSeed.nTreeSize, BindingOf(tx),
+                                          nValueIn, nFee, outs, payload, error,
+                                          &epochSeed.vchParameterDigest);
+}
+
+// The same shield, required to build.
+std::vector<unsigned char> BuildShieldPayload(const CTransaction& tx,
+                                              uint64_t nValueIn,
+                                              uint64_t nFee,
+                                              uint8_t nDisclosureMask = 7,
+                                              unsigned char nSeed = 0x31)
+{
     std::vector<unsigned char> payload;
-    BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(LocalNetwork(), nDisclosureMask, genesis,
-                                       keys.outgoingViewSecret, root, nTreeSize,
-                                       BindingOf(tx), nValueIn, nFee, outs,
-                                       payload, error,
-                                       &epochSeed.vchParameterDigest),
-        error);
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(TryBuildShieldPayload(tx, nValueIn, nFee, nDisclosureMask,
+                                                nSeed, payload, error), error);
     BOOST_REQUIRE(!payload.empty());
     return payload;
+}
+
+void PutLE64(std::vector<unsigned char>& out, uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        out.push_back((unsigned char)(v >> (8 * i)));
+}
+
+void PutDigest(std::vector<unsigned char>& out, const PrivacyVNextDigest& d)
+{
+    out.insert(out.end(), d.begin(), d.end());
+}
+
+// A payload with no input and no leaf, bound to tx. The validator admits it; the
+// builder refuses to make one, so it is framed here in the builder's layout.
+bool FrameOutputFreePayload(const CTransaction& tx,
+                            std::vector<unsigned char>& payload,
+                            std::string& error)
+{
+    payload.clear();
+    error.clear();
+    PrivacyVNextEpochSeed epochSeed;
+    PrivacyVNextDigest root;
+    LoadSeedAnchor(epochSeed, root);
+    BOOST_REQUIRE_EQUAL(epochSeed.vchParameterDigest.size(), 32U);
+    PrivacyVNextDigest parameterDigest;
+    std::memcpy(parameterDigest.data(), &epochSeed.vchParameterDigest[0], 32);
+
+    std::vector<unsigned char> prefix;
+    prefix.push_back((unsigned char)iv5::PROTOCOL_SCHEMA);
+    prefix.push_back(0);
+    prefix.push_back((unsigned char)iv5::NOTE_SHIELD);
+    prefix.push_back(0);                          // finality profile: none
+    prefix.push_back(0);                          // authorization: owner
+    prefix.push_back(iv5::DISCLOSURE_MASK);
+    prefix.push_back((unsigned char)iv5::FINALITY_OBJECT_NONE);
+    prefix.push_back(LocalNetwork());
+    prefix.push_back(0);                          // reserved
+    PutDigest(prefix, LocalGenesis());
+    PutDigest(prefix, parameterDigest);
+    PutDigest(prefix, root);
+    PutLE64(prefix, epochSeed.nTreeSize);
+    PutLE64(prefix, 0);                           // transparent value balance
+    PutLE64(prefix, 0);                           // fee
+    PutDigest(prefix, BindingOf(tx));
+    prefix.push_back(0);                          // inputs
+    prefix.push_back(0);                          // outputs
+    prefix.push_back(0);                          // finality body
+
+    PrivacyVNextDigest signingHash;
+    if (!HashPrivacyVNextPayloadPrefix(static_cast<uint32_t>(tx.nVersion), prefix,
+                                       signingHash, error))
+        return false;
+    PrivacyVNextValueProof proof;
+    if (!ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(),
+                                std::vector<PrivacyVNextValueOutput>(), 0, 0,
+                                signingHash, FillDigest(0x42), FillDigest(0),
+                                proof, error))
+        return false;
+
+    payload = prefix;
+    payload.push_back(0);                         // membership proof
+    payload.push_back(0);                         // range proof
+    payload.push_back((unsigned char)proof.balanceProof.size());
+    payload.insert(payload.end(), proof.balanceProof.begin(),
+                   proof.balanceProof.end());
+    payload.push_back(0);                         // operation proof
+    payload.push_back(0);                         // disclosure proofs
+    return true;
 }
 
 // A canonical-envelope transaction carrying a shield payload built under the
@@ -1799,15 +1886,40 @@ BOOST_AUTO_TEST_CASE(a_coinbase_iv5_note_is_worth_exactly_the_block_iv5_fee_sum)
                      "a coinbase note that charges a fee");
     }
 
-    // A coinbase payload that takes nothing into the pool is a payload with no
-    // reason to be on a coinbase at all, and the equality below would hold
-    // vacuously for it.
+    // A coinbase payload declaring no value would satisfy the equality vacuously.
+    // With a note, the payload validator refuses it; the control adds one satoshi.
     {
         CTransaction empty = coinbaseTemplate;
-        empty.privacyVNext.vchPayload = BuildShieldPayload(empty, 0, 0);
+        std::vector<unsigned char> vchPayload;
+        std::string strBuild;
+        BOOST_CHECK_MESSAGE(
+            !TryBuildShieldPayload(empty, 0, 0, 7, 0x31, vchPayload, strBuild),
+            "a coinbase note declaring no value was built");
+        BOOST_CHECK_MESSAGE(LogHas(strBuild, "consensus-invalid IV5 payload"),
+            "a coinbase note declaring no value was not refused by the payload "
+            "validator; builder said: " + strBuild);
+        BOOST_CHECK(vchPayload.empty());
+        BOOST_CHECK_MESSAGE(
+            TryBuildShieldPayload(empty, 1, 0, 7, 0x31, vchPayload, strBuild),
+            "the same note with one satoshi entering did not build: " + strBuild);
+    }
+
+    // Without a note, the payload validator admits the shape, so the coinbase gate
+    // is the only thing refusing it.
+    {
+        CTransaction empty = coinbaseTemplate;
+        std::string strFrame;
+        BOOST_REQUIRE_MESSAGE(
+            FrameOutputFreePayload(empty, empty.privacyVNext.vchPayload, strFrame),
+            strFrame);
+        const PrivacyVNextPayloadValidation shape = ValidatePrivacyVNextPayload(
+            static_cast<uint32_t>(empty.nVersion), empty.privacyVNext.vchPayload);
+        BOOST_REQUIRE_MESSAGE(shape.IsValid(),
+            "the output-free payload is not one the validator admits: " +
+            shape.strError);
         ExpectReason(RunCheckTransaction(empty),
                      "coinbase IV5 payload takes no value into the pool",
-                     "a coinbase note declaring no value");
+                     "a coinbase payload declaring no value and no note");
     }
 
     // The control for both: the miner's own note passes the shape checks.

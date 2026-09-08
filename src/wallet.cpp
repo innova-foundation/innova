@@ -13233,7 +13233,17 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                               std::memcmp(&vNewNotes[n].vchKeyImage[0],
                                           vMatches[m].keyImage.data(), 32) == 0);
             if (fDuplicate)
+            {
+                // Consensus and the one-time key derivation each refuse a repeated
+                // output key, so reaching here means one of them failed. Silent before,
+                // which left a note the wallet never shows as the only symptom.
+                printf("IV5 wallet: skipped duplicate note %s:%u (key image %s)\n",
+                       hashTx.ToString().substr(0, 10).c_str(),
+                       (unsigned int)vMatches[m].nOutputIndex,
+                       HexStr(vMatches[m].keyImage.begin(),
+                              vMatches[m].keyImage.begin() + 8).c_str());
                 continue;
+            }
 
             CPrivacyVNextWalletNote note;
             note.txhash = hashTx;

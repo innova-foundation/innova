@@ -19,15 +19,17 @@ pub(crate) const CIPHERTEXT_VERSION: u8 = 1;
 const SCAN_FULL: u8 = 0;
 const SCAN_VIEW_ONLY: u8 = 1;
 const SCAN_OUTGOING: u8 = 2;
-const SCAN_PREFIX_BYTES: usize = 236;
+pub(crate) const SCAN_PREFIX_BYTES: usize = 268;
 const KEY_IMAGE_BASE_DOMAIN: &[u8] = b"Innova/IV5/NoteKeyImageBase/v1";
+const INPUT_CONTEXT_DOMAIN: &[u8] = b"Innova/IV5/InputContext/v1";
+const ASSOCIATED_DATA_DOMAIN: &[u8] = b"Innova/IV5/NoteAssociatedData/v2";
 const RECIPIENT_PLAINTEXT_BYTES: usize = 144;
 const OUTGOING_PLAINTEXT_BYTES: usize = 208;
 const TAG_BYTES: usize = 32;
 pub(crate) const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
 pub(crate) const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
 const SCAN_RESULT_BYTES: usize = 212;
-pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 272;
+pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 304;
 const ENCRYPT_RESULT_BYTES: usize = 586;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,6 +151,30 @@ pub(crate) fn key_image_base_checked(output_o: &[u8; 32]) -> Result<[u8; 32], Re
     key_image_base(output_o).map_err(ResultCode::from)
 }
 
+/// Per-payload value every output's one-time key and note tag are derived under.
+/// Built from the operation, binding and key images, so it occurs in at most one
+/// accepted payload and a one-time key cannot recur. Nothing chain-local enters it.
+pub(crate) fn input_context(
+    operation: u8,
+    transparent_binding: &[u8; 32],
+    key_images: &[[u8; 32]],
+) -> [u8; 32] {
+    let mut hash = Blake2b512::new();
+    Digest::update(&mut hash, INPUT_CONTEXT_DOMAIN);
+    Digest::update(&mut hash, 1_u64.to_le_bytes());
+    Digest::update(&mut hash, [operation]);
+    Digest::update(&mut hash, 32_u64.to_le_bytes());
+    Digest::update(&mut hash, transparent_binding);
+    Digest::update(&mut hash, ((key_images.len() as u64) * 32).to_le_bytes());
+    for key_image in key_images {
+        Digest::update(&mut hash, key_image);
+    }
+    let digest = hash.finalize();
+    let mut context = [0_u8; 32];
+    context.copy_from_slice(&digest[..32]);
+    context
+}
+
 #[allow(clippy::too_many_arguments)]
 fn associated_data(
     network: u8,
@@ -160,9 +186,10 @@ fn associated_data(
     output_c: &[u8; 32],
     note_ephemeral: &[u8; 32],
     tweak_ephemeral: &[u8; 32],
+    input_context: &[u8; 32],
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(204);
-    data.extend_from_slice(b"Innova/IV5/NoteAssociatedData/v1");
+    let mut data = Vec::with_capacity(264);
+    data.extend_from_slice(ASSOCIATED_DATA_DOMAIN);
     data.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
     data.push(network);
     data.push(address_type);
@@ -175,6 +202,9 @@ fn associated_data(
     // leaving the note undecryptable or the owner key underivable.
     data.extend_from_slice(note_ephemeral);
     data.extend_from_slice(tweak_ephemeral);
+    // Transaction-unique: without it a record copied verbatim into another payload still
+    // authenticates and scans as the recipient's, under a one-time key it now shares.
+    data.extend_from_slice(input_context);
     data
 }
 
@@ -304,6 +334,7 @@ fn encrypt_note(
     amount: u64,
     y_bytes: &[u8; 32],
     mask_bytes: &[u8; 32],
+    input_context: &[u8; 32],
 ) -> Result<EncryptedNote, NoteError> {
     if network > NETWORK_ID_MAX
         || address_type > ADDRESS_TYPE_MAX
@@ -338,6 +369,7 @@ fn encrypt_note(
         recipient_spend,
         recipient_view,
         output_index,
+        input_context,
     );
     let output_o = (spend + (ED25519_BASEPOINT_POINT * tweak) + (monero_t() * y))
         .compress()
@@ -355,6 +387,7 @@ fn encrypt_note(
         &output_c,
         &note_ephemeral,
         &tweak_ephemeral,
+        input_context,
     );
 
     let mut recipient_plaintext = Vec::with_capacity(RECIPIENT_PLAINTEXT_BYTES);
@@ -418,6 +451,7 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let amount = reader.u64().map_err(ResultCode::from)?;
     let y = reader.array().map_err(ResultCode::from)?;
     let mask = reader.array().map_err(ResultCode::from)?;
+    let input_context = reader.array().map_err(ResultCode::from)?;
     reader.finish().map_err(ResultCode::from)?;
     let encrypted = encrypt_note(
         network,
@@ -432,6 +466,7 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         amount,
         &y,
         &mask,
+        &input_context,
     )
     .map_err(ResultCode::from)?;
 
@@ -448,6 +483,7 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         &encrypted.output_c,
         &encrypted.note_ephemeral,
         &encrypted.tweak_ephemeral,
+        &input_context,
         &encrypted.outgoing_ciphertext,
     )
     .map_err(ResultCode::from)?;
@@ -527,6 +563,7 @@ fn scan_receiver(
     output_c_bytes: &[u8; 32],
     note_ephemeral_bytes: &[u8; 32],
     tweak_ephemeral_bytes: &[u8; 32],
+    input_context: &[u8; 32],
     ciphertext: &[u8],
 ) -> Result<OpenedNote, NoteError> {
     let view_secret = canonical_scalar(view_secret_bytes, true)?;
@@ -547,6 +584,7 @@ fn scan_receiver(
         output_c_bytes,
         note_ephemeral_bytes,
         tweak_ephemeral_bytes,
+        input_context,
     );
     let plaintext = decrypt(
         b"Innova/IV5/NoteEncryption/Recipient/v1",
@@ -575,6 +613,7 @@ fn scan_receiver(
         &recipient_spend,
         &recipient_view,
         output_index,
+        input_context,
     );
     let expected_o = spend + (ED25519_BASEPOINT_POINT * tweak) + (monero_t() * y);
     if expected_o.compress().to_bytes() != *output_o_bytes
@@ -626,6 +665,7 @@ fn scan_outgoing(
     output_c_bytes: &[u8; 32],
     note_ephemeral_bytes: &[u8; 32],
     tweak_ephemeral_bytes: &[u8; 32],
+    input_context: &[u8; 32],
     ciphertext: &[u8],
 ) -> Result<OpenedNote, NoteError> {
     if spend_material.iter().any(|byte| *byte != 0) {
@@ -644,6 +684,7 @@ fn scan_outgoing(
         output_c_bytes,
         note_ephemeral_bytes,
         tweak_ephemeral_bytes,
+        input_context,
     );
     let mut plaintext = decrypt(
         b"Innova/IV5/NoteEncryption/Outgoing/v1",
@@ -690,6 +731,7 @@ fn scan_outgoing(
         &recipient_spend,
         &recipient_view,
         output_index,
+        input_context,
     );
     let expected_o = spend + (ED25519_BASEPOINT_POINT * tweak) + (monero_t() * y);
     if expected_o.compress().to_bytes() != *output_o_bytes
@@ -749,6 +791,7 @@ pub(crate) fn try_open_recipient(
     output_c: &[u8; 32],
     note_ephemeral: &[u8; 32],
     tweak_ephemeral: &[u8; 32],
+    input_context: &[u8; 32],
     ciphertext: &[u8],
     candidate_secret: &[u8; 32],
 ) -> Option<u64> {
@@ -763,6 +806,7 @@ pub(crate) fn try_open_recipient(
         output_c,
         note_ephemeral,
         tweak_ephemeral,
+        input_context,
     );
     let plaintext = decrypt(
         b"Innova/IV5/NoteEncryption/Recipient/v1",
@@ -805,6 +849,7 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let output_c = reader.array().map_err(ResultCode::from)?;
     let note_ephemeral = reader.array().map_err(ResultCode::from)?;
     let tweak_ephemeral = reader.array().map_err(ResultCode::from)?;
+    let input_context = reader.array().map_err(ResultCode::from)?;
     let ciphertext = reader
         .take(request.len() - SCAN_PREFIX_BYTES)
         .map_err(ResultCode::from)?;
@@ -830,6 +875,7 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &output_c,
             &note_ephemeral,
             &tweak_ephemeral,
+            &input_context,
             ciphertext,
         ),
         SCAN_OUTGOING => scan_outgoing(
@@ -843,6 +889,7 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &output_c,
             &note_ephemeral,
             &tweak_ephemeral,
+            &input_context,
             ciphertext,
         ),
         _ => Err(NoteError::Unsupported),
@@ -861,11 +908,32 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 mod tests {
     use super::*;
 
+    const TEST_CONTEXT: [u8; 32] = [0x33; 32];
+    const OTHER_CONTEXT: [u8; 32] = [0x34; 32];
+
     fn scan_request(
         kind: u8,
         scan_secret: [u8; 32],
         spend_material: [u8; 32],
         note: &EncryptedNote,
+        ciphertext: &[u8],
+    ) -> Vec<u8> {
+        scan_request_under(
+            kind,
+            scan_secret,
+            spend_material,
+            note,
+            &TEST_CONTEXT,
+            ciphertext,
+        )
+    }
+
+    fn scan_request_under(
+        kind: u8,
+        scan_secret: [u8; 32],
+        spend_material: [u8; 32],
+        note: &EncryptedNote,
+        input_context: &[u8; 32],
         ciphertext: &[u8],
     ) -> Vec<u8> {
         let mut request = Vec::new();
@@ -879,11 +947,22 @@ mod tests {
         request.extend_from_slice(&note.output_c);
         request.extend_from_slice(&note.note_ephemeral);
         request.extend_from_slice(&note.tweak_ephemeral);
+        request.extend_from_slice(input_context);
         request.extend_from_slice(ciphertext);
+        assert_eq!(request.len(), SCAN_PREFIX_BYTES + ciphertext.len());
         request
     }
 
     fn note_to(ephemeral_secret: u64, spend_secret: Scalar, view_secret: Scalar) -> EncryptedNote {
+        note_to_under(ephemeral_secret, spend_secret, view_secret, &TEST_CONTEXT)
+    }
+
+    fn note_to_under(
+        ephemeral_secret: u64,
+        spend_secret: Scalar,
+        view_secret: Scalar,
+        input_context: &[u8; 32],
+    ) -> EncryptedNote {
         encrypt_note(
             1,
             0,
@@ -901,6 +980,7 @@ mod tests {
             99,
             &Scalar::from(17_u64).to_bytes(),
             &Scalar::from(19_u64).to_bytes(),
+            input_context,
         )
         .unwrap()
     }
@@ -938,11 +1018,202 @@ mod tests {
         request.extend_from_slice(&99_u64.to_le_bytes());
         request.extend_from_slice(&Scalar::from(17_u64).to_bytes());
         request.extend_from_slice(&Scalar::from(19_u64).to_bytes());
+        request.extend_from_slice(&TEST_CONTEXT);
         assert_eq!(request.len(), ENCRYPT_REQUEST_BYTES);
         let response = encrypt_request(&request).unwrap();
         assert_eq!(response.len(), ENCRYPT_RESULT_BYTES);
         request.push(0);
         assert_eq!(encrypt_request(&request), Err(ResultCode::BadLength));
+        // The old record shape, without a context, is a length error and never a note.
+        request.truncate(ENCRYPT_REQUEST_BYTES - 32);
+        assert_eq!(encrypt_request(&request), Err(ResultCode::BadLength));
+    }
+
+    // The transcript is written out by hand here: field order, the u64le length prefix on
+    // each field, and the key images concatenated in the order given. A derivation that
+    // sorted the key images, dropped a prefix or reordered a field diverges from this.
+    #[test]
+    fn input_context_is_a_length_prefixed_transcript_in_payload_order() {
+        let binding = [0x5a_u8; 32];
+        let a = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let b = (ED25519_BASEPOINT_POINT * Scalar::from(6_u64))
+            .compress()
+            .to_bytes();
+        // Payload order is chosen to be the reverse of byte order, so a derivation that
+        // sorted the key images would compute the other value below.
+        let (low, high) = if a < b { (a, b) } else { (b, a) };
+        let (first, second) = (high, low);
+        assert!(second < first);
+
+        let expected = |operation: u8, images: &[[u8; 32]]| -> [u8; 32] {
+            let mut preimage = Vec::new();
+            preimage.extend_from_slice(b"Innova/IV5/InputContext/v1");
+            preimage.extend_from_slice(&1_u64.to_le_bytes());
+            preimage.push(operation);
+            preimage.extend_from_slice(&32_u64.to_le_bytes());
+            preimage.extend_from_slice(&binding);
+            preimage.extend_from_slice(&(32 * images.len() as u64).to_le_bytes());
+            for image in images {
+                preimage.extend_from_slice(image);
+            }
+            let digest = Blake2b512::digest(&preimage);
+            let mut context = [0_u8; 32];
+            context.copy_from_slice(&digest[..32]);
+            context
+        };
+
+        assert_eq!(input_context(0, &binding, &[]), expected(0, &[]));
+        assert_eq!(
+            input_context(2, &binding, &[first, second]),
+            expected(2, &[first, second])
+        );
+        // Payload order, not sorted order.
+        assert_ne!(
+            input_context(2, &binding, &[first, second]),
+            input_context(2, &binding, &[second, first])
+        );
+        assert_eq!(
+            input_context(2, &binding, &[second, first]),
+            expected(2, &[second, first])
+        );
+        // Every field moves the result.
+        assert_ne!(
+            input_context(0, &binding, &[]),
+            input_context(1, &binding, &[])
+        );
+        assert_ne!(
+            input_context(0, &binding, &[]),
+            input_context(0, &[0x5b; 32], &[])
+        );
+        assert_ne!(
+            input_context(2, &binding, &[first]),
+            input_context(2, &binding, &[first, second])
+        );
+    }
+
+    // Same recipient, same ephemerals, same y: only the input context differs. Under the
+    // old derivation these two records were byte-identical.
+    #[test]
+    fn the_one_time_key_is_bound_to_the_input_context() {
+        let spend_secret = Scalar::from(3_u64);
+        let view_secret = Scalar::from(5_u64);
+        let under_test = note_to_under(13, spend_secret, view_secret, &TEST_CONTEXT);
+        let under_other = note_to_under(13, spend_secret, view_secret, &OTHER_CONTEXT);
+        assert_eq!(under_test.note_ephemeral, under_other.note_ephemeral);
+        assert_eq!(under_test.tweak_ephemeral, under_other.tweak_ephemeral);
+        assert_eq!(under_test.output_c, under_other.output_c);
+        assert_ne!(under_test.output_o, under_other.output_o);
+        assert_ne!(under_test.output_i, under_other.output_i);
+
+        // O is the address tweaked under exactly this context.
+        let spend = (ED25519_BASEPOINT_POINT * spend_secret)
+            .compress()
+            .to_bytes();
+        let view = (ED25519_BASEPOINT_POINT * view_secret)
+            .compress()
+            .to_bytes();
+        let shared = (canonical_point(&under_test.tweak_ephemeral).unwrap() * view_secret)
+            .compress()
+            .to_bytes();
+        let tweak = disclosure::receiver_tweak(
+            &shared,
+            &under_test.tweak_ephemeral,
+            &spend,
+            &view,
+            7,
+            &TEST_CONTEXT,
+        );
+        let expected = canonical_point(&spend).unwrap()
+            + (ED25519_BASEPOINT_POINT * tweak)
+            + (monero_t() * Scalar::from(17_u64));
+        assert_eq!(expected.compress().to_bytes(), under_test.output_o);
+
+        // The recipient finds it only under the context of the payload that carries it.
+        for (note, right, wrong) in [
+            (&under_test, &TEST_CONTEXT, &OTHER_CONTEXT),
+            (&under_other, &OTHER_CONTEXT, &TEST_CONTEXT),
+        ] {
+            for kind in [SCAN_FULL, SCAN_VIEW_ONLY] {
+                let material = if kind == SCAN_FULL {
+                    spend_secret.to_bytes()
+                } else {
+                    [0_u8; 32]
+                };
+                assert!(scan(&scan_request_under(
+                    kind,
+                    view_secret.to_bytes(),
+                    material,
+                    note,
+                    right,
+                    &note.recipient_ciphertext,
+                ))
+                .is_ok());
+                assert_eq!(
+                    scan(&scan_request_under(
+                        kind,
+                        view_secret.to_bytes(),
+                        material,
+                        note,
+                        wrong,
+                        &note.recipient_ciphertext,
+                    )),
+                    Err(ResultCode::ConsensusInvalid)
+                );
+            }
+            assert!(scan(&scan_request_under(
+                SCAN_OUTGOING,
+                Scalar::from(7_u64).to_bytes(),
+                [0_u8; 32],
+                note,
+                right,
+                &note.outgoing_ciphertext,
+            ))
+            .is_ok());
+            assert_eq!(
+                scan(&scan_request_under(
+                    SCAN_OUTGOING,
+                    Scalar::from(7_u64).to_bytes(),
+                    [0_u8; 32],
+                    note,
+                    wrong,
+                    &note.outgoing_ciphertext,
+                )),
+                Err(ResultCode::ConsensusInvalid)
+            );
+        }
+    }
+
+    // A record copied byte for byte into another payload must fail on its tag, before any
+    // opening is checked: try_open_recipient decrypts and parses and nothing more, so it
+    // separates a tag failure from the O mismatch a full scan would also report.
+    #[test]
+    fn a_copied_output_record_fails_its_tag_under_another_context() {
+        let (note, _, view_secret, _) = test_note();
+        let note_shared = (canonical_point(&note.note_ephemeral).unwrap() * view_secret)
+            .compress()
+            .to_bytes();
+        let open_under = |context: &[u8; 32]| {
+            try_open_recipient(
+                1,
+                0,
+                7,
+                &[0x71; 32],
+                &note.output_o,
+                &note.output_c,
+                &note.note_ephemeral,
+                &note.tweak_ephemeral,
+                context,
+                &note.recipient_ciphertext,
+                &note_shared,
+            )
+        };
+        assert_eq!(open_under(&TEST_CONTEXT), Some(99));
+        assert_eq!(open_under(&OTHER_CONTEXT), None);
+        let mut near = TEST_CONTEXT;
+        near[31] ^= 1;
+        assert_eq!(open_under(&near), None);
     }
 
     #[test]
@@ -1128,7 +1399,14 @@ mod tests {
         let view = (ED25519_BASEPOINT_POINT * view_secret)
             .compress()
             .to_bytes();
-        let tweak = disclosure::receiver_tweak(&disclosed, &note.tweak_ephemeral, &spend, &view, 7);
+        let tweak = disclosure::receiver_tweak(
+            &disclosed,
+            &note.tweak_ephemeral,
+            &spend,
+            &view,
+            7,
+            &TEST_CONTEXT,
+        );
         let expected = canonical_point(&spend).unwrap()
             + (ED25519_BASEPOINT_POINT * tweak)
             + (monero_t() * Scalar::from(17_u64));

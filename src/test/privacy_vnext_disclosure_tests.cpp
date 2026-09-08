@@ -51,6 +51,21 @@ PrivacyVNextDigest NoTransparentSide()
     return d;
 }
 
+// The input context of a shield with no transparent side. The notes funded by hand below
+// are grown straight into the tree, never carried by a payload, so encrypt and scan only
+// have to agree on it.
+PrivacyVNextDigest FundingContext()
+{
+    PrivacyVNextDigest context;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, NoTransparentSide(),
+                                       std::vector<PrivacyVNextDigest>(), context,
+                                       error),
+        error);
+    return context;
+}
+
 // The 64 bytes a receiver disclosure publishes for one output: the recipient's spend
 // key then its view key, in the order the payload carries them.
 std::vector<unsigned char> AddressBytes(const PrivacyVNextDerivedKeys& keys)
@@ -101,7 +116,8 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill,
                                 funded.keys.outgoingViewSecret,
                                 DisclosureScalar(29), DisclosureScalar(30),
                                 funded.nAmount, DisclosureScalar(31),
-                                DisclosureScalar(37), funding, error),
+                                DisclosureScalar(37), FundingContext(),
+                                funding, error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -140,6 +156,7 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill,
     onChain.noteEphemeral = funding.noteEphemeral;
     onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0, onChain,
@@ -856,7 +873,8 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
         EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, change.spendPublic,
                                 change.viewPublic, change.outgoingViewSecret,
                                 DisclosureScalar(41), DisclosureScalar(43), 777,
-                                DisclosureScalar(47), DisclosureScalar(53), note,
+                                DisclosureScalar(47), DisclosureScalar(53), FundingContext(),
+                                note,
                                 error),
         error);
 
@@ -868,6 +886,7 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
     onChain.noteEphemeral = note.noteEphemeral;
     onChain.tweakEphemeral = note.tweakEphemeral;
     onChain.vchCiphertext = note.vchRecipientCiphertext;
+    onChain.inputContext = FundingContext();
 
     bool fFound = false;
     PrivacyVNextDigest zero;
