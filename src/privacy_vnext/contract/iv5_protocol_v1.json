@@ -148,7 +148,8 @@
     "operation": 10,
     "rules": [
       "exactly-one-input-and-exactly-one-output",
-      "transparent-value-balance-and-fee-are-zero",
+      "fee-is-zero-and-transparent-value-balance-is-not-negative",
+      "how-much-value-may-enter-is-the-callers-rule-because-it-is-a-function-of-the-epoch-and-the-emission-schedule",
       "disclosure-mask-is-seven-and-authorization-is-owner",
       "a-nonzero-32-byte-boundary-block-hash-and-a-u32-le-boundary-height-follow-the-outputs-inside-the-signing-hash",
       "the-key-image-is-a-spend-and-the-output-is-an-ordinary-leaf-so-the-effects-are-a-transfers",

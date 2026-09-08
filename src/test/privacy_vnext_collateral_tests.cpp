@@ -1922,10 +1922,9 @@ BOOST_AUTO_TEST_CASE(a_note_vote_is_fee_exempt_like_an_attestation)
     BOOST_CHECK(!IsPrivacyVNextFeeExemptShape(withInput));
 }
 
-// Refusals here are the shape rule answering: the prover made every proof over the shape
-// as built. Mutation proving this: drop a clause from the vote shape check in
-// validate_payload and the matching arm validates.
-BOOST_AUTO_TEST_CASE(a_note_vote_moves_no_value_and_takes_no_fee)
+// Refusals are the vote shape rule. The reward amount is chain-dependent and pinned in
+// note_vote_reward_tests; here only its direction: a vote never drains the pool.
+BOOST_AUTO_TEST_CASE(a_note_vote_takes_no_fee_and_never_drains_the_pool)
 {
     CTxDB txdb("r+");
     std::string error;
@@ -1953,13 +1952,21 @@ BOOST_AUTO_TEST_CASE(a_note_vote_moves_no_value_and_takes_no_fee)
         error);
     BOOST_CHECK_EQUAL(ValidationResult(paying), kConsensusInvalid);
 
-    // A mint: one atom enters from the transparent side.
-    std::vector<unsigned char> minting;
+    // The reward: one atom enters through the reissue. Well-formed here by construction;
+    // whether the epoch owes that atom is the caller's equality, not this decoder's.
+    std::vector<unsigned char> rewarded;
     BOOST_REQUIRE_MESSAGE(
-        BuildShapedNoteVote(note, digest, kVoteNote + 1, 1, 0, boundary, 1200, minting,
+        BuildShapedNoteVote(note, digest, kVoteNote + 1, 1, 0, boundary, 1200, rewarded,
                             keyImage, reissue, error),
         error);
-    BOOST_CHECK_EQUAL(ValidationResult(minting), kConsensusInvalid);
+    BOOST_CHECK_EQUAL(ValidationResult(rewarded), kValid);
+    // And the caller sees the declared figure, which is what it holds against the epoch.
+    PrivacyVNextStateEffects rewardedEffects;
+    const PrivacyVNextPayloadValidation rewardedRead =
+        ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                          rewarded, rewardedEffects);
+    BOOST_REQUIRE_MESSAGE(rewardedRead.IsValid(), rewardedRead.strError);
+    BOOST_CHECK_EQUAL(rewardedEffects.nTransparentValueBalance, 1);
 
     // A leak: one atom leaves.
     std::vector<unsigned char> leaking;

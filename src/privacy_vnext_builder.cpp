@@ -720,6 +720,7 @@ bool BuildPrivacyVNextNoteVotePayload(
     const PrivacyVNextDigest& transparentBinding,
     const PrivacyVNextDigest& voteBoundaryHash,
     uint32_t nVoteBoundaryHeight,
+    int64_t nVoteReward,
     const PrivacyVNextSpendNote& note,
     const PrivacyVNextAddressComponents& reissueTo,
     std::vector<unsigned char>& vchPayloadOut,
@@ -731,10 +732,8 @@ bool BuildPrivacyVNextNoteVotePayload(
     keyImageOut.fill(0);
     strErrorOut.clear();
 
-    // The decoder pins the whole shape before any proof runs, so every field it fixes is
-    // fixed here rather than taken from the caller: one input, one output, no fee, no
-    // transparent movement, nothing disclosed. What is left is which note votes, which
-    // boundary it names and where the value is reissued.
+    // The decoder pins the shape: one input, one output, no fee, no value leaving the
+    // pool, nothing disclosed. None of it is taken from the caller.
     if (note.nAmount == 0)
     {
         strErrorOut = "an IV5 note finality vote needs a note carrying value";
@@ -754,9 +753,21 @@ bool BuildPrivacyVNextNoteVotePayload(
         return false;
     }
 
-    // The value is preserved exactly: what the note held is what the reissue holds, so
-    // the balance proof states C_in == C_out with a zero fee and nothing crossing the
-    // transparent boundary. The reward increment is what makes this an inequality.
+    // The reward is the only value that enters, and it enters through the reissue: the
+    // balance proof states C_in + reward*H == C_out with a zero fee. A negative reward
+    // would be an unshield wearing a vote's operation byte.
+    if (nVoteReward < 0)
+    {
+        strErrorOut = "an IV5 note finality vote cannot declare a negative reward";
+        return false;
+    }
+    if ((uint64_t)nVoteReward > std::numeric_limits<uint64_t>::max() - note.nAmount)
+    {
+        strErrorOut = "an IV5 note finality vote reissue amount overflows";
+        return false;
+    }
+    const uint64_t nReissueAmount = note.nAmount + (uint64_t)nVoteReward;
+
     std::vector<PrivacyVNextSpendNote> vSpends(1);
     vSpends[0].spendSecret = note.spendSecret;
     vSpends[0].y = note.y;
@@ -767,13 +778,14 @@ bool BuildPrivacyVNextNoteVotePayload(
 
     std::vector<PrivacyVNextNewOutput> vOutputs(1);
     vOutputs[0].recipient = reissueTo;
-    vOutputs[0].nAmount = note.nAmount;
+    vOutputs[0].nAmount = nReissueAmount;
 
     std::vector<PrivacyVNextDigest> vKeyImages;
     const bool fBuilt = BuildPrivacyVNextPayload(
         nNetwork, VNEXT_OPERATION_NOTE_VOTE, iv5::DISCLOSURE_MASK, genesis,
         outgoingViewSecret, finalizedRoot, nFinalizedTreeSize, transparentBinding,
-        0 /* nothing crosses the boundary */, 0 /* and no fee is taken */, vSpends,
+        nVoteReward /* the epoch's entitlement, and nothing else, enters */,
+        0 /* and no fee is taken */, vSpends,
         vOutputs, vchPayloadOut, strErrorOut, pvchChainParameterDigest,
         &voteBoundaryHash, nVoteBoundaryHeight, &vKeyImages);
     for (size_t i = 0; i < vSpends.size(); ++i)

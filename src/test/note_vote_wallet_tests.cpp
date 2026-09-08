@@ -13,6 +13,8 @@
 #include "../privacy_vnext/rust/include/innova_privacy_vnext.h"
 #include "../dag.h"
 #include "../finality.h"
+#include "../finality_note.h"
+#include "../subsidy.h"
 #include "../main.h"
 #include "../miner.h"
 #include "../ed25519_zk.h"
@@ -47,8 +49,8 @@ void ApplyPrivacyVNextNoteVoteSelectionOrder(const CTransaction& tx,
 namespace
 {
 
-// A note at the finality stake floor (100 INN), the note a vote spends.
-const uint64_t kVoteNote = 100ULL * 100000000ULL;
+// A note at the finality stake floor (500 INN), the note a vote spends.
+const uint64_t kVoteNote = 500ULL * 100000000ULL;
 
 // The post-DAG epoch the votes name; E-1 is the epoch state they anchor to.
 const int kEpoch = 5;
@@ -423,7 +425,9 @@ bool BuildVote(const FundedNote& note, const PrivacyVNextDigest& reissueSpend,
     return BuildPrivacyVNextNoteVotePayload(
         LocalNetwork(), LocalGenesis(), outgoingViewSecret, note.finalizedRoot,
         note.nTreeSize, NoTransparentSide(), boundaryHash,
-        (uint32_t)nBoundaryHeight, note.spend, reissueTo, vchPayloadOut, keyImageOut,
+        (uint32_t)nBoundaryHeight,
+        GetFinalityNoteVoteReward(GetEpochForHeight(nBoundaryHeight)),
+        note.spend, reissueTo, vchPayloadOut, keyImageOut,
         error, &vchParameterDigest);
 }
 
@@ -546,7 +550,8 @@ BOOST_AUTO_TEST_CASE(the_builder_makes_a_vote_the_connect_rules_accept)
     ScopedEpochRecord anchor(txdb, kEpoch - 1, AnchorRecord(note, chain.pBoundary));
 
     // The shape the decoder pins before any proof runs: one note in, one note out,
-    // nothing across the boundary, no fee, and the boundary the vote names.
+    // no fee, the boundary the vote names, and a balance that may enter the pool but
+    // never leave it.
     BOOST_CHECK(vote.effects.HasVoteBoundary());
     BOOST_CHECK_EQUAL((int)vote.effects.nVoteBoundaryHeight, nBoundary);
     BOOST_CHECK(vote.effects.voteBoundaryHash == BlockDigest(chain.pBoundary));
@@ -554,7 +559,14 @@ BOOST_AUTO_TEST_CASE(the_builder_makes_a_vote_the_connect_rules_accept)
     BOOST_CHECK(vote.effects.keyImages[0] == vote.keyImage);
     BOOST_CHECK(vote.effects.keyImages[0] == note.keyImage);
     BOOST_CHECK_EQUAL(vote.effects.outputLeaves.size(), 1U);
-    BOOST_CHECK_EQUAL(vote.effects.nTransparentValueBalance, 0);
+    // A vote carries its own epoch's entitlement in, so the balance is the mint and
+    // not zero; the decoder allows any non-negative figure and the caller pins this one.
+    int64_t nMint = 0;
+    std::string strMint;
+    BOOST_REQUIRE_MESSAGE(GetPrivacyVNextNoteVoteMint(vote.effects, nMint, strMint),
+                          strMint);
+    BOOST_CHECK_EQUAL(nMint, GetFinalityNoteVoteReward(kEpoch));
+    BOOST_CHECK_EQUAL(vote.effects.nTransparentValueBalance, nMint);
     BOOST_CHECK_EQUAL(vote.effects.nFee, 0U);
     BOOST_CHECK(vote.effects.attestationKeyImages.empty());
 
@@ -613,7 +625,12 @@ BOOST_AUTO_TEST_CASE(the_wallet_finds_its_own_reissue_from_the_payload_alone)
                                 nOutputCount, error),
         error);
     BOOST_REQUIRE_EQUAL(vMatches.size(), 1U);
-    BOOST_CHECK_EQUAL(vMatches[0].nAmount, kVoteNote);
+    // The note plus the epoch's entitlement: the reward is minted into the reissue, so a
+    // wallet reads it back out of the ordinary scan and nowhere else.
+    const uint64_t nExpectedReissue =
+        kVoteNote +
+        (uint64_t)GetFinalityNoteVoteReward(GetEpochForHeight(BoundaryHeight()));
+    BOOST_CHECK_EQUAL(vMatches[0].nAmount, nExpectedReissue);
     BOOST_CHECK_EQUAL((unsigned int)vMatches[0].nOutputIndex, 0U);
     // Found under the rotated key, not an issued one.
     BOOST_CHECK_EQUAL((unsigned int)vMatches[0].nKeyIndex, 1U);
@@ -675,7 +692,8 @@ BOOST_AUTO_TEST_CASE(a_wallet_votes_once_per_note_and_refuses_the_second)
     BOOST_REQUIRE_MESSAGE(
         wallet.CreatePrivacyVNextNoteVote(
             txdb, anchor, chain.pBoundary->GetBlockHash(), nBoundary, nConnect - 1,
-            FINALITY_MIN_VOTE_WEIGHT, false /* do not commit */, wtx, keyImage, error),
+            GetFinalityMinVoteWeight(nBoundary), false /* do not commit */, wtx,
+            keyImage, error),
         error);
     BOOST_CHECK(keyImage == AsUint256(note.keyImage));
     BOOST_CHECK(wtx.vin.empty());
@@ -703,7 +721,7 @@ BOOST_AUTO_TEST_CASE(a_wallet_votes_once_per_note_and_refuses_the_second)
         std::string strSecond;
         BOOST_CHECK(!wallet.CreatePrivacyVNextNoteVote(
             txdb, anchor, chain.pBoundary->GetBlockHash(), nBoundary, nConnect - 1,
-            FINALITY_MIN_VOTE_WEIGHT, false, second, secondKeyImage, strSecond));
+            GetFinalityMinVoteWeight(nBoundary), false, second, secondKeyImage, strSecond));
         BOOST_CHECK(Mentions(strSecond, "no unspent IV5 note"));
     }
 
@@ -722,7 +740,7 @@ BOOST_AUTO_TEST_CASE(a_wallet_votes_once_per_note_and_refuses_the_second)
         std::string strThird;
         BOOST_CHECK(!wallet.CreatePrivacyVNextNoteVote(
             txdb, anchor, chain.pBoundary->GetBlockHash(), nBoundary, nConnect - 1,
-            FINALITY_MIN_VOTE_WEIGHT, false, third, thirdKeyImage, strThird));
+            GetFinalityMinVoteWeight(nBoundary), false, third, thirdKeyImage, strThird));
         BOOST_CHECK(Mentions(strThird, "no unspent IV5 note"));
     }
 

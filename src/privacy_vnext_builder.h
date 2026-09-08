@@ -103,25 +103,8 @@ bool BuildPrivacyVNextShieldPayload(
     std::string& strErrorOut,
     const std::vector<unsigned char>* pvchChainParameterDigest = NULL);
 
-// Build a note finality vote payload (operation 10).
-//
-// The vote spends its note and reissues the same value to one fresh note, so unspent-ness
-// is the spent-key index the spend path already keeps and a second vote of the same note
-// is a double spend. Everything the decoder pins is fixed here rather than taken from the
-// caller -- one input, one output, fee zero, transparent balance zero, mask 7 -- so the
-// only choices are which note votes, which epoch boundary it names, and where the value
-// is reissued.
-//
-// `voteBoundaryHash` and `nVoteBoundaryHeight` name the epoch boundary block H_E. Both sit
-// inside the signing hash, so a vote cannot be replayed into another epoch and a
-// transfer's proof cannot be repackaged as one.
-//
-// `reissueTo` should be an address of the voting wallet: the reissue is what votes in the
-// next epoch. Its one-time key derives under input_context(10, transparent_binding,
-// [key image]), which is unique per note, so the reissue's key cannot recur.
-//
-// `keyImageOut` is the key image the proof publishes -- the value the caller watches, and
-// the value the reissue's self-pay index is drawn from.
+// Build a note finality vote payload (op 10): spends the note and reissues value + `nVoteReward`
+// (fee 0, mask 7). `nVoteReward` must equal GetFinalityNoteVoteReward at `nVoteBoundaryHeight`.
 bool BuildPrivacyVNextNoteVotePayload(
     uint8_t nNetwork,
     const PrivacyVNextDigest& genesis,
@@ -131,6 +114,7 @@ bool BuildPrivacyVNextNoteVotePayload(
     const PrivacyVNextDigest& transparentBinding,
     const PrivacyVNextDigest& voteBoundaryHash,
     uint32_t nVoteBoundaryHeight,
+    int64_t nVoteReward,
     const PrivacyVNextSpendNote& note,
     const PrivacyVNextAddressComponents& reissueTo,
     std::vector<unsigned char>& vchPayloadOut,

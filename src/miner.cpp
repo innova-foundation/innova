@@ -756,9 +756,22 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             std::vector<CFinalityVote> vSettlementVotes;
             std::string strSettleError;
             // Same budget function the validator calls, off the same parent: the
-            // reserve earlier blocks withheld, clamped to the issuance headroom.
+            // reserve earlier blocks withheld, less what the epoch's note votes already
+            // minted for themselves, clamped to the issuance headroom.
+            int64_t nNoteVoteMintTotal = 0;
+            bool fMintLocalFailure = false;
+            if (!GetPrivacyVNextNoteVoteMintTotal(pindexPrev, nSettlementEpoch,
+                                                  nNoteVoteMintTotal, fMintLocalFailure,
+                                                  strSettleError))
+            {
+                printf("CreateNewBlock: cannot total the note-vote mint for epoch %d at "
+                       "height %d: %s\n", nSettlementEpoch, nHeight,
+                       strSettleError.c_str());
+                return NULL;
+            }
             const int64_t nSettlementBudget =
-                GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch);
+                GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch,
+                                                   nNoteVoteMintTotal);
             if (!GatherFinalitySettlementVotes(pindexPrev, nSettlementEpoch, vSettlementVotes, &strSettleError) ||
                 !BuildFinalitySettlementOutputs(vSettlementVotes, nSettlementBudget,
                                                 vFinalitySettlementOutputs,
@@ -1058,11 +1071,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
                 int64_t nDeclaredBalance = 0;
+                int64_t nNoteVoteMint = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
                                                     fFlowLocalFailure, strFlowError,
-                                                    NULL, &nDeclaredBalance))
+                                                    NULL, &nDeclaredBalance,
+                                                    &nNoteVoteMint))
                 {
                     printf("CreateNewBlock: IV5 pool flow unavailable, skipping tx: %s\n",
                            strFlowError.c_str());
@@ -1082,6 +1097,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     continue;
                 }
                 nFee += nReleased;
+                // The vote's absorbed value is the epoch's reserve, not a shortfall this
+                // transaction owes; without the credit every vote sorts as the most
+                // fee-negative transaction in the queue and is never selected.
+                nFee += nNoteVoteMint;
                 nFee -= nAbsorbed;
             }
             double dFeePerKb =  double(nFee) / (double(nTxSize)/1000.0);
@@ -1194,10 +1213,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 {
                     int64_t nAbsorbed = 0;
                     int64_t nReleased = 0;
+                    int64_t nNoteVoteMint = 0;
                     bool fFlowLocalFailure = false;
                     std::string strFlowError;
                     if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
-                                                        fFlowLocalFailure, strFlowError))
+                                                        fFlowLocalFailure, strFlowError,
+                                                        NULL, NULL, &nNoteVoteMint))
                     {
                         printf("CreateNewBlock() : IV5 pool flow unavailable for %s: %s\n",
                                tx.GetHash().ToString().substr(0,10).c_str(),
@@ -1205,6 +1226,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                         continue;
                     }
                     nTxFees += nReleased;
+                    nTxFees += nNoteVoteMint;
                     nTxFees -= nAbsorbed;
                 }
                 nFee = nTxFees;

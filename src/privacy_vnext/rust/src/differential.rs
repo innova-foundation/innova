@@ -477,7 +477,8 @@ impl Spec {
     }
 
     /// A note finality vote: one note spent, its whole value reissued to one output, naming
-    /// one epoch boundary. Nothing crosses the boundary and no fee is paid.
+    /// one epoch boundary. No fee, and nothing crosses the boundary -- the reward-carrying
+    /// shape is built through `base` where the case can state the balance it declares.
     fn note_vote(input: Note, output: Note, boundary_hash: [u8; 32], boundary_height: u32) -> Self {
         let mut spec = Self::base(NOTE_FINALITY_VOTE, vec![input], vec![output], 0, 0);
         spec.vote_boundary = Some((boundary_hash, boundary_height));
@@ -2563,10 +2564,23 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
         vote_like(vec![input.clone()], vec![short], -1, 0),
     );
 
+    // A reissue grown by the declared balance is well-formed here; the caller pins the owed
+    // figure (epoch budget over slot cap) against the effects.
     let grown = make_output(&mut rng, &address, 0, 1_001, &context);
-    refused(
-        "a vote minting",
-        vote_like(vec![input.clone()], vec![grown], 1, 0),
+    let rewarded = build(
+        &mut ChaCha20Rng::from_seed([0xd3; 32]),
+        &vote_like(vec![input.clone()], vec![grown], 1, 0),
+    );
+    assert_eq!(
+        validate(&rewarded.request),
+        Ok(()),
+        "a vote may take the reward into its reissue"
+    );
+    let rewarded_effects = payload::effects(&rewarded.request).expect("effects of a vote");
+    assert_eq!(
+        &rewarded_effects[76..84],
+        &1_i64.to_le_bytes(),
+        "the declared balance reaches the caller"
     );
 
     refused(

@@ -552,12 +552,10 @@ fn validate_payload(
     {
         return Err(ResultCode::ConsensusInvalid);
     }
-    // A vote spends one note and reissues it whole: one input, one output, nothing crossing
-    // the boundary and no fee, so value is preserved exactly and a producer has nothing to
-    // select on. Splitting and merging stay ordinary transfers. Pinned before any proof
-    // runs, like the attestation shape. The mask is pinned by the envelope.
+    // A vote: one input, one output, no fee, no value leaving the pool. Value entering
+    // is the reward; its exact amount is a chain fact the caller pins.
     if is_note_vote_operation(operation)
-        && (input_count != 1 || output_count != 1 || transparent_value_balance != 0 || fee != 0)
+        && (input_count != 1 || output_count != 1 || transparent_value_balance < 0 || fee != 0)
     {
         return Err(ResultCode::ConsensusInvalid);
     }
@@ -2675,10 +2673,10 @@ mod tests {
         );
     }
 
-    // One input, one output, no value crossing, no fee. Each is refused before any proof
-    // section is read; the shape that holds reaches the sections.
+    // One input, one output, no fee, no value leaving; each refused before any proof
+    // section. Value entering is admitted at any size here.
     #[test]
-    fn a_note_vote_is_pinned_to_one_input_one_output_no_value_no_fee() {
+    fn a_note_vote_is_pinned_to_one_input_one_output_no_fee_and_no_value_leaving() {
         const INVALID: Result<(), ResultCode> = Err(ResultCode::ConsensusInvalid);
         let boundary = [0x7e_u8; 32];
         let verdict = |operation: u8, inputs: usize, outputs: usize, tvb: i64, fee: u64| {
@@ -2697,8 +2695,15 @@ mod tests {
         assert_eq!(verdict(vote, 1, 2, 0, 0), INVALID, "two outputs");
         assert_eq!(verdict(vote, 1, 0, 0, 0), INVALID, "no output");
         assert_eq!(verdict(vote, 1, 1, 0, 1), INVALID, "a fee");
-        assert_eq!(verdict(vote, 1, 1, 1, 0), INVALID, "value entering");
         assert_eq!(verdict(vote, 1, 1, -1, 0), INVALID, "value leaving");
+        assert_eq!(verdict(vote, 1, 1, i64::MIN, 0), INVALID, "value leaving, at the edge");
+        for entering in [1_i64, 292_187_500, i64::MAX] {
+            assert_eq!(
+                verdict(vote, 1, 1, entering, 0),
+                Err(ResultCode::ResourceLimit),
+                "the reward enters the pool through the vote; its size is the caller's rule"
+            );
+        }
 
         // The rule is on the operation: the same shapes under a transfer reach the sections.
         for (inputs, outputs, tvb, fee) in [(2, 1, 0, 0), (1, 2, 0, 0), (1, 1, 0, 1)] {

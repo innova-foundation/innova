@@ -1603,10 +1603,8 @@ fi
 mine_to 0 "$SHIELD_HEIGHT" || { fail "could not mine to the shield height"; exit 1; }
 wait_sync "$SHIELD_HEIGHT" || { fail "peers did not sync to the shield height"; exit 1; }
 
-# A vote needs ONE note worth at least FINALITY_MIN_VOTE_WEIGHT (100 INN), so sweep
-# several addresses: each sweep moves one address's whole value with no transparent
-# change. Each is confirmed before the next is built, because a shield names the
-# tree it saw.
+# A vote needs ONE note >= GetFinalityMinVoteWeight (500 INN), so sweep several
+# addresses, each confirmed before the next (a shield names the tree it saw).
 SHIELDS=0
 FIRST_SHIELD_TXID=""
 for ((s=0; s<SHIELD_SWEEPS; s++)); do

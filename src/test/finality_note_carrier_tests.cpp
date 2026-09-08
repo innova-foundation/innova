@@ -148,7 +148,8 @@ CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
     vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, nTagSeed);
     vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
     BOOST_REQUIRE_MESSAGE(
-        BuildNoteVoteWeightFloorProof(nAmount, maskTilde, ProofEntropy(0x91),
+        BuildNoteVoteWeightFloorProof(nAmount, vote.nHeight, maskTilde,
+                                      ProofEntropy(0x91),
                                       vote.vchWeightFloorProof, &strError),
         strError);
     BOOST_REQUIRE_MESSAGE(vote.IsValidBasic(&strError), strError);
@@ -515,25 +516,28 @@ BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
 }
 
 // The floor proof is over C~ - W_min*H, recomputed by the verifier from the vote's own
-// commitment. A weight under the floor has no in-range opening of that point.
+// commitment at the vote's own height. A weight under that height's floor has no in-range
+// opening of the point.
 BOOST_AUTO_TEST_CASE(note_vote_weight_floor_is_unconstructible_below_the_floor)
 {
+    const int nHeight = 6000;
+    const int64_t nFloor = GetFinalityMinVoteWeight(nHeight);
     const uint256 mask = RandomScalar();
     std::vector<unsigned char> vchProof;
     std::string strError;
 
-    BOOST_CHECK(BuildNoteVoteWeightFloorProof(FINALITY_MIN_VOTE_WEIGHT, mask,
+    BOOST_CHECK(BuildNoteVoteWeightFloorProof(nFloor, nHeight, mask,
                                               ProofEntropy(0x92), vchProof, &strError));
     BOOST_CHECK(!vchProof.empty());
 
     vchProof.clear();
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(FINALITY_MIN_VOTE_WEIGHT - 1, mask,
+    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(nFloor - 1, nHeight, mask,
                                                ProofEntropy(0x92), vchProof, &strError));
     BOOST_CHECK(vchProof.empty());
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(0, mask, ProofEntropy(0x92), vchProof,
-                                               &strError));
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(-1, mask, ProofEntropy(0x92), vchProof,
-                                               &strError));
+    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(0, nHeight, mask, ProofEntropy(0x92),
+                                               vchProof, &strError));
+    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(-1, nHeight, mask, ProofEntropy(0x92),
+                                               vchProof, &strError));
 }
 
 // The verifier never accepts a supplied commitment point: a proof over C~ itself, which
@@ -562,7 +566,7 @@ BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
     BOOST_CHECK(VerifyPrivacyVNextRange(cTilde, ZeroDigest(), vchDustProof, error));
 
     PrivacyVNextDigest floorPoint = ZeroDigest();
-    BOOST_REQUIRE(DeriveNoteVoteWeightFloorPoint(cTilde, floorPoint));
+    BOOST_REQUIRE(DeriveNoteVoteWeightFloorPoint(cTilde, 6012, floorPoint));
     BOOST_CHECK(floorPoint != cTilde);
     BOOST_CHECK(!VerifyPrivacyVNextRange(floorPoint, ZeroDigest(), vchDustProof, error));
 
@@ -584,13 +588,14 @@ BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
     BOOST_CHECK_EQUAL(strError, "note vote does not reach the minimum vote weight");
 
     // The same vote with a real floor proof passes, so the floor check is what failed.
-    const int64_t nAtFloor = FINALITY_MIN_VOTE_WEIGHT;
+    const int64_t nAtFloor = GetFinalityMinVoteWeight(vote.nHeight);
     const uint256 maskAtFloor = RandomScalar();
     CNoteFinalityVote funded = vote;
     funded.vchMembership = MakeMembershipRequest(
         funded.hashCurveRoot,
         CommitPoint(Ed25519ScalarFromInt64(nAtFloor), maskAtFloor), 64);
-    BOOST_REQUIRE(BuildNoteVoteWeightFloorProof(nAtFloor, maskAtFloor, ProofEntropy(0x94),
+    BOOST_REQUIRE(BuildNoteVoteWeightFloorProof(nAtFloor, funded.nHeight, maskAtFloor,
+                                                ProofEntropy(0x94),
                                                 funded.vchWeightFloorProof, &strError));
     BOOST_CHECK(CheckNoteVoteWeightFloorProof(funded, &strError));
 }

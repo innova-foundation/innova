@@ -2990,6 +2990,56 @@ bool CheckPrivacyVNextNoteVoteCaps(unsigned int nBlockVotes,
     return true;
 }
 
+bool GetPrivacyVNextNoteVoteMintTotal(const CBlockIndex* pindexWindowTop,
+                                      int nSettlementEpoch,
+                                      int64_t& nTotalOut,
+                                      bool& fLocalFailure,
+                                      std::string& strError)
+{
+    nTotalOut = 0;
+    fLocalFailure = false;
+    strError.clear();
+    if (pindexWindowTop == NULL)
+        return true;
+    // A window top below the lane's fork height can carry no vote, so no block is read and
+    // settlement stays as cheap as without the lane.
+    if (!IsIV5NoteVoteActiveAtHeight(pindexWindowTop->nHeight))
+        return true;
+
+    // Bound the epoch number before the boundary arithmetic multiplies it, the way the
+    // accrual range does: rejecting the product afterwards would be reading an overflow.
+    if (nSettlementEpoch < 1)
+        return true;
+    const int64_t nBoundary64 = GetEpochBoundaryHeight64(nSettlementEpoch);
+    if (nBoundary64 > (int64_t)std::numeric_limits<int>::max())
+        return true;
+    const int nBoundaryHeight = (int)nBoundary64;
+    const int64_t nReward = GetFinalityNoteVoteReward(nSettlementEpoch);
+    if (nReward <= 0)
+        return true;
+
+    unsigned int nVotes = 0;
+    if (!CountConnectedPrivacyVNextNoteVotes(pindexWindowTop, nBoundaryHeight,
+                                             FINALITY_MAX_EPOCH_NOTE_VOTES, nVotes,
+                                             strError))
+    {
+        fLocalFailure = true;
+        return false;
+    }
+    // ConnectBlock refuses the block that would take the window past the cap, so an
+    // ancestor chain that is over it did not connect here. Fail closed rather than
+    // subtract more than the budget holds.
+    if (nVotes > FINALITY_MAX_EPOCH_NOTE_VOTES)
+    {
+        strError = strprintf("epoch %d window carries %u note finality votes, above the "
+                             "cap of %u", nSettlementEpoch, nVotes,
+                             FINALITY_MAX_EPOCH_NOTE_VOTES);
+        return false;
+    }
+    nTotalOut = (int64_t)nVotes * nReward;
+    return true;
+}
+
 PrivacyVNextSpendResult ConnectPrivacyVNextSpentKeys(CTxDB& txdb,
                                                      const CTransaction& tx,
                                                      const PrivacyVNextStateEffects& effects,
@@ -3111,6 +3161,56 @@ bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
     return true;
 }
 
+bool GetPrivacyVNextNoteVoteMint(const PrivacyVNextStateEffects& effects,
+                                 int64_t& nMintOut,
+                                 std::string& strError)
+{
+    nMintOut = 0;
+    strError.clear();
+    // Every other operation's positive balance is a shield the transparent inputs cover.
+    // Only a vote may bring value into the pool with no transparent side to pay for it,
+    // and only the exact amount its epoch owes it.
+    if (!effects.HasVoteBoundary())
+        return true;
+
+    if (effects.nVoteBoundaryHeight >
+        static_cast<uint32_t>(std::numeric_limits<int>::max()))
+    {
+        strError = "IV5 note finality vote names a boundary height out of range";
+        return false;
+    }
+    const int nBoundaryHeight = static_cast<int>(effects.nVoteBoundaryHeight);
+    if (nBoundaryHeight < FORK_HEIGHT_DAG || !IsEpochBoundaryHeight(nBoundaryHeight))
+    {
+        strError = "IV5 note finality vote names a height that opens no post-DAG epoch";
+        return false;
+    }
+    // A pure function of the epoch number: the emission schedule over a closed height
+    // range. No chain state reaches it, so the mempool, the miner, ConnectInputs,
+    // ConnectBlock and the epoch build all arrive at the same figure.
+    const int nEpoch = GetEpochForHeight(nBoundaryHeight);
+    const int64_t nReward = GetFinalityNoteVoteReward(nEpoch);
+    if (nReward < 0 || !MoneyRange(nReward))
+    {
+        strError = "IV5 note finality vote entitlement is out of range";
+        return false;
+    }
+    if (effects.nFee != 0)
+    {
+        strError = "IV5 note finality vote charges a fee";
+        return false;
+    }
+    if (effects.nTransparentValueBalance != nReward)
+    {
+        strError = strprintf("IV5 note finality vote for epoch %d declares %" PRId64
+                             " against an entitlement of %" PRId64,
+                             nEpoch, effects.nTransparentValueBalance, nReward);
+        return false;
+    }
+    nMintOut = nReward;
+    return true;
+}
+
 bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,
                                       std::string& strError)
 {
@@ -3135,7 +3235,8 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     bool& fLocalFailure,
                                     std::string& strError,
                                     int64_t* pnDeclaredFeeOut,
-                                    int64_t* pnDeclaredBalanceOut)
+                                    int64_t* pnDeclaredBalanceOut,
+                                    int64_t* pnNoteVoteMintOut)
 {
     nAbsorbedOut = 0;
     nReleasedOut = 0;
@@ -3145,6 +3246,8 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         *pnDeclaredFeeOut = 0;
     if (pnDeclaredBalanceOut)
         *pnDeclaredBalanceOut = 0;
+    if (pnNoteVoteMintOut)
+        *pnNoteVoteMintOut = 0;
 
     PrivacyVNextStateEffects effects;
     const PrivacyVNextPayloadValidation validation =
@@ -3176,6 +3279,14 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
     if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError))
         return false;
 
+    // A note finality vote's value is a mint with no transparent side. The entitlement is
+    // bounded here, the derivation all fee-accounting callers share.
+    int64_t nNoteVoteMint = 0;
+    if (!GetPrivacyVNextNoteVoteMint(effects, nNoteVoteMint, strError))
+        return false;
+    if (pnNoteVoteMintOut)
+        *pnNoteVoteMintOut = nNoteVoteMint;
+
     // GetPrivacyVNextPoolDelta has already range-checked both fields.
     if (pnDeclaredFeeOut)
         *pnDeclaredFeeOut = (int64_t)effects.nFee;
@@ -3203,9 +3314,8 @@ bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx)
                                    tx.privacyVNext.vchPayload.size(),
                                    nOperation, nDisclosureMask))
         return false;
-    // A note finality vote is the other zero-fee shape: the decoder pins its fee to zero
-    // and its value to the note it spends, and it has no transparent side to pay from.
-    // Its lane is gated where the effects are judged, not here.
+    // A note finality vote is also zero-fee: the decoder pins its fee to zero and its value
+    // to the spent note plus the epoch's entitlement. Its lane is gated elsewhere.
     return iv5::IsAttestationOperation(nOperation) ||
            iv5::IsNoteFinalityVoteOperation(nOperation);
 }
@@ -3556,10 +3666,12 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 // shield's transparent inputs read as an enormous fee.
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
+                int64_t nNoteVoteMint = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
-                                                    fFlowLocalFailure, strFlowError))
+                                                    fFlowLocalFailure, strFlowError,
+                                                    NULL, NULL, &nNoteVoteMint))
                 {
                     if (fFlowLocalFailure)
                         StartShutdown();
@@ -3569,6 +3681,12 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 if (nReleased > MAX_MONEY - nFees)
                     return error("CTxMemPool::accept() : IV5 released value overflow");
                 nFees += nReleased;
+                // A vote's absorbed value is the epoch's own reserve, pinned above, not
+                // value some transparent input owes. Charging it here would make every
+                // vote look like a transaction paying a negative fee.
+                if (nNoteVoteMint > MAX_MONEY - nFees)
+                    return error("CTxMemPool::accept() : IV5 note vote mint overflow");
+                nFees += nNoteVoteMint;
                 nFees -= nAbsorbed;
                 if (nFees < 0)
                     return error("CTxMemPool::accept() : IV5 transaction does not cover its pool flow");
@@ -8700,12 +8818,14 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
                 int64_t nDeclaredBalance = 0;
+                int64_t nNoteVoteMint = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(*this, nAbsorbed, nReleased,
                                                     fFlowLocalFailure, strFlowError,
                                                     &nDeclaredPayloadFee,
-                                                    &nDeclaredBalance))
+                                                    &nDeclaredBalance,
+                                                    &nNoteVoteMint))
                 {
                     if (fFlowLocalFailure)
                     {
@@ -8730,6 +8850,11 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 if (nReleased > MAX_MONEY - nEffectiveIn)
                     return DoS(100, error("ConnectInputs() : IV5 released value overflow"));
                 nEffectiveIn += nReleased;
+                // A note finality vote has no transparent input; crediting the epoch entitlement here
+                // makes its fee exactly zero.
+                if (nNoteVoteMint > MAX_MONEY - nEffectiveIn)
+                    return DoS(100, error("ConnectInputs() : IV5 note vote mint overflow"));
+                nEffectiveIn += nNoteVoteMint;
             }
 
             if (nEffectiveIn < nEffectiveOut)
@@ -9774,6 +9899,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             int64_t nTxValueIn = tx.GetValueIn(mapInputs);
             int64_t nTxValueOut = tx.GetValueOut();
+            // Absorbed value a note finality vote minted rather than moved. It belongs in
+            // the money supply and not in the block's fee pool, so it is tracked apart
+            // from nTxValueOut, which feeds both.
+            int64_t nTxNoteVoteMint = 0;
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
@@ -9829,7 +9958,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
                                                     fFlowLocalFailure, strFlowError,
-                                                    &nDeclaredPayloadFee))
+                                                    &nDeclaredPayloadFee, NULL,
+                                                    &nTxNoteVoteMint))
                 {
                     if (fFlowLocalFailure)
                     {
@@ -9865,7 +9995,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 nAmountBurned += out.nValue;
             }
             if (!tx.IsCoinStake()) {
-                nFees += nTxValueIn - nTxValueOut;
+                // The mint is the epoch's withheld reserve reaching its voter, not collected value; left
+                // in, it would lower the producer's coinbase allowance by the vote's payment.
+                nFees += nTxValueIn - nTxValueOut + nTxNoteVoteMint;
             }
             if (tx.IsCoinStake())
                 nStakeReward = nTxValueOut - nTxValueIn;
@@ -10013,8 +10145,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                                   strSettleError.c_str()));
                 return DoS(100, error("ConnectBlock() : finality settlement set unavailable: %s", strSettleError.c_str()));
             }
+            // The note lane paid itself at its own blocks. Its total comes off the
+            // transparent budget here, so the epoch still issues at most the reserve it
+            // withheld and total emission telescopes back to the schedule.
+            int64_t nNoteVoteMintTotal = 0;
+            bool fMintLocalFailure = false;
+            if (!GetPrivacyVNextNoteVoteMintTotal(pindex->pprev, nSettlementEpoch,
+                                                  nNoteVoteMintTotal, fMintLocalFailure,
+                                                  strSettleError))
+            {
+                if (fMintLocalFailure)
+                    return TransientFailure(error(
+                        "ConnectBlock() : IV5 note vote mint total unreadable: %s",
+                        strSettleError.c_str()));
+                return DoS(100, error("ConnectBlock() : IV5 note vote mint total invalid: %s",
+                                      strSettleError.c_str()));
+            }
             const int64_t nSettlementBudget =
-                GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch);
+                GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch,
+                                                   nNoteVoteMintTotal);
             if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
                                                 nFinalityRewardOut, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));
@@ -11011,6 +11160,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 if (!CheckPrivacyVNextNoteVoteCaps(nBlockNoteVotes, nPriorNoteVotes,
                                                    strVoteError))
                     return DoS(100, error("ConnectBlock() : %s", strVoteError.c_str()));
+            }
+
+            // Bound the note-vote mint immediately before the pool absorbs it. The persisted pool
+            // balance and the epoch build each bound it independently.
+            {
+                int64_t nVoteMint = 0;
+                std::string strMintError;
+                if (!GetPrivacyVNextNoteVoteMint(effects, nVoteMint, strMintError))
+                    return DoS(100, error("ConnectBlock() : %s for %s",
+                                          strMintError.c_str(),
+                                          tx.GetHash().ToString().substr(0,10).c_str()));
             }
 
             int64_t nPoolDelta = 0;

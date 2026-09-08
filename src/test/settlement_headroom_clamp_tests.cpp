@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(the_settlement_budget_is_clamped_to_the_issuance_headroom)
 
     // Room to spare: the whole budget is payable.
     CBlockIndex idxRoomy = MakeIndex(nSettlementHeight - 1, 0);
-    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxRoomy, nEpoch), nBudget);
+    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxRoomy, nEpoch, 0), nBudget);
 
     // Less headroom than budget: the headroom is the answer, and the block's own
     // subsidy then has nothing left to take, which is what keeps the total inside
@@ -99,15 +99,15 @@ BOOST_AUTO_TEST_CASE(the_settlement_budget_is_clamped_to_the_issuance_headroom)
     const int64_t nTight = nBudget / 3;
     BOOST_REQUIRE(nTight > 0);
     CBlockIndex idxTight = MakeIndex(nSettlementHeight - 1, nCap - nTight);
-    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxTight, nEpoch), nTight);
+    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxTight, nEpoch, 0), nTight);
 
     // At the cap: nothing is payable and nothing is minted.
     CBlockIndex idxFull = MakeIndex(nSettlementHeight - 1, nCap);
-    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxFull, nEpoch), 0);
+    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxFull, nEpoch, 0), 0);
 
     // Past the cap, which a historical chain can be after the cap is lowered.
     CBlockIndex idxOver = MakeIndex(nSettlementHeight - 1, nCap + nBudget);
-    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxOver, nEpoch), 0);
+    BOOST_CHECK_EQUAL(GetClampedFinalitySettlementBudget(&idxOver, nEpoch, 0), 0);
 }
 
 // The clamp is not inert: the amount it returns is what each counted voter is
@@ -158,10 +158,10 @@ BOOST_AUTO_TEST_CASE(the_clamped_budget_is_what_the_settlement_outputs_pay)
     int64_t nRoomyTotal = 0, nTightTotal = 0;
     std::string strError;
     BOOST_REQUIRE(BuildFinalitySettlementOutputs(
-        vVotes, GetClampedFinalitySettlementBudget(&idxRoomy, nEpoch),
+        vVotes, GetClampedFinalitySettlementBudget(&idxRoomy, nEpoch, 0),
         vRoomy, nRoomyTotal, &strError));
     BOOST_REQUIRE(BuildFinalitySettlementOutputs(
-        vVotes, GetClampedFinalitySettlementBudget(&idxTight, nEpoch),
+        vVotes, GetClampedFinalitySettlementBudget(&idxTight, nEpoch, 0),
         vTight, nTightTotal, &strError));
 
     BOOST_CHECK_EQUAL(vRoomy.size(), vVotes.size());
@@ -194,8 +194,8 @@ BOOST_AUTO_TEST_CASE(the_headroom_is_read_from_the_settlement_block_parent)
     CBlockIndex idxParent = MakeIndex(nSettlementHeight - 1, nCap - nTight);
     CBlockIndex idxSelf = MakeIndex(nSettlementHeight, 0);
 
-    const int64_t nFromParent = GetClampedFinalitySettlementBudget(&idxParent, nEpoch);
-    const int64_t nFromSelf = GetClampedFinalitySettlementBudget(&idxSelf, nEpoch);
+    const int64_t nFromParent = GetClampedFinalitySettlementBudget(&idxParent, nEpoch, 0);
+    const int64_t nFromSelf = GetClampedFinalitySettlementBudget(&idxSelf, nEpoch, 0);
 
     BOOST_CHECK_EQUAL(nFromParent, nTight);
     BOOST_CHECK_EQUAL(nFromSelf, nBudget);

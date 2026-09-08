@@ -262,10 +262,17 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
         {
             std::vector<CFinalityVote> vSettlementVotes;
             std::vector<CTxOut> vSettlementLeg;
-            if (GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
+            int64_t nNoteVoteMintTotal = 0;
+            bool fMintLocalFailure = false;
+            std::string strMintError;
+            if (GetPrivacyVNextNoteVoteMintTotal(blockindex->pprev, nSettlementEpoch,
+                                                 nNoteVoteMintTotal, fMintLocalFailure,
+                                                 strMintError) &&
+                GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
                 BuildFinalitySettlementOutputs(vSettlementVotes,
                                                GetClampedFinalitySettlementBudget(
-                                                   blockindex->pprev, nSettlementEpoch),
+                                                   blockindex->pprev, nSettlementEpoch,
+                                                   nNoteVoteMintTotal),
                                                vSettlementLeg, nFinalityReward))
             {
                 Object settleObj;

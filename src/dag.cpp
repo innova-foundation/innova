@@ -3063,6 +3063,20 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 state.vchVNextRoot.swap(nextRoot);
                 state.nVNextTreeSize = nextSize;
 
+                // Bound the vote mint here too: this build applies the payload's pool delta
+                // from the payload itself, independent of ConnectBlock. The entitlement is a
+                // pure function of the voted epoch and the emission schedule.
+                int64_t nVoteMint = 0;
+                std::string strMintError;
+                if (!GetPrivacyVNextNoteVoteMint(effects, nVoteMint, strMintError))
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 transaction %s: %s", nEpoch,
+                        txit->GetHash().ToString().substr(0, 20).c_str(),
+                        strMintError.c_str());
+                    return false;
+                }
+
                 // Track what the pool holds and refuse to let it go negative. Whatever a
                 // proof does inside the pool, no more value can leave it than entered, so a
                 // soundness failure is bounded by the deposits rather than the money supply.

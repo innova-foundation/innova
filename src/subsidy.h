@@ -49,6 +49,11 @@ int64_t SumFinalityReserve(int nBegin, int nEnd);
  *  rate, which is zero. */
 int64_t GetFinalityEpochBudget(int nSettlementEpoch);
 
+/** What one counted note vote may mint into its own reissue: the epoch budget
+ *  divided by the note-vote slot cap. A pure function of the epoch number, and
+ *  dividing by the cap (not turnout) keeps total mint within budget. */
+int64_t GetFinalityNoteVoteReward(int nSettlementEpoch);
+
 /** One block's reward at a height, for display surfaces. Derived from the
  *  consensus schedule and CBlockSubsidySplit; never restate the ladder or rates. */
 struct CBlockRewardSummary

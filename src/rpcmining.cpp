@@ -965,11 +965,17 @@ Value getblocktemplate(const Array& params, bool fHelp)
         std::vector<CFinalityVote> vTmplSettlementVotes;
         std::vector<CTxOut> vTmplSettlementLeg;
         std::string strTmplSettleError;
-        if (!GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
+        int64_t nTmplNoteVoteMint = 0;
+        bool fTmplMintLocalFailure = false;
+        if (!GetPrivacyVNextNoteVoteMintTotal(pindexPrev, nTmplSettlementEpoch,
+                                              nTmplNoteVoteMint, fTmplMintLocalFailure,
+                                              strTmplSettleError) ||
+            !GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
                                            vTmplSettlementVotes, &strTmplSettleError) ||
             !BuildFinalitySettlementOutputs(vTmplSettlementVotes,
                                             GetClampedFinalitySettlementBudget(
-                                                pindexPrev, nTmplSettlementEpoch),
+                                                pindexPrev, nTmplSettlementEpoch,
+                                                nTmplNoteVoteMint),
                                             vTmplSettlementLeg,
                                             nTmplFinalityReward, &strTmplSettleError))
             throw JSONRPCError(RPC_INTERNAL_ERROR,

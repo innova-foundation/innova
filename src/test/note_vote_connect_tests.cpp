@@ -30,8 +30,8 @@ extern bool fTestNet;
 namespace
 {
 
-// A note at the finality stake floor (100 INN), the note a vote spends.
-const uint64_t kVoteNote = 100ULL * 100000000ULL;
+// A note at the finality stake floor (500 INN), the note a vote spends.
+const uint64_t kVoteNote = 500ULL * 100000000ULL;
 
 // The post-DAG epoch the votes name. Its boundary is 1211 on regtest; E-1 ends at 1210.
 const int kEpoch = 5;

@@ -3,8 +3,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <limits>
+
 #include "../main.h"
 #include "../finality.h"
+#include "../finality_note.h"
 #include "../v5activation.h"
 
 extern bool fRegTest;
@@ -123,9 +126,11 @@ BOOST_AUTO_TEST_CASE(private_cert_paths_cannot_predate_their_committee)
     if (IsIV5NoteVoteConfigured())
         BOOST_CHECK(FORK_HEIGHT_IV5_NOTE_VOTE > FORK_HEIGHT_BOUNDARY_B);
 
-    // The floor is a plain constant rather than a fork-gated one, so it reads
-    // the same on both sides of the note height.
-    BOOST_CHECK_EQUAL(FINALITY_MIN_VOTE_WEIGHT, 100 * COIN);
+    // The vote-weight floor is keyed by height, not by the fork gate.
+    BOOST_CHECK_EQUAL(GetFinalityMinVoteWeight(0), 500 * COIN);
+    BOOST_CHECK_EQUAL(GetFinalityMinVoteWeight(FORK_HEIGHT_DAG), 500 * COIN);
+    BOOST_CHECK_EQUAL(GetFinalityMinVoteWeight(std::numeric_limits<int>::max()),
+                      500 * COIN);
 }
 
 // The per-epoch vote-set cap is Boundary-A gated and Boundary A is one epoch

@@ -1390,17 +1390,12 @@ bool CheckFinalitySettlementOutputs(const CBlock& block,
                                     int64_t& nTotalOut,
                                     std::string* pstrError = NULL);
 
-/** The settlement budget for epoch nSettlementEpoch, clamped to the issuance
- *  headroom left under the supply cap for the block extending pindexPrev.
- *
- *  THE one function both the producer and every validator call. It is what makes the
- *  settlement payable in every case: the clamp can only lower it, both sides lower it
- *  identically from the same parent, and the block's own subsidy is then computed
- *  against the headroom that remains. There is no state in which the required outputs
- *  exceed what the block is allowed to mint, so there is no height at which no valid
- *  block exists. */
+/** Settlement budget for nSettlementEpoch, clamped to the supply-cap headroom for the
+ *  block extending pindexPrev. Called by producer and validators alike. nNoteVoteMintTotal
+ *  (already minted by note votes) is subtracted before the clamp; it is required. */
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
-                                           int nSettlementEpoch);
+                                           int nSettlementEpoch,
+                                           int64_t nNoteVoteMintTotal);
 
 /** Structural check for the vote commitments a non-settlement block carries. Carrying a
  *  vote pays nothing, so this validates shape only (per-block cap, no duplicate

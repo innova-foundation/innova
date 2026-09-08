@@ -2180,11 +2180,20 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
 }
 
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
-                                           int nSettlementEpoch)
+                                           int nSettlementEpoch,
+                                           int64_t nNoteVoteMintTotal)
 {
-    const int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch);
+    int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch);
     if (nBudget <= 0)
         return 0;
+
+    // Subtract what the note lane already minted. ConnectBlock caps the window at the epoch's
+    // vote cap, so this cannot go negative on a connected chain; clamped anyway.
+    if (nNoteVoteMintTotal < 0)
+        return 0;
+    if (nNoteVoteMintTotal >= nBudget)
+        return 0;
+    nBudget -= nNoteVoteMintTotal;
 
     // Headroom is read from the parent before the subsidy. The settlement takes its share first
     // and the subsidy takes the rest, so both stay within the headroom.
@@ -5131,11 +5140,10 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
     if (vote.nullifier != expectedNullifier.GetHash())
         return reject("nullifier mismatch");
 
-    // A transparent vote states its weight in the clear, so the floor is a direct
-    // comparison. Gated on the note-vote fork because it retires votes that were valid
-    // before it, and both sides of the tally have to move at the same height.
+    // Transparent weight floor, gated on the note-vote fork. Read at the boundary the vote
+    // names, the same height a note vote's proof uses, so both lanes select the same rung.
     if (IsIV5NoteVoteActiveAtHeight(nEffectiveContextHeight) &&
-        vote.nVoteWeight < FINALITY_MIN_VOTE_WEIGHT)
+        vote.nVoteWeight < GetFinalityMinVoteWeight(vote.nHeight))
         return reject("vote weight is below the minimum vote weight");
 
     int64_t nExpectedReward = GetFinalityVoteRewardAtHeight(vote.nVoteWeight, vote.nHeight);
@@ -10012,7 +10020,8 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
     if (!pwalletMain->SelectPrivacyVNextVoteNote(
             txdb, anchorState.vchVNextTreeState, anchorState.vchVNextRoot,
             anchorState.nVNextTreeSize, pindexBest ? pindexBest->nHeight : nEpochHeight,
-            FINALITY_MIN_VOTE_WEIGHT, setCast, note, vchWitnessRecord, strError))
+            GetFinalityMinVoteWeight(nEpochHeight), setCast, note, vchWitnessRecord,
+            strError))
     {
         if (fDebug)
             printf("ProduceNoteFinalityVote: no eligible note for epoch %d: %s\n",

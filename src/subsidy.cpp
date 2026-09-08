@@ -89,6 +89,16 @@ int64_t GetFinalityEpochBudget(int nSettlementEpoch)
     return SumFinalityReserve(nAccrualBegin, nAccrualEnd);
 }
 
+int64_t GetFinalityNoteVoteReward(int nSettlementEpoch)
+{
+    const int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch);
+    if (nBudget <= 0)
+        return 0;
+    // Divide by the ConnectBlock cap, not the turnout, so votes * reward <= budget at any
+    // turnout and the amount is known before a vote is proved.
+    return nBudget / (int64_t)FINALITY_MAX_EPOCH_NOTE_VOTES;
+}
+
 int64_t CBlockSubsidySplit::CollateralnodeShareOfBase(int64_t nBase)
 {
     if (nBase <= 0)

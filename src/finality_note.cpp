@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <set>
 #include <utility>
@@ -366,7 +367,26 @@ uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote)
     return ss.GetHash();
 }
 
+// Height-keyed floor ladder. The last rung ends at the height type's maximum; a new floor
+// sets that rung's last height and appends a rung.
+static const CFinalityVoteWeightFloorRung vFinalityVoteWeightFloor[] = {
+    { std::numeric_limits<int>::max(), 500 * COIN },
+};
+
+int64_t GetFinalityMinVoteWeight(int nHeight)
+{
+    // A negative height is no chain position at all; answer with the rung a genesis-side
+    // caller would get rather than reading past the table.
+    const int nKey = (nHeight < 0) ? 0 : nHeight;
+    for (size_t i = 0; i < ARRAYLEN(vFinalityVoteWeightFloor); ++i)
+        if (nKey <= vFinalityVoteWeightFloor[i].nHeightLast)
+            return vFinalityVoteWeightFloor[i].nMinWeight;
+    // Unreachable while the last rung is open-ended; fails closed at the highest floor.
+    return vFinalityVoteWeightFloor[ARRAYLEN(vFinalityVoteWeightFloor) - 1].nMinWeight;
+}
+
 bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
+                                    int nHeight,
                                     PrivacyVNextDigest& pointOut,
                                     std::string* pstrError)
 {
@@ -376,7 +396,7 @@ bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
     vTerms[0].point = cTilde;
     vTerms[1].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
     vTerms[1].scalar = Ed25519ScalarToDigest(
-        Ed25519ScalarNeg(Ed25519ScalarFromInt64(FINALITY_MIN_VOTE_WEIGHT)));
+        Ed25519ScalarNeg(Ed25519ScalarFromInt64(GetFinalityMinVoteWeight(nHeight))));
 
     std::string error;
     if (!CombinePrivacyVNextPoints(vTerms, pointOut, error))
@@ -388,13 +408,15 @@ bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
 }
 
 bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
+                                   int nHeight,
                                    const uint256& maskTilde,
                                    const PrivacyVNextDigest& entropy,
                                    std::vector<unsigned char>& vchProofOut,
                                    std::string* pstrError)
 {
     vchProofOut.clear();
-    if (nAmount < FINALITY_MIN_VOTE_WEIGHT || nAmount > MAX_MONEY)
+    const int64_t nFloor = GetFinalityMinVoteWeight(nHeight);
+    if (nAmount < nFloor || nAmount > MAX_MONEY)
     {
         Fail(pstrError, "note vote weight is outside the range the floor allows");
         return false;
@@ -402,7 +424,7 @@ bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
 
     PrivacyVNextDigest commitment = ZeroDigest();
     std::string error;
-    if (!ProvePrivacyVNextRange((uint64_t)(nAmount - FINALITY_MIN_VOTE_WEIGHT),
+    if (!ProvePrivacyVNextRange((uint64_t)(nAmount - nFloor),
                                 Ed25519ScalarToDigest(maskTilde), entropy, commitment,
                                 vchProofOut, error))
     {
@@ -426,7 +448,7 @@ bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
         return false;
     }
     PrivacyVNextDigest expected = ZeroDigest();
-    if (!DeriveNoteVoteWeightFloorPoint(cTilde, expected, pstrError))
+    if (!DeriveNoteVoteWeightFloorPoint(cTilde, nHeight, expected, pstrError))
     {
         vchProofOut.clear();
         return false;
@@ -455,8 +477,10 @@ bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote, std::string* p
         Fail(pstrError, "note vote membership instance carries no input tuple");
         return false;
     }
+    // The vote's own height, which CheckNoteVote has already pinned to the epoch boundary
+    // block it names, so the statement checked here is the one the prover made.
     PrivacyVNextDigest floorPoint = ZeroDigest();
-    if (!DeriveNoteVoteWeightFloorPoint(cTilde, floorPoint, pstrError))
+    if (!DeriveNoteVoteWeightFloorPoint(cTilde, vote.nHeight, floorPoint, pstrError))
         return false;
 
     std::string error;
@@ -523,7 +547,7 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
     }
     // Below the floor there is no weight-floor proof to make: the shifted point's
     // H-coefficient is negative and opens to nothing in range.
-    if (ctx.nAmount < FINALITY_MIN_VOTE_WEIGHT || ctx.nAmount > MAX_MONEY)
+    if (ctx.nAmount < GetFinalityMinVoteWeight(ctx.nHeight) || ctx.nAmount > MAX_MONEY)
     {
         Fail(pstrError, "note vote weight is outside the range a vote may carry");
         return false;
@@ -578,7 +602,8 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
             Fail(pstrError, "note vote could not draw proving entropy");
         else
         {
-            fOk = BuildNoteVoteWeightFloorProof(ctx.nAmount, maskTilde, floorEntropy,
+            fOk = BuildNoteVoteWeightFloorProof(ctx.nAmount, ctx.nHeight, maskTilde,
+                                                floorEntropy,
                                                 voteOut.vchWeightFloorProof, pstrError);
             OPENSSL_cleanse(floorEntropy.data(), floorEntropy.size());
         }

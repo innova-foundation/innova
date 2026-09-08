@@ -12575,12 +12575,18 @@ bool CWallet::CreatePrivacyVNextNoteVote(
     PrivacyVNextDigest boundaryHash;
     std::memcpy(boundaryHash.data(), hashBoundaryBlock.begin(), 32);
 
+    // The epoch's entitlement, from the consensus function ConnectBlock and the epoch
+    // build pin the declared balance against. Any other figure builds a vote no node
+    // will connect, so the wallet reads it rather than choosing it.
+    const int64_t nVoteReward =
+        GetFinalityNoteVoteReward(GetEpochForHeight(nBoundaryHeight));
+
     std::vector<unsigned char> vchPayload;
     PrivacyVNextDigest keyImage;
     const bool fBuilt = BuildPrivacyVNextNoteVotePayload(
         nNetwork, genesis, reissueKeys.outgoingViewSecret, finalizedRoot,
         anchor.nVNextTreeSize, transparentBinding, boundaryHash,
-        (uint32_t)nBoundaryHeight, spend, reissueTo, vchPayload, keyImage,
+        (uint32_t)nBoundaryHeight, nVoteReward, spend, reissueTo, vchPayload, keyImage,
         strErrorOut, &anchor.vchVNextParameterDigest);
     if (!fBuilt)
         return false;
@@ -12727,8 +12733,8 @@ bool ProducePrivacyVNextNoteVote(CTxDB& txdb,
     CWalletTx wtx;
     if (!pwalletMain->CreatePrivacyVNextNoteVote(
             txdb, anchor, pEpochBlock->GetBlockHash(), nBoundaryHeight,
-            nIncludingHeight - 1, FINALITY_MIN_VOTE_WEIGHT, true /* commit */, wtx,
-            keyImageOut, strErrorOut))
+            nIncludingHeight - 1, GetFinalityMinVoteWeight(nBoundaryHeight),
+            true /* commit */, wtx, keyImageOut, strErrorOut))
         return false;
 
     printf("ProducePrivacyVNextNoteVote: epoch=%d boundary=%d height=%d txid=%s\n",

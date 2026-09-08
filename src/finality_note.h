@@ -27,18 +27,16 @@ static const size_t FINALITY_NOTE_MAX_MEMBERSHIP_BYTES = 32768;
 static const size_t FINALITY_NOTE_MAX_RANGE_PROOF_BYTES = 4096;
 
 
-/** Consensus floor on the weight one finality vote may carry.
- *
- *  The tally denominator is cast weight, and an epoch's canonical vote set is capped, so
- *  without a floor an attacker fills every slot with dust, crowds out the honest heavy
- *  votes, and owns ~100% of the weight the tiers compare against. The floor prices that
- *  capture: filling the epoch cap costs at least
- *  FINALITY_MAX_EPOCH_NOTE_VOTES * FINALITY_MIN_VOTE_WEIGHT of real stake.
- *
- *  A transparent vote proves it in the clear; a note vote proves C~ - W_min*H opens to a
- *  non-negative amount, leaking the single bit "at least the floor". Review this against
- *  circulating supply before scheduling the activation on a public network. */
-static const int64_t FINALITY_MIN_VOTE_WEIGHT = 100 * COIN;
+/** Height-keyed consensus floor on one finality vote's weight; keeps a capped vote set
+ *  from filling with dust. W_min is in the proof statement, so prover and verifier must
+ *  select the same rung: the first whose last height is >= nHeight. */
+struct CFinalityVoteWeightFloorRung
+{
+    int nHeightLast;        // the last height this floor is in force at
+    int64_t nMinWeight;
+};
+
+int64_t GetFinalityMinVoteWeight(int nHeight);
 
 // Fixed layout of a one-input membership verification request, which is where a vote's
 // O~ and C~ live. Reading them from the proof is what stops a vote from naming one pair
@@ -129,19 +127,23 @@ public:
  *  otherwise be replayed under has to reach this, because nothing else binds them. */
 uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote);
 
-/** Recompute C~ - W_min*H, the point the weight-floor proof must be over.
+/** Recompute C~ - W_min*H, the point the weight-floor proof must be over, at the floor
+ *  in force at nHeight.
  *
  *  The commitment comes from the vote's own membership instance, which its sigma binds.
  *  A supplied point would let any weight claim any floor, so this is the only source the
- *  verifier ever reads. */
+ *  verifier ever reads. The height is the vote's own, so the statement a verifier checks
+ *  is the statement the prover made. */
 bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
+                                    int nHeight,
                                     PrivacyVNextDigest& pointOut,
                                     std::string* pstrError = NULL);
 
-/** Prove the vote's note weighs at least the floor. `maskTilde` opens C~ with `nAmount`.
- *  Fails for an amount under the floor: the shifted point's H-coefficient is negative and
- *  has no in-range opening. */
+/** Prove the vote's note weighs at least the floor in force at nHeight. `maskTilde` opens
+ *  C~ with `nAmount`. Fails for an amount under that floor: the shifted point's
+ *  H-coefficient is negative and has no in-range opening. */
 bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
+                                   int nHeight,
                                    const uint256& maskTilde,
                                    const PrivacyVNextDigest& entropy,
                                    std::vector<unsigned char>& vchProofOut,

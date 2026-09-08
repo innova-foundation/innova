@@ -1336,14 +1336,36 @@ bool CheckPrivacyVNextParameterDigest(
 /*  pnDeclaredFeeOut/pnDeclaredBalanceOut return the payload's own cleartext fields
  *  from the same extraction the flow is derived from. Post-fork the coinbase note
  *  and the transparent coinbase allowance are both keyed on the declared fee, so
- *  taking it from a second extraction would be a second derivation of one value. */
+ *  taking it from a second extraction would be a second derivation of one value.
+ *
+ *  pnNoteVoteMintOut is how much of the absorbed value is a note finality vote's mint,
+ *  which no transparent input paid for. Every fee accumulator has to credit it or the
+ *  block's producer is charged for the epoch's own reserve; the value is pinned to the
+ *  epoch's entitlement here, so a caller that ignores it still cannot be over-claimed at. */
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nAbsorbedOut,
                                     int64_t& nReleasedOut,
                                     bool& fLocalFailure,
                                     std::string& strError,
                                     int64_t* pnDeclaredFeeOut = NULL,
-                                    int64_t* pnDeclaredBalanceOut = NULL);
+                                    int64_t* pnDeclaredBalanceOut = NULL,
+                                    int64_t* pnNoteVoteMintOut = NULL);
+
+/** What a payload may mint into the pool with no transparent side. Zero except for a
+ *  note finality vote (op 10), where it is GetFinalityNoteVoteReward of the vote's epoch
+ *  and must equal the declared transparent value balance exactly. */
+bool GetPrivacyVNextNoteVoteMint(const PrivacyVNextStateEffects& effects,
+                                 int64_t& nMintOut,
+                                 std::string& strError);
+
+/** Note votes connected in the inclusion window times the epoch entitlement, withheld from
+ *  the transparent budget. pindexWindowTop is the settlement block's parent.
+ *  fLocalFailure: a window block this node cannot read. */
+bool GetPrivacyVNextNoteVoteMintTotal(const CBlockIndex* pindexWindowTop,
+                                      int nSettlementEpoch,
+                                      int64_t& nTotalOut,
+                                      bool& fLocalFailure,
+                                      std::string& strError);
 
 /** Fee-exempt shapes: an IV5 attestation (no transparent side or pool flow) and a note
  *  finality vote (op 10, fee pinned to zero). Callers must still require a zero fee. */
