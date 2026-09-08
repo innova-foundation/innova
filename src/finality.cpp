@@ -56,6 +56,13 @@ bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
     return CBitcoinAddress(dest).GetKeyID(keyIDOut);
 }
 
+int GetFinalizedEpochForHeight(int nFinalizedHeight)
+{
+    if (nFinalizedHeight < 0 || nFinalizedHeight == std::numeric_limits<int>::max())
+        return -1;
+    return GetEpochForHeight(nFinalizedHeight + 1) - 1;
+}
+
 /** Resolve the finalized epoch anchor. Nothing finalized yet is a deterministic premature
  * verdict; only an unrecoverable expected record is a transient local failure. */
 // fRequireCurveRoot: an IV5-root caller must not skip epochs with an empty legacy curve root.
@@ -87,9 +94,11 @@ static FinalityResult ResolveFinalityAnchorForContext(
                       nContextHeight, stateOut);
         if (!fHaveState)
             return FINALITY_RESULT_LOCAL_STATE;
-        if (stateOut.nEpoch == GetEpochForHeight(nFinalizedHeight))
+        // The finalized epoch is the last one ending at or below the finalized boundary.
+        const int nFinalizedEpoch = GetFinalizedEpochForHeight(nFinalizedHeight);
+        if (stateOut.nEpoch == nFinalizedEpoch)
         {
-            if (stateOut.nFinalizedHeightAsOf < nFinalizedHeight)
+            if (stateOut.nHeightEnd > nFinalizedHeight)
                 return FINALITY_RESULT_LOCAL_STATE;
             return FINALITY_RESULT_OK;
         }
@@ -97,7 +106,7 @@ static FinalityResult ResolveFinalityAnchorForContext(
         // epoch deep enough to stand without finality, so this is the answer, not a
         // mismatch. Pinning to the finalized epoch would stall voting while finality lags.
         if (!fAllowDeepUnfinalizedAnchor ||
-            stateOut.nEpoch < GetEpochForHeight(nFinalizedHeight) ||
+            stateOut.nEpoch < nFinalizedEpoch ||
             stateOut.nHeightEnd <= 0 ||
             nContextHeight - stateOut.nHeightEnd <
                 EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH)
@@ -108,7 +117,7 @@ static FinalityResult ResolveFinalityAnchorForContext(
     if (nLiveFinalizedHeight <= 0)
         return FINALITY_RESULT_INVALID;
     if (!g_dagManager.GetLastFinalizedEpochState(stateOut, fRequireCurveRoot) ||
-        stateOut.nEpoch != GetEpochForHeight(nLiveFinalizedHeight))
+        stateOut.nEpoch != GetFinalizedEpochForHeight(nLiveFinalizedHeight))
         return FINALITY_RESULT_LOCAL_STATE;
     return FINALITY_RESULT_OK;
 }

@@ -46,6 +46,29 @@ uint256 CEpochState::GetDigest() const
     return ss.GetHash();
 }
 
+// The block at nHeight on pFrom's pprev chain, or NULL when the chain does not reach it.
+static const CBlockIndex* PprevBlockAt(const CBlockIndex* pFrom, int nHeight)
+{
+    const CBlockIndex* p = pFrom;
+    while (p && p->nHeight > nHeight)
+        p = p->pprev;
+    return (p && p->nHeight == nHeight && p->phashBlock) ? p : NULL;
+}
+
+
+bool EpochStateIsFinalizedAsOf(const CEpochState& state, int nFinalizedHeight)
+{
+    return state.nHeightEnd > 0 && state.nHeightEnd <= nFinalizedHeight;
+}
+
+bool EpochStateMayAnchorAt(const CEpochState& state, int nFinalizedHeight,
+                           int nContextHeight)
+{
+    if (EpochStateIsFinalizedAsOf(state, nFinalizedHeight))
+        return true;
+    return state.nHeightEnd > 0 &&
+           nContextHeight - state.nHeightEnd >= EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH;
+}
 
 // ---------------------------------------------------------------------------
 // DAG Parent Commitment: coinbase OP_RETURN encoding
@@ -1573,7 +1596,7 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
             return false;
         }
     }
-    for (std::map<int, CEpochState>::const_iterator it = mapStates.begin();
+    for (std::map<int, CEpochState>::iterator it = mapStates.begin();
          it != mapStates.end(); ++it)
     {
         const int nEpoch = it->first;
@@ -1609,6 +1632,34 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
             printf("LoadEpochStates: FATAL legacy record at epoch %d under schema %d; "
                    "-reindex/resync required\n", nEpoch, nSchema);
             return false;
+        }
+        if (nSchema >= EPOCHSTATE_SCHEMA_V5 && state.nFinalizedHeightAsOf != 0 &&
+            !IsEpochBoundaryHeight(state.nFinalizedHeightAsOf))
+        {
+            printf("LoadEpochStates: FATAL finalized height %d at epoch %d is not an epoch "
+                   "boundary under schema %d; -reindex/resync required\n",
+                   state.nFinalizedHeightAsOf, nEpoch, nSchema);
+            return false;
+        }
+        // A record written below Boundary B does not serialize its finalized anchor. The
+        // reorg guard needs the attested block, so re-derive it exactly as the builder
+        // did: the block at the finalized height on the boundary block's pprev chain.
+        if (state.nFinalizedHeightAsOf != 0 && state.hashVNextFinalizedAnchor == 0)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator miBoundary =
+                mapBlockIndex.find(state.hashBoundaryBlock);
+            const CBlockIndex* pFinalized =
+                miBoundary != mapBlockIndex.end()
+                    ? PprevBlockAt(miBoundary->second, state.nFinalizedHeightAsOf)
+                    : NULL;
+            if (!pFinalized)
+            {
+                printf("LoadEpochStates: FATAL finalized height %d at epoch %d is not on the "
+                       "boundary block's chain; -reindex/resync required\n",
+                       state.nFinalizedHeightAsOf, nEpoch);
+                return false;
+            }
+            it->second.hashVNextFinalizedAnchor = pFinalized->GetBlockHash();
         }
         if (fStrictV3Record &&
             (state.nBlockCount < 0 || (size_t)state.nBlockCount != state.vBlockHashes.size()))
@@ -2489,7 +2540,7 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
     // votes / tally certificate plus the prior epoch's persisted state -- NOT the
     // node-local live finalization streak. This guarantees every node computes the
     // same tier and the same monotonic finalized height, so private-vote / tally-cert
-    // / FCMP-spend validation (which anchors to GetEpochForHeight(nFinalizedHeight))
+    // / FCMP-spend validation (which anchors to GetFinalizedEpochForHeight(nFinalizedHeight))
     // is identical on all nodes and ConnectBlock stays deterministic.
     {
         // Tier from the epoch's own-block best cert, not the live cert map, so a late cert cannot make
@@ -2510,12 +2561,45 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
         state.nConsecutiveHardCount = (nDetTier >= FINALITY_HARD) ? (nPrevHardCount + 1) : 0;
 
         // Finalized height is monotonic; advance it only when this epoch completes a
-        // run of FINALITY_CONFIRMATION_EPOCHS consecutive HARD epochs.
+        // run of FINALITY_CONFIRMATION_EPOCHS consecutive HARD epochs, and only to the voted boundary block.
         state.nFinalizedHeightAsOf = nPrevFinalizedHeight;
-        if (state.nConsecutiveHardCount >= FINALITY_CONFIRMATION_EPOCHS &&
-            state.nHeightEnd > state.nFinalizedHeightAsOf)
-            state.nFinalizedHeightAsOf = state.nHeightEnd;
+        if (state.nConsecutiveHardCount >= FINALITY_CONFIRMATION_EPOCHS)
+        {
+            if (nWinnerHeight != state.nHeightStart)
+            {
+                strError = strprintf("epoch %d finality winner at height %d is not the "
+                                     "epoch boundary %d",
+                                     nEpoch, nWinnerHeight, state.nHeightStart);
+                return false;
+            }
+            const CBlockIndex* pOpening = PprevBlockAt(pBoundary, state.nHeightStart);
+            if (!pOpening || pOpening->GetBlockHash() != hashWinner)
+            {
+                strError = strprintf("epoch %d finality winner %s is not the epoch's "
+                                     "boundary block at height %d",
+                                     nEpoch, hashWinner.ToString().substr(0, 20).c_str(),
+                                     state.nHeightStart);
+                return false;
+            }
+            if (state.nHeightStart > state.nFinalizedHeightAsOf)
+                state.nFinalizedHeightAsOf = state.nHeightStart;
+        }
         state.fFinalized = (state.nHeightEnd > 0 && state.nFinalizedHeightAsOf >= state.nHeightEnd);
+    }
+
+    // The attested block at the finalized height, read off the boundary's pprev chain
+    // for the reorg guard. Records this builder writes do not serialize it; LoadEpochStates
+    // re-derives it the same way.
+    if (state.nFinalizedHeightAsOf != 0)
+    {
+        const CBlockIndex* pFinalized = PprevBlockAt(pBoundary, state.nFinalizedHeightAsOf);
+        if (!pFinalized)
+        {
+            strError = strprintf("V2 epoch %d finalized anchor at height %d is unavailable "
+                                 "from the epoch boundary", nEpoch, state.nFinalizedHeightAsOf);
+            return false;
+        }
+        state.hashVNextFinalizedAnchor = pFinalized->GetBlockHash();
     }
 
     if (fHaveBestCert)
@@ -3128,15 +3212,20 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
     state.hashVoteSetRoot = voteSetHasher.GetHash();
 
     int nDetTier = FINALITY_NONE;
+    uint256 hashWinner = 0;
+    int nWinnerHeight = 0;
     if (fHaveBestCert)
     {
         nDetTier = bestCert.nTier;
+        hashWinner = bestCert.hashBlock;
+        nWinnerHeight = bestCert.nHeight;
         state.hashFinalityCertificate = bestCert.GetHash();
     }
     else
     {
         int64_t nEpochVoteWeight = 0;
         std::map<uint256, int64_t> mapBlockVoteWeight;
+        std::map<uint256, int> mapBlockHeight;
         std::set<CKeyID> setVoters;
         for (std::map<uint256, CFinalityVote>::const_iterator it = mapEpochVotes.begin();
              it != mapEpochVotes.end(); ++it)
@@ -3158,10 +3247,10 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 nBlockWeight += vote.nVoteWeight;
             else
                 nBlockWeight = MAX_MONEY;
+            mapBlockHeight[vote.hashBlock] = vote.nHeight;
         }
         if (nEpochVoteWeight > 0 && (int)setVoters.size() >= FINALITY_MIN_VOTERS)
         {
-            uint256 hashWinner = 0;
             int64_t nWinnerWeight = 0;
             for (std::map<uint256, int64_t>::const_iterator it = mapBlockVoteWeight.begin();
                  it != mapBlockVoteWeight.end(); ++it)
@@ -3179,6 +3268,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 nDetTier = FINALITY_SOFT;
             else if (nWinnerWeight * 3 >= nEpochVoteWeight)
                 nDetTier = FINALITY_TENTATIVE;
+            nWinnerHeight = mapBlockHeight.count(hashWinner) ? mapBlockHeight[hashWinner] : 0;
         }
     }
     state.nFinalityTier = nDetTier;
@@ -3188,30 +3278,53 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             ? prevState.nConsecutiveHardCount : 0;
     state.nConsecutiveHardCount =
         (nDetTier >= FINALITY_HARD) ? nPrevHardCount + 1 : 0;
+    // The finalized height advances to the block the votes named: the epoch boundary,
+    // the only block a vote or certificate may name, and it must be the boundary block
+    // on this epoch's own chain. The epoch's end is attested by nothing.
     state.nFinalizedHeightAsOf =
         fHavePredecessor ? prevState.nFinalizedHeightAsOf : 0;
-    if (state.nConsecutiveHardCount >= FINALITY_CONFIRMATION_EPOCHS &&
-        state.nHeightEnd > state.nFinalizedHeightAsOf)
-        state.nFinalizedHeightAsOf = state.nHeightEnd;
+    if (state.nConsecutiveHardCount >= FINALITY_CONFIRMATION_EPOCHS)
+    {
+        if (nWinnerHeight != state.nHeightStart)
+        {
+            strError = strprintf("epoch %d finality winner at height %d is not the "
+                                 "epoch boundary %d",
+                                 nEpoch, nWinnerHeight, state.nHeightStart);
+            return false;
+        }
+        const CBlockIndex* pOpening = PprevBlockAt(pBoundary, state.nHeightStart);
+        if (!pOpening || pOpening->GetBlockHash() != hashWinner)
+        {
+            strError = strprintf("epoch %d finality winner %s is not the epoch's boundary "
+                                 "block at height %d",
+                                 nEpoch, hashWinner.ToString().substr(0, 20).c_str(),
+                                 state.nHeightStart);
+            return false;
+        }
+        if (state.nHeightStart > state.nFinalizedHeightAsOf)
+            state.nFinalizedHeightAsOf = state.nHeightStart;
+    }
     state.fFinalized = state.nHeightEnd > 0 &&
                        state.nFinalizedHeightAsOf >= state.nHeightEnd;
     state.nTxCount = -1;
 
-    if (fBuildVNext)
+    // The attested block at the finalized height on the boundary's pprev chain (reorg guard anchor).
+    // Below Boundary B it is not serialized and LoadEpochStates re-derives it.
+    if (fBuildVNext || state.nFinalizedHeightAsOf != 0)
     {
-        state.nVNextFinalizedHeight = state.nFinalizedHeightAsOf;
-        const CBlockIndex* pFinalized = pBoundary;
-        while (pFinalized &&
-               pFinalized->nHeight > state.nVNextFinalizedHeight)
-            pFinalized = pFinalized->pprev;
-        if (!pFinalized ||
-            pFinalized->nHeight != state.nVNextFinalizedHeight ||
-            !pFinalized->phashBlock)
+        const CBlockIndex* pFinalized = PprevBlockAt(pBoundary, state.nFinalizedHeightAsOf);
+        if (!pFinalized)
         {
-            strError = "IV5 finalized anchor is unavailable from epoch boundary";
+            strError = strprintf("epoch %d finalized anchor at height %d is unavailable from "
+                                 "the epoch boundary", nEpoch, state.nFinalizedHeightAsOf);
             return false;
         }
         state.hashVNextFinalizedAnchor = pFinalized->GetBlockHash();
+    }
+
+    if (fBuildVNext)
+    {
+        state.nVNextFinalizedHeight = state.nFinalizedHeightAsOf;
 
         CHashWriter activeSetHasher(SER_GETHASH, 0);
         activeSetHasher << std::string(
@@ -3557,7 +3670,10 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(int nBlockHeight, CEpochState& stat
     if (!TryGetDeterministicFinalizedHeight(GetEpochForHeight(nBlockHeight) - 1,
                                             nFinHeight))
         return false;
-    int nFinEpoch = GetEpochForHeight(nFinHeight);
+    // Nothing finalized reads as epoch 0, as it always has on this legacy path.
+    const int nFinEpoch = (nFinHeight > 0) ? GetFinalizedEpochForHeight(nFinHeight) : 0;
+    if (nFinEpoch < 0)
+        return false;
     std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nFinEpoch);
     if (it == mapEpochState.end())
         return false;
@@ -3585,9 +3701,12 @@ static bool EpochStateReadIsLocalFailure(CTxDB& txdb, int nEpoch)
 
 bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                              CEpochState& stateOut,
-                                             bool& fLocalFailureOut) const
+                                             bool& fLocalFailureOut,
+                                             int* pnFinalizedHeightOut) const
 {
     fLocalFailureOut = false;
+    if (pnFinalizedHeightOut)
+        *pnFinalizedHeightOut = 0;
     const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
     int nFinHeight = 0;
     if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
@@ -3595,16 +3714,15 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch);
         return false;
     }
+    if (pnFinalizedHeightOut)
+        *pnFinalizedHeightOut = nFinHeight;
 
-    // Before anything is finalized the "finalized epoch" is epoch 0, which has no record
-    // on a chain whose epochs start at the DAG fork; requiring it rejected every IV5
-    // transaction until the first finalization, on every node alike -- the one window
-    // the depth anchor below exists for. With nothing finalized the search below is
-    // the whole answer.
-    const int nFinEpoch = (nFinHeight > 0) ? GetEpochForHeight(nFinHeight) : -1;
+    // With nothing finalized the depth search below is the whole answer; otherwise the finalized
+    // epoch is the last one ending at or below the finalized boundary.
+    const int nFinEpoch = (nFinHeight > 0) ? GetFinalizedEpochForHeight(nFinHeight) : -1;
     CEpochState state;
     bool fHaveAnchor = false;
-    if (nFinHeight > 0)
+    if (nFinEpoch >= 0)
     {
         if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
         {
@@ -3711,7 +3829,8 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         return false;
     }
 
-    const int nFinEpoch = GetEpochForHeight(nFinHeight) - nEpochsBack;
+    const int nFinEpoch =
+        ((nFinHeight > 0) ? GetFinalizedEpochForHeight(nFinHeight) : 0) - nEpochsBack;
     if (nFinEpoch < 0)
         return false;
     CEpochState state;
@@ -3805,10 +3924,104 @@ bool CDAGManager::ValidateEpochStateTip(const CBlockIndex* pBest,
     return true;
 }
 
+bool CDAGManager::EpochStatesNameOnlyBoundaries(int& nEpochOut, int& nHeightOut) const
+{
+    LOCK(cs_dag);
+    nEpochOut = -1;
+    nHeightOut = 0;
+    for (std::map<int, CEpochState>::const_iterator it = mapEpochState.begin();
+         it != mapEpochState.end(); ++it)
+    {
+        const int nHeight = it->second.nFinalizedHeightAsOf;
+        if (nHeight != 0 && !IsEpochBoundaryHeight(nHeight))
+        {
+            nEpochOut = it->first;
+            nHeightOut = nHeight;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CDAGManager::CheckEpochStateSchemaAtTip(bool fSchemaRead, int nSchema,
+                                             const CBlockIndex* pBest,
+                                             bool fAcceptEpochState,
+                                             bool& fStampOut,
+                                             std::string& strError) const
+{
+    fStampOut = false;
+    strError.clear();
+    if (!pBest || pBest->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+        return true;
+
+    const int nRequired = EPOCHSTATE_SCHEMA_V5;
+    const int nMarker = nSchema;
+    const int nLoaded = (int)GetLoadedEpochStateCount();
+
+    // A record naming a non-boundary finalized height was built under the end-height
+    // rule whatever the marker says, and differs from what a resync computes.
+    int nBadEpoch = -1;
+    int nBadHeight = 0;
+    if (!EpochStatesNameOnlyBoundaries(nBadEpoch, nBadHeight))
+    {
+        strError = strprintf(
+            "Epoch-state records were written under schema marker %d, and epoch %d names "
+            "finalized height %d, which is not an epoch boundary. Schema %d, required at "
+            "height %d, places the finalized height at the attested epoch boundary, so these "
+            "records differ from a resynced node's and continuing could split this node from "
+            "the network. Refusing to start. Recover by removing the chain database (keep "
+            "wallet.dat) and resyncing; -acceptepochstate cannot accept records that name a "
+            "non-boundary finalized height.",
+            nMarker, nBadEpoch, nBadHeight, nRequired, pBest->nHeight);
+        return false;
+    }
+
+    bool fStamp = false;
+    if (fSchemaRead &&
+        (nSchema == EPOCHSTATE_SCHEMA_V3 || nSchema == EPOCHSTATE_SCHEMA_V4))
+    {
+        if (!fAcceptEpochState)
+        {
+            strError = strprintf(
+                "Epoch-state records (%d) were written under schema %d, before the finalized "
+                "height moved to the attested epoch boundary; schema %d is required at height "
+                "%d. Every record names a boundary or nothing, so they match what a resync "
+                "computes. Refusing to start. Recover by removing the chain database (keep "
+                "wallet.dat) and resyncing, or restart with -acceptepochstate to stamp these "
+                "records as schema %d.",
+                nLoaded, nMarker, nRequired, pBest->nHeight, nRequired);
+            return false;
+        }
+        fStamp = true;
+        nSchema = nRequired;
+    }
+
+    std::string strTipError;
+    const bool fTipValid = fSchemaRead && nSchema == nRequired && nLoaded > 0 &&
+                           ValidateEpochStateTip(pBest, strTipError);
+    if (!fTipValid)
+    {
+        if (strTipError.empty())
+            strTipError = "schema marker or epoch-state set is missing";
+        strError = strprintf(
+            "Epoch-state schema %d is required at height %d, but the chain database has "
+            "schema marker %d and %d loaded epoch records (%s). This indicates an old or torn "
+            "epoch-state database; continuing could split consensus. Resync "
+            "or remove the chain database (preserve wallet.dat) and resync.",
+            nRequired, pBest->nHeight, nMarker, nLoaded, strTipError.c_str());
+        return false;
+    }
+    fStampOut = fStamp;
+    return true;
+}
+
 bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut,
                                              bool fRequireCurveRoot) const
 {
-    int nFinalizedEpoch = GetEpochForHeight(g_finalityTracker.GetFinalizedHeight());
+    const int nLiveFinalized = g_finalityTracker.GetFinalizedHeight();
+    // Nothing finalized starts the scan at epoch 0 as before.
+    const int nFinalizedEpoch =
+        (nLiveFinalized > 0) ? GetFinalizedEpochForHeight(nLiveFinalized) : 0;
 
     LOCK(cs_dag);
 

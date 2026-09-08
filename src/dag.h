@@ -136,6 +136,10 @@ static const int EPOCHSTATE_SCHEMA_V3 = 3;
 // Boundary B appends independently versioned IV5 accumulator/finality fields.
 // Existing V3 records remain byte-identical and continue to deserialize as v1.
 static const int EPOCHSTATE_SCHEMA_V4 = 4;
+// V5 records carry the finalized height as the attested epoch boundary; V3/V4 records
+// carried the epoch end. The layout is unchanged, so only this marker tells them apart,
+// and LoadEpochStates requires every V5 record to name a boundary or nothing.
+static const int EPOCHSTATE_SCHEMA_V5 = 5;
 // The maximum committee this record can carry, so a corrupt or hostile record cannot
 // make deserialization allocate without bound.
 static const size_t EPOCHSTATE_MAX_COMMITTEE_SEATS = 64;
@@ -174,10 +178,12 @@ struct CEpochState
     int nTxCount;
     int nFinalityTier;
     int nConsecutiveHardCount;
+    // True when every block of this epoch is at or below nFinalizedHeightAsOf. A record
+    // cannot say this of itself; consumers derive it via EpochStateIsFinalizedAsOf.
     bool fFinalized;
-    // Deterministic finalized height as of this epoch (monotonic running max). A pure
-    // function of the chain's connected per-epoch tiers, identical on every node, so
-    // private-vote / tally-cert / FCMP-spend validation anchors deterministically.
+    // Deterministic finalized height as of this epoch (monotonic running max): the epoch
+    // boundary the votes named, never the epoch's end. A pure function of the chain's
+    // connected per-epoch tiers, identical on every node.
     int nFinalizedHeightAsOf;
     // Record serialization version (trailing field; legacy records read back as 0). Not part of the
     // consensus root — purely a format tag so a future field-add can be detected across upgrades.
@@ -192,6 +198,9 @@ struct CEpochState
     uint64_t nVNextNullifierCount;
     std::vector<uint256> vVNextEpochNullifiers;
     std::vector<unsigned char> vchVNextParameterDigest;
+    // The block at nFinalizedHeightAsOf on the boundary block's pprev chain: the block
+    // the votes attested, which the reorg guard tests ancestry against. Serialized with
+    // the V4 fields; a record written below Boundary B re-derives it at load.
     uint256 hashVNextFinalizedAnchor;
     int nVNextFinalizedHeight;
     std::vector<unsigned int> vVNextActiveBlockTxCounts;
@@ -312,7 +321,23 @@ struct CEpochState
             }
         }
     )
+
+    /** The attested block at nFinalizedHeightAsOf; zero when nothing is finalized. An
+     *  IV5 record holds the genesis hash in hashVNextFinalizedAnchor at height zero. */
+    uint256 FinalizedAnchorHash() const
+    {
+        return nFinalizedHeightAsOf != 0 ? hashVNextFinalizedAnchor : uint256(0);
+    }
 };
+
+/** Whether every block of an epoch is at or below a finalized height. Derived from the
+ *  finalized height in force, never from the record's own flag. */
+bool EpochStateIsFinalizedAsOf(const CEpochState& state, int nFinalizedHeight);
+
+/** Whether an epoch may anchor an IV5 proof validated at nContextHeight: its root is
+ *  final as of nFinalizedHeight, or it is deep enough to stand without finality. */
+bool EpochStateMayAnchorAt(const CEpochState& state, int nFinalizedHeight,
+                           int nContextHeight);
 
 
 // ---------------------------------------------------------------------------
@@ -499,12 +524,12 @@ public:
     bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                     CEpochState& stateOut) const;
 
-    /** Same, reporting whether a failure was node-local. A record the chain has not
-     *  written yet is absent on every node and must stay a consensus outcome; a record
-     *  this node cannot read or decode is local and must not become one. */
+    /** Same, reporting whether a failure was node-local: an unwritten record is a consensus
+     *  outcome, an unreadable one is not. Optionally reports the resolved finalized height. */
     bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                     CEpochState& stateOut,
-                                    bool& fLocalFailureOut) const;
+                                    bool& fLocalFailureOut,
+                                    int* pnFinalizedHeightOut = NULL) const;
 
     /** The finalized epoch state `nEpochsBack` epochs before the one nBlockHeight resolves to.
      *  The epoch number is derived from the chain, not from node-local state, so the set of
@@ -515,6 +540,17 @@ public:
     /** Validate that V3 persistence ends at the exact completed epoch required by pBest and
      *  that both the migration-base and highest-required boundaries are on pBest's pprev chain. */
     bool ValidateEpochStateTip(const CBlockIndex* pBest, std::string& strError) const;
+
+    /** Whether every loaded record's finalized height is an epoch boundary or 0. On
+     *  failure reports the first offending epoch and the height it names. */
+    bool EpochStatesNameOnlyBoundaries(int& nEpochOut, int& nHeightOut) const;
+
+    /** Whether the loaded epoch-state set may run at pBest. Past the V3 fork the marker
+     *  must be EPOCHSTATE_SCHEMA_V5; V3/V4 is accepted only with fAcceptEpochState and
+     *  boundary-only records (fStampOut then requests the V5 marker). */
+    bool CheckEpochStateSchemaAtTip(bool fSchemaRead, int nSchema, const CBlockIndex* pBest,
+                                    bool fAcceptEpochState, bool& fStampOut,
+                                    std::string& strError) const;
 
     /** Get the number of in-memory DAG entries. */
     int GetDAGEntryCount() const;

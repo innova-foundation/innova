@@ -2696,12 +2696,8 @@ public:
     // (memory only) Number of transactions in the chain up to and including this block
     unsigned int nChainTx; // change to 64-bit type when necessary; won't happen before 2030
 
-    // (memory only) Deterministic finalized height as of this block's connected set.
-    // A pure function of the in-chain finality votes/certs up to this block (NOT the
-    // node-local live finalization tip). Private finality votes/certs and FCMP spends
-    // anchor to GetEpochForHeight(pprev->nFinalizedHeight) so producer and every
-    // validator compute the identical anchor -> ConnectBlock stays deterministic.
-    // Recomputed on connect and on load; never serialized.
+    // (memory only) Deterministic finalized height of this block's connected set, never the
+    // node-local tip. Recomputed on connect and load; never serialized.
     int nFinalizedHeight;
 
     unsigned int nFlags;  // ppcoin: block index flags

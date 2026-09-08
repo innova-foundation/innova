@@ -1,16 +1,10 @@
-// Verdicts that must not outlive this node's view.
-//
-// ConnectBlock's result is CONNECT_RESULT_INVALID unless a site says otherwise, and an
-// INVALID result is serialized as BLOCK_FAILED_VALID. Every deterministic rejection in
-// ConnectBlock is a DoS(...) return; a bare return comes from a clock or local read
-// condition, so a verdict that did not raise nDoS is downgraded to TRANSIENT on exit.
-// AcceptBlock refuses a child of a flagged parent, but the flag is this node's own,
-// so the relayer is not scored.
-//
-// Mines on the shared regtest fixture; linked last in TEST_OBJS.
+// Verdicts that must not outlive this node's view: a ConnectBlock rejection without nDoS
+// is TRANSIENT, and a child of a locally flagged parent does not score the relayer.
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -62,6 +56,8 @@ std::unique_ptr<CBlock> TemplateOnTip()
     std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
     BOOST_REQUIRE(pblock.get() != NULL);
     IncrementExtraNonce(pblock.get(), pindexPrev, nExtraNonce);
+    BOOST_REQUIRE_MESSAGE(pblock->hashPrevBlock == pindexPrev->GetBlockHash(),
+                          "the template does not build on the tip");
     return pblock;
 }
 
@@ -82,6 +78,134 @@ void MineTo(int nTarget)
         MineOne();
 }
 
+CBlockIndex* AncestorAt(CBlockIndex* pindex, int nHeight)
+{
+    while (pindex && pindex->nHeight > nHeight)
+        pindex = pindex->pprev;
+    return pindex;
+}
+
+int HighestIndexedHeight()
+{
+    LOCK(cs_main);
+    int nHighest = 0;
+    for (std::map<uint256, CBlockIndex*>::const_iterator it = mapBlockIndex.begin();
+         it != mapBlockIndex.end(); ++it)
+        nHighest = std::max(nHighest, it->second->nHeight);
+    return nHighest;
+}
+
+// The epoch records from nFrom up to the epoch after the tip's, in memory and on disk,
+// put back when the holder goes out of scope. That range is every record an
+// InstallEpochStateBatch(nFrom, ...) can replace or drop.
+struct ScopedEpochRecords
+{
+    int nFrom;
+    int nFirst; // the first epoch at or above nFrom with a record in memory
+    int nLast;
+    std::map<int, CEpochState> states;
+    std::map<int, CEpochState> diskStates;
+    std::map<int, CCurveTree> diskTrees;
+
+    explicit ScopedEpochRecords(int nFromIn) : nFrom(nFromIn), nFirst(-1)
+    {
+        nLast = GetEpochForHeight(BestIndex()->nHeight) + 1;
+        CTxDB txdb("r");
+        for (int e = nFrom; e <= nLast; e++)
+        {
+            CEpochState state;
+            if (g_dagManager.GetEpochState(e, state))
+            {
+                if (nFirst < 0)
+                    nFirst = e;
+                states[e] = state;
+            }
+            CEpochState onDisk;
+            if (txdb.ReadEpochState(e, onDisk))
+                diskStates[e] = onDisk;
+            CCurveTree tree;
+            if (txdb.ReadCurveTreeAtEpoch(e, tree))
+                diskTrees[e] = tree;
+        }
+        BOOST_REQUIRE_MESSAGE(nFirst >= 0, "no epoch record at or above epoch " << nFrom);
+    }
+
+    ~ScopedEpochRecords()
+    {
+        // Memory: each saved state with the tree it was written with; a state whose tree
+        // is not on disk goes back with an empty tree and root, as the siblings install.
+        std::map<int, CEpochState> restored;
+        std::map<int, CCurveTree> trees;
+        for (std::map<int, CEpochState>::const_iterator it = states.begin(); it != states.end(); ++it)
+        {
+            CEpochState state = it->second;
+            std::map<int, CCurveTree>::const_iterator itTree = diskTrees.find(it->first);
+            if (itTree != diskTrees.end() && itTree->second.nLeafCount != 0)
+                trees[it->first] = itTree->second;
+            else
+            {
+                state.hashCurveRoot = 0;
+                trees[it->first] = CCurveTree();
+            }
+            restored[it->first] = state;
+        }
+        BOOST_CHECK_MESSAGE(g_dagManager.InstallEpochStateBatch(nFirst, restored, trees),
+                            "could not put the displaced epoch records back in memory");
+        // Disk: exactly what was there, record by record.
+        CTxDB txdb;
+        bool fOK = true;
+        for (int e = nFrom; e <= nLast; e++)
+        {
+            std::map<int, CEpochState>::const_iterator itState = diskStates.find(e);
+            fOK = (itState != diskStates.end() ? txdb.WriteEpochState(e, itState->second)
+                                               : txdb.EraseEpochState(e)) && fOK;
+            std::map<int, CCurveTree>::const_iterator itTree = diskTrees.find(e);
+            fOK = (itTree != diskTrees.end() ? txdb.WriteCurveTreeAtEpoch(e, itTree->second)
+                                             : txdb.EraseCurveTreeAtEpoch(e)) && fOK;
+        }
+        BOOST_CHECK_MESSAGE(fOK, "could not put the displaced epoch records back on disk");
+    }
+};
+
+// Every epoch record in memory is one the chain could have built, and the disk copy agrees.
+// Catches a fixture that left a synthetic record behind.
+void CheckEpochRecordsAreTheChains(const char* pszWhen)
+{
+    CBlockIndex* pTip = BestIndex();
+    const int nLast = GetEpochForHeight(pTip->nHeight) + 1;
+    CTxDB txdb("r");
+    int nSeen = 0;
+    for (int e = 0; e <= nLast; e++)
+    {
+        CEpochState state;
+        if (!g_dagManager.GetEpochState(e, state))
+        {
+            BOOST_CHECK_MESSAGE(txdb.ProbeEpochState(e) == TXDB_READ_NOT_FOUND,
+                                pszWhen << ": epoch " << e << " is on disk but not in memory");
+            continue;
+        }
+        nSeen++;
+        const int nFin = state.nFinalizedHeightAsOf;
+        BOOST_CHECK_MESSAGE(nFin == 0 || (IsEpochBoundaryHeight(nFin) && nFin <= state.nHeightEnd),
+                            pszWhen << ": epoch " << e << " names finalized height " << nFin
+                            << ", which is not a boundary at or below its end " << state.nHeightEnd);
+        if (nFin != 0)
+        {
+            const CBlockIndex* pAt = AncestorAt(pTip, nFin);
+            BOOST_CHECK_MESSAGE(pAt && pAt->nHeight == nFin &&
+                                pAt->GetBlockHash() == state.FinalizedAnchorHash(),
+                                pszWhen << ": epoch " << e << " names a finalized block at "
+                                << nFin << " that the tip's chain does not carry");
+        }
+        CEpochState onDisk;
+        BOOST_CHECK_MESSAGE(txdb.ReadEpochState(e, onDisk) && onDisk.nEpoch == e &&
+                            onDisk.nFinalizedHeightAsOf == nFin &&
+                            onDisk.hashBoundaryBlock == state.hashBoundaryBlock,
+                            pszWhen << ": epoch " << e << " differs between memory and disk");
+    }
+    BOOST_CHECK_MESSAGE(nSeen > 0, pszWhen << ": no epoch record in memory");
+}
+
 // ConnectBlock in check-only mode against an index that was never added: the result
 // and the score are what the block would have been written down with.
 CBlock::ConnectResult CheckOnly(CBlock& block, CBlockIndex* pindexPrev)
@@ -100,6 +224,12 @@ CBlock::ConnectResult CheckOnly(CBlock& block, CBlockIndex* pindexPrev)
 }
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(epoch_records_arrive_as_the_chain_built_them)
+{
+    BOOST_REQUIRE(fRegTest);
+    CheckEpochRecordsAreTheChains("on entry");
+}
 
 BOOST_AUTO_TEST_CASE(an_unscored_refusal_is_transient_and_a_scored_one_persists)
 {
@@ -128,6 +258,9 @@ BOOST_AUTO_TEST_CASE(an_unscored_refusal_is_transient_and_a_scored_one_persists)
 BOOST_AUTO_TEST_CASE(a_child_of_a_flagged_parent_is_refused_without_a_score)
 {
     BOOST_REQUIRE(fRegTest);
+    // Side branches earlier suites left indexed must not outweigh the chain once its tip
+    // is refused: the tip's parent has to be the heaviest block that remains.
+    MineTo(HighestIndexedHeight() + 3);
     CBlockIndex* pTip = BestIndex();
     BOOST_REQUIRE(pTip->pprev != NULL);
     std::unique_ptr<CBlock> pChild = TemplateOnTip();
@@ -218,7 +351,13 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
     const int nTip = BestIndex()->nHeight;
     const int nAsOf = GetEpochForHeight(nTip) - 1;
     const int nFinEpoch = nAsOf - 2;
-    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip) - 1;
+    // Finalized at the boundary that closes nFinEpoch, which GetFinalizedEpochForHeight
+    // resolves to nFinEpoch; the record names the tip's block there, as a built one would.
+    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
+    BOOST_REQUIRE_EQUAL(GetFinalizedEpochForHeight(nFinalized), nFinEpoch);
+    CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
+    BOOST_REQUIRE(pAttested && pAttested->nHeight == nFinalized);
+    ScopedEpochRecords records(nFinEpoch);
     {
         std::map<int, CEpochState> states;
         std::map<int, CCurveTree> trees;
@@ -228,6 +367,7 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
             BOOST_REQUIRE(g_dagManager.GetEpochState(e, state));
             state.hashCurveRoot = 0;
             state.nFinalizedHeightAsOf = (e == nAsOf) ? nFinalized : 0;
+            state.hashVNextFinalizedAnchor = (e == nAsOf) ? pAttested->GetBlockHash() : uint256(0);
             states[e] = state;
             trees[e] = CCurveTree();
         }
@@ -291,31 +431,31 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
     const int nTip = BestIndex()->nHeight;
     const int nAsOf = GetEpochForHeight(nTip) - 1;
     BOOST_REQUIRE(nAsOf >= 2);
+    ScopedEpochRecords records(0);
     CTxDB txdb;
 
-    // Nothing finalized in any record, written through.
-    std::map<int, CEpochState> saved;
+    // Nothing finalized in any record the chain has, written through.
     {
         std::map<int, CEpochState> states;
         std::map<int, CCurveTree> trees;
-        for (int e = 0; e <= nAsOf; e++)
+        for (std::map<int, CEpochState>::const_iterator it = records.states.begin();
+             it != records.states.end() && it->first <= nAsOf; ++it)
         {
-            CEpochState state;
-            if (!g_dagManager.GetEpochState(e, state))
-                state.nEpoch = e;
-            saved[e] = state;
+            CEpochState state = it->second;
             state.hashCurveRoot = 0;
             state.nFinalizedHeightAsOf = 0;
             state.fFinalized = false;
-            states[e] = state;
-            trees[e] = CCurveTree();
+            states[it->first] = state;
+            trees[it->first] = CCurveTree();
         }
-        BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(0, states, trees));
-        for (int e = 0; e <= nAsOf; e++)
-            BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, e));
+        BOOST_REQUIRE(states.count(1) != 0);
+        BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(records.nFirst, states, trees));
+        for (std::map<int, CEpochState>::const_iterator it = states.begin(); it != states.end(); ++it)
+            BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, it->first));
     }
     // And no record at all for epoch 0, as on a chain whose epochs start at the fork.
     txdb.EraseEpochState(0);
+    txdb.EraseCurveTreeAtEpoch(0);
 
     CEpochState anchor;
     bool fLocal = true;
@@ -345,20 +485,12 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
     BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(
         txdb, GetEpochBoundaryHeight(1, nTip) + 5, shallow, fLocal));
     BOOST_CHECK(!fLocal);
+}
 
-    // Put the records back for whatever runs after this suite.
-    std::map<int, CEpochState> states;
-    std::map<int, CCurveTree> trees;
-    for (std::map<int, CEpochState>::const_iterator it = saved.begin(); it != saved.end(); ++it)
-    {
-        CEpochState state = it->second;
-        state.hashCurveRoot = 0;
-        states[it->first] = state;
-        trees[it->first] = CCurveTree();
-    }
-    BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(0, states, trees));
-    for (int e = 0; e <= nAsOf; e++)
-        BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, e));
+BOOST_AUTO_TEST_CASE(epoch_records_leave_as_the_chain_built_them)
+{
+    BOOST_REQUIRE(fRegTest);
+    CheckEpochRecordsAreTheChains("on exit");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

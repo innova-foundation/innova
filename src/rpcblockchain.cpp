@@ -42,7 +42,7 @@ static std::string FinalityTierName(FinalityTier tier)
 static int EpochStateSchemaForHeight(int nHeight)
 {
     if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-        return EPOCHSTATE_SCHEMA_V3;
+        return EPOCHSTATE_SCHEMA_V5;
     if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
         return EPOCHSTATE_SCHEMA_V2;
     return 0;
@@ -2400,8 +2400,12 @@ Value getfinalityinfo(const Array& params, bool fHelp)
         result.push_back(Pair("epoch_root_status", std::string("not_computed")));
     }
     CEpochState finalizedEpochState;
-    int nFinalizedEpoch = GetEpochForHeight(nFinalizedHeight);
-    if (g_dagManager.GetEpochState(nFinalizedEpoch, finalizedEpochState))
+    // The epoch whose root is final: the last one ending at or below the finalized block.
+    const int nFinalizedEpoch =
+        nFinalizedHeight > 0 ? GetFinalizedEpochForHeight(nFinalizedHeight) : 0;
+    result.push_back(Pair("finalized_root_epoch", nFinalizedEpoch));
+    if (nFinalizedEpoch >= 0 &&
+        g_dagManager.GetEpochState(nFinalizedEpoch, finalizedEpochState))
         result.push_back(Pair("finalized_epoch_root", finalizedEpochState.hashCurveRoot.GetHex()));
     else
     {
@@ -2769,7 +2773,12 @@ Value getepochinfo(const Array& params, bool fHelp)
         }
         result.push_back(Pair("tx_count", nTxCount));
         result.push_back(Pair("total_trust", state.nTotalTrust.GetHex()));
-        result.push_back(Pair("finalized", state.fFinalized));
+        // Judged against the finalized height in force now, not the record's own flag.
+        int nFinalizedNow = 0;
+        const int nLastCompletedEpoch = GetEpochForHeight(nCurrentHeight) - 1;
+        if (nLastCompletedEpoch >= 0)
+            g_dagManager.TryGetDeterministicFinalizedHeight(nLastCompletedEpoch, nFinalizedNow);
+        result.push_back(Pair("finalized", EpochStateIsFinalizedAsOf(state, nFinalizedNow)));
         result.push_back(Pair("curve_root", state.hashCurveRoot.GetHex()));
         result.push_back(Pair("nullifier_root", state.hashNullifierRoot.GetHex()));
         result.push_back(Pair("vote_set_root", state.hashVoteSetRoot.GetHex()));
@@ -2777,6 +2786,7 @@ Value getepochinfo(const Array& params, bool fHelp)
         result.push_back(Pair("finality_tier", FinalityTierName((FinalityTier)state.nFinalityTier)));
         result.push_back(Pair("consecutive_hard_epochs", state.nConsecutiveHardCount));
         result.push_back(Pair("finalized_height_as_of", state.nFinalizedHeightAsOf));
+        result.push_back(Pair("finalized_hash_as_of", state.FinalizedAnchorHash().GetHex()));
         result.push_back(Pair("schema_version", EpochStateSchemaForHeight(state.nHeightEnd)));
         result.push_back(Pair("anchor_rule", EpochStateAnchorRuleForHeight(state.nHeightEnd)));
         result.push_back(Pair("epoch_state_digest", state.GetDigest().GetHex()));

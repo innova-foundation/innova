@@ -667,7 +667,7 @@ std::string HelpMessage()
         "  -replayexpectedheight=<n> " + _("Required trusted terminal height for -replayblocks") + "\n" +
         "  -replayexpectedhash=<hex> " + _("Required trusted terminal block hash for -replayblocks") + "\n" +
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
-        "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
+        "  -acceptepochstate      " + _("Grandfather epoch-state records under an older schema marker: pre-marker records as deterministic, and schema V3/V4 records as V5 when every record already names an epoch boundary; otherwise resync") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestidnsreset=<n>  " + _("Regtest only: IDNS name-reset rehearsal height (default: 0, no reset)") + "\n" +
         "  -regtestmstimestamp=<n> " + _("Regtest only: millisecond block-timestamp activation height (default: 9)") + "\n" +
@@ -2911,34 +2911,28 @@ bool AppInit2()
         }
     }
 
-    // Schema V3 is intentionally not grandfatherable: its exact-boundary roots and
-    // atomic state/tree invariant cannot be inferred from an older marker. A node whose
-    // best chain has crossed the V3 activation must have committed the V3 marker in the
-    // same batch as that best-chain transition. Anything else is a torn/old database.
+    // Schema V3 is not grandfatherable: crossing its activation requires the V3 marker in the
+    // same batch. V5 moved only the record's finalized height, so V3/V4 databases are admitted
+    // with -acceptepochstate when every record names a boundary or nothing.
     if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
     {
-        CTxDB txdbEpochV3("r");
+        CTxDB txdbEpochV3("rw");
         int nEpochSchema = 0;
-        std::string strEpochTipError;
         const bool fSchemaRead = txdbEpochV3.ReadEpochStateSchema(nEpochSchema);
-        const int nExpectedEpochSchema =
-            IsBoundaryBActiveAtHeight(pindexBest->nHeight)
-                ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
-        const bool fEpochTipValid =
-            fSchemaRead && nEpochSchema == nExpectedEpochSchema &&
-            g_dagManager.GetLoadedEpochStateCount() > 0 &&
-            g_dagManager.ValidateEpochStateTip(pindexBest, strEpochTipError);
-        if (!fEpochTipValid)
+        bool fStampV5 = false;
+        std::string strEpochError;
+        if (!g_dagManager.CheckEpochStateSchemaAtTip(
+                fSchemaRead, nEpochSchema, pindexBest,
+                GetBoolArg("-acceptepochstate", false), fStampV5, strEpochError))
+            return InitError(strEpochError);
+        if (fStampV5)
         {
-            if (strEpochTipError.empty())
-                strEpochTipError = "schema marker or epoch-state set is missing";
-            return InitError(strprintf(_(
-                "Epoch-state schema %d is required at height %d, but the chain database has "
-                "schema marker %d and %d loaded epoch records (%s). This indicates an old or torn "
-                "epoch-state database; continuing could split consensus. Resync "
-                "or remove the chain database (preserve wallet.dat) and resync."),
-                nExpectedEpochSchema, pindexBest->nHeight, nEpochSchema,
-                (int)g_dagManager.GetLoadedEpochStateCount(), strEpochTipError.c_str()));
+            if (!txdbEpochV3.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V5))
+                return InitError(_("Epoch-state schema marker write failed."));
+            printf("EpochState: -acceptepochstate given; %d epoch records under schema %d "
+                   "name only epoch boundaries; stamped schema %d\n",
+                   (int)g_dagManager.GetLoadedEpochStateCount(), nEpochSchema,
+                   EPOCHSTATE_SCHEMA_V5);
         }
     }
 

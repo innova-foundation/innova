@@ -2505,8 +2505,9 @@ static bool ValidatePrivacyVNextFinalizedContext(
     // The epoch state consulted is fixed by nContextHeight, so a not-yet-produced state is
     // the chain's answer; only an unreadable record is local.
     CEpochState finalizedState;
+    int nFinalizedAsOf = 0;
     if (!g_dagManager.GetFinalizedEpochStateAsOf(
-            txdb, nContextHeight, finalizedState, fLocalFailure))
+            txdb, nContextHeight, finalizedState, fLocalFailure, &nFinalizedAsOf))
     {
         strError = fLocalFailure
                        ? "finalized epoch state cannot be read; -reindex/resync required"
@@ -2519,14 +2520,9 @@ static bool ValidatePrivacyVNextFinalizedContext(
     uint64_t nExpectedTreeSize = 0;
     if (finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
     {
-        // Whether the anchor epoch is finalized is chain state; the digest widths are
-        // already enforced by the record decoder, so failing them means local damage.
-        // The resolver returns either a finalized epoch or one deep enough to stand
-        // without finality, so accept both here or it would reject its own choice.
-        if (!finalizedState.fFinalized &&
-            (finalizedState.nHeightEnd <= 0 ||
-             nContextHeight - finalizedState.nHeightEnd <
-                 EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH))
+        // Anchor finality is derived from the finalized height in force here, not read from the
+        // record. Accept both finalized and deep-enough epochs: the resolver may return either.
+        if (!EpochStateMayAnchorAt(finalizedState, nFinalizedAsOf, nContextHeight))
         {
             strError = strprintf(
                 "the anchor epoch is neither finalized nor %d blocks deep",
@@ -2597,11 +2593,7 @@ static bool ValidatePrivacyVNextFinalizedContext(
             }
             // An older anchor is deeper than the one resolved above, so the same
             // finalized-or-deep rule applies and never admits anything shallower.
-            const bool fOlderDeepEnough =
-                olderState.nHeightEnd > 0 &&
-                nContextHeight - olderState.nHeightEnd >=
-                    EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH;
-            if ((!olderState.fFinalized && !fOlderDeepEnough) ||
+            if (!EpochStateMayAnchorAt(olderState, nFinalizedAsOf, nContextHeight) ||
                 olderState.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
                 olderState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
                 olderState.vchVNextParameterDigest.size() !=
@@ -12063,9 +12055,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                 return error("Reorganize() : V3 epoch suffix build failed: %s",
                              strEpochError.c_str());
         }
-        const int nEpochSchema = IsBoundaryBActiveAtHeight(pindexNew->nHeight)
-            ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
-        if (!txdb.WriteEpochStateSchema(nEpochSchema))
+        if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V5))
             return error("Reorganize() : V3 epoch schema write failed");
     }
     else if (fV2EpochReorg)
@@ -12483,9 +12473,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
             }
             nFirstStagedEpoch = nEpoch;
         }
-        const int nEpochSchema = IsBoundaryBActiveAtHeight(pindexNew->nHeight)
-            ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
-        if (!txdb.WriteEpochStateSchema(nEpochSchema))
+        if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V5))
         {
             txdb.TxnAbort();
             RestoreCommittedFinalityOrShutdown("SetBestChainInner()");

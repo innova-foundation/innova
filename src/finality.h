@@ -21,6 +21,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <limits>
 #include <stdint.h>
 #include <string>
 
@@ -397,6 +398,19 @@ inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
 {
     return (int)GetEpochBoundaryHeight64(nEpoch);
 }
+
+/** Whether nHeight opens an epoch. A record's finalized height is one of these or 0;
+ *  an epoch's end never is. */
+inline bool IsEpochBoundaryHeight(int nHeight)
+{
+    return nHeight >= 0 &&
+           GetEpochBoundaryHeight(GetEpochForHeight(nHeight), nHeight) == nHeight;
+}
+
+/** The newest epoch every block of which is at or below nFinalizedHeight. A finalized
+ *  height is an epoch boundary, so this is the epoch before the one it opens.
+ *  -1 when no epoch ends that early. */
+int GetFinalizedEpochForHeight(int nFinalizedHeight);
 
 // ---------------------------------------------------------------------------
 // Stake-derived finality committee
