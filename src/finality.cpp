@@ -5215,7 +5215,7 @@ bool CFinalityTracker::CheckTallyCertificate(
     const CFinalityTallyCertificate& cert, CTxDB& txdb,
     std::string* pstrError, const std::vector<CFinalityVote>* pvBlockVotes,
     bool fAllowPendingVotes, int nContextHeight, bool fSkipCommitteeSigs,
-    FinalityResult* pResult) const
+    FinalityResult* pResult, const CBlockIndex* pindexAnchor) const
 {
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
@@ -5317,6 +5317,13 @@ bool CFinalityTracker::CheckTallyCertificate(
         return reject("tally certificates require DAG epoch mode");
     if (!pEpochBlock->IsProofOfWork())
         return reject("tally certificates must target proof-of-work epoch blocks");
+    // The lookup above is global; bind the named block to the carrier's ancestors, as
+    // CheckVote does. A valid certificate is within (FINALITY_CONFIRMATION_EPOCHS + 1)
+    // epochs of its boundary, inside the walk bound.
+    if (pindexAnchor &&
+        GetFinalityAncestorOnChain(pindexAnchor, cert.nHeight,
+                                   FINALITY_ANCESTOR_MAX_WALK) != pEpochBlock)
+        return reject("tally certificate block is not an ancestor of the including block");
     if (cert.HasPrivateWeight())
     {
         // Deterministic anchor from the including block's chain context (see CheckVote).
@@ -6165,6 +6172,31 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
     return true;
 }
 
+void CFinalityTracker::RecordConflictingNullifierVote(const CFinalityVote& vote)
+{
+    AssertLockHeld(cs_finality);
+    // Observability only. Counted when the held vote for this nullifier names a
+    // different block; a re-encoding of the same choice is not an equivocation.
+    const CFinalityVote* pHeld = NULL;
+    std::map<uint256, CFinalityVote>::const_iterator itHeld = mapConnectedVotes.find(vote.nullifier);
+    if (itHeld != mapConnectedVotes.end())
+        pHeld = &itHeld->second;
+    else if ((itHeld = mapPendingVotes.find(vote.nullifier)) != mapPendingVotes.end())
+        pHeld = &itHeld->second;
+    if (!pHeld || pHeld->hashBlock == vote.hashBlock)
+        return;
+    std::set<uint256>& setEpoch = mapEpochEquivocatedVoteNullifiers[pHeld->nEpoch];
+    if (setEpoch.size() < (size_t)FINALITY_MAX_VOTES)
+        setEpoch.insert(vote.nullifier);
+    if (fDebug)
+        printf("FINALITY equivocation: epoch=%d nullifier=%s held=%s offered=%s connected=%d\n",
+               pHeld->nEpoch,
+               vote.nullifier.ToString().substr(0, 10).c_str(),
+               pHeld->hashBlock.ToString().substr(0, 10).c_str(),
+               vote.hashBlock.ToString().substr(0, 10).c_str(),
+               mapConnectedVotes.count(vote.nullifier) ? 1 : 0);
+}
+
 bool CFinalityTracker::AddVote(const CFinalityVote& vote, bool fCheckStake, bool fRecordFinality)
 {
     if (fCheckStake)
@@ -6193,6 +6225,8 @@ bool CFinalityTracker::AddVote(const CFinalityVote& vote, bool fCheckStake, bool
     }
     if (itNullifier != mapVoteHashByNullifier.end() && itNullifier->second != hashVote)
     {
+        RecordConflictingNullifierVote(vote);
+
         if (!fRecordFinality)
             return false;
 
@@ -6296,7 +6330,9 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
                 (cert.nTier == pBestCert->nTier && cert.GetSignatureDigest() < pBestCert->GetSignatureDigest()))
                 pBestCert = &cert;
         }
-        if (pBestCert)
+        // A NONE-tier certificate is treated as absent, as in
+        // ComputeDeterministicEpochTier; the vote path below decides.
+        if (pBestCert && pBestCert->nTier != FINALITY_NONE)
         {
             // Note tags are voters the certificate counted, exactly as
             // ComputeDeterministicEpochTier counts them; reading only the
@@ -6381,12 +6417,11 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
     LOCK(cs_finality);
     nTierOut = FINALITY_NONE; hashWinnerOut = 0; nWinnerHeightOut = 0; nVoterCountOut = 0;
 
-    // Prefer the epoch's own-block aggregate tally certificate (the only path that
-    // can promote hidden-weight NullStake votes); its tier is fixed by the cert.
-    // Scoped to the epoch's own blocks (NOT the live global cert map) so a late cert
-    // carried in a later epoch's block (block-valid per R2 up to E+CONFIRMATION) can
-    // never fold into this epoch's tier on one path but not another -> no split.
-    if (fHaveEpochCert && epochBestCert.nEpoch == nEpoch)
+    // Prefer the epoch's own-block tally certificate (not the global map, so a late
+    // cert in a later block cannot change the tier on one path only). A NONE-tier
+    // certificate is treated as absent.
+    if (fHaveEpochCert && epochBestCert.nEpoch == nEpoch &&
+        epochBestCert.nTier != FINALITY_NONE)
     {
         nTierOut = epochBestCert.nTier;
         hashWinnerOut = epochBestCert.hashBlock;
@@ -7564,6 +7599,14 @@ int CFinalityTracker::GetEpochEquivocatedNoteVoteCount(int nEpoch) const
     return it == mapEpochEquivocatedNoteVotes.end() ? 0 : (int)it->second.size();
 }
 
+int CFinalityTracker::GetEpochEquivocatedVoteCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::map<int, std::set<uint256> >::const_iterator it =
+        mapEpochEquivocatedVoteNullifiers.find(nEpoch);
+    return it == mapEpochEquivocatedVoteNullifiers.end() ? 0 : (int)it->second.size();
+}
+
 NoteVoteCountingState CFinalityTracker::GetNoteVoteCountingState(
     int nEpoch, const uint256& tag) const
 {
@@ -7589,6 +7632,17 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(
     if (vCerts.empty())
         return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 
+    // ConnectBlock indexes the carrier before it runs, so its own ancestor chain is
+    // the one every certificate here must name its boundary block on. A carrier this
+    // node has not indexed (unit fixtures) has no chain to bind to.
+    const CBlockIndex* pindexCarrier = NULL;
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator itCarrier =
+            mapBlockIndex.find(hashBlock);
+        if (itCarrier != mapBlockIndex.end())
+            pindexCarrier = itCarrier->second;
+    }
+
     std::set<uint256> setBlockCerts;
     for (const CFinalityTallyCertificate& cert : vCerts)
     {
@@ -7602,7 +7656,7 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(
         std::string strError;
         FinalityResult checkResult = FINALITY_RESULT_INVALID;
         if (!CheckTallyCertificate(cert, txdb, &strError, NULL, false,
-                                   nBlockHeight, false, &checkResult))
+                                   nBlockHeight, false, &checkResult, pindexCarrier))
         {
             if (fDebug)
                 printf("ConnectBlockTallyCertificates: rejected cert in block %s: %s\n",
@@ -8311,6 +8365,7 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapBlockConnectedNoteVotes.clear();
         mapEpochCountedNoteVotes.clear();
         mapEpochEquivocatedNoteVotes.clear();
+        mapEpochEquivocatedVoteNullifiers.clear();
         mapPendingNoteVotes.clear();
         mapEpochVoters.clear();
         mapEpochTransparentVoteCount.clear();
@@ -8369,6 +8424,15 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
     {
         if (it->second.nEpoch < nMinEpoch && !mapNoteVotesByHash.count(it->first))
             it = mapPendingNoteVotes.erase(it);
+        else
+            ++it;
+    }
+
+    for (auto it = mapEpochEquivocatedVoteNullifiers.begin();
+         it != mapEpochEquivocatedVoteNullifiers.end(); )
+    {
+        if (it->first < nMinEpoch)
+            it = mapEpochEquivocatedVoteNullifiers.erase(it);
         else
             ++it;
     }

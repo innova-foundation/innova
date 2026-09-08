@@ -1430,13 +1430,15 @@ public:
     /** Stateless consensus validation of an aggregate hidden tally certificate.
      *  Block validation must pass fAllowPendingVotes=false so referenced votes
      *  resolve only from connected (on-chain) votes or pvBlockVotes; pending
-     *  relay state is node-local and must not affect block validity. */
+     *  relay state is node-local and must not affect block validity. pindexAnchor
+     *  (NULL for relay/RPC) must have cert.hashBlock as its ancestor at cert.nHeight. */
     bool CheckTallyCertificate(const CFinalityTallyCertificate& cert, CTxDB& txdb, std::string* pstrError = NULL,
                                const std::vector<CFinalityVote>* pvBlockVotes = NULL,
                                bool fAllowPendingVotes = true,
                                int nContextHeight = -1,
                                bool fSkipCommitteeSigs = false,
-                               FinalityResult* pResult = NULL) const;
+                               FinalityResult* pResult = NULL,
+                               const CBlockIndex* pindexAnchor = NULL) const;
 
     /** Stateless validation of a relayed hidden tally share.
      *  Block validation must pass fAllowPendingVotes=false so the referenced
@@ -1554,6 +1556,9 @@ public:
     std::vector<CNoteFinalityVote> GetCountedEpochNoteVotes(int nEpoch) const;
     int GetEpochNoteVoteCount(int nEpoch) const;
     int GetEpochEquivocatedNoteVoteCount(int nEpoch) const;
+    /** Transparent-lane nullifiers offered with a block other than the held vote's.
+     *  Observability only; never read by consensus. */
+    int GetEpochEquivocatedVoteCount(int nEpoch) const;
     NoteVoteCountingState GetNoteVoteCountingState(int nEpoch, const uint256& tag) const;
     bool ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock,
                                  const std::vector<CFinalityTallyShare>& vShares,
@@ -1718,6 +1723,9 @@ private:
     std::map<uint256, std::vector<uint256>> mapBlockConnectedNoteVotes;
     std::map<int, std::map<uint256, uint256>> mapEpochCountedNoteVotes;   // epoch -> tag -> vote hash
     std::map<int, std::set<uint256>> mapEpochEquivocatedNoteVotes;
+    // Transparent nullifiers seen with a conflicting block. Observability only.
+    std::map<int, std::set<uint256>> mapEpochEquivocatedVoteNullifiers;
+    void RecordConflictingNullifierVote(const CFinalityVote& vote);
     std::map<uint256, CNoteFinalityVote> mapPendingNoteVotes;
     // Note votes that arrived before the block they name, keyed by that block hash so
     // the expensive re-check only runs once the block is actually here.
