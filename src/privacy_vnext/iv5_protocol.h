@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "b796ba76b3a95bd96e36c7e1255c6deae410675692de7e7eaaff1b4d1f70a2a7";
+    "1424a38b5e4351e0ae9fb103b779d3b5b245aaf02d02525d79ad8bb9b3e970d5";
 // Contract texts this build's lineage has published, besides the current one.
 //
 // Provenance only. No consensus rule may branch on this list: a payload is judged against
@@ -30,11 +30,15 @@ static const char PROTOCOL_CONTRACT_SHA256[] =
 // 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
 // trailer is the decoder's answer to this binary, never a consensus payload, so no rule
 // moved and no payload's verdict changes.
+// b796ba76: a note finality vote gained its stake-floor rule and the floor itself. This one
+// DOES move a rule: a vote that proves no floor, or proves it against an unshifted point, is
+// refused from the same height the lane activates, and the lane has never been active.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
     "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
     "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b",
     "4313419b351b5c9ba6a25bb94c5bf2b317843d238d2376b5cc181dfb6146a280",
-    "07c5f16b0da26d5f201a24039dc7eb0c00b4ff57d161ed6c7896586cc50163f1"
+    "07c5f16b0da26d5f201a24039dc7eb0c00b4ff57d161ed6c7896586cc50163f1",
+    "b796ba76b3a95bd96e36c7e1255c6deae410675692de7e7eaaff1b4d1f70a2a7"
 };
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
@@ -43,7 +47,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "6b7e03750527f371eed96f1923c15d1822a2fd4e1100d0376ae93b015bd8d969";
+    "7a1548f58ef09da64be0515201d55793a6f5049bea690e5a934087e5ef772558";
 // The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
 // payload is judged against below that epoch.
 //
@@ -88,6 +92,10 @@ enum NoteOperation
     NOTE_FINALITY_VOTE = 10,
     NOTE_OPERATION_NONE = 255
 };
+
+// Minimum note value for a finality vote. Mirrors NOTE_VOTE_MIN_WEIGHT in the Rust
+// crate; a new rung moves both under a new wire version.
+static const int64_t NOTE_VOTE_MIN_WEIGHT = 500LL * 100000000LL;
 
 // Compressed secp256k1 encoding length of a committee member's tally-encryption key.
 static const size_t FINALITY_MEMBER_KEY_BYTES = 33;

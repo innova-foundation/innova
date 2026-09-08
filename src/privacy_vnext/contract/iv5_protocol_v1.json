@@ -153,8 +153,10 @@
       "disclosure-mask-is-seven-and-authorization-is-owner",
       "a-nonzero-32-byte-boundary-block-hash-and-a-u32-le-boundary-height-follow-the-outputs-inside-the-signing-hash",
       "the-key-image-is-a-spend-and-the-output-is-an-ordinary-leaf-so-the-effects-are-a-transfers",
-      "which-boundary-is-votable-is-the-callers-rule-and-unspent-ness-is-the-callers-spent-key-index"
-    ]
+      "which-boundary-is-votable-is-the-callers-rule-and-unspent-ness-is-the-callers-spent-key-index",
+      "the-stake-floor-is-a-range-statement-over-the-output-commitment-moved-down-by-the-floor-and-by-the-value-entering-carried-in-operation-proof"
+    ],
+    "minimum_vote_weight_atomic": 50000000000
   },
   "finality_profiles": {
     "none": 0,

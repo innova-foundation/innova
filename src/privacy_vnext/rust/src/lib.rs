@@ -146,6 +146,10 @@ pub const NOTE_OPERATION_NONE: u8 = 255;
 /// Atomic units one collateralnode must attest to. Single tier; the value is proved against
 /// the re-randomized commitment and never appears on the wire.
 pub const COLLATERAL_ATTESTATION_AMOUNT: u64 = 25_000 * 100_000_000;
+/// Atomic units a note must hold to cast a finality vote, enforced inside the proof statement.
+/// Must move with the C++ height-keyed floor under a new wire version (the decoder has no
+/// height); check_iv5_protocol_contract.py pins the pair.
+pub const NOTE_VOTE_MIN_WEIGHT: u64 = 500 * 100_000_000;
 /// Compressed secp256k1 encoding length of a committee member's tally-encryption key.
 pub const FINALITY_MEMBER_KEY_BYTES: usize = 33;
 /// The two fields a note finality vote carries after its outputs: the hash of the epoch
@@ -236,7 +240,11 @@ pub const fn is_note_vote_operation(operation: u8) -> bool {
 /// 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
 /// trailer is the decoder's answer to the caller, never a consensus payload, so no rule
 /// moved and no payload's verdict changes.
-const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 4] = [
+///
+/// b796ba76: a note finality vote gained its stake-floor rule and the floor itself. This one
+/// DOES move a rule: a vote proving no floor, or proving it against an unshifted point, is
+/// refused from the height the lane activates, and the lane has never been active.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 5] = [
     [
         0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
         0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
@@ -256,6 +264,11 @@ const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 4] = [
         0x07, 0xc5, 0xf1, 0x6b, 0x0d, 0xa2, 0x6d, 0x5f, 0x20, 0x1a, 0x24, 0x03, 0x9d, 0xc7, 0xeb,
         0x0c, 0x00, 0xb4, 0xff, 0x57, 0xd1, 0x61, 0xed, 0x6c, 0x78, 0x96, 0x58, 0x6c, 0xc5, 0x01,
         0x63, 0xf1,
+    ],
+    [
+        0xb7, 0x96, 0xba, 0x76, 0xb3, 0xa9, 0x5b, 0xd9, 0x6e, 0x36, 0xc7, 0xe1, 0x25, 0x5c, 0x6d,
+        0xea, 0xe4, 0x10, 0x67, 0x56, 0x92, 0xde, 0x7e, 0x7e, 0xaa, 0xff, 0x1b, 0x4d, 0x1f, 0x70,
+        0xa2, 0xa7,
     ],
 ];
 

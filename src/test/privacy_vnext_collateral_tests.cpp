@@ -19,7 +19,7 @@ namespace
 
 const uint64_t kTier = INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT;
 // A note at the finality stake floor (100 INN), the note a vote spends.
-const uint64_t kVoteNote = 100ULL * 100000000ULL;
+const uint64_t kVoteNote = 500ULL * 100000000ULL;   // the stake floor a vote proves
 
 PrivacyVNextDigest CollateralDigest(unsigned char fill)
 {
@@ -485,12 +485,31 @@ bool BuildShapedNoteVote(const FundedNote& note,
         return false;
     }
 
+    // The stake-floor proof a vote carries, shaped as the builder makes it: over the
+    // output commitment moved down by the floor and by the value entering. A case asking
+    // for a reissue below the shift leaves it empty so it sees the decoder's refusal.
+    std::vector<unsigned char> vchFloorProof;
+    if (nTransparentValueBalance >= 0)
+    {
+        const uint64_t nShift = (uint64_t)iv5::NOTE_VOTE_MIN_WEIGHT +
+                                (uint64_t)nTransparentValueBalance;
+        if (nReissueAmount >= nShift)
+        {
+            PrivacyVNextDigest floorCommitment;
+            floorCommitment.fill(0);
+            if (!ProvePrivacyVNextRange(nReissueAmount - nShift, outputMask,
+                                        CollateralScalar(0x66), floorCommitment,
+                                        vchFloorProof, error))
+                return false;
+        }
+    }
+
     std::vector<unsigned char> payload = prefix;
     PutSection(payload, vchMembership);
     PutSection(payload, valueProof.vchRangeProof);
     PutSection(payload, std::vector<unsigned char>(valueProof.balanceProof.begin(),
                                                    valueProof.balanceProof.end()));
-    PutSection(payload, std::vector<unsigned char>());   // no operation proof
+    PutSection(payload, vchFloorProof);
     PutSection(payload, std::vector<unsigned char>());   // no disclosures
     vchPayloadOut.swap(payload);
     keyImageOut = vFinal[0].keyImage;

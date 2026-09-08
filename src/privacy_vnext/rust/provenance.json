@@ -59,7 +59,7 @@
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
     "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
-    "contract_sha256": "b796ba76b3a95bd96e36c7e1255c6deae410675692de7e7eaaff1b4d1f70a2a7",
+    "contract_sha256": "1424a38b5e4351e0ae9fb103b779d3b5b245aaf02d02525d79ad8bb9b3e970d5",
     "scope": "normative inactive IV5 protocol contract; not activation"
   },
   "product_contract": {
@@ -201,7 +201,7 @@
       },
       "src": {
         "file_count": 12,
-        "sha256_tree": "e6a69177c5480d603e47acac5c0efa9b5bf75c029dad8d4fa03ddf91c2e91147"
+        "sha256_tree": "d863e9c3dfe2c5958f13fb80549dd37c7db4ca922437f702de8f830d701e5490"
       },
       "tests": {
         "file_count": 1,

@@ -12,7 +12,8 @@ use crate::{
     validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
     COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE,
     FINALITY_VOTE_CONTEXT_BYTES, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX,
-    NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
+    NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, NOTE_VOTE_MIN_WEIGHT,
+    PAYLOAD_SCHEMA_U16,
     TREE_LAYERS,
 };
 
@@ -680,6 +681,26 @@ fn validate_payload(
                 value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
                 _ => ResultCode::ConsensusInvalid,
             })?
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+    } else if is_note_vote_operation(operation) {
+        // Stake floor as a range statement (the amount is hidden, mask 7). Since
+        // v_out = v_in + tvb, proving v_out - W_MIN - tvb in range is v_in >= W_MIN.
+        let entering = u64::try_from(transparent_value_balance)
+            .map_err(|_| ResultCode::ConsensusInvalid)?;
+        let shift = NOTE_VOTE_MIN_WEIGHT
+            .checked_add(entering)
+            .ok_or(ResultCode::ConsensusInvalid)?;
+        let shifted = value::shift_commitment(&output_commitments[0], shift)
+            .map_err(|_| ResultCode::ConsensusInvalid)?;
+        if operation_proof.is_empty()
+            || !value::verify_range(&[shifted], operation_proof, &signing_hash).map_err(
+                |error| match error {
+                    value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                    _ => ResultCode::ConsensusInvalid,
+                },
+            )?
         {
             return Err(ResultCode::ConsensusInvalid);
         }

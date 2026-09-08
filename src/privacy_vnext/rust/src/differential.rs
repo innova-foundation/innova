@@ -817,6 +817,17 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
         )
         .expect("amount-equality proof must be provable")
         .to_vec()
+    } else if spec.operation == NOTE_FINALITY_VOTE {
+        // The stake floor: a range statement over the output commitment moved down by the
+        // floor and by the value entering, which is what the decoder derives for itself.
+        let shift = crate::NOTE_VOTE_MIN_WEIGHT + spec.transparent_value_balance as u64;
+        let (_, proof) = value::prove_range(
+            &[spec.outputs[0].amount - shift],
+            &[spec.outputs[0].mask.to_bytes()],
+            &entropy,
+        )
+        .expect("stake-floor range proof must be provable");
+        proof
     } else {
         Vec::new()
     };
@@ -948,9 +959,12 @@ fn cases(seed: u64) -> Vec<(String, Spec, ChaCha20Rng)> {
         bytes
     });
     let address = Address::new(&mut rng);
-    let input = make_note(&mut rng, &address, 0, 1_000);
+    // At the stake floor: a vote proves its staked note cleared it, so a 1_000-unit note
+    // has no opening to range-prove and could not be built at all.
+    let vote_amount = crate::NOTE_VOTE_MIN_WEIGHT;
+    let input = make_note(&mut rng, &address, 0, vote_amount);
     let context = context_of(NOTE_FINALITY_VOTE, std::slice::from_ref(&input));
-    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let output = make_output(&mut rng, &address, 0, vote_amount, &context);
     let spec = Spec::note_vote(input, output, [0x7e; 32], 1_200);
     built.push(("mask=7 shape=note_vote".to_string(), spec, rng));
     built

@@ -599,6 +599,59 @@ BOOST_AUTO_TEST_CASE(the_builder_makes_a_vote_the_connect_rules_accept)
     BOOST_CHECK(Mentions(vPast.strError, "outside its inclusion window"));
 }
 
+
+// Consensus stake floor: the range proof is over the output commitment shifted down by
+// the floor and the entering value, so it bounds the staked note, not note plus reward.
+// Pins the boundary and the refusals.
+BOOST_AUTO_TEST_CASE(a_vote_proves_the_staked_note_cleared_the_floor)
+{
+    ScopedNoteVoteHeight fork(0);
+    CTxDB txdb("r+");
+    VoteChain chain(0x6E770900U);
+    const int nBoundary = BoundaryHeight();
+    std::string error;
+
+    // Exactly at the floor is admitted: the shifted opening is zero, which is in range.
+    BOOST_CHECK_EQUAL((int64_t)kVoteNote, GetFinalityMinVoteWeight(nBoundary));
+    FundedNote atFloor;
+    Fund(txdb, 0x31, atFloor);
+    BuiltVote vote;
+    CastVote(atFloor, chain.pBoundary, 1500002001, vote);
+    BOOST_CHECK(!vote.payload.empty());
+
+    // One atomic unit short cannot be built at all: the shifted amount would be negative,
+    // so there is no opening to prove and the builder refuses before the network sees it.
+    FundedNote below;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0x32, kVoteNote - 1, below, error), error);
+    std::vector<PrivacyVNextDigest> vBelowImages(1, below.keyImage);
+    const uint32_t nBelowIndex = PrivacyVNextChangeIndexFor(
+        LocalGenesis(), LocalNetwork(), NoTransparentSide(), vBelowImages);
+    PrivacyVNextDerivedKeys belowKeys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextChangeKeys(below.seed, LocalGenesis(), LocalNetwork(),
+                                     nBelowIndex, belowKeys, error), error);
+    std::vector<unsigned char> vchBelow;
+    PrivacyVNextDigest belowImage;
+    std::string strBelow;
+    BOOST_CHECK(!BuildVote(below, belowKeys.spendPublic, belowKeys.viewPublic,
+                           belowKeys.outgoingViewSecret, BlockDigest(chain.pBoundary),
+                           chain.pBoundary->nHeight, vchBelow, belowImage, strBelow));
+    BOOST_CHECK(Mentions(strBelow, "below the minimum vote weight"));
+
+    // A vote whose floor proof does not verify is refused by the decoder. The payload ends
+    // with the operation proof and then an empty disclosure vector, so the last byte of the
+    // proof is the byte before that terminator.
+    BOOST_REQUIRE(vote.payload.size() > 2);
+    BOOST_REQUIRE_EQUAL((int)vote.payload.back(), 0);
+    std::vector<unsigned char> vchCorrupt = vote.payload;
+    vchCorrupt[vchCorrupt.size() - 2] ^= 0x01;
+    PrivacyVNextStateEffects corruptEffects;
+    const PrivacyVNextPayloadValidation corrupt =
+        ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                          vchCorrupt, corruptEffects);
+    BOOST_CHECK(!corrupt.IsValid());
+}
+
 // The reissue's one-time key and self-pay index both derive from the key image, so a
 // block scan finds it from the payload alone.
 BOOST_AUTO_TEST_CASE(the_wallet_finds_its_own_reissue_from_the_payload_alone)

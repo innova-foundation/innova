@@ -96,6 +96,30 @@ for name, value in mapping.items():
     require(numeric_constant(cpp, name) == value, "C++ mismatch for " + name)
     require(numeric_constant(rust, name) == value, "Rust mismatch for " + name)
 
+
+def product_constant(text: str, name: str) -> int:
+    """Read a constant written as INN x atomic units on either side."""
+    match = re.search(
+        r"\b" + re.escape(name) + r"\s*(?::[^=]+)?=\s*([0-9_]+)(?:LL|L|u64)?\s*\*\s*([0-9_]+)(?:LL|L|u64)?",
+        text,
+    )
+    require(match is not None, "missing product constant " + name)
+    return int(match.group(1).replace("_", "")) * int(match.group(2).replace("_", ""))
+
+
+# The stake floor a note vote proves. The Rust decoder proves it as a range statement and
+# has no height to key on, while the C++ side keys the same figure by height; the one rung
+# reads this constant, so a rung that moves has to move both.
+floor_atomic = contract["note_finality_vote"]["minimum_vote_weight_atomic"]
+require(
+    product_constant(cpp, "NOTE_VOTE_MIN_WEIGHT") == floor_atomic,
+    "C++ mismatch for NOTE_VOTE_MIN_WEIGHT",
+)
+require(
+    product_constant(rust, "NOTE_VOTE_MIN_WEIGHT") == floor_atomic,
+    "Rust mismatch for NOTE_VOTE_MIN_WEIGHT",
+)
+
 abi_path = ROOT / "src/privacy_vnext/rust/abi/innova_privacy_vnext_v2.txt"
 abi_sha256 = hashlib.sha256(abi_path.read_bytes()).hexdigest()
 require(

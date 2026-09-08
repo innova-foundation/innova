@@ -73,6 +73,13 @@ pub(crate) fn commitment(amount: u64, mask_bytes: &[u8; 32]) -> Result<[u8; 32],
     Ok(commitment.compress().to_bytes())
 }
 
+/// `C - shift * H`: the point a floor statement is proved over. Only moves the point; the
+/// shift itself is the caller's fact. Both inputs are torsion-free, so the result is too.
+pub(crate) fn shift_commitment(encoded: &[u8; 32], shift: u64) -> Result<[u8; 32], ValueError> {
+    let point = canonical_point(encoded, false)?;
+    Ok((point - monero_h() * Scalar::from(shift)).compress().to_bytes())
+}
+
 pub(crate) fn validate_disclosed_commitment(
     encoded: &[u8; 32],
     amount: u64,

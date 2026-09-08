@@ -165,10 +165,89 @@ static bool ResolvePrivacyVNextParameterDigest(
     return true;
 }
 
-// One path for every payload shape.
-//
-// A shield is simply the case with no notes spent: it takes its value from the transparent
-// side instead, so it names no pseudo-outputs and needs no membership proof. Keeping both in
+// Floor point a validator reaches from the payload alone: the output commitment minus the
+// stake floor and the entering value. A range proof on it shows the staked note cleared
+// the floor.
+static bool BuildPrivacyVNextNoteVoteFloorProof(
+    uint64_t nOutputAmount,
+    int64_t nEntering,
+    const PrivacyVNextDigest& outputMask,
+    const PrivacyVNextDigest& outputCommitment,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& strErrorOut)
+{
+    vchProofOut.clear();
+    if (nEntering < 0)
+    {
+        strErrorOut = "an IV5 note vote may not take value out of the pool";
+        return false;
+    }
+    const uint64_t nFloor = (uint64_t)iv5::NOTE_VOTE_MIN_WEIGHT;
+    if ((uint64_t)nEntering > std::numeric_limits<uint64_t>::max() - nFloor)
+    {
+        strErrorOut = "IV5 note vote floor shift overflows";
+        return false;
+    }
+    const uint64_t nShift = nFloor + (uint64_t)nEntering;
+    if (nOutputAmount < nShift)
+    {
+        strErrorOut = "IV5 note vote stake is below the minimum vote weight";
+        return false;
+    }
+
+    PrivacyVNextDigest entropy;
+    if (!RandomScalar(entropy, strErrorOut))
+        return false;
+    PrivacyVNextDigest commitment;
+    commitment.fill(0);
+    std::string error;
+    const bool fProved = ProvePrivacyVNextRange(nOutputAmount - nShift, outputMask, entropy,
+                                                commitment, vchProofOut, error);
+    OPENSSL_cleanse(entropy.data(), entropy.size());
+    if (!fProved)
+    {
+        strErrorOut = "IV5 note vote weight floor could not be range-proved: " + error;
+        vchProofOut.clear();
+        return false;
+    }
+
+    // Only usable if it lands on the point the decoder derives. Surfacing a divergent
+    // opening here beats emitting a vote the network refuses. A u64 is already a
+    // canonical scalar, so the shift is its little-endian encoding, negated.
+    PrivacyVNextDigest one;
+    one.fill(0);
+    one[0] = 1;
+    PrivacyVNextDigest shiftScalar;
+    shiftScalar.fill(0);
+    for (size_t i = 0; i < 8; ++i)
+        shiftScalar[i] = (unsigned char)((nShift >> (8 * i)) & 0xffULL);
+    std::vector<unsigned char> vchNegated;
+    if (!Ed25519ScalarNeg(AsVector(shiftScalar), vchNegated) || vchNegated.size() != 32)
+    {
+        strErrorOut = "IV5 note vote floor shift is not a canonical scalar";
+        vchProofOut.clear();
+        return false;
+    }
+    PrivacyVNextDigest negatedShift;
+    std::copy(vchNegated.begin(), vchNegated.end(), negatedShift.begin());
+
+    std::vector<PrivacyVNextCombineTerm> vTerms(2);
+    vTerms[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+    vTerms[0].scalar = one;
+    vTerms[0].point = outputCommitment;
+    vTerms[1].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
+    vTerms[1].scalar = negatedShift;
+    PrivacyVNextDigest expected;
+    expected.fill(0);
+    if (!CombinePrivacyVNextPoints(vTerms, expected, error) || commitment != expected)
+    {
+        strErrorOut = "IV5 note vote floor proof is over a point the validator misses";
+        vchProofOut.clear();
+        return false;
+    }
+    return true;
+}
+
 // one function is what stops the two drifting apart in how they serialize or balance.
 static bool BuildPrivacyVNextPayload(
     uint8_t nNetwork,
@@ -583,7 +662,21 @@ static bool BuildPrivacyVNextPayload(
     PutVector(payload, std::vector<unsigned char>(
                            valueProof.balanceProof.begin(),
                            valueProof.balanceProof.end()));
-    PutVector(payload, std::vector<unsigned char>());   // operation proof: none
+    // A note vote carries its stake-floor proof here; every other operation carries none.
+    std::vector<unsigned char> vchOperationProof;
+    if (nOperation == VNEXT_OPERATION_NOTE_VOTE)
+    {
+        if (outputs.size() != 1 || valueProof.vOutputCommitments.size() != 1)
+        {
+            strErrorOut = "an IV5 note vote proves exactly one output";
+            return false;
+        }
+        if (!BuildPrivacyVNextNoteVoteFloorProof(
+                outputs[0].nAmount, nTransparentValueBalance, vOutputMasks[0],
+                valueProof.vOutputCommitments[0], vchOperationProof, strErrorOut))
+            return false;
+    }
+    PutVector(payload, vchOperationProof);
     PutVector(payload, vchDisclosureProofs);
 
     // Run the decoder consensus uses before handing the payload back, so a payload that

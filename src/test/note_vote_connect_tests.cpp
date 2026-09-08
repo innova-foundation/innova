@@ -16,6 +16,7 @@
 #include "../main.h"
 #include "../ed25519_zk.h"
 #include "../privacy_vnext_builder.h"
+#include "../privacy_vnext/iv5_protocol.h"
 #include "../privacy_vnext_ffi.h"
 #include "../privacy_vnext_store.h"
 #include "../shielded.h"
@@ -395,12 +396,30 @@ bool BuildShapedNoteVote(const FundedNote& note,
         return false;
     }
 
+    // Stake-floor range proof over the output commitment shifted down by the floor and the
+    // value entering. A reissue below the shift leaves the section empty.
+    std::vector<unsigned char> vchFloorProof;
+    if (nTransparentValueBalance >= 0)
+    {
+        const uint64_t nShift = (uint64_t)iv5::NOTE_VOTE_MIN_WEIGHT +
+                                (uint64_t)nTransparentValueBalance;
+        if (nReissueAmount >= nShift)
+        {
+            PrivacyVNextDigest floorCommitment;
+            floorCommitment.fill(0);
+            if (!ProvePrivacyVNextRange(nReissueAmount - nShift, outputMask,
+                                        CollateralScalar(0x66), floorCommitment,
+                                        vchFloorProof, error))
+                return false;
+        }
+    }
+
     std::vector<unsigned char> payload = prefix;
     PutSection(payload, vchMembership);
     PutSection(payload, valueProof.vchRangeProof);
     PutSection(payload, std::vector<unsigned char>(valueProof.balanceProof.begin(),
                                                    valueProof.balanceProof.end()));
-    PutSection(payload, std::vector<unsigned char>());   // no operation proof
+    PutSection(payload, vchFloorProof);
     PutSection(payload, std::vector<unsigned char>());   // no disclosures
     vchPayloadOut.swap(payload);
     keyImageOut = vFinal[0].keyImage;

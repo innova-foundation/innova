@@ -370,7 +370,7 @@ uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote)
 // Height-keyed floor ladder. The last rung ends at the height type's maximum; a new floor
 // sets that rung's last height and appends a rung.
 static const CFinalityVoteWeightFloorRung vFinalityVoteWeightFloor[] = {
-    { std::numeric_limits<int>::max(), 500 * COIN },
+    { std::numeric_limits<int>::max(), iv5::NOTE_VOTE_MIN_WEIGHT },
 };
 
 int64_t GetFinalityMinVoteWeight(int nHeight)
