@@ -243,6 +243,36 @@ under the default datadir (the assertion the old behaviour fails), and that
 is the compile-time `NATIVETOR_SOCKS_PORT`, so only one nativetor node runs per
 host and the suite is marked `fixed_ports`.
 
+## Shutdown and reload across two machines
+
+```bash
+contrib/test/iv5_shutdown_reload_fleet.sh setup
+contrib/test/iv5_shutdown_reload_fleet.sh start
+contrib/test/iv5_shutdown_reload_fleet.sh mine 910
+contrib/test/iv5_shutdown_reload_fleet.sh check
+contrib/test/iv5_shutdown_reload_fleet.sh crosscheck
+```
+
+The feature harnesses stop the fleet at the end and never look at how it stopped
+or whether it comes back, so nothing covered the two things a release needs:
+that every node exits 0, and that its datadir reloads unchanged. Four nodes
+(d0/d1 on the Linux host, m0/m1 on the MacBook, linked over tailscale), both
+stop routes -- d0/m0 take the stop RPC, d1/m1 take SIGTERM, which reach
+`StartShutdown()` differently.
+
+`check` drives one node at a time: snapshot, stop, read the daemon's own exit
+status, restart, compare height, tip, epoch state digest, nullifier root, IV5
+tree root, pool balance, finalized height, wallet balance and transaction count,
+then wait for the peer to come back. `crosscheck` stops all four, reloads all
+four and requires the four to agree, which a node-at-a-time pass cannot see.
+
+Two positive controls keep the log assertions honest, because `-regtest` writes
+the log under `<datadir>/regtest` and a grep against the wrong path passes every
+absence test: the stop window must contain `Innova exited`, and the reload
+window must contain the startup banner. The exit status comes from a launcher
+that waits on the daemon rather than `-daemon`, which forks and leaves no
+process to read it from.
+
 ## Release verification evidence
 
 `check_v5_release_policy.py` requires a SHA-256 for every field of
