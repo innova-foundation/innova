@@ -820,14 +820,21 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     } else if spec.operation == NOTE_FINALITY_VOTE {
         // The stake floor: a range statement over the output commitment moved down by the
         // floor and by the value entering, which is what the decoder derives for itself.
-        let shift = crate::NOTE_VOTE_MIN_WEIGHT + spec.transparent_value_balance as u64;
-        let (_, proof) = value::prove_range(
-            &[spec.outputs[0].amount - shift],
-            &[spec.outputs[0].mask.to_bytes()],
-            &entropy,
-        )
-        .expect("stake-floor range proof must be provable");
-        proof
+        let shift = crate::NOTE_VOTE_MIN_WEIGHT
+            .saturating_add(spec.transparent_value_balance.max(0) as u64);
+        if spec.outputs[0].amount < shift {
+            // Deliberately below the floor: there is no opening to prove, so the section
+            // stays empty and the case sees the decoder's refusal rather than a panic.
+            Vec::new()
+        } else {
+            let (_, proof) = value::prove_range(
+                &[spec.outputs[0].amount - shift],
+                &[spec.outputs[0].mask.to_bytes()],
+                &entropy,
+            )
+            .expect("stake-floor range proof must be provable");
+            proof
+        }
     } else {
         Vec::new()
     };
@@ -2507,10 +2514,13 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
     let address = Address::new(&mut rng);
     let boundary = [0x7e_u8; 32];
 
-    let input = make_note(&mut rng, &address, 0, 1_000);
+    // Above the floor rather than exactly on it: the cases below derive their outputs by
+    // subtracting from this note, and they have to clear the floor AND balance.
+    let vote_amount = crate::NOTE_VOTE_MIN_WEIGHT + 1_000;
+    let input = make_note(&mut rng, &address, 0, vote_amount);
     let inputs = vec![input.clone()];
     let context = context_of(NOTE_FINALITY_VOTE, &inputs);
-    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let output = make_output(&mut rng, &address, 0, vote_amount, &context);
     let spec = Spec::note_vote(input.clone(), output.clone(), boundary, 1_200);
     let built = build(&mut rng, &spec);
     assert_eq!(validate(&built.request), Ok(()), "a vote validates");
@@ -2559,16 +2569,18 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
         vote_like(two, vec![merged], 0, 0),
     );
 
+    // Halves of the voting note, balanced so the refusal is for two outputs, not the sum.
+    let half = vote_amount / 2;
     let split = vec![
-        make_output(&mut rng, &address, 0, 500, &context),
-        make_output(&mut rng, &address, 1, 500, &context),
+        make_output(&mut rng, &address, 0, half, &context),
+        make_output(&mut rng, &address, 1, vote_amount - half, &context),
     ];
     refused(
         "a vote splitting its note",
         vote_like(vec![input.clone()], split, 0, 0),
     );
 
-    let short = make_output(&mut rng, &address, 0, 999, &context);
+    let short = make_output(&mut rng, &address, 0, vote_amount - 1, &context);
     refused(
         "a vote paying a fee",
         vote_like(vec![input.clone()], vec![short.clone()], 0, 1),
@@ -2580,7 +2592,7 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
 
     // A reissue grown by the declared balance is well-formed here; the caller pins the owed
     // figure (epoch budget over slot cap) against the effects.
-    let grown = make_output(&mut rng, &address, 0, 1_001, &context);
+    let grown = make_output(&mut rng, &address, 0, vote_amount + 1, &context);
     let rewarded = build(
         &mut ChaCha20Rng::from_seed([0xd3; 32]),
         &vote_like(vec![input.clone()], vec![grown], 1, 0),
@@ -2613,7 +2625,7 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
     );
 
     let transfer_context = context_of(NOTE_TRANSFER, &inputs);
-    let transfer_output = make_output(&mut rng, &address, 0, 1_000, &transfer_context);
+    let transfer_output = make_output(&mut rng, &address, 0, vote_amount, &transfer_context);
     let transfer = Spec::transfer(vec![input], vec![transfer_output], 0);
     let built_transfer = build(&mut rng, &transfer);
     let transfer_verdict = validate(&built_transfer.request);
@@ -2643,9 +2655,10 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
 fn a_note_vote_binds_its_boundary() {
     let mut rng = ChaCha20Rng::from_seed([0xd2; 32]);
     let address = Address::new(&mut rng);
-    let input = make_note(&mut rng, &address, 0, 1_000);
+    let vote_amount = crate::NOTE_VOTE_MIN_WEIGHT;
+    let input = make_note(&mut rng, &address, 0, vote_amount);
     let context = context_of(NOTE_FINALITY_VOTE, std::slice::from_ref(&input));
-    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let output = make_output(&mut rng, &address, 0, vote_amount, &context);
     let built = build(&mut rng, &Spec::note_vote(input, output, [0x7e; 32], 1_200));
     assert_eq!(validate(&built.request), Ok(()));
 
