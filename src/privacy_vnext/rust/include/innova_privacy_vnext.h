@@ -275,6 +275,15 @@ int32_t innova_privacy_vnext_payload_effects(
     uint8_t *out,
     size_t out_capacity,
     size_t *out_written);
+/* Effects with the proof gates skipped. Structure is still enforced and the bytes are
+   identical to innova_privacy_vnext_payload_effects for anything that accepts. The CALLER
+   owns the assume-valid gate: this checks no height and no chain. */
+int32_t innova_privacy_vnext_payload_effects_assume_valid(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
 int32_t innova_privacy_vnext_address_encode(
     const uint8_t *request,
     size_t request_len,

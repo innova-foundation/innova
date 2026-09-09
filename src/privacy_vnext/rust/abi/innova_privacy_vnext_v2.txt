@@ -28,6 +28,7 @@ functions:
   innova_privacy_vnext_payload_signing_hash(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_len)
   innova_privacy_vnext_payload_validate(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_payload_effects(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_payload_effects_assume_valid(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_address_encode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_address_decode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_key_derive(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)

@@ -502,12 +502,22 @@ fn validate_compressed_secp256k1(bytes: &[u8; FINALITY_MEMBER_KEY_BYTES]) -> Res
 }
 
 #[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
+/// `VerifyProofs::No` skips only the proof gates; effects are byte-identical either way.
+/// Reachable only for assume-valid sync under a compiled-in checkpoint.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifyProofs {
+    Yes,
+    No,
+}
+
 fn validate_payload(
     wire_version: u32,
     payload: &[u8],
     expected_network: u8,
     expected_genesis: &[u8; 32],
+    verify_proofs: VerifyProofs,
 ) -> Result<PayloadEffects, ResultCode> {
+    let verify = verify_proofs == VerifyProofs::Yes;
     let PayloadPrefix {
         mut cursor,
         operation,
@@ -615,7 +625,7 @@ fn validate_payload(
     if membership.len() != expected_membership {
         return Err(ResultCode::ConsensusInvalid);
     }
-    if input_count != 0 {
+    if verify && input_count != 0 {
         fcmp::verify_components(
             finalized_root,
             signing_hash,
@@ -630,7 +640,8 @@ fn validate_payload(
     if requires_range == range.is_empty() {
         return Err(ResultCode::ConsensusInvalid);
     }
-    if requires_range
+    if verify
+        && requires_range
         && !value::verify_range(&output_commitments, range, &signing_hash).map_err(|error| {
             match error {
                 value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
@@ -650,18 +661,19 @@ fn validate_payload(
             return Err(ResultCode::ConsensusInvalid);
         }
     } else if balance_proof.is_empty()
-        || !value::verify_balance(
-            &pseudo_outs,
-            &output_commitments,
-            transparent_value_balance,
-            fee,
-            &signing_hash,
-            balance_proof,
-        )
-        .map_err(|error| match error {
-            value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
-            _ => ResultCode::ConsensusInvalid,
-        })?
+        || (verify
+            && !value::verify_balance(
+                &pseudo_outs,
+                &output_commitments,
+                transparent_value_balance,
+                fee,
+                &signing_hash,
+                balance_proof,
+            )
+            .map_err(|error| match error {
+                value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                _ => ResultCode::ConsensusInvalid,
+            })?)
     {
         return Err(ResultCode::ConsensusInvalid);
     }
@@ -671,7 +683,8 @@ fn validate_payload(
         // Against the re-randomized commitment, never a leaf; the challenge folds the commitment
         // and signing hash so an amount proof cannot be moved.
         if operation_proof.len() != value::AMOUNT_EQUALITY_PROOF_BYTES
-            || !value::verify_amount_equality(
+            || (verify
+                && !value::verify_amount_equality(
                 &pseudo_outs[0],
                 COLLATERAL_ATTESTATION_AMOUNT,
                 &signing_hash,
@@ -680,7 +693,7 @@ fn validate_payload(
             .map_err(|error| match error {
                 value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
                 _ => ResultCode::ConsensusInvalid,
-            })?
+            })?)
         {
             return Err(ResultCode::ConsensusInvalid);
         }
@@ -695,12 +708,13 @@ fn validate_payload(
         let shifted = value::shift_commitment(&output_commitments[0], shift)
             .map_err(|_| ResultCode::ConsensusInvalid)?;
         if operation_proof.is_empty()
-            || !value::verify_range(&[shifted], operation_proof, &signing_hash).map_err(
+            || (verify
+                && !value::verify_range(&[shifted], operation_proof, &signing_hash).map_err(
                 |error| match error {
                     value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
                     _ => ResultCode::ConsensusInvalid,
                 },
-            )?
+            )?)
         {
             return Err(ResultCode::ConsensusInvalid);
         }
@@ -726,7 +740,8 @@ fn validate_payload(
     for (input_index, authority) in sender_authorities.iter().enumerate() {
         let end = disclosure_offset + disclosure::SENDER_PROOF_BYTES;
         let o_tilde = fcmp::input_o_tilde(membership, input_count, input_index)?;
-        if !disclosure::verify_sender(
+        if verify
+            && !disclosure::verify_sender(
             authority,
             &o_tilde,
             &signing_hash,
@@ -741,7 +756,8 @@ fn validate_payload(
     }
     for (output_index, (spend, view)) in receiver_addresses.iter().enumerate() {
         let end = disclosure_offset + disclosure::RECEIVER_PROOF_BYTES;
-        if !disclosure::verify_receiver(
+        if verify
+            && !disclosure::verify_receiver(
             spend,
             view,
             &output_owners[output_index],
@@ -983,7 +999,7 @@ pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
         genesis,
         payload,
     } = request_parts(request)?;
-    validate_payload(wire_version, payload, network, &genesis).map(|_| ())
+    validate_payload(wire_version, payload, network, &genesis, VerifyProofs::Yes).map(|_| ())
 }
 
 /// Hash of the serialized payload prefix; the single definition shared by builder
@@ -1006,6 +1022,19 @@ pub(crate) fn signing_hash(request: &[u8]) -> Result<[u8; 32], ResultCode> {
     Ok(signable_hash(wire_version, &request[8..]))
 }
 
+/// Effects without proof verification; returns the same bytes as `effects` for any
+/// payload `effects` accepts. Assume-valid sync only: the block must be an ancestor
+/// of a compiled-in hash.
+pub(crate) fn effects_assume_valid(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let ValidationRequest {
+        wire_version,
+        network,
+        genesis,
+        payload,
+    } = request_parts(request)?;
+    validate_payload(wire_version, payload, network, &genesis, VerifyProofs::No)?.encode()
+}
+
 pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let ValidationRequest {
         wire_version,
@@ -1013,7 +1042,7 @@ pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         genesis,
         payload,
     } = request_parts(request)?;
-    validate_payload(wire_version, payload, network, &genesis)?.encode()
+    validate_payload(wire_version, payload, network, &genesis, VerifyProofs::Yes)?.encode()
 }
 
 #[cfg(test)]

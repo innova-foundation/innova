@@ -900,6 +900,66 @@ fn payload_signing_hash(prefix: &[u8]) -> [u8; 32] {
     blake2::Digest::finalize(transcript).into()
 }
 
+/// Skipping proof gates (assume-valid) changes the verdict only for bad proofs, never for
+/// good ones; a divergence would be a chain split.
+#[test]
+fn assume_valid_effects_match_verified_effects_exactly() {
+    let mut checked = 0_usize;
+    for seed in [1_u64, 7] {
+        for (label, spec, mut rng) in cases(seed) {
+            let built = build(&mut rng, &spec);
+            let verified = payload::effects(&built.request)
+                .unwrap_or_else(|e| panic!("{label}: verified effects: {e:?}"));
+            let assumed = payload::effects_assume_valid(&built.request)
+                .unwrap_or_else(|e| panic!("{label}: assume-valid effects: {e:?}"));
+            assert_eq!(verified, assumed, "{label}: effects differ with proofs skipped");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 20, "expected the whole case grid, saw {checked}");
+}
+
+/// What assume-valid actually buys, per payload shape.
+#[test]
+#[ignore = "measurement, not an assertion"]
+fn report_assume_valid_saving() {
+    for (label, spec, mut rng) in cases(1) {
+        let built = build(&mut rng, &spec);
+        let t0 = std::time::Instant::now();
+        let _ = payload::effects(&built.request);
+        let verified = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let _ = payload::effects_assume_valid(&built.request);
+        let assumed = t1.elapsed();
+        let saved = 100.0 - (assumed.as_secs_f64() / verified.as_secs_f64() * 100.0);
+        println!(
+            "{label}: inputs={} verified={:?} assume_valid={:?} saved={:.1}%",
+            spec.inputs.len(), verified, assumed, saved
+        );
+    }
+}
+
+/// Structure is still enforced when proofs are not: a payload whose sections are the wrong
+/// shape is refused either way. Only the proof VERDICT is skipped.
+#[test]
+fn assume_valid_still_enforces_structure() {
+    let mut rng = ChaCha20Rng::from_seed([0xa5; 32]);
+    let address = Address::new(&mut rng);
+    let input = make_note(&mut rng, &address, 0, 1_000);
+    let context = context_of(NOTE_TRANSFER, std::slice::from_ref(&input));
+    let output = make_output(&mut rng, &address, 0, 1_000, &context);
+    let built = build(&mut rng, &Spec::transfer(vec![input], vec![output], 0));
+    assert!(payload::effects_assume_valid(&built.request).is_ok(), "the sound payload");
+
+    // Truncating the membership section is a length violation, not a proof failure.
+    let mut short = built.request.clone();
+    short.truncate(short.len() - 64);
+    assert!(
+        payload::effects_assume_valid(&short).is_err(),
+        "a truncated payload is refused even with proofs skipped"
+    );
+}
+
 fn validate(request: &[u8]) -> Result<(), ResultCode> {
     payload::validate(request)
 }

@@ -137,6 +137,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_payload_signing_hash",
             "innova_privacy_vnext_payload_validate",
             "innova_privacy_vnext_payload_effects",
+            "innova_privacy_vnext_payload_effects_assume_valid",
             "innova_privacy_vnext_payload_scan",
             "innova_privacy_vnext_address_encode",
             "innova_privacy_vnext_address_decode",

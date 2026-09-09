@@ -212,39 +212,9 @@ pub const fn is_note_vote_operation(operation: u8) -> bool {
     operation == NOTE_FINALITY_VOTE
 }
 
-/// Contract texts this binary's lineage has published, besides the current one.
-///
-/// Provenance only. No consensus rule may branch on this list: the decoder sees a payload
-/// and nothing else, so any verdict it reached from a compile-time list would differ
-/// between two binaries and split the chain on the block carrying that payload. Which
-/// digest a payload must carry is decided against the digest the chain carries, once, on
-/// the C++ side.
-///
-/// An entry may be added only when the contract text changed without changing a rule --
-/// documentation catching up to code. The list stays short and append-only; a rule change
-/// needs a fork, not a digest.
-///
-/// e65eaaa6: the text before operation 8 was written down and operation 9 was added. Both
-/// were already enforced by this binary's predecessor, so payloads carrying it are judged
-/// by exactly the rules they were built under.
-///
-/// f0259ccc: the text still declared all four authorization modes on 2005 and 2008 after the
-/// decoders were narrowed to owner. The digest selects no rule, so a payload carrying it is
-/// judged by the narrowed table like any other.
-/// f0259ccc: the parameter-digest acceptance rule was written down as the chain's own.
-///
-/// 4313419b: the vote membership prover began reporting r_i and r_r_i, widening its FFI
-/// response record. That record is prover-side construction material, never a consensus
-/// payload, so no rule moved and no payload's verdict changes.
-///
-/// 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
-/// trailer is the decoder's answer to the caller, never a consensus payload, so no rule
-/// moved and no payload's verdict changes.
-///
-/// b796ba76: a note finality vote gained its stake-floor rule and the floor itself. This one
-/// DOES move a rule: a vote proving no floor, or proving it against an unshifted point, is
-/// refused from the height the lane activates, and the lane has never been active.
-const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 5] = [
+/// Contract texts this binary's lineage has published, besides the current one. Provenance
+/// only: no consensus rule may branch on it. Append-only, for text changes that move no rule.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 6] = [
     [
         0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
         0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
@@ -269,6 +239,11 @@ const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 5] = [
         0xb7, 0x96, 0xba, 0x76, 0xb3, 0xa9, 0x5b, 0xd9, 0x6e, 0x36, 0xc7, 0xe1, 0x25, 0x5c, 0x6d,
         0xea, 0xe4, 0x10, 0x67, 0x56, 0x92, 0xde, 0x7e, 0x7e, 0xaa, 0xff, 0x1b, 0x4d, 0x1f, 0x70,
         0xa2, 0xa7,
+    ],
+    [
+        0x14, 0x24, 0xa3, 0x8b, 0x5e, 0x43, 0x51, 0xe0, 0xae, 0x9f, 0xb1, 0x03, 0xb7, 0x79, 0xd3,
+        0xb5, 0xb2, 0x45, 0xaa, 0xf0, 0x2d, 0x02, 0x52, 0x5d, 0x79, 0xad, 0x8b, 0xb9, 0xb3, 0xe9,
+        0x70, 0xd5,
     ],
 ];
 
@@ -1538,6 +1513,27 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_effects(
         // SAFETY: request validation precedes this read.
         let request = unsafe { slice::from_raw_parts(request, request_len) };
         let effects = payload::effects(request)?;
+        write_variable_output(&effects, out, out_capacity, out_written)
+    })
+}
+
+/// Payload effects WITHOUT proof verification (structure rules still run); the caller owns the gate.
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_payload_effects_assume_valid(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let effects = payload::effects_assume_valid(request)?;
         write_variable_output(&effects, out, out_capacity, out_written)
     })
 }
