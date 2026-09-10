@@ -11080,6 +11080,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
+    // Resolved before the warm pass, not beside the loop that consumes it: warming calls
+    // the VERIFYING extraction, so warming a block whose proofs are about to be skipped
+    // pays the whole cost assume-valid exists to avoid, and then pays an uncached parse
+    // on top. Nothing fails if this is wrong -- both paths produce identical effects --
+    // so the only symptom is that the feature does nothing.
+    const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
+
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {
         // Verify the block's payloads concurrently before validating them in order. Each
@@ -11087,6 +11094,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         // inside a block interval during a sync, where nothing has been seen before. This
         // only fills the effects cache; every consensus decision still happens below, in
         // order, and an invalid payload is simply left uncached for that loop to reject.
+        if (!fAssumeValidBlock)
         {
             std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
             vWarm.reserve(activeBlock.vtx.size());
@@ -11124,8 +11132,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         unsigned int nBlockNoteVotes = 0;
         unsigned int nPriorNoteVotes = 0;
         bool fHavePriorNoteVotes = false;
-        // One ancestry resolution for the block, not one per payload.
-        const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
         for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsPrivacyVNext())
