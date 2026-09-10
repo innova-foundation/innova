@@ -2540,8 +2540,9 @@ FinalityEnvelopeDecodeResult ExtractFinalityTallyCertificateForHeight(
         ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
 }
 
-// Note finality vote records carried by a block. The op-10 payload source lands here;
-// until it does this yields nothing, which is what keeps the lane inert.
+// Note finality vote records carried by a block, derived from its operation-10 payloads.
+// ConnectBlock and DisconnectBlock call this with the same DAG-active view and height,
+// so both derive the identical list.
 bool ExtractNoteFinalityVotesFromBlockForHeight(
     const CBlock& block, int nHeight, std::vector<CNoteFinalityVote>& vVotesOut,
     FinalityEnvelopeDecodeResult* pFailure)
@@ -2549,6 +2550,61 @@ bool ExtractNoteFinalityVotesFromBlockForHeight(
     vVotesOut.clear();
     if (pFailure)
         *pFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!IsIV5NoteVoteActiveAtHeight(nHeight))
+        return true;
+
+    const FinalityEnvelopeDecodeResult invalid = FINALITY_ENVELOPE_INVALID;
+    for (size_t i = 0; i < block.vtx.size(); i++)
+    {
+        const CTransaction& tx = block.vtx[i];
+        // An envelope read, not a decode: a block of ordinary payloads costs one
+        // operation-byte comparison per transaction instead of a payload parse.
+        if (!IsPrivacyVNextNoteVoteShape(tx))
+            continue;
+
+        // The non-verifying decoder. Every field read below is produced by parsing, the
+        // proofs were verified where the payload connected, and the disconnect side has
+        // no warm effects cache to draw on.
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffectsAssumeValid(
+                tx.nVersion, tx.privacyVNext.vchPayload, effects);
+        if (!validation.IsValid() || !effects.HasVoteBoundary() ||
+            effects.keyImages.size() != 1 ||
+            effects.nVoteBoundaryHeight > (uint32_t)std::numeric_limits<int>::max())
+        {
+            // The shape said vote, so a payload that will not yield one is a producer's
+            // doing and invalidates the block rather than being skipped. One input is
+            // the payload's own rule for this operation, not an assumption made here.
+            vVotesOut.clear();
+            if (pFailure)
+                *pFailure = invalid;
+            return false;
+        }
+
+        const int nBoundaryHeight = (int)effects.nVoteBoundaryHeight;
+        CNoteFinalityVote vote;
+        vote.nEpoch = GetEpochForHeight(nBoundaryHeight);
+        vote.nHeight = nBoundaryHeight;
+        memcpy(vote.hashBlock.begin(), effects.voteBoundaryHash.data(),
+               effects.voteBoundaryHash.size());
+        // The tag is the spent note's key image: unique to the note, published by this
+        // same payload, and replaced by an unrelated one next epoch because the vote
+        // retires the note and reissues to a fresh one.
+        vote.vchTag.assign(effects.keyImages[0].begin(), effects.keyImages[0].end());
+
+        // Nothing malformed may reach the tracker: the record is persisted, and the
+        // startup load refuses the node on one it cannot read back.
+        std::string strError;
+        if (!vote.IsValidBasic(&strError))
+        {
+            vVotesOut.clear();
+            if (pFailure)
+                *pFailure = invalid;
+            return false;
+        }
+        vVotesOut.push_back(vote);
+    }
     return true;
 }
 

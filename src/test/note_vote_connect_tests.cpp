@@ -1113,6 +1113,87 @@ BOOST_AUTO_TEST_CASE(the_stake_floor_is_enforced_by_the_payload_verifier)
     }
 }
 
+
+// The tally record is derived from the vote payload, not a script. The four fields
+// asserted are all the tally reads; connect and disconnect share this function.
+BOOST_AUTO_TEST_CASE(the_extractor_derives_a_record_from_an_op_10_payload)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xC1, kVoteNote, note, error), error);
+
+    const uint32_t nBoundaryHeight = 6000;
+    PrivacyVNextDigest boundary = ContractDigest();
+    std::vector<unsigned char> payload;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0, boundary,
+                            nBoundaryHeight, payload, keyImage, reissue, error),
+        error);
+
+    CBlock block;
+    block.vtx.push_back(CTransaction());              // coinbase placeholder
+    block.vtx.push_back(CarryingTx(payload, 1000));
+
+    // Unset on every value network, so the source yields nothing until a height is set.
+    {
+        ScopedNoteVoteHeight off(PRIVACY_VNEXT_HEIGHT_UNSET);
+        std::vector<CNoteFinalityVote> vNone;
+        FinalityEnvelopeDecodeResult failure = FINALITY_ENVELOPE_INVALID;
+        BOOST_CHECK(ExtractNoteFinalityVotesFromBlockForHeight(block, 6100, vNone,
+                                                               &failure));
+        BOOST_CHECK(vNone.empty());
+    }
+
+    ScopedNoteVoteHeight fork(0);
+    std::vector<CNoteFinalityVote> vVotes;
+    FinalityEnvelopeDecodeResult failure = FINALITY_ENVELOPE_INVALID;
+    BOOST_REQUIRE(ExtractNoteFinalityVotesFromBlockForHeight(block, 6100, vVotes,
+                                                             &failure));
+    BOOST_REQUIRE_EQUAL(vVotes.size(), 1U);
+    const CNoteFinalityVote& vote = vVotes[0];
+
+    // The boundary it names, and the height that fixes its epoch.
+    uint256 hashBoundary = 0;
+    memcpy(hashBoundary.begin(), boundary.data(), boundary.size());
+    BOOST_CHECK(vote.hashBlock == hashBoundary);
+    BOOST_CHECK_EQUAL(vote.nHeight, (int)nBoundaryHeight);
+    BOOST_CHECK_EQUAL(vote.nEpoch, GetEpochForHeight((int)nBoundaryHeight));
+
+    // The tag is the payload's key image.
+    BOOST_REQUIRE_EQUAL(vote.vchTag.size(), (size_t)FINALITY_NOTE_POINT_SIZE);
+    BOOST_CHECK(memcmp(&vote.vchTag[0], keyImage.data(), keyImage.size()) == 0);
+
+    // The record must round-trip through the tracker's persistence.
+    BOOST_CHECK(vote.IsValidBasic(&error));
+
+    // A block with no vote-shaped transaction yields nothing rather than failing.
+    CBlock plain;
+    plain.vtx.push_back(CTransaction());
+    std::vector<CNoteFinalityVote> vEmpty;
+    BOOST_CHECK(ExtractNoteFinalityVotesFromBlockForHeight(plain, 6100, vEmpty,
+                                                           &failure));
+    BOOST_CHECK(vEmpty.empty());
+
+    // A vote-shaped tx whose payload yields no record invalidates the block.
+    CBlock corrupt;
+    corrupt.vtx.push_back(CTransaction());
+    std::vector<unsigned char> mangled = payload;
+    mangled.resize(mangled.size() / 2);
+    corrupt.vtx.push_back(CarryingTx(mangled, 1000));
+    if (IsPrivacyVNextNoteVoteShape(corrupt.vtx[1]))
+    {
+        std::vector<CNoteFinalityVote> vBad;
+        FinalityEnvelopeDecodeResult badFailure = FINALITY_ENVELOPE_NO_MATCH;
+        BOOST_CHECK(!ExtractNoteFinalityVotesFromBlockForHeight(corrupt, 6100, vBad,
+                                                                &badFailure));
+        BOOST_CHECK(vBad.empty());
+        BOOST_CHECK_EQUAL(badFailure, FINALITY_ENVELOPE_INVALID);
+    }
+}
+
 // A vote is carried by its payload alone, and the per-block and per-window caps count
 // what a block adds against what the window already holds.
 BOOST_AUTO_TEST_CASE(a_vote_rides_bare_and_the_caps_hold)
