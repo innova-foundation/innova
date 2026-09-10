@@ -2540,48 +2540,8 @@ FinalityEnvelopeDecodeResult ExtractFinalityTallyCertificateForHeight(
         ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
 }
 
-bool BuildNoteFinalityVoteScript(const CNoteFinalityVote& vote, CScript& scriptOut)
-{
-    scriptOut.clear();
-    if (!vote.IsValidBasic())
-        return false;
-    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-    ss << vote;
-    return BuildCanonicalTaggedFinalityScript(
-        FINALITY_NOTE_VOTE_TAG,
-        std::vector<unsigned char>(ss.begin(), ss.end()), scriptOut);
-}
-
-bool ExtractNoteFinalityVote(const CScript& scriptPubKey, CNoteFinalityVote& voteOut)
-{
-    std::vector<unsigned char> vPayload;
-    if (!ExtractCanonicalTaggedOpReturnPayload(scriptPubKey, FINALITY_NOTE_VOTE_TAG,
-                                               vPayload))
-        return false;
-    try {
-        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
-        CNoteFinalityVote vote;
-        ss >> vote;
-        if (!ss.empty())
-            return false;
-        voteOut = vote;
-    } catch (const std::exception&) {
-        return false;
-    }
-    return true;
-}
-
-FinalityEnvelopeDecodeResult ExtractNoteFinalityVoteForHeight(
-    const CScript& scriptPubKey, int nHeight, CNoteFinalityVote& voteOut)
-{
-    if (!IsIV5NoteVoteActiveAtHeight(nHeight))
-        return FINALITY_ENVELOPE_NO_MATCH;
-    if (!ScriptCarriesFinalityTag(scriptPubKey, FINALITY_NOTE_VOTE_TAG))
-        return FINALITY_ENVELOPE_NO_MATCH;
-    return ExtractNoteFinalityVote(scriptPubKey, voteOut)
-        ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
-}
-
+// Note finality vote records carried by a block. The op-10 payload source lands here;
+// until it does this yields nothing, which is what keeps the lane inert.
 bool ExtractNoteFinalityVotesFromBlockForHeight(
     const CBlock& block, int nHeight, std::vector<CNoteFinalityVote>& vVotesOut,
     FinalityEnvelopeDecodeResult* pFailure)
@@ -2589,24 +2549,6 @@ bool ExtractNoteFinalityVotesFromBlockForHeight(
     vVotesOut.clear();
     if (pFailure)
         *pFailure = FINALITY_ENVELOPE_NO_MATCH;
-    if (block.vtx.empty())
-        return true;
-    for (const CTxOut& out : block.vtx[0].vout)
-    {
-        CNoteFinalityVote vote;
-        FinalityEnvelopeDecodeResult result = ExtractNoteFinalityVoteForHeight(
-            out.scriptPubKey, nHeight, vote);
-        if (result == FINALITY_ENVELOPE_NO_MATCH)
-            continue;
-        if (result != FINALITY_ENVELOPE_VALID)
-        {
-            vVotesOut.clear();
-            if (pFailure)
-                *pFailure = result;
-            return false;
-        }
-        vVotesOut.push_back(vote);
-    }
     return true;
 }
 
@@ -3360,52 +3302,6 @@ static bool PushFinalityVoteMessage(CNode* pnode, const CFinalityVote& vote)
         return false;
     pnode->PushMessage("fvote", vote);
     return true;
-}
-
-// Note-vote relay guards. A note vote is the most expensive object on this wire (a
-// membership proof plus two range-proof verifications) and the cheapest to fabricate a
-// near-duplicate of, so relay pays for verification at most once per envelope and each
-// peer gets a budget sized to what a whole epoch could legitimately carry.
-static CCriticalSection cs_noteVoteRelay;
-static std::map<uint256, bool> mapNoteVoteVerifyCache;
-static std::map<NodeId, std::pair<int64_t, int> > mapNoteVotePeerBudget;
-
-static const size_t NOTE_VOTE_VERIFY_CACHE_MAX = 4096;
-static const int NOTE_VOTE_PEER_BUDGET_SECONDS = 60;
-static const int NOTE_VOTE_PEER_BUDGET =
-    (int)FINALITY_MAX_EPOCH_NOTE_VOTES * 2;
-
-static bool NoteVotePeerBudgetAllows(NodeId id, int64_t nNow)
-{
-    LOCK(cs_noteVoteRelay);
-    std::pair<int64_t, int>& budget = mapNoteVotePeerBudget[id];
-    if (nNow - budget.first >= NOTE_VOTE_PEER_BUDGET_SECONDS)
-    {
-        budget.first = nNow;
-        budget.second = 0;
-    }
-    if (budget.second >= NOTE_VOTE_PEER_BUDGET)
-        return false;
-    budget.second++;
-    return true;
-}
-
-static bool NoteVoteVerifyCacheLookup(const uint256& hashVote, bool& fValidOut)
-{
-    LOCK(cs_noteVoteRelay);
-    std::map<uint256, bool>::const_iterator it = mapNoteVoteVerifyCache.find(hashVote);
-    if (it == mapNoteVoteVerifyCache.end())
-        return false;
-    fValidOut = it->second;
-    return true;
-}
-
-static void NoteVoteVerifyCacheStore(const uint256& hashVote, bool fValid)
-{
-    LOCK(cs_noteVoteRelay);
-    if (mapNoteVoteVerifyCache.size() >= NOTE_VOTE_VERIFY_CACHE_MAX)
-        mapNoteVoteVerifyCache.clear();
-    mapNoteVoteVerifyCache[hashVote] = fValid;
 }
 
 static bool PushFinalityTallyCertificateMessage(
@@ -7144,7 +7040,6 @@ bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlo
         if (!txdb.WriteNoteFinalityVote(hashVote, vote))
             return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
         mapNoteVotesByHash[hashVote] = vote;
-        mapPendingNoteVotes.erase(hashVote);
         vHashes.push_back(hashVote);
     }
 
@@ -7209,225 +7104,6 @@ bool CFinalityTracker::LoadNoteVotes(CTxDB& txdb)
         return false;
     RecomputeNoteVoteCounting();
     return true;
-}
-
-bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
-                                          std::string* pstrError, FinalityResult* pResult)
-{
-    if (pResult)
-        *pResult = FINALITY_RESULT_INVALID;
-    const uint256 hashVote = vote.GetHash();
-    {
-        LOCK(cs_finality);
-        if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
-        {
-            // Already held. Local state, so a caller that caches verdicts must not
-            // cache this one as a refusal.
-            if (pResult)
-                *pResult = FINALITY_RESULT_LOCAL_STATE;
-            return false;
-        }
-    }
-    // Relay-time context only: the window is a connect-time rule and a relayed vote may
-    // legitimately arrive before the block that will carry it.
-    if (!CheckNoteVoteForContext(vote, txdb, pstrError, CFinalityVoteContext::Relay(),
-                                 pResult))
-        return false;
-
-    LOCK(cs_finality);
-    mapPendingNoteVotes[hashVote] = vote;
-    if (pResult)
-        *pResult = FINALITY_RESULT_OK;
-    return true;
-}
-
-// Tip height for the hold bounds. Reads the plain height global rather than
-// dereferencing pindexBest: these run under cs_finality, which ConnectBlock takes while
-// holding cs_main, so this side must never reach for cs_main. A stale read only delays a
-// purge by a block, and the sentinel means "no chain yet", which disables the bound.
-static int DeferredNoteVoteTipHeight()
-{
-    return nBestHeight == std::numeric_limits<int>::max() ? -1 : nBestHeight;
-}
-
-unsigned int CFinalityTracker::PurgeDeferredNoteVotesLocked(int nTipHeight, int64_t nNow)
-{
-    unsigned int nDropped = 0;
-    std::map<uint256, std::map<uint256, CDeferredNoteVote> >::iterator it =
-        mapDeferredNoteVotes.begin();
-    while (it != mapDeferredNoteVotes.end())
-    {
-        std::map<uint256, CDeferredNoteVote>::iterator itVote = it->second.begin();
-        while (itVote != it->second.end())
-        {
-            // Un-carriable: the chain is already past the last block that could have
-            // included this vote (R1), so releasing it could never produce a valid
-            // carrier. Dropping it therefore loses nothing that was still winnable.
-            const bool fWindowClosed =
-                nTipHeight >= 0 &&
-                nTipHeight > itVote->second.vote.nHeight + FINALITY_VOTE_INCLUSION_WINDOW;
-            // Backstop for a hold the height rule can never reach -- a fabricated block
-            // at a height the chain has not got to. The age is orders of magnitude above
-            // the window, so a hold this old had no carrier left either.
-            const bool fAgedOut =
-                itVote->second.nTimeHeld > 0 &&
-                nNow - itVote->second.nTimeHeld > FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE;
-            if (fWindowClosed || fAgedOut)
-            {
-                it->second.erase(itVote++);
-                nDropped++;
-            }
-            else
-                ++itVote;
-        }
-        if (it->second.empty())
-            mapDeferredNoteVotes.erase(it++);
-        else
-            ++it;
-    }
-    return nDropped;
-}
-
-unsigned int CFinalityTracker::PurgeDeferredNoteVotes(int nTipHeight, int64_t nNow)
-{
-    LOCK(cs_finality);
-    return PurgeDeferredNoteVotesLocked(nTipHeight, nNow);
-}
-
-void CFinalityTracker::DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote)
-{
-    const uint256 hashVote = vote.GetHash();
-    LOCK(cs_finality);
-    if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
-        return;
-    // Reclaim slots the bound has already retired before consulting the cap, so a
-    // spammer's stale holds cannot squat on capacity an arriving honest vote needs.
-    PurgeDeferredNoteVotesLocked(DeferredNoteVoteTipHeight(), GetTime());
-    unsigned int nHeld = 0;
-    for (const auto& pair : mapDeferredNoteVotes)
-        nHeld += (unsigned int)pair.second.size();
-    // Full: refuse the NEW hold rather than evict an existing one. The sender of this
-    // vote still holds it and its inv will come round again; an evicted hold has no
-    // second sender, because a note vote is cast once per epoch and never re-emitted.
-    if (nHeld >= FINALITY_MAX_DEFERRED_NOTE_VOTES)
-        return;
-    CDeferredNoteVote held;
-    held.vote = vote;
-    held.nTimeHeld = GetTime();
-    mapDeferredNoteVotes[vote.hashBlock][hashVote] = held;
-}
-
-std::vector<uint256> CFinalityTracker::GetDeferredNoteVoteBlockHashes() const
-{
-    LOCK(cs_finality);
-    std::vector<uint256> vBlocks;
-    vBlocks.reserve(mapDeferredNoteVotes.size());
-    for (const auto& pair : mapDeferredNoteVotes)
-        vBlocks.push_back(pair.first);
-    return vBlocks;
-}
-
-unsigned int CFinalityTracker::GetDeferredNoteVoteCount() const
-{
-    LOCK(cs_finality);
-    unsigned int nHeld = 0;
-    for (const auto& pair : mapDeferredNoteVotes)
-        nHeld += (unsigned int)pair.second.size();
-    return nHeld;
-}
-
-std::vector<CNoteFinalityVote> CFinalityTracker::TakeDeferredNoteVotes(
-    const std::set<uint256>& setArrivedBlocks, int nCurrentEpoch)
-{
-    LOCK(cs_finality);
-    std::vector<CNoteFinalityVote> vTaken;
-    // Height and age bounds first: both retire only holds no carrier could still take.
-    PurgeDeferredNoteVotesLocked(DeferredNoteVoteTipHeight(), GetTime());
-    std::map<uint256, std::map<uint256, CDeferredNoteVote> >::iterator it =
-        mapDeferredNoteVotes.begin();
-    while (it != mapDeferredNoteVotes.end())
-    {
-        if (setArrivedBlocks.count(it->first))
-        {
-            for (const auto& pair : it->second)
-                vTaken.push_back(pair.second.vote);
-            mapDeferredNoteVotes.erase(it++);
-            continue;
-        }
-        // An epoch the chain has left behind can no longer carry the vote, so holding
-        // it would only grow the map until the cap starved a live one.
-        std::map<uint256, CDeferredNoteVote>::iterator itVote = it->second.begin();
-        while (itVote != it->second.end())
-        {
-            if (itVote->second.vote.nEpoch < nCurrentEpoch - 1)
-                it->second.erase(itVote++);
-            else
-                ++itVote;
-        }
-        if (it->second.empty())
-            mapDeferredNoteVotes.erase(it++);
-        else
-            ++it;
-    }
-    return vTaken;
-}
-
-bool CFinalityTracker::HaveNoteVote(const uint256& hashVote) const
-{
-    LOCK(cs_finality);
-    return mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote);
-}
-
-std::vector<CNoteFinalityVote> CFinalityTracker::GetPendingNoteVotesForBlock(
-    int nBlockHeight, unsigned int nMaxVotes) const
-{
-    LOCK(cs_finality);
-
-    std::vector<CNoteFinalityVote> vVotes;
-    if (!IsIV5NoteVoteActiveAtHeight(nBlockHeight))
-        return vVotes;
-    const int nBlockEpoch = GetEpochForHeight(nBlockHeight);
-
-    // Offer only what the epoch still has room for, or the produced block would fail the
-    // same capacity rule at connect on every node that receives it.
-    {
-        std::set<uint256> setEpochTags;
-        for (const auto& pair : mapBlockConnectedNoteVotes)
-            for (const uint256& hashVote : pair.second)
-            {
-                std::map<uint256, CNoteFinalityVote>::const_iterator it =
-                    mapNoteVotesByHash.find(hashVote);
-                if (it != mapNoteVotesByHash.end() && it->second.nEpoch == nBlockEpoch)
-                    setEpochTags.insert(it->second.GetVoteTag());
-            }
-        if (setEpochTags.size() >= FINALITY_MAX_EPOCH_NOTE_VOTES)
-            return vVotes;
-        nMaxVotes = std::min<unsigned int>(
-            nMaxVotes,
-            (unsigned int)(FINALITY_MAX_EPOCH_NOTE_VOTES - setEpochTags.size()));
-    }
-
-    for (const auto& pair : mapPendingNoteVotes)
-    {
-        const CNoteFinalityVote& vote = pair.second;
-        if (vote.nEpoch != nBlockEpoch)
-            continue;
-        const int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nBlockHeight);
-        if (nBlockHeight < nBoundary ||
-            nBlockHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
-            continue;
-        // A tag already retired for this epoch can never count again, so offering it
-        // would only spend block space.
-        std::map<int, std::set<uint256> >::const_iterator itEquiv =
-            mapEpochEquivocatedNoteVotes.find(vote.nEpoch);
-        if (itEquiv != mapEpochEquivocatedNoteVotes.end() &&
-            itEquiv->second.count(vote.GetVoteTag()))
-            continue;
-        vVotes.push_back(vote);
-        if (vVotes.size() >= nMaxVotes)
-            break;
-    }
-    return vVotes;
 }
 
 std::vector<CNoteFinalityVote> CFinalityTracker::GetCountedEpochNoteVotes(int nEpoch) const
@@ -8231,7 +7907,6 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapEpochCountedNoteVotes.clear();
         mapEpochEquivocatedNoteVotes.clear();
         mapEpochEquivocatedVoteNullifiers.clear();
-        mapPendingNoteVotes.clear();
         mapEpochVoters.clear();
         mapEpochTransparentVoteCount.clear();
         mapEpochPrivateVoteCount.clear();
@@ -8279,14 +7954,6 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
                 mapVoteHashByNullifier.erase(hit);
             mapPendingVotes.erase(it++);
         }
-        else
-            ++it;
-    }
-
-    for (auto it = mapPendingNoteVotes.begin(); it != mapPendingNoteVotes.end(); )
-    {
-        if (it->second.nEpoch < nMinEpoch && !mapNoteVotesByHash.count(it->first))
-            it = mapPendingNoteVotes.erase(it);
         else
             ++it;
     }
@@ -8410,80 +8077,6 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             }
         }
 
-        return true;
-    }
-    else if (strCommand == FINALITY_NOTE_VOTE_COMMAND)
-    {
-        if (!IsIV5NoteVoteActiveAtHeight(nBestHeight + 1))
-            return false;
-        if (!NoteVotePeerBudgetAllows(pfrom->GetId(), GetTime()))
-            return false;
-
-        CNoteFinalityVote vote;
-        try {
-            vRecv >> vote;
-        } catch (const std::exception&) {
-            return false;
-        }
-        if (!vRecv.empty())
-            return false;
-
-        const uint256 hashVote = vote.GetHash();
-        if (g_finalityTracker.HaveNoteVote(hashVote))
-            return true;
-
-        // The cache exists to stop a rejected envelope being re-proved once per peer;
-        // an accepted one is already short-circuited by HaveNoteVote above.
-        bool fCachedValid = false;
-        if (NoteVoteVerifyCacheLookup(hashVote, fCachedValid) && !fCachedValid)
-            return false;
-
-        // Cheap structure first: the proofs behind it are the expensive part.
-        if (!vote.IsValidBasic())
-        {
-            NoteVoteVerifyCacheStore(hashVote, false);
-            return false;
-        }
-        int nCurrentEpoch = 0;
-        CBlockIndex* pBest = pindexBest;
-        if (pBest)
-            nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
-        if (vote.nEpoch > nCurrentEpoch + 1 || vote.nEpoch + 2 < nCurrentEpoch)
-            return false;
-
-        CTxDB txdb("r");
-        std::string strError;
-        FinalityResult noteResult = FINALITY_RESULT_INVALID;
-        const bool fValid =
-            g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError, &noteResult);
-        if (!fValid && noteResult == FINALITY_RESULT_LOCAL_STATE)
-        {
-            // Nothing here says the vote is bad; this node just cannot check it yet,
-            // normally because the block it names is still a getdata behind its header.
-            // Caching that as a refusal would burn the vote for good: a note vote is
-            // single-shot, so its producer will never send another.
-            g_finalityTracker.DeferNoteVoteForUnknownBlock(vote);
-            if (fDebug)
-                printf("ProcessMessageFinality: holding note vote from peer %s: %s\n",
-                       pfrom->addr.ToString().c_str(), strError.c_str());
-            return true;
-        }
-        NoteVoteVerifyCacheStore(hashVote, fValid);
-        if (!fValid)
-        {
-            if (fDebug)
-                printf("ProcessMessageFinality: rejected note vote from peer %s: %s\n",
-                       pfrom->addr.ToString().c_str(), strError.c_str());
-            return false;
-        }
-
-        LOCK(cs_vNodes);
-        for (CNode* pnode : vNodes)
-        {
-            if (pnode == pfrom)
-                continue;
-            pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
-        }
         return true;
     }
     else if (strCommand == "ftshare")
@@ -9288,52 +8881,6 @@ void ReleaseFinalityVote(int nEpoch, bool fProduced)
 // Finality Voter Thread
 // ---------------------------------------------------------------------------
 
-// Reconsider note votes that arrived ahead of the block they name, once that block is
-// here. Run on the voter loop rather than from the connect path: re-checking a note
-// vote verifies its proofs, which is far too much work to do while cs_main is held for
-// a block, and the inclusion window is 24 blocks against a 1s poll.
-static void ProcessDeferredNoteVotes(int nCurrentHeight)
-{
-    std::vector<uint256> vBlocks = g_finalityTracker.GetDeferredNoteVoteBlockHashes();
-    if (vBlocks.empty())
-        return;
-
-    std::set<uint256> setArrived;
-    {
-        LOCK(cs_main);
-        for (const uint256& hashBlock : vBlocks)
-            if (mapBlockIndex.count(hashBlock))
-                setArrived.insert(hashBlock);
-    }
-
-    std::vector<CNoteFinalityVote> vReady = g_finalityTracker.TakeDeferredNoteVotes(
-        setArrived, GetEpochForHeight(nCurrentHeight));
-    if (vReady.empty())
-        return;
-
-    CTxDB txdb("r");
-    for (const CNoteFinalityVote& vote : vReady)
-    {
-        std::string strError;
-        FinalityResult result = FINALITY_RESULT_INVALID;
-        if (!g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError, &result))
-        {
-            // Dropped, not re-held: the block it was waiting on is here, so any
-            // remaining local-state failure is a node-level fault that re-holding
-            // would only turn into a re-verification loop.
-            if (fDebug)
-                printf("ProcessDeferredNoteVotes: dropped a held note vote: %s\n",
-                       strError.c_str());
-            continue;
-        }
-        printf("ProcessDeferredNoteVotes: accepted a note vote held for epoch block %s\n",
-               vote.hashBlock.ToString().substr(0, 10).c_str());
-        LOCK(cs_vNodes);
-        for (CNode* pnode : vNodes)
-            pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
-    }
-}
-
 static void RebroadcastOwnVoteIfUncarried(int nCurrentHeight)
 {
     CFinalityVote vote;
@@ -9409,10 +8956,6 @@ static void FinalityVoterLoop()
             nLastTallyPassMs = GetTimeMillis();
             ProcessFinalityTallyCommittee();
         }
-
-        // Ahead of the claim: a vote this node held for a block that has since arrived
-        // still has to reach the pending set inside the same inclusion window.
-        ProcessDeferredNoteVotes(nCurrentHeight);
 
         // A tip advance may have arrived while this pass was busy; the latch
         // carries it, so claim against the tip as it stands now.
@@ -9924,204 +9467,6 @@ static bool GetNoteVoteCommitteeConfig(int nEpoch, CFinalityTallyConfig& configO
     return true;
 }
 
-// Notes this process has already voted with, per epoch.
-//
-// The tag T_e = x*U_e is one note's single identity for one epoch, and two votes under one
-// tag count for neither: re-proving a note in the same epoch destroys the vote it already
-// cast. The tag is only reachable by proving, so the note's key image stands in for it
-// here, and it is recorded before the first proof rather than after the last, which makes
-// the rule at-most-once rather than at-least-once. Guarded by cs_main, which every caller
-// already holds.
-static std::map<int, std::set<uint256> > mapNoteVotesCastByEpoch;
-
-static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
-                                    int nCurrentEpoch, int nEpochHeight,
-                                    const std::string& strVoteMode)
-{
-    if (!pwalletMain || !pEpochBlock)
-        return false;
-    // The note vote is the anonymous lane. A node whose configured lane is the identity
-    // one never casts it: the two emitted together from one node let any directly
-    // connected peer read the tag as the transparent voter's, whatever the tag algebra
-    // does. The latch is the second check, for a caller that got here anyway.
-    if (GetFinalityVoteLaneForMode(strVoteMode) != FINALITY_VOTE_LANE_ANONYMOUS)
-        return false;
-    if (!FinalityVoteEmissionLaneAllows(FINALITY_VOTE_LANE_ANONYMOUS))
-        return false;
-    // A note vote must target a proof-of-work epoch block, so proving against any other
-    // kind only produces something every peer rejects.
-    if (!pEpochBlock->IsProofOfWork())
-        return false;
-
-    const int nIncludingHeight = pindexBest ? pindexBest->nHeight + 1 : nEpochHeight;
-    if (!IsIV5NoteVoteActiveAtHeight(nIncludingHeight))
-        return false;
-
-    // Outside the epoch's inclusion window no block may carry the vote, so proving one
-    // only spends time. This is the same window ConnectBlockNoteVotes enforces.
-    const int nBoundary = GetEpochBoundaryHeight(nCurrentEpoch, nIncludingHeight);
-    if (nIncludingHeight < nBoundary ||
-        nIncludingHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
-        return false;
-
-    // The cast set lives in memory, and a vote that is pending but not yet connected
-    // leaves no record a restart can read. Voting again in that epoch would put a
-    // second identity under one tag and retire both, so the epoch already open when
-    // this process started is skipped. It costs at most one epoch after a restart.
-    static int nFirstEpochSeen = -1;
-    if (nFirstEpochSeen < 0)
-        nFirstEpochSeen = (nIncludingHeight > nBoundary) ? nCurrentEpoch : -2;
-    if (nFirstEpochSeen == nCurrentEpoch)
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: skipping epoch %d, already open at "
-                   "startup and any earlier vote is unrecorded\n", nCurrentEpoch);
-        return false;
-    }
-
-    CFinalityTallyConfig config;
-    if (!GetNoteVoteCommitteeConfig(nCurrentEpoch, config))
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: epoch %d has no canonical committee a note "
-                   "vote can share to\n", nCurrentEpoch);
-        return false;
-    }
-
-    // Anchor to the finalized epoch the including block will resolve, never to this
-    // node's live finalized tip: a proof against node-local finality is valid on some
-    // nodes and invalid on others, which is a chain split.
-    CEpochState anchorState;
-    const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
-        txdb, nIncludingHeight, g_finalityTracker.GetFinalizedHeight(), anchorState,
-        true /* fRequireCurveRoot */,
-        true /* fAllowDeepUnfinalizedAnchor */);
-    if (anchorResult != FINALITY_RESULT_OK)
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: no finalized anchor for height %d "
-                   "(result=%d); not voting\n", nIncludingHeight, (int)anchorResult);
-        return false;
-    }
-    if (anchorState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
-        anchorState.vchVNextTreeState.empty() || anchorState.nVNextTreeSize == 0)
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: finalized epoch %d carries no IV5 tree to "
-                   "prove against\n", anchorState.nEpoch);
-        return false;
-    }
-
-    std::set<uint256>& setCast = mapNoteVotesCastByEpoch[nCurrentEpoch];
-
-    CPrivacyVNextWalletNote note;
-    std::vector<unsigned char> vchWitnessRecord;
-    std::string strError;
-    if (!pwalletMain->SelectPrivacyVNextVoteNote(
-            txdb, anchorState.vchVNextTreeState, anchorState.vchVNextRoot,
-            anchorState.nVNextTreeSize, pindexBest ? pindexBest->nHeight : nEpochHeight,
-            GetFinalityMinVoteWeight(nEpochHeight), setCast, note, vchWitnessRecord,
-            strError))
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: no eligible note for epoch %d: %s\n",
-                   nCurrentEpoch, strError.c_str());
-        return false;
-    }
-
-    uint256 keyImage = 0;
-    memcpy(keyImage.begin(), &note.vchKeyImage[0], 32);
-    // The note is recorded as cast only once a vote is actually pending, further down.
-    // Equivocation needs a vote that was relayed; a failure before that relayed nothing,
-    // so retrying is safe. Recording it here instead burned a note per attempt, and a
-    // wallet whose stake is entirely shielded has no other vote to set nLastEpochVoted,
-    // so the voter retries through the whole window and drains every eligible note.
-
-    CNoteVoteBuildContext ctx;
-    ctx.nEpoch = nCurrentEpoch;
-    ctx.nHeight = nEpochHeight;
-    ctx.hashBlock = pEpochBlock->GetBlockHash();
-    memcpy(ctx.hashAnchorRoot.begin(), &anchorState.vchVNextRoot[0],
-           EPOCHSTATE_VNEXT_DIGEST_SIZE);
-    ctx.hashNullifierRoot = anchorState.hashNullifierRoot;
-    ctx.committeeSetHash = config.committeeSetHash;
-    ctx.nAmount = (int64_t)note.nAmount;
-
-    PrivacyVNextDigest noteMask;
-    PrivacyVNextSpendInput input;
-    memcpy(noteMask.data(), &note.vchMask[0], 32);
-    memcpy(input.spendScalar.data(), &note.vchSpendSecret[0], 32);
-    memcpy(input.commitmentScalar.data(), &note.vchY[0], 32);
-    memcpy(input.leaf.owner.data(), &note.vchOwner[0], 32);
-    memcpy(input.leaf.nullifierBase.data(), &note.vchNullifierBase[0], 32);
-    memcpy(input.leaf.commitment.data(), &note.vchCommitment[0], 32);
-    input.vchWitnessRecord = vchWitnessRecord;
-
-    CNoteFinalityVote vote;
-    const bool fBuilt = BuildNoteFinalityVote(ctx, input, noteMask, vote, &strError);
-    OPENSSL_cleanse(noteMask.data(), noteMask.size());
-    if (!fBuilt)
-    {
-        printf("ProduceNoteFinalityVote: could not build a note vote for epoch %d: %s\n",
-               nCurrentEpoch, strError.c_str());
-        return false;
-    }
-
-    // A restart clears the cast set, so the tracker is the second guard: a tag this epoch
-    // already counts is this note's own earlier vote, and a byte-distinct twin under it
-    // would retire both.
-    const uint256 tag = vote.GetVoteTag();
-    if (g_finalityTracker.GetNoteVoteCountingState(nCurrentEpoch, tag) !=
-        NOTE_VOTE_UNSEEN)
-    {
-        if (fDebug)
-            printf("ProduceNoteFinalityVote: epoch %d already carries this note's tag; "
-                   "not casting a second\n", nCurrentEpoch);
-        return false;
-    }
-
-    // Latch the lane before the note is spent on this epoch, so a refusal costs
-    // nothing.
-    if (!RecordFinalityVoteEmission(FINALITY_VOTE_LANE_ANONYMOUS, nCurrentEpoch))
-        return false;
-
-    if (!g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError))
-    {
-        printf("ProduceNoteFinalityVote: epoch %d vote was refused locally: %s\n",
-               nCurrentEpoch, strError.c_str());
-        return false;
-    }
-
-    // Pending now, so a second vote on this note would be a second identity under one
-    // tag and retire both.
-    setCast.insert(keyImage);
-
-    printf("ProduceNoteFinalityVote: epoch=%d height=%d anchor=%s tag=%s\n",
-           nCurrentEpoch, nEpochHeight,
-           ctx.hashAnchorRoot.ToString().substr(0, 10).c_str(),
-           tag.ToString().substr(0, 10).c_str());
-
-    LOCK(cs_vNodes);
-    for (CNode* pnode : vNodes)
-        pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
-    return true;
-}
-
-// Drop the cast record for epochs the chain has left behind, so a long-running node does
-// not accumulate one set per epoch forever.
-static void PruneNoteVotesCast(int nCurrentEpoch)
-{
-    std::map<int, std::set<uint256> >::iterator it = mapNoteVotesCastByEpoch.begin();
-    while (it != mapNoteVotesCastByEpoch.end())
-    {
-        if (it->first < nCurrentEpoch - 1)
-            mapNoteVotesCastByEpoch.erase(it++);
-        else
-            ++it;
-    }
-}
-
-
 bool ProduceFinalityVote()
 {
     if (!pwalletMain)
@@ -10173,15 +9518,10 @@ bool ProduceFinalityVote()
     // allowed, and the IV5 note vote that replaces it. Each gates itself, so a node
     // holding stake for only one of them casts only that. Reached from the single
     // anonymous-lane exit below and nowhere else.
-    PruneNoteVotesCast(nCurrentEpoch);
     auto castPrivateVotes = [&]() -> bool {
-        bool fCast = fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                         txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                         tallyConfig, strVoteMode);
-        if (ProduceNoteFinalityVote(txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                                    strVoteMode))
-            fCast = true;
-        return fCast;
+        return fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                   txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                   tallyConfig, strVoteMode);
     };
 
     // The one branch point between the lanes. Everything below this line is the

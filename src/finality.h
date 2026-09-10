@@ -78,16 +78,6 @@ static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
 // names it, so peers hold the block body before the vote arrives. Node-local;
 // CFinalityVoteSchedule clamps it below the producer window.
 static const int FINALITY_VOTE_EMIT_OFFSET_POST_DAG = 2;
-// Cap on note votes held waiting for the block they name. Bounded because a peer
-// chooses the block hash a vote points at, so an unbounded hold is a memory sink.
-static const unsigned int FINALITY_MAX_DEFERRED_NOTE_VOTES = 256;
-// Wall-clock backstop on a single hold. The height-based purge below retires a hold
-// the moment the chain proves it un-carriable, but a vote naming a fabricated block at
-// a FUTURE height is never reached by it, so without this a spammer could occupy every
-// slot indefinitely and starve honest holds. A note vote is single-shot, so starvation
-// loses it for the epoch -- the age bound is what keeps the queue available, not just
-// bounded. Two orders of magnitude above the 24s inclusion window at 1s spacing.
-static const int64_t FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE = 600;
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
 
 /** Chain context a finality vote is judged in. Relay may hold a vote whose block is
@@ -201,10 +191,8 @@ static const unsigned char FINALITY_CANONICAL_VOTE_TAG[4] = { 0x49, 0x46, 0x43, 
 static const unsigned char FINALITY_CANONICAL_TALLY_CERT_TAG[4] = { 0x49, 0x46, 0x43, 0x43 }; // "IFCC"
 // F2 note-vote carrier: one coinbase OP_RETURN output over a single push, bounded by
 // MAX_SCRIPT_SIZE. Never the coinbase IV5 payload, whose value rule stays closed.
-static const unsigned char FINALITY_NOTE_VOTE_TAG[4] = { 0x49, 0x46, 0x4e, 0x56 }; // "IFNV"
 static const char FINALITY_CANONICAL_VOTE_COMMAND[] = "fvotea";
 static const char FINALITY_CANONICAL_TALLY_CERT_COMMAND[] = "ftcerta";
-static const char FINALITY_NOTE_VOTE_COMMAND[] = "fnvote";
 static const uint32_t FINALITY_CANONICAL_VOTE_VERSION = 1;
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
 // Note-leg schema. Schema 1 stays byte-identical; only a certificate that actually
@@ -1285,10 +1273,6 @@ bool ExtractFinalityTallyCertificatesFromBlockForHeight(
     FinalityEnvelopeDecodeResult* pFailure = NULL);
 /** Note-vote carrier: one vote, one coinbase output, one push. Unknown data below the
  *  F2 height; at and above it a tagged script must decode or the block is invalid. */
-bool BuildNoteFinalityVoteScript(const CNoteFinalityVote& vote, CScript& scriptOut);
-bool ExtractNoteFinalityVote(const CScript& scriptPubKey, CNoteFinalityVote& voteOut);
-FinalityEnvelopeDecodeResult ExtractNoteFinalityVoteForHeight(
-    const CScript& scriptPubKey, int nHeight, CNoteFinalityVote& voteOut);
 bool ExtractNoteFinalityVotesFromBlockForHeight(
     const CBlock& block, int nHeight, std::vector<CNoteFinalityVote>& vVotesOut,
     FinalityEnvelopeDecodeResult* pFailure = NULL);
@@ -1523,36 +1507,6 @@ public:
                                   const std::vector<CNoteFinalityVote>& vVotes);
     /** Load persisted connected note votes and their carrier index at startup. */
     bool LoadNoteVotes(CTxDB& txdb);
-    /** Relay-side pending note votes (verify-once, gossiped). pResult separates a vote
-     *  this node judged bad from one it could not judge yet. */
-    bool AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
-                            std::string* pstrError = NULL,
-                            FinalityResult* pResult = NULL);
-    bool HaveNoteVote(const uint256& hashVote) const;
-    /** Hold a note vote whose epoch block has not arrived, keyed by that block. A note
-     *  vote is single-shot -- its producer retires the note in a per-epoch cast set and
-     *  never sends a second -- so dropping one costs the epoch that voter for good.
-     *
-     *  Bounded three ways, in this order: holds the chain has proven un-carriable are
-     *  purged first (lossless), then holds past FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE, and
-     *  only then, if still at FINALITY_MAX_DEFERRED_NOTE_VOTES, the NEW hold is refused.
-     *  Refusing the newcomer rather than evicting an incumbent is deliberate: the
-     *  newcomer's sender still has it and can resend, while an evicted hold is gone. */
-    void DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote);
-    /** Drop held votes the chain has moved past or that have aged out. nTipHeight is the
-     *  chain tip; -1 uses the live tip. Exposed so the bound is testable without a clock
-     *  or a chain. */
-    unsigned int PurgeDeferredNoteVotes(int nTipHeight, int64_t nNow);
-    /** Blocks that held note votes are waiting on. */
-    std::vector<uint256> GetDeferredNoteVoteBlockHashes() const;
-    /** Hand back the held votes whose block is in setArrivedBlocks, dropping any whose
-     *  epoch the chain has left behind. */
-    std::vector<CNoteFinalityVote> TakeDeferredNoteVotes(
-        const std::set<uint256>& setArrivedBlocks, int nCurrentEpoch);
-    unsigned int GetDeferredNoteVoteCount() const;
-    std::vector<CNoteFinalityVote> GetPendingNoteVotesForBlock(
-        int nBlockHeight,
-        unsigned int nMaxVotes = FINALITY_MAX_BLOCK_NOTE_VOTES) const;
     /** Note votes an epoch's tally may count: the tags that resolved to exactly one
      *  identity. Equivocated tags are deliberately absent, so certificate coverage and
      *  connect-time agree on one set. */
@@ -1729,18 +1683,6 @@ private:
     // Transparent nullifiers seen with a conflicting block. Observability only.
     std::map<int, std::set<uint256>> mapEpochEquivocatedVoteNullifiers;
     void RecordConflictingNullifierVote(const CFinalityVote& vote);
-    std::map<uint256, CNoteFinalityVote> mapPendingNoteVotes;
-    // Note votes that arrived before the block they name, keyed by that block hash so
-    // the expensive re-check only runs once the block is actually here.
-    struct CDeferredNoteVote
-    {
-        CNoteFinalityVote vote;
-        int64_t nTimeHeld;
-        CDeferredNoteVote() : nTimeHeld(0) {}
-    };
-    std::map<uint256, std::map<uint256, CDeferredNoteVote>> mapDeferredNoteVotes;
-    /** Purge body; callers already hold cs_finality. */
-    unsigned int PurgeDeferredNoteVotesLocked(int nTipHeight, int64_t nNow);
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;

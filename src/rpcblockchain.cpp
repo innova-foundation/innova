@@ -2381,10 +2381,6 @@ Value getfinalityinfo(const Array& params, bool fHelp)
                             g_finalityTracker.GetEpochEquivocatedNoteVoteCount(nCurrentEpoch)));
         // Below "counted" only if a counted tag's vote body is no longer held.
         note.push_back(Pair("resolved", (int)vCountedNoteVotes.size()));
-        note.push_back(Pair("pending",
-                            (int)g_finalityTracker.GetPendingNoteVotesForBlock(
-                                nCurrentHeight + 1).size()));
-        note.push_back(Pair("deferred", (int)g_finalityTracker.GetDeferredNoteVoteCount()));
         note.push_back(Pair("tags", noteTags));
         result.push_back(Pair("note_votes", note));
     }

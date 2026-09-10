@@ -159,56 +159,5 @@ bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote,
 bool CheckNoteVote(const CNoteFinalityVote& vote,
                    std::string* pstrError = NULL);
 
-/** What one note vote's construction takes from consensus state.
- *
- *  None of it is the voter's to choose. `hashAnchorRoot` is the IV5 note-tree root of the
- *  finalized epoch the including block will resolve, which is both the root the membership
- *  proof is against and the value the vote declares; anchoring to anything a node computes
- *  locally is what splits a chain when two nodes disagree about it. */
-struct CNoteVoteBuildContext
-{
-    int nEpoch;
-    int nHeight;
-    uint256 hashBlock;
-    uint256 hashAnchorRoot;
-    uint256 hashNullifierRoot;
-    uint256 committeeSetHash;
-    int64_t nAmount;
-
-    // No reward field: a counted vote's reward is a consensus formula of its epoch, not
-    // a value the vote carries.
-
-    CNoteVoteBuildContext()
-    {
-        nEpoch = 0;
-        nHeight = 0;
-        hashBlock = 0;
-        hashAnchorRoot = 0;
-        hashNullifierRoot = 0;
-        committeeSetHash = 0;
-        nAmount = 0;
-    }
-};
-
-/** Build one note vote from a note the caller holds, in the order the checks read it.
- *
- *  Membership comes first because it produces the re-randomized O~/C~ every later step is
- *  over, then the weight-floor proof, and the sigma last: its challenge covers all of them,
- *  which is the only thing making the vote undetachable from the proof it was built from.
- *
- *  `input` carries the note's spend and commitment scalars and the witness record cut from
- *  the anchor tree; `noteMask` opens the note's own commitment. Proving entropy is drawn
- *  here rather than taken from the caller, so it is never a function of note material.
- *
- *  No timestamp is stamped anywhere: an anonymous vote dated at proving time is a
- *  wallet-pipeline fingerprint.
- *
- *  Fails closed. A failure leaves `voteOut` null rather than partially built, and the
- *  result is re-checked with CheckNoteVote before it is returned. */
-bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
-                           const PrivacyVNextSpendInput& input,
-                           const PrivacyVNextDigest& noteMask,
-                           CNoteFinalityVote& voteOut,
-                           std::string* pstrError = NULL);
 
 #endif // INN_FINALITY_NOTE_H

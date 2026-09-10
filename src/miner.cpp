@@ -1405,44 +1405,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                        nHeight, (unsigned int)vFinalitySettlementOutputs.size(),
                        FormatMoney(nFinalityRewardTotal).c_str());
 
-            // Note votes ride their own coinbase outputs and mint nothing: a vote is not a
-            // pool operation, so the coinbase IV5 payload is deliberately untouched here.
-            if (IsIV5NoteVoteActiveAtHeight(nHeight))
-            {
-                std::vector<CNoteFinalityVote> vNoteVotes =
-                    g_finalityTracker.GetPendingNoteVotesForBlock(nHeight);
-                for (const CNoteFinalityVote& vote : vNoteVotes)
-                {
-                    // Relay accepted this vote without a chain to test it against.
-                    // Connect judges it against THIS block's ancestors, so a vote naming
-                    // a boundary block off our own chain would make the whole template
-                    // invalid. Drop it here instead. Ancestry only: the proofs were
-                    // verified once at relay and re-running them per template is far too
-                    // expensive at 1s spacing.
-                    const CBlockIndex* pNamed = GetFinalityAncestorOnChain(
-                        pindexPrev, vote.nHeight, FINALITY_ANCESTOR_MAX_WALK);
-                    if (!pNamed || pNamed->GetBlockHash() != vote.hashBlock)
-                    {
-                        printf("CreateNewBlock: excluding note vote for off-chain epoch block %s\n",
-                               vote.hashBlock.ToString().substr(0,20).c_str());
-                        continue;
-                    }
-                    CScript voteScript;
-                    if (!BuildNoteFinalityVoteScript(vote, voteScript))
-                        continue;
-                    unsigned int nVoteCommitSize =
-                        ::GetSerializeSize(voteScript, SER_NETWORK, PROTOCOL_VERSION);
-                    if (nBlockSize + nVoteCommitSize + 16 >= nBlockMaxSize)
-                        break;
-
-                    CTxOut voteOut;
-                    voteOut.nValue = 0;
-                    voteOut.scriptPubKey = voteScript;
-                    pblock->vtx[0].vout.push_back(voteOut);
-                    nBlockSize += nVoteCommitSize + 16;
-                }
-            }
-
             std::vector<CFinalityTallyShare> vFinalityShares;
             if (!IsLegacyPrivacyPolicyDisabled() &&
                 !IsBoundaryAActiveAtHeight(nHeight))
