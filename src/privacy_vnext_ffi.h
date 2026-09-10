@@ -234,6 +234,14 @@ PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
     const std::vector<unsigned char>& payload,
     PrivacyVNextStateEffects& effects);
 
+// Effects with the proof verdicts skipped. Structure is still enforced and the effects are
+// identical to the verifying call for anything it accepts. ONLY for a block established to
+// be an ancestor of the compiled-in assume-valid hash; it checks no height and no chain.
+PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsAssumeValid(
+    uint32_t wireVersion,
+    const std::vector<unsigned char>& payload,
+    PrivacyVNextStateEffects& effects);
+
 struct PrivacyVNextDerivedKeys
 {
     uint8_t nNetwork;

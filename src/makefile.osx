@@ -353,7 +353,8 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/note_vote_connect_tests.o \
     obj/test/note_vote_wallet_tests.o \
     obj/test/finality_note_cert_root_tests.o \
-    obj/test/note_vote_reward_tests.o
+    obj/test/note_vote_reward_tests.o \
+    obj/test/assume_valid_gate_tests.o
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.
 TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)

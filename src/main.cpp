@@ -3137,6 +3137,56 @@ PrivacyVNextUndoResult DisconnectPrivacyVNextSpentKeys(CTxDB& txdb,
     return PRIVACY_VNEXT_UNDO_OK;
 }
 
+// The ancestry rule the gate rests on, separated from where the hash comes from so it can
+// be tested directly. A block qualifies only when it IS the named block or lies on the
+// selected-parent path to it; a block at the same height on any other branch does not.
+bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
+                                         const CBlockIndex* pindex)
+{
+    if (pindex == NULL || hashAssumeValid == 0)
+        return false;
+    // Looked up every call rather than cached: the index entry may not exist yet when the
+    // first blocks connect, and a cached miss would disable the gate for the whole run.
+    std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(hashAssumeValid);
+    if (mi == mapBlockIndex.end() || mi->second == NULL)
+        return false;
+    const CBlockIndex* pAssumeValid = mi->second;
+    // Height first: GetAncestor above the tip would walk the whole chain to answer no.
+    if (pindex->nHeight > pAssumeValid->nHeight)
+        return false;
+    return pAssumeValid->GetAncestor(pindex->nHeight) == pindex;
+}
+
+// The assume-valid gate: may this block's payloads skip their proof verdicts?
+//
+// True only when the block is an ANCESTOR of the configured hash. Height is never the test:
+// a fork reaches any height it likes, but it cannot place a block on the path to a hash this
+// binary shipped. Resolved through CBlockIndex::GetAncestor, which walks the skip list.
+//
+// -assumevalid=<hash> overrides the compiled-in value; -assumevalid=0 disables it and every
+// payload is verified in full. Unset on testnet and regtest, so they always verify.
+bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex)
+{
+    if (pindex == NULL)
+        return false;
+
+    static bool fResolved = false;
+    static uint256 hashAssumeValid = 0;
+    if (!fResolved)
+    {
+        fResolved = true;
+        const std::string strArg =
+            GetArg("-assumevalid", (fTestNet || fRegTest) ? std::string("0")
+                                                          : std::string(MAINNET_ASSUME_VALID_BLOCK));
+        if (strArg != "0" && !strArg.empty())
+            hashAssumeValid.SetHex(strArg);
+        if (hashAssumeValid != 0)
+            printf("IV5: assume-valid below %s (-assumevalid=0 to verify every proof)\n",
+                   hashAssumeValid.ToString().substr(0, 16).c_str());
+    }
+    return IsPrivacyVNextAssumeValidAncestorOf(hashAssumeValid, pindex);
+}
+
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError)
@@ -11074,16 +11124,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         unsigned int nBlockNoteVotes = 0;
         unsigned int nPriorNoteVotes = 0;
         bool fHavePriorNoteVotes = false;
+        // One ancestry resolution for the block, not one per payload.
+        const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
         for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsPrivacyVNext())
                 continue;
 
             PrivacyVNextStateEffects effects;
+            // Below the assume-valid hash the proof verdicts are skipped. The state is
+            // identical either way, so a node that skipped and one that did not connect
+            // the same block to the same chain.
             const PrivacyVNextPayloadValidation validation =
-                ExtractPrivacyVNextPayloadEffects(
-                    static_cast<uint32_t>(tx.nVersion),
-                    tx.privacyVNext.vchPayload, effects);
+                fAssumeValidBlock
+                    ? ExtractPrivacyVNextPayloadEffectsAssumeValid(
+                          static_cast<uint32_t>(tx.nVersion),
+                          tx.privacyVNext.vchPayload, effects)
+                    : ExtractPrivacyVNextPayloadEffects(
+                          static_cast<uint32_t>(tx.nVersion),
+                          tx.privacyVNext.vchPayload, effects);
             if (validation.fLocalFailure)
             {
                 StartShutdown();

@@ -637,6 +637,25 @@ inline int GetForkHeightIV5FeeNote()
 // liveness floor a stalled committee falls back to.
 //
 // The pool must exist before a note can be voted, so this is scheduled after
+// Assume-valid: the block whose ancestry this binary asserts was fully validated.
+//
+// A payload in a block that is an ANCESTOR of this hash may skip its proof verdicts during
+// sync -- 97-98% of the cost of validating one. Everything else still runs: proof-of-work on
+// every block, every structural rule, and the identical state computation.
+//
+// Ancestry, never height. A fork can reach any height it likes; it cannot put a block on the
+// path to a hash shipped in the binary.
+//
+// The trust this buys back is real and worth stating: below this hash a node trusts the
+// release rather than the mathematics, and GetPrivacyVNextPoolDelta reads the balance a
+// payload DECLARES, whose proof is one of the verdicts skipped. -assumevalid=0 restores
+// full verification. Only ever advance this to a block the project has itself validated in
+// full, and re-cut it each release.
+//
+// Empty on testnet and regtest: they are rebuilt often and their history is not asserted.
+static const char* const MAINNET_ASSUME_VALID_BLOCK =
+    "0x00000000523d02837bf00acee580aa7e4443b6da34929b8b2caa7116e10c353a";  // 7,750,000
+
 // Boundary B: mainnet 8,225,000, which is 4,700 blocks past it.
 extern int nRegtestIV5NoteVoteHeight;
 
@@ -1380,6 +1399,15 @@ bool IsPrivacyVNextNoteVoteShape(const CTransaction& tx);
  *  than after it. PoolDelta() subtracts in int64_t, so the operands have to be
  *  bounded first or the result is already undefined by the time it is inspected. */
 struct PrivacyVNextStateEffects;
+/** The ancestry rule, with the hash supplied. A block qualifies only when it is the named
+ *  block or lies on the selected-parent path to it. Exposed so the rule can be tested. */
+bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
+                                         const CBlockIndex* pindex);
+
+/** Whether this block is an ancestor of the configured assume-valid hash, and so may skip
+ *  its payloads' proof verdicts. Ancestry, never height. */
+bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
+
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError);

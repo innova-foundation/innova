@@ -963,16 +963,35 @@ static PrivacyVNextPayloadValidation& DeterministicVNextEffectsReject(
     return validation;
 }
 
+// Which decoder entry an extraction uses. ASSUME_VALID skips the proof verdicts and
+// nothing else; it is only ever reached through the ancestry gate in main.cpp.
+enum VNextEffectsMode
+{
+    VNEXT_EFFECTS_VERIFY = 0,
+    VNEXT_EFFECTS_ASSUME_VALID = 1
+};
+
 static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload,
-    PrivacyVNextStateEffects& effects)
+    PrivacyVNextStateEffects& effects,
+    VNextEffectsMode mode = VNEXT_EFFECTS_VERIFY)
 {
     effects = PrivacyVNextStateEffects();
-    PrivacyVNextPayloadValidation validation =
-        ValidatePrivacyVNextPayload(wireVersion, payload);
-    if (!validation.IsValid())
-        return validation;
+    PrivacyVNextPayloadValidation validation;
+    if (mode == VNEXT_EFFECTS_VERIFY)
+    {
+        // The verifying path validates first and extracts second; under assume-valid
+        // that first pass is exactly the cost being skipped, so it is not run.
+        validation = ValidatePrivacyVNextPayload(wireVersion, payload);
+        if (!validation.IsValid())
+            return validation;
+    }
+    else
+    {
+        validation.nResult = INNOVA_PRIVACY_VNEXT_VALID;
+        validation.fLocalFailure = false;
+    }
 
     try
     {
@@ -983,8 +1002,12 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
                         payload.size());
 
         size_t required = 0;
-        int32_t result = innova_privacy_vnext_payload_effects(
-            &request[0], request.size(), NULL, 0, &required);
+        int32_t result =
+            (mode == VNEXT_EFFECTS_ASSUME_VALID)
+                ? innova_privacy_vnext_payload_effects_assume_valid(
+                      &request[0], request.size(), NULL, 0, &required)
+                : innova_privacy_vnext_payload_effects(
+                      &request[0], request.size(), NULL, 0, &required);
         if (result != INNOVA_PRIVACY_VNEXT_VALID ||
             required < INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE ||
             required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
@@ -1000,8 +1023,13 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
 
         std::vector<uint8_t> encoded(required);
         size_t written = 0;
-        result = innova_privacy_vnext_payload_effects(
-            &request[0], request.size(), &encoded[0], encoded.size(), &written);
+        result = (mode == VNEXT_EFFECTS_ASSUME_VALID)
+                     ? innova_privacy_vnext_payload_effects_assume_valid(
+                           &request[0], request.size(), &encoded[0], encoded.size(),
+                           &written)
+                     : innova_privacy_vnext_payload_effects(
+                           &request[0], request.size(), &encoded[0], encoded.size(),
+                           &written);
         if (result != INNOVA_PRIVACY_VNEXT_VALID || written != required)
         {
             validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
@@ -1203,6 +1231,22 @@ void WarmPrivacyVNextEffectsCache(
     }
     for (size_t i = 0; i < vWorkers.size(); ++i)
         vWorkers[i].join();
+}
+
+// Effects with the proof verdicts skipped, for a block the caller has already established
+// is an ancestor of a hash compiled into this binary.
+//
+// DELIBERATELY UNCACHED. The effects cache is keyed on the payload alone, so a result
+// produced here would be indistinguishable from a verified one and could be served later to
+// a caller that must verify. Assume-valid costs about 2 ms, so the cache saves little and
+// conflating the two would cost correctness.
+PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsAssumeValid(
+    uint32_t wireVersion,
+    const std::vector<unsigned char>& payload,
+    PrivacyVNextStateEffects& effects)
+{
+    return ExtractPrivacyVNextPayloadEffectsUncached(wireVersion, payload, effects,
+                                                     VNEXT_EFFECTS_ASSUME_VALID);
 }
 
 PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
