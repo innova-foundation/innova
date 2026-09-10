@@ -9551,14 +9551,35 @@ bool ProduceFinalityVote()
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
 
-    // Both anonymous tiers in one place: the legacy nullstake vote where it is still
-    // allowed, and the IV5 note vote that replaces it. Each gates itself, so a node
-    // holding stake for only one of them casts only that. Reached from the single
-    // anonymous-lane exit below and nowhere else.
+    // Both anonymous tiers, each self-gated: the legacy nullstake vote where allowed and the
+    // IV5 note vote. Reached only from the anonymous-lane exit below.
+    const bool fAllowNoteVote = (lane == FINALITY_VOTE_LANE_ANONYMOUS) &&
+                                strVoteMode == "note" &&
+                                FinalityVoteEmissionLaneAllows(
+                                    FINALITY_VOTE_LANE_ANONYMOUS) &&
+                                IsIV5NoteVoteActiveAtHeight(nCurrentHeight + 1);
+
     auto castPrivateVotes = [&]() -> bool {
-        return fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                   txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                   tallyConfig, strVoteMode);
+        bool fCast = fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                         txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                         tallyConfig, strVoteMode);
+        if (fAllowNoteVote)
+        {
+            // Latch the lane before proving, not after: the whole point of the latch is
+            // that this node never appears in both lanes for one epoch, and proving takes
+            // seconds during which the identity lane must already be closed.
+            if (!RecordFinalityVoteEmission(FINALITY_VOTE_LANE_ANONYMOUS, nCurrentEpoch))
+                return fCast;
+            uint256 keyImage = 0;
+            std::string strNoteError;
+            if (ProducePrivacyVNextNoteVote(txdb, pEpochBlock, nCurrentHeight + 1,
+                                            keyImage, strNoteError))
+                fCast = true;
+            else if (fDebug)
+                printf("ProduceFinalityVote: no IV5 note vote for epoch %d: %s\n",
+                       nCurrentEpoch, strNoteError.c_str());
+        }
+        return fCast;
     };
 
     // The one branch point between the lanes. Everything below this line is the
