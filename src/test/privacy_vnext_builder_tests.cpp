@@ -125,6 +125,76 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     BOOST_CHECK(scanned.spendSecret != zero);
 }
 
+// The one-time key and tag derive under the payload's input context, so an output record
+// copied into another payload does not open as the recipient's. Round trips cannot see
+// this (builder and scanner share the code), hence this case.
+BOOST_AUTO_TEST_CASE(the_one_time_key_and_tag_change_with_the_input_context)
+{
+    const PrivacyVNextDigest seed = BuilderDigest(0x2C);
+    const PrivacyVNextDigest genesis = LocalGenesis();
+    PrivacyVNextDerivedKeys keys;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, LocalNetwork(), 0, keys, error), error);
+
+    // Two contexts that differ only in the operation the carrying payload declares.
+    PrivacyVNextDigest contextShield;
+    PrivacyVNextDigest contextTransfer;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_SHIELD, kNoTransparentSide,
+                                       std::vector<PrivacyVNextDigest>(), contextShield,
+                                       error), error);
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextInputContext(iv5::NOTE_TRANSFER, kNoTransparentSide,
+                                       std::vector<PrivacyVNextDigest>(), contextTransfer,
+                                       error), error);
+    BOOST_REQUIRE(contextShield != contextTransfer);
+
+    // Everything else held identical: same recipient, amount, ephemerals, mask and index.
+    const uint64_t nAmount = 987654;
+    PrivacyVNextEncryptedOutput underShield;
+    PrivacyVNextEncryptedOutput underTransfer;
+    BOOST_REQUIRE_MESSAGE(
+        EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
+                                keys.viewPublic, keys.outgoingViewSecret,
+                                BuilderScalar(23), BuilderScalar(29), nAmount,
+                                BuilderScalar(31), BuilderScalar(37), contextShield,
+                                underShield, error), error);
+    BOOST_REQUIRE_MESSAGE(
+        EncryptPrivacyVNextNote(LocalNetwork(), 0, 0, genesis, keys.spendPublic,
+                                keys.viewPublic, keys.outgoingViewSecret,
+                                BuilderScalar(23), BuilderScalar(29), nAmount,
+                                BuilderScalar(31), BuilderScalar(37), contextTransfer,
+                                underTransfer, error), error);
+
+    // The one-time key and the nullifier base are the two values a copy would reuse.
+    BOOST_CHECK_MESSAGE(underShield.leaf.owner != underTransfer.leaf.owner,
+                        "the one-time key does not bind the input context");
+    BOOST_CHECK_MESSAGE(
+        underShield.leaf.nullifierBase != underTransfer.leaf.nullifierBase,
+        "the tag base does not bind the input context");
+    // The commitment is over amount and mask alone, so it is the control: it must NOT move.
+    BOOST_CHECK(underShield.leaf.commitment == underTransfer.leaf.commitment);
+
+    // A record lifted into a payload with a different context does not open.
+    PrivacyVNextEncryptedNote lifted;
+    lifted.nOutputIndex = 0;
+    lifted.genesis = genesis;
+    lifted.leafO = underShield.leaf.owner;
+    lifted.leafC = underShield.leaf.commitment;
+    lifted.noteEphemeral = underShield.noteEphemeral;
+    lifted.tweakEphemeral = underShield.tweakEphemeral;
+    lifted.vchCiphertext = underShield.vchRecipientCiphertext;
+    lifted.inputContext = contextTransfer;   // the payload it was copied INTO
+
+    PrivacyVNextScannedNote scanned;
+    const bool fOpened = ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0,
+                                              lifted, keys.viewSecret, keys.spendSecret,
+                                              scanned, error);
+    BOOST_CHECK_MESSAGE(!fOpened,
+                        "a note copied into another payload still opened as the recipient's");
+}
+
 // The proof size the prover emits must be exactly the size the ABI fixes for that input
 // count, because a payload carrying any other length is not the canonical one.
 BOOST_AUTO_TEST_CASE(proof_size_is_fixed_per_input_count)
