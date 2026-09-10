@@ -635,50 +635,6 @@ BOOST_AUTO_TEST_CASE(the_stake_floor_is_five_hundred_inn_and_is_read_by_height)
     BOOST_CHECK_EQUAL(GetFinalityMinVoteWeight(-1), 500 * COIN);
 }
 
-// The floor lives inside the proof statement -- a vote proves C~ - W_min*H opens to a
-// non-negative amount -- so prover and verifier have to select the same W_min. Both take
-// it from the vote's own height, which is consensus-bound to the boundary block it names.
-BOOST_AUTO_TEST_CASE(the_floor_proof_statement_is_taken_at_the_votes_own_height)
-{
-    const int nHeight = BoundaryHeight();
-    const int64_t nFloor = GetFinalityMinVoteWeight(nHeight);
-    BOOST_REQUIRE(nFloor > 0);
-
-    const PrivacyVNextDigest entropy = ScalarDigest(0x77);
-    const uint256 mask = Ed25519ScalarFromUint64(0x0123456789abcdefULL);
-    std::vector<unsigned char> vchProof;
-    std::string strError;
-
-    // At the floor there is an in-range opening; one satoshi under it there is none. With
-    // the floor read at any other value the second call would succeed.
-    BOOST_CHECK_MESSAGE(
-        BuildNoteVoteWeightFloorProof(nFloor, nHeight, mask, entropy, vchProof, &strError),
-        strError);
-    BOOST_CHECK(!vchProof.empty());
-    vchProof.clear();
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(nFloor - 1, nHeight, mask, entropy,
-                                               vchProof, &strError));
-    BOOST_CHECK(vchProof.empty());
-
-    // The shifted point is not the commitment: a proof over C~ itself, which any honest
-    // note can make, satisfies no floor.
-    PrivacyVNextDigest cTilde;
-    cTilde.fill(0);
-    std::vector<unsigned char> vchOwnProof;
-    BOOST_REQUIRE_MESSAGE(
-        ProvePrivacyVNextRange((uint64_t)nFloor, Ed25519ScalarToDigest(mask), entropy,
-                               cTilde, vchOwnProof, strError),
-        strError);
-    PrivacyVNextDigest floorPoint;
-    floorPoint.fill(0);
-    BOOST_REQUIRE(DeriveNoteVoteWeightFloorPoint(cTilde, nHeight, floorPoint, &strError));
-    BOOST_CHECK(!(floorPoint == cTilde));
-    PrivacyVNextDigest zero;
-    zero.fill(0);
-    BOOST_CHECK(VerifyPrivacyVNextRange(cTilde, zero, vchOwnProof, strError));
-    BOOST_CHECK(!VerifyPrivacyVNextRange(floorPoint, zero, vchOwnProof, strError));
-}
-
 // ---------------------------------------------------------------------------
 // Supply
 // ---------------------------------------------------------------------------

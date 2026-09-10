@@ -272,7 +272,8 @@ bool BuildShapedNoteVote(const FundedNote& note,
                          std::vector<unsigned char>& vchPayloadOut,
                          PrivacyVNextDigest& keyImageOut,
                          PrivacyVNextOutputLeaf& reissueOut,
-                         std::string& error)
+                         std::string& error,
+                         bool fProveUnshifted = false)
 {
     vchPayloadOut.clear();
     const PrivacyVNextDigest entropy = CollateralScalar(0x5c);
@@ -407,7 +408,10 @@ bool BuildShapedNoteVote(const FundedNote& note,
         {
             PrivacyVNextDigest floorCommitment;
             floorCommitment.fill(0);
-            if (!ProvePrivacyVNextRange(nReissueAmount - nShift, outputMask,
+            // fProveUnshifted proves over C rather than C - shift*H, so it satisfies no floor.
+            const uint64_t nProved =
+                fProveUnshifted ? nReissueAmount : nReissueAmount - nShift;
+            if (!ProvePrivacyVNextRange(nProved, outputMask,
                                         CollateralScalar(0x66), floorCommitment,
                                         vchFloorProof, error))
                 return false;
@@ -1037,6 +1041,75 @@ BOOST_AUTO_TEST_CASE(the_lane_is_closed_below_its_fork_height)
         ScopedNoteVoteHeight open(0);
         const ContextVerdict v = JudgeVote(txdb, chain, nBoundary + 2, vote.effects);
         BOOST_CHECK_MESSAGE(v.fOK, v.strError);
+    }
+}
+
+
+// The stake floor is enforced only by the payload verifier. Both arms pass every other
+// rule, so the floor statement is the only thing left to reject.
+BOOST_AUTO_TEST_CASE(the_stake_floor_is_enforced_by_the_payload_verifier)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    // One satoshi under the floor: no in-range opening, so the floor section is empty.
+    {
+        FundedNote under;
+        BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xB1, kVoteNote - 1, under, error), error);
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest keyImage;
+        PrivacyVNextOutputLeaf reissue;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(under, ContractDigest(), kVoteNote - 1, 0, 0,
+                                ContractDigest(), 6000, payload, keyImage, reissue,
+                                error),
+            error);
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects);
+        BOOST_CHECK_MESSAGE(!validation.IsValid(),
+                            "a note under the stake floor must not validate");
+    }
+
+    // At the floor, but proven over the unshifted commitment: well formed, refused by the
+    // floor statement.
+    {
+        FundedNote atFloor;
+        BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xB2, kVoteNote, atFloor, error), error);
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest keyImage;
+        PrivacyVNextOutputLeaf reissue;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(atFloor, ContractDigest(), kVoteNote, 0, 0,
+                                ContractDigest(), 6000, payload, keyImage, reissue,
+                                error, true /* fProveUnshifted */),
+            error);
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects);
+        BOOST_CHECK_MESSAGE(!validation.IsValid(),
+                            "a range proof over the unshifted commitment satisfies no floor");
+    }
+
+    // The control: at the floor, shifted correctly, the same shape validates.
+    {
+        FundedNote good;
+        BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xB3, kVoteNote, good, error), error);
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest keyImage;
+        PrivacyVNextOutputLeaf reissue;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(good, ContractDigest(), kVoteNote, 0, 0,
+                                ContractDigest(), 6000, payload, keyImage, reissue,
+                                error),
+            error);
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects);
+        BOOST_CHECK_MESSAGE(validation.IsValid(), validation.strError);
     }
 }
 

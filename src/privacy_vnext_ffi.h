@@ -634,58 +634,6 @@ bool ProvePrivacyVNextReceiverDisclosure(
     std::vector<unsigned char>& vchProofOut,
     std::string& error);
 
-// One note-vote membership instance plus the witnesses its sigma is built from. The two
-// scalars are secret construction material: zeroize them once the vote and share exist.
-struct PrivacyVNextVoteMembership
-{
-    PrivacyVNextDigest oTilde;
-    PrivacyVNextDigest cTilde;
-    PrivacyVNextDigest rerandomizedY;
-    PrivacyVNextDigest maskDelta;
-    // r_i and r_r_i in the sign the key-image relation uses, L = x*I~ - (x*r_i)*U. A vote
-    // that proves anything about its own key image needs r_i, and R = r_i*V + r_r_i*T is
-    // what pins r_i to this instance rather than to a value the prover picked.
-    PrivacyVNextDigest iBlind;
-    PrivacyVNextDigest iBlindBlind;
-    std::vector<unsigned char> vchRequest;
-
-    PrivacyVNextVoteMembership();
-};
-
-bool ProvePrivacyVNextVoteMembership(
-    const PrivacyVNextDigest& finalizedRoot,
-    const PrivacyVNextDigest& entropy,
-    const PrivacyVNextSpendInput& input,
-    PrivacyVNextVoteMembership& membershipOut,
-    std::string& error);
-
-bool VerifyPrivacyVNextVoteMembership(
-    const std::vector<unsigned char>& vchRequest,
-    std::string& error);
-
-// Prove the note-vote authorization sigma. `binding` is the caller's digest over every
-// consensus field the vote must not be detachable from; the membership proof binds none.
-bool ProvePrivacyVNextVoteSigma(
-    uint64_t nEpoch,
-    const PrivacyVNextDigest& oTilde,
-    const PrivacyVNextDigest& cTilde,
-    const PrivacyVNextDigest& binding,
-    const PrivacyVNextDigest& x,
-    const PrivacyVNextDigest& rerandomizedY,
-    const PrivacyVNextDigest& entropy,
-    PrivacyVNextDigest& tagOut,
-    std::vector<unsigned char>& vchProofOut,
-    std::string& error);
-
-bool VerifyPrivacyVNextVoteSigma(
-    uint64_t nEpoch,
-    const PrivacyVNextDigest& oTilde,
-    const PrivacyVNextDigest& cTilde,
-    const PrivacyVNextDigest& binding,
-    const PrivacyVNextDigest& tag,
-    const std::vector<unsigned char>& vchProof,
-    std::string& error);
-
 // One term of an ed25519 linear combination. A generator term must leave `point` zero.
 enum PrivacyVNextCombineSource
 {

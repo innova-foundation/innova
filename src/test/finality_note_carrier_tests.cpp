@@ -1,7 +1,6 @@
-// Tests for the note-vote block carrier and the consensus rules it ships with: the
-// one-push coinbase envelope and its generational decode, the equivocation rule that
-// drops a conflicting tag instead of the block carrying it, the per-block and per-epoch
-// caps, and the minimum vote weight.
+// Tests for the note-vote tally rules: the shape a payload-derived record must have, the
+// equivocation rule that drops a conflicting tag instead of the block carrying it, the
+// re-carry rule, and the per-block and per-epoch caps.
 
 #include <boost/test/unit_test.hpp>
 
@@ -24,134 +23,17 @@
 namespace
 {
 
-struct ScopedCarrierArgs
+// A payload-derived record. It carries no proof and no anchor: the operation-10 payload
+// carries those and was verified when it connected, so everything here is what the tally
+// actually reads -- the epoch, the boundary it names, and the tag that dedups it.
+CNoteFinalityVote MakeVote(int nEpoch, const uint256& hashBlock, unsigned char nTagSeed)
 {
-    std::map<std::string, std::string> mapArgsSaved;
-    std::map<std::string, std::vector<std::string> > mapMultiArgsSaved;
-    int nNoteVoteHeightSaved;
-
-    ScopedCarrierArgs()
-        : mapArgsSaved(mapArgs),
-          mapMultiArgsSaved(mapMultiArgs),
-          nNoteVoteHeightSaved(nRegtestIV5NoteVoteHeight)
-    {
-    }
-
-    ~ScopedCarrierArgs()
-    {
-        mapArgs = mapArgsSaved;
-        mapMultiArgs = mapMultiArgsSaved;
-        nRegtestIV5NoteVoteHeight = nNoteVoteHeightSaved;
-    }
-};
-
-PrivacyVNextDigest ZeroDigest()
-{
-    PrivacyVNextDigest out;
-    out.fill(0);
-    return out;
-}
-
-// The prover rejects an all-zero seed, so every proving call here supplies one.
-PrivacyVNextDigest ProofEntropy(unsigned char nSeed)
-{
-    PrivacyVNextDigest out;
-    out.fill(nSeed);
-    return out;
-}
-
-uint256 RandomScalar()
-{
-    return Ed25519ScalarReduce(GetRandHash());
-}
-
-PrivacyVNextDigest CommitPoint(const uint256& value, const uint256& blind)
-{
-    std::vector<PrivacyVNextCombineTerm> vTerms(2);
-    vTerms[0].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
-    vTerms[0].scalar = Ed25519ScalarToDigest(value);
-    vTerms[1].nSource = PRIVACY_VNEXT_TERM_ED25519_G;
-    vTerms[1].scalar = Ed25519ScalarToDigest(blind);
-    PrivacyVNextDigest out = ZeroDigest();
-    std::string error;
-    BOOST_REQUIRE_MESSAGE(CombinePrivacyVNextPoints(vTerms, out, error), error);
-    return out;
-}
-
-CFinalityTallyConfig MakeCarrierCommittee(std::vector<CKey>& vKeys, int nThreshold)
-{
-    std::vector<std::string> vPubKeyHex;
-    for (size_t i = 0; i < vKeys.size(); i++)
-    {
-        vKeys[i].MakeNewKey(true);
-        const CPubKey pubkey = vKeys[i].GetPubKey();
-        vPubKeyHex.push_back(HexStr(pubkey.begin(), pubkey.end()));
-    }
-    mapArgs["-finalitytallymode"] = "committee";
-    mapArgs["-finalitytallythreshold"] =
-        strprintf("%d-of-%d", nThreshold, (int)vKeys.size());
-    mapMultiArgs["-finalitytallypubkey"] = vPubKeyHex;
-
-    CFinalityTallyConfig config = GetFinalityTallyConfig();
-    BOOST_REQUIRE(config.fCommitteeValid);
-    return config;
-}
-
-std::vector<unsigned char> MakeMembershipRequest(const uint256& hashCurveRoot,
-                                                 const PrivacyVNextDigest& cTilde,
-                                                 size_t nProofBytes)
-{
-    std::vector<unsigned char> vch;
-    vch.push_back((unsigned char)iv5::PROTOCOL_SCHEMA);
-    vch.push_back(0);
-    vch.push_back((unsigned char)iv5::TREE_LAYERS);
-    vch.push_back(2);
-    vch.push_back(1);
-    vch.push_back(0);
-    vch.push_back(0);
-    vch.push_back(0);
-    vch.insert(vch.end(), hashCurveRoot.begin(), hashCurveRoot.end());
-    const PrivacyVNextDigest oTilde = ZeroDigest();
-    vch.insert(vch.end(), oTilde.begin(), oTilde.end());
-    vch.insert(vch.end(), 64, 0);
-    vch.insert(vch.end(), cTilde.begin(), cTilde.end());
-    const uint32_t nProofLen = (uint32_t)nProofBytes;
-    for (int i = 0; i < 4; i++)
-        vch.push_back((unsigned char)((nProofLen >> (8 * i)) & 0xff));
-    vch.insert(vch.end(), nProofBytes, 0x5a);
-    return vch;
-}
-
-// A structurally complete vote. The sigma and membership bytes are filler because no
-// test here reaches the proof verifiers; every rule under test is a carrier or
-// bookkeeping rule that runs before them.
-CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
-                                  int nEpoch,
-                                  const uint256& hashBlock,
-                                  unsigned char nTagSeed,
-                                  size_t nMembershipProofBytes = 6656,
-                                  int64_t nAmount = 500 * COIN)
-{
-    const uint256 maskTilde = RandomScalar();
-    std::string strError;
-
     CNoteFinalityVote vote;
     vote.nEpoch = nEpoch;
     vote.hashBlock = hashBlock;
     vote.nHeight = 6000 + nEpoch;
-    vote.hashCurveRoot = uint256(0x4321);
-    vote.hashNullifierRoot = uint256(0x8765);
-    vote.committeeSetHash = config.committeeSetHash;
-    vote.vchMembership = MakeMembershipRequest(
-        vote.hashCurveRoot, CommitPoint(Ed25519ScalarFromInt64(nAmount), maskTilde),
-        nMembershipProofBytes);
     vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, nTagSeed);
-    vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
-    BOOST_REQUIRE_MESSAGE(
-        BuildNoteVoteWeightFloorProof(nAmount, vote.nHeight, maskTilde,
-                                      ProofEntropy(0x91),
-                                      vote.vchWeightFloorProof, &strError),
-        strError);
+    std::string strError;
     BOOST_REQUIRE_MESSAGE(vote.IsValidBasic(&strError), strError);
     return vote;
 }
@@ -160,18 +42,71 @@ CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
 
 BOOST_AUTO_TEST_SUITE(finality_note_carrier_tests)
 
+// Record shape is fail-closed both ways: startup rejects the load on any invalid
+// record, so a record the tally rejects must be refused before it is written.
+BOOST_AUTO_TEST_CASE(a_record_carrying_a_proof_or_an_anchor_is_refused)
+{
+    const CNoteFinalityVote good = MakeVote(21, uint256(0x1234), 0x55);
+    BOOST_REQUIRE(good.IsValidBasic());
+    BOOST_CHECK_EQUAL(good.nVersion, FINALITY_NOTE_VOTE_VERSION);
+
+    // Version 1 carried its proofs in a coinbase script. It is refused, not armed: a v1
+    // record left on disk must fail the load rather than be counted as a phantom vote.
+    CNoteFinalityVote v1 = good;
+    v1.nVersion = 1;
+    BOOST_CHECK(!v1.IsValidBasic());
+
+    // Every proof field the payload owns.
+    CNoteFinalityVote withMembership = good;
+    withMembership.vchMembership.assign(8, 0);
+    BOOST_CHECK(!withMembership.IsValidBasic());
+    CNoteFinalityVote withSigma = good;
+    withSigma.vchSigma.assign(1, 0);
+    BOOST_CHECK(!withSigma.IsValidBasic());
+    CNoteFinalityVote withFloorProof = good;
+    withFloorProof.vchWeightFloorProof.assign(1, 0);
+    BOOST_CHECK(!withFloorProof.IsValidBasic());
+
+    // Every anchor field the payload owns.
+    CNoteFinalityVote withCurveRoot = good;
+    withCurveRoot.hashCurveRoot = uint256(1);
+    BOOST_CHECK(!withCurveRoot.IsValidBasic());
+    CNoteFinalityVote withNullifierRoot = good;
+    withNullifierRoot.hashNullifierRoot = uint256(1);
+    BOOST_CHECK(!withNullifierRoot.IsValidBasic());
+    CNoteFinalityVote withCommittee = good;
+    withCommittee.committeeSetHash = uint256(1);
+    BOOST_CHECK(!withCommittee.IsValidBasic());
+
+    // The two fields the tally cannot do without.
+    CNoteFinalityVote noBoundary = good;
+    noBoundary.hashBlock = 0;
+    BOOST_CHECK(!noBoundary.IsValidBasic());
+    CNoteFinalityVote zeroTag = good;
+    zeroTag.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0);
+    BOOST_CHECK(!zeroTag.IsValidBasic());
+    CNoteFinalityVote shortTag = good;
+    shortTag.vchTag.assign(FINALITY_NOTE_POINT_SIZE - 1, 0x55);
+    BOOST_CHECK(!shortTag.IsValidBasic());
+
+    // What the startup load actually does with an accepted record.
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << good;
+    CNoteFinalityVote reloaded;
+    ss >> reloaded;
+    BOOST_CHECK(reloaded.IsValidBasic());
+    BOOST_CHECK(reloaded.GetHash() == good.GetHash());
+    BOOST_CHECK(reloaded.GetVoteTag() == good.GetVoteTag());
+}
+
 // A conflicting tag is resolved by dropping the tag, never the carrier. The outcome is
 // a pure function of the carried set, so connect order cannot change it.
 BOOST_AUTO_TEST_CASE(note_vote_equivocation_counts_for_neither)
 {
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
-    const CNoteFinalityVote voteA = MakeCarrierVote(config, 11, uint256(0xaaaa), 0x31);
-    CNoteFinalityVote voteB = MakeCarrierVote(config, 11, uint256(0xbbbb), 0x31);
+    const CNoteFinalityVote voteA = MakeVote(11, uint256(0xaaaa), 0x31);
+    CNoteFinalityVote voteB = MakeVote(11, uint256(0xbbbb), 0x31);
     voteB.vchTag = voteA.vchTag;
-    const CNoteFinalityVote voteOther = MakeCarrierVote(config, 11, uint256(0xaaaa), 0x32);
+    const CNoteFinalityVote voteOther = MakeVote(11, uint256(0xaaaa), 0x32);
     BOOST_REQUIRE(voteA.GetVoteTag() == voteB.GetVoteTag());
     BOOST_REQUIRE(GetNoteVoteSemanticIdentity(voteA) != GetNoteVoteSemanticIdentity(voteB));
 
@@ -205,26 +140,14 @@ BOOST_AUTO_TEST_CASE(note_vote_equivocation_counts_for_neither)
     ResolveNoteVoteCounting(vRecarried, mapRecarried, setRecarriedEquivocated);
     BOOST_CHECK_EQUAL(mapRecarried.size(), (size_t)1);
     BOOST_CHECK(setRecarriedEquivocated.empty());
-
-    // Proof bytes are outside the semantic identity, so a peer that re-randomizes a
-    // relayed vote cannot manufacture an equivocation out of it.
-    CNoteFinalityVote reencoded = voteA;
-    reencoded.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x22);
-    BOOST_CHECK(reencoded.GetHash() != voteA.GetHash());
-    BOOST_CHECK(GetNoteVoteSemanticIdentity(reencoded) ==
-                GetNoteVoteSemanticIdentity(voteA));
 }
 
 // The same rule, driven through the tracker: two sibling carriers, both valid.
 BOOST_AUTO_TEST_CASE(note_vote_equivocation_leaves_both_carriers_valid)
 {
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
     const int nEpoch = 4011;
-    const CNoteFinalityVote voteA = MakeCarrierVote(config, nEpoch, uint256(0xaaaa), 0x41);
-    CNoteFinalityVote voteB = MakeCarrierVote(config, nEpoch, uint256(0xbbbb), 0x41);
+    const CNoteFinalityVote voteA = MakeVote(nEpoch, uint256(0xaaaa), 0x41);
+    CNoteFinalityVote voteB = MakeVote(nEpoch, uint256(0xbbbb), 0x41);
     voteB.vchTag = voteA.vchTag;
     const uint256 tag = voteA.GetVoteTag();
     const uint256 hashSiblingA(0x51510001);
@@ -268,12 +191,8 @@ BOOST_AUTO_TEST_CASE(note_vote_equivocation_leaves_both_carriers_valid)
 // One vote carried by two connected siblings counts once, and survives losing one of them.
 BOOST_AUTO_TEST_CASE(note_vote_recarry_counts_once_and_survives_one_carrier)
 {
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
     const int nEpoch = 4012;
-    const CNoteFinalityVote vote = MakeCarrierVote(config, nEpoch, uint256(0xcccc), 0x61);
+    const CNoteFinalityVote vote = MakeVote(nEpoch, uint256(0xcccc), 0x61);
     const uint256 tag = vote.GetVoteTag();
     const uint256 hashFirst(0x52520001);
     const uint256 hashSecond(0x52520002);
@@ -300,15 +219,10 @@ BOOST_AUTO_TEST_CASE(note_vote_recarry_counts_once_and_survives_one_carrier)
 // The per-block carrier cap is re-asserted for note envelopes.
 BOOST_AUTO_TEST_CASE(note_vote_block_cap_is_enforced)
 {
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
     const int nEpoch = 4013;
     std::vector<CNoteFinalityVote> vVotes;
     for (int i = 0; i <= FINALITY_MAX_BLOCK_NOTE_VOTES; i++)
-        vVotes.push_back(MakeCarrierVote(config, nEpoch, uint256(0xdddd),
-                                         (unsigned char)(0x80 + i), 64));
+        vVotes.push_back(MakeVote(nEpoch, uint256(0xdddd), (unsigned char)(0x80 + i)));
     BOOST_REQUIRE_EQUAL(vVotes.size(), (size_t)FINALITY_MAX_BLOCK_NOTE_VOTES + 1);
 
     CTxDB txdb("r+");
@@ -336,15 +250,11 @@ BOOST_AUTO_TEST_CASE(note_vote_block_cap_is_enforced)
 // extra slots by conflicting itself: capacity counts every tag the epoch has seen.
 BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
 {
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
     const int nEpoch = 4014;
     CTxDB txdb("r+");
     unsigned int nTagSeed = 0;
     auto makeTagged = [&](unsigned int nSeed) {
-        CNoteFinalityVote vote = MakeCarrierVote(config, nEpoch, uint256(0xf00d), 0x01, 64);
+        CNoteFinalityVote vote = MakeVote(nEpoch, uint256(0xf00d), 0x01);
         vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0);
         vote.vchTag[0] = (unsigned char)(nSeed & 0xff);
         vote.vchTag[1] = (unsigned char)((nSeed >> 8) & 0xff);
@@ -378,104 +288,4 @@ BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
             txdb, vCarriers[i].first, vCarriers[i].second));
     BOOST_CHECK_EQUAL(g_finalityTracker.GetEpochNoteVoteCount(nEpoch), 0);
 }
-
-// The floor proof is over C~ - W_min*H, recomputed by the verifier from the vote's own
-// commitment at the vote's own height. A weight under that height's floor has no in-range
-// opening of the point.
-BOOST_AUTO_TEST_CASE(note_vote_weight_floor_is_unconstructible_below_the_floor)
-{
-    const int nHeight = 6000;
-    const int64_t nFloor = GetFinalityMinVoteWeight(nHeight);
-    const uint256 mask = RandomScalar();
-    std::vector<unsigned char> vchProof;
-    std::string strError;
-
-    BOOST_CHECK(BuildNoteVoteWeightFloorProof(nFloor, nHeight, mask,
-                                              ProofEntropy(0x92), vchProof, &strError));
-    BOOST_CHECK(!vchProof.empty());
-
-    vchProof.clear();
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(nFloor - 1, nHeight, mask,
-                                               ProofEntropy(0x92), vchProof, &strError));
-    BOOST_CHECK(vchProof.empty());
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(0, nHeight, mask, ProofEntropy(0x92),
-                                               vchProof, &strError));
-    BOOST_CHECK(!BuildNoteVoteWeightFloorProof(-1, nHeight, mask, ProofEntropy(0x92),
-                                               vchProof, &strError));
-}
-
-// The verifier never accepts a supplied commitment point: a proof over C~ itself, which
-// any honest note could produce, must not satisfy the floor.
-BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
-{
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
-    const int64_t nDust = 1;
-    const uint256 maskTilde = RandomScalar();
-    const PrivacyVNextDigest cTilde =
-        CommitPoint(Ed25519ScalarFromInt64(nDust), maskTilde);
-
-    // A dust note range-proving its own commitment: valid over C~, useless over the
-    // shifted point the verifier derives.
-    PrivacyVNextDigest provedOver = ZeroDigest();
-    std::vector<unsigned char> vchDustProof;
-    std::string error;
-    BOOST_REQUIRE_MESSAGE(
-        ProvePrivacyVNextRange((uint64_t)nDust, Ed25519ScalarToDigest(maskTilde),
-                               ProofEntropy(0x93), provedOver, vchDustProof, error),
-        error);
-    BOOST_CHECK(provedOver == cTilde);
-    BOOST_CHECK(VerifyPrivacyVNextRange(cTilde, ZeroDigest(), vchDustProof, error));
-
-    PrivacyVNextDigest floorPoint = ZeroDigest();
-    BOOST_REQUIRE(DeriveNoteVoteWeightFloorPoint(cTilde, 6012, floorPoint));
-    BOOST_CHECK(floorPoint != cTilde);
-    BOOST_CHECK(!VerifyPrivacyVNextRange(floorPoint, ZeroDigest(), vchDustProof, error));
-
-    std::string strError;
-
-    CNoteFinalityVote vote;
-    vote.nEpoch = 12;
-    vote.hashBlock = uint256(0xeeee);
-    vote.nHeight = 6012;
-    vote.hashCurveRoot = uint256(0x4321);
-    vote.hashNullifierRoot = uint256(0x8765);
-    vote.committeeSetHash = config.committeeSetHash;
-    vote.vchMembership = MakeMembershipRequest(vote.hashCurveRoot, cTilde, 64);
-    vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0x71);
-    vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
-    vote.vchWeightFloorProof = vchDustProof;
-    BOOST_REQUIRE(vote.IsValidBasic(&strError));
-    BOOST_CHECK(!CheckNoteVoteWeightFloorProof(vote, &strError));
-    BOOST_CHECK_EQUAL(strError, "note vote does not reach the minimum vote weight");
-
-    // The same vote with a real floor proof passes, so the floor check is what failed.
-    const int64_t nAtFloor = GetFinalityMinVoteWeight(vote.nHeight);
-    const uint256 maskAtFloor = RandomScalar();
-    CNoteFinalityVote funded = vote;
-    funded.vchMembership = MakeMembershipRequest(
-        funded.hashCurveRoot,
-        CommitPoint(Ed25519ScalarFromInt64(nAtFloor), maskAtFloor), 64);
-    BOOST_REQUIRE(BuildNoteVoteWeightFloorProof(nAtFloor, funded.nHeight, maskAtFloor,
-                                                ProofEntropy(0x94),
-                                                funded.vchWeightFloorProof, &strError));
-    BOOST_CHECK(CheckNoteVoteWeightFloorProof(funded, &strError));
-}
-
-// The floor proof is inside the vote's sigma binding, so it cannot be swapped for
-// another proof over the same point to mint a second object under one tag.
-BOOST_AUTO_TEST_CASE(note_vote_binding_covers_the_weight_floor_proof)
-{
-    ScopedCarrierArgs scoped;
-    std::vector<CKey> vKeys(3);
-    const CFinalityTallyConfig config = MakeCarrierCommittee(vKeys, 2);
-
-    const CNoteFinalityVote vote = MakeCarrierVote(config, 13, uint256(0xffff), 0x81, 64);
-    CNoteFinalityVote reproved = vote;
-    reproved.vchWeightFloorProof[0] ^= 0x01;
-    BOOST_CHECK(ComputeNoteVoteBinding(reproved) != ComputeNoteVoteBinding(vote));
-}
-
 BOOST_AUTO_TEST_SUITE_END()

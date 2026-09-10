@@ -2566,10 +2566,6 @@ uint256 GetNoteVoteSemanticIdentity(const CNoteFinalityVote& vote)
     ss << vote.hashNullifierRoot;
     ss << vote.committeeSetHash;
     ss << vote.vchTag;
-    PrivacyVNextDigest cTilde;
-    cTilde.fill(0);
-    vote.GetCTilde(cTilde);
-    ss << std::vector<unsigned char>(cTilde.begin(), cTilde.end());
     return ss.GetHash();
 }
 
@@ -6883,20 +6879,6 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
             return reject("note vote epoch block is not an ancestor of the including block");
     }
 
-    // The committee the vote shared to is consensus state, not the voter's choice: a share
-    // split to some other set is one no quorum can ever open.
-    std::vector<CPubKey> vCommittee;
-    int nThresholdM = 0;
-    uint256 committeeSetHash = 0;
-    bool fCommitteeLocalFailure = false;
-    if (!GetCommitteeForEpoch(txdb, vote.nEpoch, vCommittee, nThresholdM, committeeSetHash,
-                              &fCommitteeLocalFailure))
-        return fCommitteeLocalFailure
-                   ? localState("finality committee record cannot be read; -reindex/resync required")
-                   : reject("no finality committee is seated for this vote's term");
-    if (vote.committeeSetHash != committeeSetHash)
-        return reject("note vote does not name the canonical committee for its epoch");
-
     // Anchor deterministically from the including block's context. Reading the node-local
     // finalized tip in a connect path is the ConnectBlock-split class.
     CEpochState finalizedEpochState;
@@ -6911,18 +6893,11 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
         return reject("note vote requires an already-finalized epoch");
     if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
         return localState("note vote requires unavailable finalized epoch state");
-    // A note vote's membership proof is over the IV5 note tree, and IsValidBasic pins the
-    // proof's own root field to the anchor the vote declares. That anchor is therefore the
-    // epoch's IV5 root, not CEpochState::hashCurveRoot, which is the retired
-    // ring-signature curve tree and is zero on a chain that never carried one.
+    // The record declares no anchor to compare: the payload's own epoch-anchor rule is
+    // what binds an operation-10 vote to the finalized root, and it ran at connect time.
+    // The epoch must still exist locally, which is what the resolution above establishes.
     if (finalizedEpochState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
         return localState("note vote anchor epoch carries no IV5 tree root");
-    uint256 hashAnchorRoot = 0;
-    memcpy(hashAnchorRoot.begin(), &finalizedEpochState.vchVNextRoot[0],
-           EPOCHSTATE_VNEXT_DIGEST_SIZE);
-    if (vote.hashCurveRoot != hashAnchorRoot ||
-        vote.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
-        return reject("note vote not anchored to last finalized epoch root");
 
     std::string strError;
     if (!CheckNoteVote(vote, &strError))

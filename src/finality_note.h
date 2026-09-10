@@ -18,7 +18,9 @@
 // eligibility is the stake floor below and a counted vote is one vote, so the certificate
 // commits to the counted tag set by root and carries no per-vote weight.
 
-static const uint32_t FINALITY_NOTE_VOTE_VERSION = 1;
+// Version 2: the vote is an operation-10 tx spending the note, so the record carries no
+// proof or anchor. Version 1 records are refused at startup load, not counted.
+static const uint32_t FINALITY_NOTE_VOTE_VERSION = 2;
 static const int FINALITY_NOTE_CERT_VERSION = 4;
 
 static const size_t FINALITY_NOTE_POINT_SIZE = 32;
@@ -118,40 +120,10 @@ public:
     uint256 GetHash() const;
     /** The tag as a map key. One note reaches one tag per epoch and cannot mint a second. */
     uint256 GetVoteTag() const;
-    bool GetOTilde(PrivacyVNextDigest& out) const;
-    bool GetCTilde(PrivacyVNextDigest& out) const;
+
     bool IsValidBasic(std::string* pstrError = NULL) const;
 };
 
-/** The digest the vote's sigma challenge covers. Every field a whole valid vote could
- *  otherwise be replayed under has to reach this, because nothing else binds them. */
-uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote);
-
-/** Recompute C~ - W_min*H, the point the weight-floor proof must be over, at the floor
- *  in force at nHeight.
- *
- *  The commitment comes from the vote's own membership instance, which its sigma binds.
- *  A supplied point would let any weight claim any floor, so this is the only source the
- *  verifier ever reads. The height is the vote's own, so the statement a verifier checks
- *  is the statement the prover made. */
-bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
-                                    int nHeight,
-                                    PrivacyVNextDigest& pointOut,
-                                    std::string* pstrError = NULL);
-
-/** Prove the vote's note weighs at least the floor in force at nHeight. `maskTilde` opens
- *  C~ with `nAmount`. Fails for an amount under that floor: the shifted point's
- *  H-coefficient is negative and has no in-range opening. */
-bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
-                                   int nHeight,
-                                   const uint256& maskTilde,
-                                   const PrivacyVNextDigest& entropy,
-                                   std::vector<unsigned char>& vchProofOut,
-                                   std::string* pstrError = NULL);
-
-/** Verify a weight-floor proof against the point derived from the vote's own C~. */
-bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote,
-                                   std::string* pstrError = NULL);
 
 /** Full validation of one vote: structure, the sigma binding, the stake-floor range proof
  *  and the membership proof. Chain context (the anchor the roots must equal, the inclusion

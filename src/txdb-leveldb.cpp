@@ -2801,8 +2801,12 @@ bool CTxDB::IterateNoteFinalityVotes(std::map<uint256, CNoteFinalityVote>& mapOu
         if (it->first == 0 || it->second.GetHash() != it->first ||
             !it->second.IsValidBasic())
         {
-            printf("IterateNoteFinalityVotes: FATAL key/value or structural mismatch; "
-                   "-reindex/resync required\n");
+            printf("IterateNoteFinalityVotes: FATAL key/value or structural mismatch "
+                   "on vote %s (version %u); a record written before the note vote "
+                   "became payload-derived cannot be loaded, and -reindex will not "
+                   "clear it -- remove the datadir\n",
+                   it->first.ToString().substr(0, 16).c_str(),
+                   (unsigned int)it->second.nVersion);
             mapOut.clear();
             return false;
         }
