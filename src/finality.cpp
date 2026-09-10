@@ -7089,13 +7089,19 @@ bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlo
 bool CFinalityTracker::DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
                                                 const std::vector<CNoteFinalityVote>& vVotes)
 {
-    if (vVotes.empty())
-        return true;
-
     LOCK(cs_finality);
+    // Remove the carrier index entry the block recorded, even when re-derivation yields
+    // an empty list, so RecomputeNoteVoteCounting never counts a disconnected block.
+    const bool fHadEntry = mapBlockConnectedNoteVotes.count(hashBlock) != 0;
     mapBlockConnectedNoteVotes.erase(hashBlock);
-    if (!txdb.EraseFinalityConnectedNoteVoteBlock(hashBlock))
+    if (fHadEntry && !txdb.EraseFinalityConnectedNoteVoteBlock(hashBlock))
         return false;
+    if (vVotes.empty())
+    {
+        if (fHadEntry)
+            RecomputeNoteVoteCounting();
+        return true;
+    }
 
     for (const CNoteFinalityVote& vote : vVotes)
     {
