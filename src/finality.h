@@ -226,7 +226,7 @@ static const unsigned int FINALITY_CANONICAL_CERT_MAX_NULLIFIERS = 128;
 // because the certificate commits to the note leg by root and count (36 bytes) instead
 // of enumerating it, so the cap costs the carrier nothing at any size. Fork-gated by
 // FORK_HEIGHT_IV5_NOTE_VOTE, which is unset on every value network.
-static const unsigned int FINALITY_MAX_EPOCH_NOTE_VOTES = 256;
+static const unsigned int FINALITY_MAX_EPOCH_NOTE_VOTES = 128;
 
 enum FinalityEnvelopeDecodeResult
 {

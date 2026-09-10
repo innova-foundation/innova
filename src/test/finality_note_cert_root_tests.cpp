@@ -361,7 +361,7 @@ BOOST_AUTO_TEST_CASE(the_transparent_nullifier_bound_did_not_move)
     const int nHeight = NoteBoundaryHeight();
 
     BOOST_CHECK_EQUAL(FINALITY_CANONICAL_CERT_MAX_NULLIFIERS, 128u);
-    BOOST_CHECK_EQUAL(FINALITY_MAX_EPOCH_NOTE_VOTES, 256u);
+    BOOST_CHECK_EQUAL(FINALITY_MAX_EPOCH_NOTE_VOTES, 128u);
 
     CFinalityTallyCertificate atBound =
         MakeCanonicalNoteCert(nHeight, FINALITY_CANONICAL_CERT_MAX_NULLIFIERS);
