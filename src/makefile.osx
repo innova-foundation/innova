@@ -150,6 +150,8 @@ OBJS= \
     obj/crypter.o \
     obj/key.o \
     obj/hash.o \
+    obj/bip39.o \
+    obj/bip39_wordlist.o \
     obj/base58.o \
     obj/db.o \
     obj/init.o \
@@ -301,6 +303,7 @@ TEST_OBJS= \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
     obj/test/base58_tests.o \
+    obj/test/bip39_tests.o \
     obj/test/bignum_tests.o \
     obj/test/key_tests.o \
     obj/test/uint160_tests.o \
