@@ -82,7 +82,7 @@ today.
 ## Technology
 
 * Hybrid PoW/PoS Collateral Nodes
-* Stealth addresses
+* Stealth addresses — retired; existing ones keep working and their funds stay spendable, but new ones are not issued. Superseded by IV5 shielded addresses, which hide the amount and sender as well as the recipient
 * Ring signatures (legacy tx version 1000) — retired; rejected on every network from height 0 (IIP-0003)
 * Native Optional Tor Onion Node (-nativetor=1)
 * Encrypted Messaging (SecureMsg) — optional, disabled by default; enable with `smsg=1`

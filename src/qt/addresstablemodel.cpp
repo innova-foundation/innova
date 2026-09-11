@@ -1,3 +1,4 @@
+#include "main.h"
 #include "addresstablemodel.h"
 #include "guiutil.h"
 #include "walletmodel.h"
@@ -481,6 +482,13 @@ QString AddressTableModel::addRow(const QString &type, const QString &label, con
 
         if (addressType == AT_Stealth)
         {
+            // Retired for issuance; existing stealth addresses still list, scan and
+            // spend. The shielded address supersedes them.
+            if (IsLegacyPrivacyPolicyDisabled())
+            {
+                editStatus = KEY_GENERATION_FAILURE;
+                return QString();
+            }
             CStealthAddress newStealthAddr;
             std::string sError;
             if (!wallet->NewStealthAddress(sError, strLabel, newStealthAddr)

@@ -2337,7 +2337,24 @@ Value getnewstealthaddress(const Array& params, bool fHelp)
     if (fHelp || params.size() > 1)
         throw runtime_error(
             "getnewstealthaddress [label]\n"
-            "Returns a new Innova stealth address for receiving payments anonymously.  ");
+            "RETIRED. Stealth addresses are superseded by IV5 shielded addresses, whose\n"
+            "one-time keys hide the recipient natively and also hide the amount and the\n"
+            "sender -- a stealth address hides only the recipient, and pays into an\n"
+            "ordinary transparent output. Use z_getnewiv5address.\n"
+            "\n"
+            "Stealth addresses this wallet already holds keep working: they still appear\n"
+            "in liststealthaddresses, still scan, and their funds stay spendable.  ");
+
+    // Retired for issuance only. Nothing here touches the ability to find or spend what a
+    // stealth address already received: those are ordinary keystore keys and ordinary
+    // outputs, and breaking them would strand value to retire a feature.
+    if (IsLegacyPrivacyPolicyDisabled())
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           "stealth addresses are retired: they are superseded by IV5 "
+                           "shielded addresses, which hide the amount and the sender as "
+                           "well as the recipient. Use z_getnewiv5address. Addresses this "
+                           "wallet already holds keep working and their funds stay "
+                           "spendable.");
 
     if (pwalletMain->IsLocked())
         throw runtime_error("Failed: Wallet must be unlocked.");
@@ -2524,8 +2541,19 @@ Value sendtostealthaddress(const Array& params, bool fHelp)
             "Send funds to a stealth address.\n"
             "<stealth_address> is the recipient's stealth address\n"
             "<amount> is a real number and is rounded to the nearest 0.000001\n"
-            "[narration] is an optional 24 character narration stored in the transaction"
+            "[narration] is an optional 24 character narration stored in the transaction\n"
+            "\n"
+            "RETIRED. Paying a stealth address creates a transparent output, which the\n"
+            "transparent lane's retirement ends anyway. Send to an IV5 shielded address\n"
+            "instead."
             + HelpRequiringPassphrase());
+
+    // Creating a new stealth payment is retired; receiving and spending are not.
+    if (IsLegacyPrivacyPolicyDisabled())
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           "paying a stealth address is retired: it creates a transparent "
+                           "output that hides only the recipient. Send to an IV5 shielded "
+                           "address instead.");
 
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
