@@ -1722,6 +1722,18 @@ bool CTxDB::ReadPrivacyVNextTreeStoreSize(uint64_t& nSize)
     return Read(string("iv5treestoresize"), nSize);
 }
 
+// How far background verification has re-proved payloads assume-valid skipped. One height
+// suffices: the skipped blocks are exactly the assume-valid block's ancestors.
+bool CTxDB::WritePrivacyVNextVerifiedHeight(int nHeight)
+{
+    return Write(std::string("iv5bgverified"), nHeight);
+}
+
+bool CTxDB::ReadPrivacyVNextVerifiedHeight(int& nHeightOut)
+{
+    return Read(std::string("iv5bgverified"), nHeightOut);
+}
+
 bool CTxDB::WritePrivacyVNextPoolValue(int64_t nValue)
 {
     return Write(string("iv5pool"), nValue);

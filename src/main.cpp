@@ -3157,6 +3157,189 @@ bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
     return pAssumeValid->GetAncestor(pindex->nHeight) == pindex;
 }
 
+// Background verification: re-proves payloads assume-valid skipped. The only state is
+// the walk height.
+
+bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
+
+// Where verification starts. Nothing shielded exists below the boundary that introduced
+// it, so every block under that height has no payload to prove.
+static int PrivacyVNextVerifyFloor()
+{
+    if (!IsBoundaryBConfigured())
+        return -1;
+    return FORK_HEIGHT_BOUNDARY_B;
+}
+
+int GetPrivacyVNextVerifiedHeight()
+{
+    CTxDB txdb("r");
+    int nHeight = 0;
+    if (!txdb.ReadPrivacyVNextVerifiedHeight(nHeight))
+        return PrivacyVNextVerifyFloor() - 1;
+    return nHeight;
+}
+
+// Re-prove one block's payloads with the verifying decoder. Returns false only on a
+// payload that does NOT verify -- a block this node accepted and should not have.
+static bool VerifyPrivacyVNextBlockProofs(CBlockIndex* pindex, std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (pindex == NULL)
+        return true;
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex, true))
+    {
+        // Not a verification failure: a pruned or unreadable block is a local condition,
+        // and treating it as a bad proof would shut the node down for a disk problem.
+        strErrorOut = "unreadable";
+        return true;
+    }
+
+    std::set<uint256> setDAGSkippedTxs;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        CTxDB txdb("r");
+        std::string strActiveSetError;
+        if (txdb.ReadDAGSkippedTxsStatus(block, setDAGSkippedTxs, strActiveSetError)
+                != TXDB_READ_FOUND)
+        {
+            // Without the connect-time view the verified set could differ from what connected;
+            // stop as a local gap.
+            strErrorOut = "connect-time DAG active set unavailable";
+            return true;
+        }
+    }
+    const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
+
+    for (size_t i = 0; i < activeBlock.vtx.size(); ++i)
+    {
+        const CTransaction& tx = activeBlock.vtx[i];
+        if (!tx.IsPrivacyVNext() || tx.privacyVNext.vchPayload.empty())
+            continue;
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(tx.nVersion, tx.privacyVNext.vchPayload,
+                                              effects);
+        if (!validation.IsValid())
+        {
+            strErrorOut = strprintf(
+                "payload of %s at height %d does not verify: %s",
+                tx.GetHash().ToString().substr(0, 16).c_str(), pindex->nHeight,
+                validation.strError.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+// One pass of the walk. Bounded so the thread yields: this competes with block connection
+// for the same verifier, and a node that cannot keep up with the tip because it is
+// re-proving history has traded one problem for another.
+bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
+                                           std::string& strErrorOut)
+{
+    nVerifiedOut = 0;
+    strErrorOut.clear();
+
+    const int nFloor = PrivacyVNextVerifyFloor();
+    if (nFloor < 0)
+        return true;   // the boundary is unset: there are no shielded payloads at all
+
+    int nFrom = GetPrivacyVNextVerifiedHeight() + 1;
+    if (nFrom < nFloor)
+        nFrom = nFloor;
+
+    for (int n = 0; n < nMaxBlocks && !fShutdown; ++n)
+    {
+        CBlockIndex* pindex = NULL;
+        {
+            LOCK(cs_main);
+            if (nFrom > nBestHeight)
+                break;
+            pindex = FindBlockByHeight(nFrom);
+            if (pindex == NULL || !pindex->IsInMainChain())
+                break;
+            // Only what the gate would have skipped is owed a second look. Above the
+            // assume-valid block every payload was proved when it connected.
+            if (!IsPrivacyVNextAssumeValidAncestor(pindex))
+            {
+                CTxDB txdb("rw");
+                txdb.WritePrivacyVNextVerifiedHeight(nBestHeight);
+                return true;
+            }
+        }
+
+        std::string strBlockError;
+        if (!VerifyPrivacyVNextBlockProofs(pindex, strBlockError))
+        {
+            // A block this node accepted carries a payload that does not prove. It was
+            // admitted on the binary's word, and that word was wrong: there is no safe
+            // way to keep serving a chain built on it.
+            strErrorOut = strBlockError;
+            return false;
+        }
+
+        CTxDB txdb("rw");
+        if (!txdb.WritePrivacyVNextVerifiedHeight(nFrom))
+        {
+            strErrorOut = strprintf("could not record verification progress at height %d",
+                                    nFrom);
+            return false;
+        }
+        ++nVerifiedOut;
+        ++nFrom;
+    }
+    return true;
+}
+
+void ThreadPrivacyVNextBackgroundVerify(void* parg)
+{
+    (void)parg;
+    RenameThread("innova-iv5verify");
+
+    // -assumevalid=0: every payload was verified at connect, nothing to re-prove.
+    if (GetBoolArg("-assumevalid", true) == false)
+    {
+        printf("IV5 background verification: not needed, -assumevalid=0\n");
+        return;
+    }
+
+    bool fReported = false;
+    while (!fShutdown)
+    {
+        if (!IsInitialBlockDownload())
+        {
+            int nVerified = 0;
+            std::string strError;
+            if (!RunPrivacyVNextBackgroundVerification(64, nVerified, strError))
+            {
+                printf("IV5 background verification FAILED: %s\n"
+                       "This node connected that block on the assume-valid assertion "
+                       "compiled into this binary, and the payload does not prove. The "
+                       "chain it built on is not one this node can serve. Shutting down; "
+                       "restart with -assumevalid=0 to verify from the start.\n",
+                       strError.c_str());
+                StartShutdown();
+                return;
+            }
+            if (nVerified > 0)
+            {
+                fReported = false;
+            }
+            else if (!fReported)
+            {
+                printf("IV5 background verification: complete through height %d\n",
+                       GetPrivacyVNextVerifiedHeight());
+                fReported = true;
+            }
+        }
+        // Slow on purpose: this is catch-up work, not a race.
+        MilliSleep(500);
+    }
+}
+
 // The assume-valid gate: may this block's payloads skip their proof verdicts?
 //
 // True only when the block is an ANCESTOR of the configured hash. Height is never the test:

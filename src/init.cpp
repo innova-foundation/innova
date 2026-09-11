@@ -2943,6 +2943,9 @@ bool AppInit2()
     // Closes a recorded IV5 scan gap once a seed exists. The unlock path must not: it runs
     // under cs_main and cs_wallet.
     NewThread(ThreadPrivacyVNextScanGapCloser, NULL);
+    // Re-proves the payloads assume-valid skipped, so a node that synced fast does not
+    // trust this binary's assertion forever.
+    NewThread(ThreadPrivacyVNextBackgroundVerify, NULL);
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
 

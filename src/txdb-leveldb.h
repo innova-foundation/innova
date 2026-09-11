@@ -737,6 +737,10 @@ public:
     bool WritePrivacyVNextTreeStoreSize(uint64_t nSize);
     bool ReadPrivacyVNextTreeStoreSize(uint64_t& nSize);
 
+    /** Highest height whose shielded payloads have had their proofs verified, including
+     *  those assume-valid skipped at connect time. */
+    bool WritePrivacyVNextVerifiedHeight(int nHeight);
+    bool ReadPrivacyVNextVerifiedHeight(int& nHeightOut);
     bool WritePrivacyVNextPoolValue(int64_t nValue);
     TxDBReadStatus ReadPrivacyVNextPoolValueStatus(int64_t& nValue);
 

@@ -1408,6 +1408,14 @@ bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
  *  its payloads' proof verdicts. Ancestry, never height. */
 bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
 
+/** Background verification: re-proves the payloads assume-valid skipped. The set is
+ *  derived from the same ancestry the gate uses, so nothing records which blocks were
+ *  skipped; progress is one height. */
+void ThreadPrivacyVNextBackgroundVerify(void* parg);
+bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
+                                           std::string& strErrorOut);
+int GetPrivacyVNextVerifiedHeight();
+
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError);

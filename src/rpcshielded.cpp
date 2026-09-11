@@ -2485,9 +2485,9 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
         // Lowest unscanned height; -1 means none (else run z_rescaniv5).
         obj.push_back(Pair("privacy_vnext_scan_gap_height",
                            pwalletMain->GetPrivacyVNextScanGapHeight()));
-        // Whether that gap survives a restart. False with a gap present means the wallet
-        // knows its view is incomplete but will forget on restart and then report a
-        // complete one -- rescan before restarting.
+        // Assume-valid re-verification progress; below the tip, the rest is still trusted.
+        obj.push_back(Pair("privacy_vnext_verified_height",
+                           GetPrivacyVNextVerifiedHeight()));
         obj.push_back(Pair("privacy_vnext_scan_gap_persisted",
                            pwalletMain->PrivacyVNextScanGapIsPersisted()));
         // Gap-closer status; "complete" with scan_gap_height -1 means done.
