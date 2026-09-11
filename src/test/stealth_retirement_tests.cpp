@@ -9,13 +9,16 @@
 
 #include <string>
 
+// At file scope on purpose: the suite macro opens a namespace, and an extern declared
+// inside it names a symbol in that namespace rather than the global the node defines.
+extern bool fRegTest;
+
 BOOST_AUTO_TEST_SUITE(stealth_retirement_tests)
 
 // The gate itself. Regtest keeps the legacy paths so replay and rejection tests can still
 // drive them; every public network refuses.
 BOOST_AUTO_TEST_CASE(the_retirement_gate_spares_regtest_only)
 {
-    extern bool fRegTest;
     const bool fSaved = fRegTest;
 
     fRegTest = true;
@@ -33,7 +36,6 @@ BOOST_AUTO_TEST_CASE(the_retirement_gate_spares_regtest_only)
 // keep working whatever issuance does, or the retirement takes the funds with it.
 BOOST_AUTO_TEST_CASE(an_existing_stealth_address_still_decodes_after_retirement)
 {
-    extern bool fRegTest;
     const bool fSaved = fRegTest;
     fRegTest = false;   // the retired condition
     BOOST_REQUIRE(IsLegacyPrivacyPolicyDisabled());
@@ -70,7 +72,6 @@ BOOST_AUTO_TEST_CASE(an_existing_stealth_address_still_decodes_after_retirement)
 // later gates this too, the refusal reaches existing funds and this goes red.
 BOOST_AUTO_TEST_CASE(the_wallet_primitive_is_not_gated)
 {
-    extern bool fRegTest;
     const bool fSaved = fRegTest;
     fRegTest = false;
     BOOST_REQUIRE(IsLegacyPrivacyPolicyDisabled());
