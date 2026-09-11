@@ -378,6 +378,9 @@ extern json_spirit::Value nyx(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value z_getnewaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_createiv5seed(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_exportphrase(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_importphrase(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_adoptphrase(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_exportiv5seed(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_importiv5seed(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_rescaniv5(const json_spirit::Array& params, bool fHelp);

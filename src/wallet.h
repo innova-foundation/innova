@@ -106,7 +106,11 @@ enum WalletFeature
     FEATURE_WALLETCRYPT = 40000, // wallet encryption
     FEATURE_COMPRPUBKEY = 60000, // compressed public keys
 
-    FEATURE_LATEST = 60000
+    // Keys derived from a recovery phrase. Older binaries refuse the wallet, since they would
+    // add random keys the phrase does not cover.
+    FEATURE_HD = 130000,
+
+    FEATURE_LATEST = 130000
 };
 
 enum AvailableCoinsType
@@ -322,13 +326,8 @@ public:
     mutable CCriticalSection cs_shielded;
 
     std::vector<CPrivacyVNextWalletNote> vPrivacyVNextNotes;
-    // Index 0 always exists as the default receive index; scanning covers every
-    // index issued, since a note only opens under the one it was sent to.
-    uint32_t nPrivacyVNextIndexCount;
-    // Lowest height whose IV5 payloads this wallet did not process. Persisted, because
-    // a note that was never detected leaves nothing behind to notice it by, and
-    // unshield is retired: value in an undetected note has no recovery path but a
-    // rescan. -1 means every connected block was scanned.
+    // Lowest height whose IV5 payloads this wallet did not process, persisted because an
+    // undetected note has no other recovery path. -1 means every connected block was scanned.
     int nPrivacyVNextScanGapHeight;
     // False once a gap was marked but its wallet write did not land; callers that degrade on
     // a gap must fail closed instead.
@@ -405,7 +404,6 @@ public:
         size_t nBaseKeys,
         std::vector<PrivacyVNextScanKey>& vKeys,
         std::string& strErrorOut) const;
-    bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
     // Assigns tree positions for every epoch up to `nThroughEpoch` that still holds an
     // unplaced note of ours, not just the most recent one.
     bool AssignPrivacyVNextLeafIndices(int nThroughEpoch, std::string& strErrorOut);
@@ -419,8 +417,9 @@ public:
                                 std::string& strErrorOut,
                                 bool* pfSeedLockedOut = NULL,
                                 uint64_t* pnDisconnectCount = NULL);
-    // Reprocess connected blocks from `nFromHeight`. The only way back to a note the
-    // connect-time scan missed, and the only use a restored seed has.
+    /** Drop notes whose transaction is no longer on this chain; a failed disconnect would
+     *  otherwise leave an unspendable note. Returns the count. Caller holds cs_shielded. */
+    unsigned int ReconcilePrivacyVNextNotes();
     bool RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
                                   std::string& strErrorOut);
     // Records a gap-close request without reading blocks; Unlock may hold cs_main.
@@ -555,7 +554,6 @@ public:
         nWalletMaxVersion = FEATURE_BASE;
         fFileBacked = false;
         nMasterKeyMaxID = 0;
-        nPrivacyVNextIndexCount = 1;
         nPrivacyVNextScanGapHeight = -1;
         fPrivacyVNextScanGapPersisted = true;
         nPrivacyVNextScanGapWalkDepth = 0;
@@ -632,6 +630,15 @@ public:
     // keystore implementation
     // Generate a new key
     CPubKey GenerateNewKey();
+    /** Next key on a BIP44 chain (HD_CHAIN_EXTERNAL or HD_CHAIN_INTERNAL). Derives from the
+     *  recovery phrase when present and throws rather than falling back to a random key. */
+    CPubKey GenerateNewKey(unsigned int nChain);
+    bool DeriveHDKey(unsigned int nChain, CKey& keyOut, std::string& strPathOut,
+                     std::string& strErrorOut);
+    /** How many transparent keys this wallet holds that a recovery phrase cannot derive.
+     *  Keys drawn at random before a phrase was adopted keep working, but no backup
+     *  message may imply the phrase covers them. */
+    int64_t CountNonHDKeys() const;
     // Adds a key to the store, and saves it to disk.
     bool AddKeyPubKey(const CKey& key, const CPubKey &pubkey);
 
@@ -775,6 +782,16 @@ public:
     bool CacheAnonStats();
 
     CShieldedPaymentAddress GenerateNewShieldedAddress();
+    /** The transparent recovery-phrase chain, and the counts each side has issued. Holds
+     *  no secret: every key is re-derived from the phrase's entropy on demand. */
+    CHDChainRecord hdChainRecord;
+    bool LoadHDChainRecord(const CHDChainRecord& record, std::string& strErrorOut);
+    bool HaveHDChain() const;
+    /** Adopt the phrase already recorded as the shielded seed, so one phrase covers both
+     *  halves. Requires an unlocked wallet: the seed has to be read to check the phrase
+     *  matches, and the chain it records is a claim that it does. */
+    bool AdoptHDChainFromSeed(std::string& strErrorOut);
+
     bool LoadPrivacyVNextSeedRecord(
         const CPrivacyVNextSeedRecord& record, std::string& strError);
     bool UnlockPrivacyVNextSeed(

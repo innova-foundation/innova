@@ -9,6 +9,8 @@
 //   cs_spvutxos is always acquired last when needed.
 
 #include "txdb.h"
+#include "bip39.h"
+#include "hdroot.h"
 #include "wallet.h"
 #include "subsidy.h"
 #include "privacy_vnext_builder.h"
@@ -623,14 +625,100 @@ struct CompareValueOnly
     }
 };
 
+namespace
+{
+bool Fail(std::string& strErrorOut, const std::string& strError)
+{
+    strErrorOut = strError;
+    return false;
+}
+} // namespace
+
+// Next key on a chain, derived from the recovery phrase when the wallet has one.
+// A phrase wallet refuses on failure rather than falling back to a random key the
+// phrase cannot restore.
+bool CWallet::DeriveHDKey(unsigned int nChain, CKey& keyOut, std::string& strPathOut,
+                          std::string& strErrorOut)
+{
+    AssertLockHeld(cs_wallet);
+    strPathOut.clear();
+    strErrorOut.clear();
+    if (!hdChainRecord.IsPresent())
+        return Fail(strErrorOut, "this wallet does not derive from a recovery phrase");
+    if (nChain != HD_CHAIN_EXTERNAL && nChain != HD_CHAIN_INTERNAL)
+        return Fail(strErrorOut, "a BIP44 chain is either receive or change");
+
+    // Deriving needs the unlocked seed; refuse rather than emit a random key the
+    // phrase would not cover.
+    if (IsLocked() || !IsPrivacyVNextSeedUnlocked())
+        return Fail(strErrorOut,
+                    "unlock the wallet first: a new address derives from the seed");
+    std::vector<unsigned char> vEntropy(vchPrivacyVNextSeed.begin(),
+                                        vchPrivacyVNextSeed.end());
+    if (vEntropy.size() != BIP39_ENTROPY_BYTES)
+        return Fail(strErrorOut, "the wallet's seed is not a recovery phrase's entropy");
+
+    CExtKey account;
+    if (!HDAccountKeyFromEntropy(vEntropy, account, strErrorOut))
+        return false;
+
+    const uint32_t nIndex = (nChain == HD_CHAIN_EXTERNAL)
+                                ? hdChainRecord.nExternalCount
+                                : hdChainRecord.nInternalCount;
+    if (!HDDeriveTransparentKey(account, nChain, nIndex, keyOut, strErrorOut))
+        return false;
+
+    // The count moves only once the key is in hand and persisted, so a failure anywhere
+    // above leaves the next call deriving the same index rather than skipping one.
+    CHDChainRecord advanced = hdChainRecord;
+    if (nChain == HD_CHAIN_EXTERNAL)
+        advanced.nExternalCount = nIndex + 1;
+    else
+        advanced.nInternalCount = nIndex + 1;
+    CWalletDB walletdb(strWalletFile);
+    if (!walletdb.WriteHDChainRecord(advanced))
+        return Fail(strErrorOut, "could not record the wallet's next address index");
+    hdChainRecord = advanced;
+
+    strPathOut = HDKeyPath(nChain, nIndex);
+    return true;
+}
+
+int64_t CWallet::CountNonHDKeys() const
+{
+    LOCK(cs_wallet);
+    int64_t nCount = 0;
+    for (std::map<CKeyID, CKeyMetadata>::const_iterator it = mapKeyMetadata.begin();
+         it != mapKeyMetadata.end(); ++it)
+        if (!it->second.IsHDDerived())
+            ++nCount;
+    return nCount;
+}
+
 CPubKey CWallet::GenerateNewKey()
+{
+    return GenerateNewKey(HD_CHAIN_EXTERNAL);
+}
+
+CPubKey CWallet::GenerateNewKey(unsigned int nChain)
 {
     AssertLockHeld(cs_wallet); // mapKeyMetadata
     bool fCompressed = CanSupportFeature(FEATURE_COMPRPUBKEY); // default to compressed public keys if we want 0.6.0 wallets
 
-    RandAddSeedPerfmon();
     CKey key;
-    key.MakeNewKey(fCompressed);
+    std::string strHDPath;
+    if (hdChainRecord.IsPresent())
+    {
+        std::string strHDError;
+        if (!DeriveHDKey(nChain, key, strHDPath, strHDError))
+            throw std::runtime_error("CWallet::GenerateNewKey() : " + strHDError);
+        fCompressed = true;   // BIP44 addresses are compressed
+    }
+    else
+    {
+        RandAddSeedPerfmon();
+        key.MakeNewKey(fCompressed);
+    }
 
     if (!key.IsValid())
         throw std::runtime_error("CWallet::GenerateNewKey() : MakeNewKey failed");
@@ -645,7 +733,9 @@ CPubKey CWallet::GenerateNewKey()
 
     // Create new metadata
     int64_t nCreationTime = GetTime();
-    mapKeyMetadata[pubkey.GetID()] = CKeyMetadata(nCreationTime);
+    CKeyMetadata metadata(nCreationTime);
+    metadata.strHDKeyPath = strHDPath;
+    mapKeyMetadata[pubkey.GetID()] = metadata;
     if (!nTimeFirstKey || nCreationTime < nTimeFirstKey)
         nTimeFirstKey = nCreationTime;
 
@@ -948,6 +1038,111 @@ bool PrivacyVNextSeedRecordIsCanonical(
     }
     return true;
 }
+}
+
+bool CWallet::LoadHDChainRecord(const CHDChainRecord& record, std::string& strErrorOut)
+{
+    LOCK(cs_wallet);
+    strErrorOut.clear();
+    if (hdChainRecord.IsPresent())
+    {
+        strErrorOut = "the wallet holds more than one HD chain record";
+        return false;
+    }
+    if (record.nVersion != CHDChainRecord::CURRENT_VERSION)
+    {
+        // Fail rather than ignore. A record this build cannot read means keys were issued
+        // under rules it does not know, and carrying on would issue more under different
+        // ones -- the phrase would then cover some of the wallet and not the rest.
+        strErrorOut = strprintf(
+            "the wallet's HD chain record is version %d, which this build cannot read",
+            record.nVersion);
+        return false;
+    }
+    if (!record.IsPresent())
+    {
+        strErrorOut = "the wallet's HD chain record carries no adoption time";
+        return false;
+    }
+    hdChainRecord = record;
+    return true;
+}
+
+bool CWallet::HaveHDChain() const
+{
+    LOCK(cs_wallet);
+    return hdChainRecord.IsPresent();
+}
+
+bool CWallet::AdoptHDChainFromSeed(std::string& strErrorOut)
+{
+    LOCK(cs_wallet);
+    strErrorOut.clear();
+    if (hdChainRecord.IsPresent())
+    {
+        strErrorOut = "this wallet already derives from a recovery phrase";
+        return false;
+    }
+    if (privacyVNextSeedRecord.nGeneration == 0)
+    {
+        strErrorOut = "this wallet has no seed to adopt a phrase for";
+        return false;
+    }
+    if (IsLocked() || !IsPrivacyVNextSeedUnlocked())
+    {
+        strErrorOut = "unlock the wallet first: adopting a phrase reads the seed";
+        return false;
+    }
+
+    // Round-trip the phrase through the encoding before recording that it matches the
+    // seed.
+    std::vector<unsigned char> vSeed(vchPrivacyVNextSeed.begin(),
+                                     vchPrivacyVNextSeed.end());
+    if (vSeed.size() != BIP39_ENTROPY_BYTES)
+    {
+        strErrorOut = "the wallet's seed is not a recovery phrase's worth of entropy";
+        return false;
+    }
+    std::string strMnemonic;
+    if (!BIP39EntropyToMnemonic(vSeed, strMnemonic, strErrorOut))
+        return false;
+    std::vector<unsigned char> vBack;
+    if (!BIP39MnemonicToEntropy(strMnemonic, vBack, strErrorOut))
+        return false;
+    if (vBack != vSeed)
+    {
+        strErrorOut = "the phrase for this seed does not reproduce it";
+        return false;
+    }
+    CExtKey account;
+    if (!HDAccountKeyFromEntropy(vSeed, account, strErrorOut))
+        return false;
+
+    CHDChainRecord record;
+    record.nVersion = CHDChainRecord::CURRENT_VERSION;
+    record.nCoinType = HDCoinType();
+    record.nAccount = HD_ACCOUNT;
+    record.nExternalCount = 0;
+    record.nInternalCount = 0;
+    record.nCreateTime = GetTime();
+
+    // Bump the wallet version before writing the chain, so an older build refuses to
+    // open the wallet instead of generating random keys into it.
+    CWalletDB walletdb(strWalletFile);
+    if (!SetMinVersion(FEATURE_HD, &walletdb, true))
+    {
+        strErrorOut = "could not record the wallet's minimum version";
+        return false;
+    }
+    if (!walletdb.WriteHDChainRecord(record))
+    {
+        strErrorOut = "could not write the wallet's HD chain record";
+        return false;
+    }
+    hdChainRecord = record;
+    printf("HD: adopted a recovery phrase for the existing seed, %s\n",
+           HDKeyPath(HD_CHAIN_EXTERNAL, 0).c_str());
+    return true;
 }
 
 bool CWallet::LoadPrivacyVNextSeedRecord(
@@ -11642,7 +11837,11 @@ bool CWallet::SelectPrivacyVNextVoteNote(
     if (vWitnesses.size() != 1 ||
         !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin()))
     {
-        strErrorOut = "the IV5 witness does not fold onto the finalized anchor root";
+        // A witness that does not fold usually means a phantom note from an abandoned
+        // branch; point the operator at a rescan.
+        strErrorOut = "the IV5 witness does not fold onto the finalized anchor root. If "
+                      "this persists, a note may remain from a chain this wallet no "
+                      "longer follows: run z_rescaniv5 to drop it.";
         return false;
     }
 
@@ -12866,11 +13065,10 @@ bool CWallet::CreatePrivacyVNextUnshield(
 uint32_t CWallet::GetPrivacyVNextScanIndexCount() const
 {
     LOCK(cs_shielded);
+    // Single source of truth: the seed record's issuance counter.
     uint32_t nCount = privacyVNextSeedRecord.nNextAddressIndex;
     if (nCount < 1)
         nCount = 1;
-    if (nCount < nPrivacyVNextIndexCount)
-        nCount = nPrivacyVNextIndexCount;
     if (nCount > PRIVACY_VNEXT_MAX_SCAN_KEYS)
         nCount = PRIVACY_VNEXT_MAX_SCAN_KEYS;
     return nCount;
@@ -13253,34 +13451,6 @@ bool CWallet::ReadPrivacyVNextScanSeed(PrivacyVNextDigest& seedOut,
     if (vchPrivacyVNextSeed.size() != seedOut.size())
         return false;
     std::memcpy(seedOut.data(), &vchPrivacyVNextSeed[0], seedOut.size());
-    return true;
-}
-
-bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
-                                        std::string& strErrorOut)
-{
-    strErrorOut.clear();
-    LOCK(cs_shielded);
-    if (nPrivacyVNextIndexCount == 0 ||
-        nPrivacyVNextIndexCount >= PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
-    {
-        strErrorOut = "IV5 derivation indices are exhausted";
-        return false;
-    }
-    const uint32_t nIndex = nPrivacyVNextIndexCount;
-    // Persist before handing the index out, so a crash cannot leave an address
-    // issued under an index the next scan will not cover.
-    if (fFileBacked)
-    {
-        CWalletDB walletdb(strWalletFile, "r+");
-        if (!walletdb.WritePrivacyVNextIndexCount(nIndex + 1))
-        {
-            strErrorOut = "failed to persist the IV5 derivation index count";
-            return false;
-        }
-    }
-    nPrivacyVNextIndexCount = nIndex + 1;
-    nIndexOut = nIndex;
     return true;
 }
 
@@ -13734,12 +13904,65 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     return true;
 }
 
-// Reprocess the IV5 payloads of already-connected blocks.
-//
-// The connect-time scan is the only thing that ever detects a note, so any block it
-// skipped -- a locked seed, a scan that failed, a seed imported after the fact -- holds
-// value this wallet does not know about. Note detection is idempotent: a note already
-// held is recognised by its transaction and output index and left alone.
+// Drop notes whose transaction is confirmed only on a branch this wallet no longer
+// follows (e.g. after an incomplete disconnect). Requires positive evidence: a failed
+// lookup or an unconfirmed tx never drops a note.
+unsigned int CWallet::ReconcilePrivacyVNextNotes()
+{
+    AssertLockHeld(cs_shielded);
+    unsigned int nDropped = 0;
+
+    for (size_t i = vPrivacyVNextNotes.size(); i > 0; --i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i - 1];
+        if (note.fSpent)
+            continue;
+
+        // Drop only on positive evidence; a failed lookup can also mean the tx index lacks
+        // the transaction.
+        CTransaction tx;
+        uint256 hashBlock;
+        if (!::GetTransaction(note.txhash, tx, hashBlock))
+            continue;
+        if (hashBlock == 0)
+            continue;   // retrievable but unconfirmed; not evidence either
+
+        bool fGone = false;
+        {
+            LOCK(cs_main);
+            std::map<uint256, CBlockIndex*>::const_iterator mi =
+                mapBlockIndex.find(hashBlock);
+            // Indexed and off the chain this wallet follows is the one case that is
+            // positive evidence. Not indexed at all is not: the index may simply not
+            // reach back this far.
+            if (mi != mapBlockIndex.end() && mi->second != NULL &&
+                !mi->second->IsInMainChain())
+                fGone = true;
+        }
+        if (!fGone)
+            continue;
+
+        printf("IV5 wallet: dropping a note for transaction %s, which is no longer on "
+               "this chain (%s)\n",
+               note.txhash.ToString().substr(0, 16).c_str(),
+               FormatMoney((int64_t)note.nAmount).c_str());
+        if (fFileBacked)
+        {
+            CWalletDB walletdb(strWalletFile, "r+");
+            if (!walletdb.ErasePrivacyVNextNote(note.txhash, note.nOutputIndex))
+            {
+                // Keep it in memory to match the file: a note erased from one and not
+                // the other reappears on restart, and selection would wedge again.
+                printf("IV5 wallet: could not erase that note's record; keeping it\n");
+                continue;
+            }
+        }
+        vPrivacyVNextNotes.erase(vPrivacyVNextNotes.begin() + (i - 1));
+        ++nDropped;
+    }
+    return nDropped;
+}
+
 bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
                                        std::string& strErrorOut)
 {
@@ -13751,6 +13974,17 @@ bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
     // Open for the whole call, including the seed check, so a gap recorded by block
     // connection meanwhile is not cleared by this walk.
     CPrivacyVNextScanGapWalk walk(*this);
+
+    // Before re-reading blocks, drop what the chain no longer holds. A rescan is the only
+    // operation that revisits the note set as a whole, so it is the one place a phantom
+    // left by a failed disconnect can be removed.
+    {
+        LOCK(cs_shielded);
+        const unsigned int nDropped = ReconcilePrivacyVNextNotes();
+        if (nDropped != 0)
+            printf("IV5 wallet: reconciliation dropped %u note(s) before the rescan\n",
+                   nDropped);
+    }
 
     if (!IsPrivacyVNextSeedUnlocked())
     {

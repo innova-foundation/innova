@@ -198,6 +198,50 @@ public:
     )
 };
 
+// The transparent side's recovery-phrase chain. Holds no secret (keys derive from the
+// shielded seed), only the path and per-chain issue counts. nExternalCount and
+// nInternalCount are the NEXT index to issue; a restore raises them by discovery.
+class CHDChainRecord
+{
+public:
+    // constexpr, so taking a reference to it does not need an out-of-line definition.
+    static constexpr int CURRENT_VERSION = 1;
+    int nVersion;
+    uint32_t nCoinType;        // the SLIP-0044 slot this chain was derived under
+    uint32_t nAccount;         // the BIP-0044 account level, zero today
+    uint32_t nExternalCount;   // next receive index
+    uint32_t nInternalCount;   // next change index
+    int64_t nCreateTime;       // when the phrase was adopted, a rescan floor
+
+    CHDChainRecord()
+    {
+        SetNull();
+    }
+
+    void SetNull()
+    {
+        nVersion = CURRENT_VERSION;
+        nCoinType = 0;
+        nAccount = 0;
+        nExternalCount = 0;
+        nInternalCount = 0;
+        nCreateTime = 0;
+    }
+
+    bool IsPresent() const { return nCreateTime != 0; }
+
+    IMPLEMENT_SERIALIZE
+    (
+        CHDChainRecord* pthis = const_cast<CHDChainRecord*>(this);
+        READWRITE(pthis->nVersion);
+        READWRITE(pthis->nCoinType);
+        READWRITE(pthis->nAccount);
+        READWRITE(pthis->nExternalCount);
+        READWRITE(pthis->nInternalCount);
+        READWRITE(pthis->nCreateTime);
+    )
+};
+
 class CPrivacyVNextSeedRecord
 {
 public:

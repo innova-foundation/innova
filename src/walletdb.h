@@ -30,9 +30,14 @@ enum DBErrors
 class CKeyMetadata
 {
 public:
-    static const int CURRENT_VERSION=1;
+    static const int VERSION_BASIC=1;
+    static const int VERSION_WITH_HDPATH=2;
+    static const int CURRENT_VERSION=VERSION_WITH_HDPATH;
     int nVersion;
     int64_t nCreateTime; // 0 means unknown
+    // BIP-0044 path of this key, empty for a random key; tells which keys the recovery phrase
+    // covers.
+    std::string strHDKeyPath;
 
     CKeyMetadata()
     {
@@ -40,7 +45,7 @@ public:
     }
     CKeyMetadata(int64_t nCreateTime_)
     {
-        nVersion = CKeyMetadata::CURRENT_VERSION;
+        SetNull();
         nCreateTime = nCreateTime_;
     }
 
@@ -49,13 +54,20 @@ public:
         READWRITE(this->nVersion);
         nVersion = this->nVersion;
         READWRITE(nCreateTime);
+        // Version 1 records predate the path and simply do not carry one; reading them
+        // must not consume bytes that are not there.
+        if (this->nVersion >= VERSION_WITH_HDPATH)
+            READWRITE(strHDKeyPath);
     )
 
     void SetNull()
     {
         nVersion = CKeyMetadata::CURRENT_VERSION;
         nCreateTime = 0;
+        strHDKeyPath.clear();
     }
+
+    bool IsHDDerived() const { return !strHDKeyPath.empty(); }
 };
 
 class CStealthKeyMetadata
@@ -381,6 +393,11 @@ public:
     {
         return Read(std::string("iv5seed"), record);
     }
+    /** The transparent recovery-phrase chain. Overwrites in place: it is bookkeeping, not
+     *  an append-only log, and the counts only ever move forward. */
+    bool WriteHDChainRecord(const CHDChainRecord& record);
+    bool ReadHDChainRecord(CHDChainRecord& recordOut);
+
     bool AdvancePrivacyVNextSeedIndex(
         const CPrivacyVNextSeedRecord& expected,
         uint32_t nextAddressIndex);
@@ -429,12 +446,6 @@ public:
     {
         nWalletDBUpdated++;
         return Erase(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)));
-    }
-
-    bool WritePrivacyVNextIndexCount(uint32_t nCount)
-    {
-        nWalletDBUpdated++;
-        return Write(std::string("iv5idxcount"), nCount, true);
     }
 
     // Lowest height whose IV5 payloads were not processed, or -1 for none. Survives a

@@ -12098,8 +12098,15 @@ private:
                "height %d: %s. The chain transition stands; this wallet's view of "
                "that block is incomplete. Run z_rescaniv5 to reprocess it.\n",
                entry.fConnect ? "connect" : "disconnect", nHeight, pszReason);
-        if (pwallet && nHeight >= 0)
-            pwallet->MarkPrivacyVNextScanGap(nHeight);
+        if (pwallet && nHeight >= 0 && !pwallet->MarkPrivacyVNextScanGap(nHeight))
+        {
+            // An unpersisted scan gap is lost on restart and the wallet would report a complete
+            // view it does not have; warn loudly.
+            printf("ReplayBestChainEffects: WARNING the scan gap at height %d was NOT "
+                   "persisted. This wallet will forget the gap on restart and report a "
+                   "complete view it does not have. Run z_rescaniv5 BEFORE restarting, "
+                   "and check the wallet file is writable.\n", nHeight);
+        }
     }
 
     bool FailClosed(const Entry& entry, const char* pszReason) const

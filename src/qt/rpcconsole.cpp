@@ -463,6 +463,38 @@ void RPCConsole::updateDAGInfo()
     dagFinality->setText(finality);
 }
 
+namespace {
+
+// Commands whose arguments are secrets. Matched on the command word only, so a name that
+// merely contains one of these is not caught by accident.
+bool CommandCarriesSecret(const QString& cmd)
+{
+    static const char* const kSensitive[] = {
+        "walletpassphrase", "walletpassphrasechange", "encryptwallet",
+        "importprivkey", "importwallet", "dumpwallet", "dumpprivkey",
+        "z_importphrase", "z_exportphrase", "z_importiv5seed", "z_exportiv5seed",
+        "signrawtransaction", "collateralnode",
+    };
+    const QString first = cmd.trimmed().section(' ', 0, 0).toLower();
+    for (size_t i = 0; i < sizeof(kSensitive) / sizeof(kSensitive[0]); ++i)
+        if (first == QString(kSensitive[i]))
+            return true;
+    return false;
+}
+
+// The command word, with every argument replaced. Keeping the word is deliberate: the
+// user needs to see that their command ran.
+QString RedactCommand(const QString& cmd)
+{
+    const QString trimmed = cmd.trimmed();
+    const QString first = trimmed.section(' ', 0, 0);
+    if (first == trimmed)
+        return first;
+    return first + QString(" [arguments hidden]");
+}
+
+} // namespace
+
 void RPCConsole::on_lineEdit_returnPressed()
 {
     QString cmd = ui->lineEdit->text();
@@ -470,12 +502,16 @@ void RPCConsole::on_lineEdit_returnPressed()
 
     if(!cmd.isEmpty())
     {
-        message(CMD_REQUEST, cmd);
+        const bool fSensitive = CommandCarriesSecret(cmd);
+        // A command whose arguments are a secret is echoed with them removed.
+        message(CMD_REQUEST, fSensitive ? RedactCommand(cmd) : cmd);
         emit cmdRequest(cmd);
         // Remove command, if already in history
         history.removeOne(cmd);
-        // Append command to history
-        history.append(cmd);
+        // A secret must not survive in the history: up-arrow would replay it, and the
+        // history outlives the moment the user meant to type it.
+        if(!fSensitive)
+            history.append(cmd);
         // Enforce maximum history size
         while(history.size() > CONSOLE_HISTORY)
             history.removeFirst();

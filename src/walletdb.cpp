@@ -1380,6 +1380,22 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         {
             ssValue >> pwallet->nOrderPosNext;
         }
+        else if (strType == "hdchain")
+        {
+            CHDChainRecord record;
+            ssValue >> record;
+            if (!ssValue.empty())
+            {
+                strErr = "Error reading wallet database: trailing HD chain bytes";
+                return false;
+            }
+            std::string strChainError;
+            if (!pwallet->LoadHDChainRecord(record, strChainError))
+            {
+                strErr = "Error reading wallet database: " + strChainError;
+                return false;
+            }
+        }
         else if (strType == "iv5seed")
         {
             CPrivacyVNextSeedRecord record;
@@ -1456,15 +1472,9 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         }
         else if (strType == "iv5idxcount")
         {
+            // Obsolete second issued-address counter: read and discarded so older files still open.
             uint32_t nCount = 0;
             ssValue >> nCount;
-            if (nCount == 0)
-            {
-                strErr = "Error reading wallet database: IV5 index count is zero";
-                return false;
-            }
-            LOCK(pwallet->cs_shielded);
-            pwallet->nPrivacyVNextIndexCount = nCount;
         }
         else if (strType == "iv5scangap")
         {
@@ -1601,6 +1611,17 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
     return true;
 }
 
+bool CWalletDB::WriteHDChainRecord(const CHDChainRecord& record)
+{
+    nWalletDBUpdated++;
+    return Write(std::string("hdchain"), record, true);
+}
+
+bool CWalletDB::ReadHDChainRecord(CHDChainRecord& recordOut)
+{
+    return Read(std::string("hdchain"), recordOut);
+}
+
 bool CWalletDB::WritePrivacyVNextSeed(
     const CPrivacyVNextSeedRecord& record)
 {
@@ -1693,9 +1714,11 @@ bool CWalletDB::RaisePrivacyVNextSeedIndex(
 
 static bool IsKeyType(string strType)
 {
+    // "hdchain" carries no secret, but a wallet that cannot read it would issue keys
+    // outside the phrase's tree, so it is fatal in the same way key material is.
     return (strType== "key" || strType == "wkey" ||
             strType == "mkey" || strType == "ckey" ||
-            strType == "iv5seed");
+            strType == "iv5seed" || strType == "hdchain");
 }
 
 DBErrors CWalletDB::LoadWallet(CWallet* pwallet)

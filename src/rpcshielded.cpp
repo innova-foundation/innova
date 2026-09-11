@@ -2,6 +2,8 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
 
+#include "bip39.h"
+#include "hdroot.h"
 #include "main.h"
 #include "txdb-leveldb.h"
 #include "wallet.h"
@@ -340,6 +342,153 @@ Value z_importiv5seed(const Array& params, bool fHelp)
     }
     result.push_back(Pair("rescanned", fRescan));
     result.push_back(Pair("notes", (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+    return result;
+}
+
+// The recovery phrase: the same 32-byte secret z_exportiv5seed returns as hex.
+Value z_exportphrase(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "z_exportphrase\n"
+            "Returns this wallet's 24-word recovery phrase.\n"
+            "\n"
+            "The phrase restores every shielded note this wallet can ever hold, and\n"
+            "every transparent address derived from it. Transparent keys created before\n"
+            "the phrase was adopted were drawn at random and CANNOT be recovered from\n"
+            "it: those still need a wallet.dat backup.\n"
+            "\n"
+            "It is the same secret z_exportiv5seed returns in hex, not an additional\n"
+            "one. Anyone holding either can spend every note in this wallet.\n");
+
+    EnsureWalletIsUnlocked();
+
+    CKeyingMaterial seed;
+    if (!pwalletMain->GetPrivacyVNextSeed(seed))
+        throw JSONRPCError(RPC_WALLET_ERROR, "this wallet holds no unlocked IV5 seed");
+
+    const std::vector<unsigned char> vEntropy(seed.begin(), seed.end());
+    std::string strMnemonic;
+    std::string strError;
+    if (!BIP39EntropyToMnemonic(vEntropy, strMnemonic, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("phrase", strMnemonic));
+    result.push_back(Pair("words", (int)BIP39_WORD_COUNT));
+    result.push_back(Pair("shielded_addresses_issued",
+                          (int64_t)pwalletMain->GetPrivacyVNextScanIndexCount()));
+    result.push_back(Pair("transparent_hd", pwalletMain->HaveHDChain()));
+    // Count of transparent keys the phrase does not recover.
+    result.push_back(Pair("transparent_keys_not_covered",
+                          (int64_t)pwalletMain->CountNonHDKeys()));
+    return result;
+}
+
+// Adopt a phrase for the seed this wallet already has, so one phrase covers both halves.
+Value z_adoptphrase(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "z_adoptphrase\n"
+            "Starts deriving transparent addresses from this wallet's existing seed, so\n"
+            "its recovery phrase covers them too.\n"
+            "\n"
+            "Addresses created from now on are recoverable from the phrase. Existing\n"
+            "ones were drawn at random and are not; they keep working and still need a\n"
+            "wallet.dat backup. The wallet records a minimum version afterwards, so an\n"
+            "older build will refuse to open it rather than add keys the phrase would\n"
+            "not cover.\n");
+
+    EnsureWalletIsUnlocked();
+
+    std::string strError;
+    if (!pwalletMain->AdoptHDChainFromSeed(strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("phrase_covers_new_addresses", true));
+    result.push_back(Pair("transparent_keys_not_covered",
+                          (int64_t)pwalletMain->CountNonHDKeys()));
+    result.push_back(Pair("path", HDKeyPath(HD_CHAIN_EXTERNAL, 0)));
+    return result;
+}
+
+// Restore from words. The shielded half needs a rescan; transparent HD keys derive on
+// demand.
+Value z_importphrase(const Array& params, bool fHelp)
+{
+    if (fHelp || params.empty() || params.size() > 3)
+        throw runtime_error(
+            "z_importphrase \"<24 words>\" [addressindexcount] [rescan=true]\n"
+            "Restores a wallet from its 24-word recovery phrase.\n"
+            "\n"
+            "Refused if this wallet already holds a seed: notes already recorded belong\n"
+            "to that seed and would become unspendable under another one. Restore into\n"
+            "a fresh wallet instead.\n"
+            "\n"
+            "addressindexcount is how many shielded addresses the original wallet had\n"
+            "issued, if known. It is only a starting point: the scan looks a further\n"
+            "window past it and moves forward as it finds notes, so the count matters\n"
+            "only if the original left a long run of addresses unused.\n");
+
+    EnsureWalletIsUnlocked();
+
+    const std::string strPhrase = params[0].get_str();
+    std::string strError;
+    std::vector<unsigned char> vEntropy;
+    if (!BIP39MnemonicToEntropy(strPhrase, vEntropy, strError))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+
+    std::vector<unsigned char> vSeedBytes;
+    if (!HDShieldedSeedFromEntropy(vEntropy, vSeedBytes, strError))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+    CKeyingMaterial seed(vSeedBytes.begin(), vSeedBytes.end());
+
+    uint32_t nAddressIndexHint = 0;
+    if (params.size() > 1)
+    {
+        const int64_t nHint = params[1].get_int64();
+        if (nHint < 0 || nHint > (int64_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               strprintf("addressindexcount must be between 0 and %u",
+                                         PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES));
+        nAddressIndexHint = (uint32_t)nHint;
+    }
+    const bool fRescan = params.size() > 2 ? params[2].get_bool() : true;
+
+    if (!pwalletMain->ImportPrivacyVNextSeed(seed, nAddressIndexHint, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    if (!pwalletMain->AdoptHDChainFromSeed(strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("shielded_seed_restored", true));
+    result.push_back(Pair("transparent_hd", true));
+    result.push_back(Pair("path", HDKeyPath(HD_CHAIN_EXTERNAL, 0)));
+
+    if (fRescan)
+    {
+        // Scan from the recorded gap if set; nothing shielded exists below the boundary.
+        int nFromHeight = pwalletMain->GetPrivacyVNextScanGapHeight();
+        if (nFromHeight < 0)
+            nFromHeight = 0;
+        if (IsBoundaryBConfigured() && nFromHeight < FORK_HEIGHT_BOUNDARY_B)
+            nFromHeight = FORK_HEIGHT_BOUNDARY_B;
+
+        int nBlocks = 0;
+        if (!pwalletMain->RescanPrivacyVNextBlocks(nFromHeight, nBlocks, strError))
+            throw JSONRPCError(RPC_WALLET_ERROR, strError);
+        result.push_back(Pair("rescanned_from_height", nFromHeight));
+        result.push_back(Pair("blocks_rescanned", nBlocks));
+        result.push_back(Pair("notes_found",
+                              (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+    }
+    else
+    {
+        result.push_back(Pair("rescan", false));
+        result.push_back(Pair("note", "run z_rescaniv5 to find this seed's notes"));
+    }
     return result;
 }
 
@@ -2336,6 +2485,11 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
         // Lowest unscanned height; -1 means none (else run z_rescaniv5).
         obj.push_back(Pair("privacy_vnext_scan_gap_height",
                            pwalletMain->GetPrivacyVNextScanGapHeight()));
+        // Whether that gap survives a restart. False with a gap present means the wallet
+        // knows its view is incomplete but will forget on restart and then report a
+        // complete one -- rescan before restarting.
+        obj.push_back(Pair("privacy_vnext_scan_gap_persisted",
+                           pwalletMain->PrivacyVNextScanGapIsPersisted()));
         // Gap-closer status; "complete" with scan_gap_height -1 means done.
         obj.push_back(Pair("privacy_vnext_scan_gap_close",
                            pwalletMain->GetPrivacyVNextScanGapCloseStatus()));

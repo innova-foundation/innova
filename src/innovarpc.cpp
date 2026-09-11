@@ -469,6 +469,9 @@ static const CRPCCommand vRPCCommands[] =
 
     /* Shielded Transaction Commands */
     { "z_createiv5seed",        &z_createiv5seed,        false,  true },
+    { "z_exportphrase",         &z_exportphrase,         false,  true },
+    { "z_importphrase",         &z_importphrase,         false,  true },
+    { "z_adoptphrase",          &z_adoptphrase,          false,  true },
     { "z_exportiv5seed",        &z_exportiv5seed,        false,  true },
     { "z_importiv5seed",        &z_importiv5seed,        false,  true },
     { "z_rescaniv5",            &z_rescaniv5,            false,  true },

@@ -7,6 +7,8 @@
 #include "../hdroot.h"
 #include "../key.h"
 #include "../util.h"
+#include "../privacy_vnext_wallet.h"
+#include "../wallet.h"
 
 #include <string>
 #include <vector>
@@ -28,6 +30,22 @@ std::string PrivHex(const CKey& key)
 {
     BOOST_REQUIRE(key.IsValid());
     return HexStr(key.begin(), key.end());
+}
+
+PrivacyVNextDigest BuilderSeedForHD()
+{
+    PrivacyVNextDigest out;
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = (unsigned char)(i + 1);
+    return out;
+}
+
+PrivacyVNextDigest LocalGenesisForHD()
+{
+    PrivacyVNextDigest out;
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = (unsigned char)(0x80 + i);
+    return out;
 }
 
 } // namespace
@@ -196,6 +214,93 @@ BOOST_AUTO_TEST_CASE(the_recorded_path_names_the_key)
 {
     BOOST_CHECK_EQUAL(HDKeyPath(HD_CHAIN_EXTERNAL, 0u), "m/44'/1'/0'/0/0");
     BOOST_CHECK_EQUAL(HDKeyPath(HD_CHAIN_INTERNAL, 7u), "m/44'/1'/0'/1/7");
+}
+
+// The chain record is bookkeeping, so its job is to survive a restart: a wallet that
+// forgot how far it had issued would hand out an address it had already given someone.
+BOOST_AUTO_TEST_CASE(the_chain_record_round_trips_and_refuses_a_future_version)
+{
+    CHDChainRecord record;
+    BOOST_CHECK(!record.IsPresent());          // a null record is not an adopted one
+    record.nCoinType = HDCoinType();
+    record.nAccount = HD_ACCOUNT;
+    record.nExternalCount = 9;
+    record.nInternalCount = 4;
+    record.nCreateTime = 1757000000;
+    BOOST_CHECK(record.IsPresent());
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << record;
+    CHDChainRecord reloaded;
+    ss >> reloaded;
+    BOOST_CHECK_EQUAL(reloaded.nVersion, (int)CHDChainRecord::CURRENT_VERSION);
+    BOOST_CHECK_EQUAL(reloaded.nCoinType, record.nCoinType);
+    BOOST_CHECK_EQUAL(reloaded.nExternalCount, 9u);
+    BOOST_CHECK_EQUAL(reloaded.nInternalCount, 4u);
+    BOOST_CHECK_EQUAL(reloaded.nCreateTime, record.nCreateTime);
+    BOOST_CHECK(ss.empty());
+
+    // A record this build cannot read must be fatal rather than ignored: keys were
+    // issued under rules it does not know, and carrying on would issue more under
+    // different ones, so the phrase would cover part of the wallet and not the rest.
+    CWallet wallet;
+    CHDChainRecord future = record;
+    future.nVersion = (int)CHDChainRecord::CURRENT_VERSION + 1;
+    std::string strError;
+    BOOST_CHECK(!wallet.LoadHDChainRecord(future, strError));
+    BOOST_CHECK(!strError.empty());
+    BOOST_CHECK(!wallet.HaveHDChain());
+
+    // A record with no adoption time is not a chain either.
+    CHDChainRecord empty;
+    empty.nCoinType = HDCoinType();
+    BOOST_CHECK(!wallet.LoadHDChainRecord(empty, strError));
+
+    // The real one loads, and only once.
+    BOOST_REQUIRE_MESSAGE(wallet.LoadHDChainRecord(record, strError), strError);
+    BOOST_CHECK(wallet.HaveHDChain());
+    BOOST_CHECK(!wallet.LoadHDChainRecord(record, strError));
+}
+
+// Adopting a phrase is a claim that the phrase reaches this wallet's keys, so it must be
+// refused wherever that claim cannot be checked.
+BOOST_AUTO_TEST_CASE(adopting_a_phrase_needs_a_seed_and_an_unlocked_wallet)
+{
+    CWallet wallet;
+    std::string strError;
+
+    // No seed: there is nothing for a phrase to be a rendering of.
+    BOOST_CHECK(!wallet.AdoptHDChainFromSeed(strError));
+    BOOST_CHECK(!strError.empty());
+    BOOST_CHECK(!wallet.HaveHDChain());
+
+    // And not twice, which would overwrite the counts a live chain is issuing from.
+    CHDChainRecord record;
+    record.nCoinType = HDCoinType();
+    record.nCreateTime = 1757000000;
+    BOOST_REQUIRE(wallet.LoadHDChainRecord(record, strError));
+    BOOST_CHECK(!wallet.AdoptHDChainFromSeed(strError));
+}
+
+// The scan count is a pure function of the seed record's issued-address counter.
+BOOST_AUTO_TEST_CASE(the_issued_count_has_exactly_one_source)
+{
+    CWallet wallet;
+    // A wallet with no seed still reports at least one index, so a scan always derives
+    // the first address rather than an empty key list.
+    BOOST_CHECK_GE(wallet.GetPrivacyVNextScanIndexCount(), 1u);
+
+    // And the scan list is that count plus the lookahead plus the self-pay key, with no
+    // second counter able to raise or lower it.
+    const PrivacyVNextDigest seed = BuilderSeedForHD();
+    const PrivacyVNextDigest genesis = LocalGenesisForHD();
+    std::vector<PrivacyVNextScanKey> vKeys;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(
+        wallet.BuildPrivacyVNextScanKeys(seed, genesis, 0, vKeys, strError), strError);
+    BOOST_CHECK_EQUAL(vKeys.size(),
+                      (size_t)wallet.GetPrivacyVNextScanIndexCount() +
+                          (size_t)PRIVACY_VNEXT_SCAN_LOOKAHEAD + 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
