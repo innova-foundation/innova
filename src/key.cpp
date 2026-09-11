@@ -827,3 +827,100 @@ bool CECKey::TweakPublic(const unsigned char vchTweak[32]) {
     BN_CTX_free(ctx);
     return ret;
 }
+
+// BIP-0032 extended keys, private and public derivation, on top of the single-step CKD
+// above. Encode writes 74 bytes; the caller (base58) adds the 4-byte version. Decode is
+// strict.
+
+void CExtKey::SetMaster(const unsigned char *seed, unsigned int nSeedLen) {
+    static const unsigned char hashkey[] = {'B','i','t','c','o','i','n',' ','s','e','e','d'};
+    unsigned char out[64];
+    LockObject(out);
+    HMAC_SHA512_CTX ctx;
+    HMAC_SHA512_Init(&ctx, hashkey, sizeof(hashkey));
+    HMAC_SHA512_Update(&ctx, seed, nSeedLen);
+    HMAC_SHA512_Final(out, &ctx);
+    key.Set(&out[0], &out[32], true);
+    memcpy(vchChainCode, &out[32], 32);
+    UnlockObject(out);
+    nDepth = 0;
+    nChild = 0;
+    memset(vchFingerprint, 0, sizeof(vchFingerprint));
+}
+
+bool CExtKey::Derive(CExtKey &out, unsigned int nChild_) const {
+    out.nDepth = nDepth + 1;
+    CKeyID id = key.GetPubKey().GetID();
+    memcpy(&out.vchFingerprint[0], &id, 4);
+    out.nChild = nChild_;
+    return key.Derive(out.key, out.vchChainCode, nChild_, vchChainCode);
+}
+
+CExtPubKey CExtKey::Neuter() const {
+    CExtPubKey ret;
+    ret.nDepth = nDepth;
+    memcpy(&ret.vchFingerprint[0], &vchFingerprint[0], 4);
+    ret.nChild = nChild;
+    ret.pubkey = key.GetPubKey();
+    memcpy(&ret.vchChainCode[0], &vchChainCode[0], 32);
+    return ret;
+}
+
+void CExtKey::Encode(unsigned char code[74]) const {
+    code[0] = nDepth;
+    memcpy(code+1, vchFingerprint, 4);
+    code[5] = (nChild >> 24) & 0xFF; code[6] = (nChild >> 16) & 0xFF;
+    code[7] = (nChild >>  8) & 0xFF; code[8] = (nChild >>  0) & 0xFF;
+    memcpy(code+9, vchChainCode, 32);
+    code[41] = 0;
+    assert(key.size() == 32);
+    memcpy(code+42, key.begin(), 32);
+}
+
+void CExtKey::Decode(const unsigned char code[74]) {
+    nDepth = code[0];
+    memcpy(vchFingerprint, code+1, 4);
+    nChild = ((unsigned int)code[5] << 24) | ((unsigned int)code[6] << 16) |
+             ((unsigned int)code[7] << 8) | (unsigned int)code[8];
+    memcpy(vchChainCode, code+9, 32);
+    // A private extended key is padded with a zero byte so both kinds are 74 bytes; a
+    // nonzero one is a public key's header and must not be read as a private key.
+    if (code[41] != 0) {
+        key = CKey();
+        return;
+    }
+    key.Set(code+42, code+74, true);
+}
+
+void CExtPubKey::Encode(unsigned char code[74]) const {
+    code[0] = nDepth;
+    memcpy(code+1, vchFingerprint, 4);
+    code[5] = (nChild >> 24) & 0xFF; code[6] = (nChild >> 16) & 0xFF;
+    code[7] = (nChild >>  8) & 0xFF; code[8] = (nChild >>  0) & 0xFF;
+    memcpy(code+9, vchChainCode, 32);
+    assert(pubkey.size() == 33);
+    memcpy(code+41, pubkey.begin(), 33);
+}
+
+void CExtPubKey::Decode(const unsigned char code[74]) {
+    nDepth = code[0];
+    memcpy(vchFingerprint, code+1, 4);
+    nChild = ((unsigned int)code[5] << 24) | ((unsigned int)code[6] << 16) |
+             ((unsigned int)code[7] << 8) | (unsigned int)code[8];
+    memcpy(vchChainCode, code+9, 32);
+    pubkey.Set(code+41, code+74);
+}
+
+bool CExtPubKey::Derive(CExtPubKey &out, unsigned int nChild_) const {
+    // A public parent cannot reach a hardened child: that is the property hardening buys,
+    // so refuse rather than assert -- a caller walking a path must be told, not aborted.
+    if ((nChild_ >> 31) != 0)
+        return false;
+    if (!pubkey.IsValid())
+        return false;
+    out.nDepth = nDepth + 1;
+    CKeyID id = pubkey.GetID();
+    memcpy(&out.vchFingerprint[0], &id, 4);
+    out.nChild = nChild_;
+    return pubkey.Derive(out.pubkey, out.vchChainCode, nChild_, vchChainCode);
+}
