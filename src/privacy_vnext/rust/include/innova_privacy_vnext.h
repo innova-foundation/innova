@@ -87,6 +87,7 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_CAP_VOTE_SIGMA (1u << 22)
 #define INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE (1u << 23)
 #define INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF (1u << 24)
+#define INNOVA_PRIVACY_VNEXT_CAP_FCMP_SPLIT_PROVE (1u << 25)
 #define INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES \
     (INNOVA_PRIVACY_VNEXT_CAP_PROTOCOL_CONTRACT | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_PROOF_SIZE | \
@@ -112,6 +113,7 @@ extern "C" {
      INNOVA_PRIVACY_VNEXT_CAP_VOTE_SIGMA | \
      INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE | \
      INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF | \
+     INNOVA_PRIVACY_VNEXT_CAP_FCMP_SPLIT_PROVE | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN)
 
 #define INNOVA_PRIVACY_VNEXT_OP_SHIELD (1u << 0)
@@ -210,6 +212,30 @@ int32_t innova_privacy_vnext_fcmp_batch_verify(
     const uint8_t *request,
     size_t request_len,
     uint32_t request_count);
+
+/*
+ * The split prover. fcmp_membership_prove takes the spend proving request
+ * with its signable-hash slot removed and returns schema_u16 || layers_u8 ||
+ * count_u8 || count * (pseudo_out_32 || key_image_32 || mask_delta_32 ||
+ * sender_authority_32) || instance_len_u32_le || instance, the instance being
+ * a canonical membership verification request. fcmp_sal_prove takes
+ * schema_u16 || layers_u8 || reserved_u8_zero || signable_hash_32 ||
+ * proving_len_u32_le || that proving request || that instance, both verbatim,
+ * and returns the fcmp_prove response. The mask delta is caller-secret. A
+ * retry under a new hash reuses the membership half.
+ */
+int32_t innova_privacy_vnext_fcmp_membership_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+int32_t innova_privacy_vnext_fcmp_sal_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
 
 /* Framing is fixed by abi/innova_privacy_vnext_v2.txt: schema 1, eight layers, Helios
  * root, at most 16 inputs. Proving self-verifies; consensus_capabilities stays zero. */

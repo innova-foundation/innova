@@ -52,6 +52,12 @@ const PROOF_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/ProofRng/v1";
 /// Where the signable hash sits in a proving request, after the header and the root.
 const SIGNABLE_HASH_OFFSET: usize = 40;
 const BATCH_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/BatchWeights/v1";
+/// Seeds the split membership half's branch blinds and proof nonces. Nothing it draws is
+/// challenged under a message, so it must not need one.
+const SPLIT_MEMBERSHIP_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/SplitMembershipRng/v1";
+/// Seeds the split SAL half's nonces over its whole request, so the signable hash is in every
+/// draw.
+const SPLIT_SAL_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/SplitSalRng/v1";
 
 type EdPoint = <Ed25519 as Ciphersuite>::G;
 type EdScalar = <Ed25519 as Ciphersuite>::F;
@@ -1122,6 +1128,367 @@ pub(crate) fn prove_membership_with_secrets(
     Ok((verification, secrets))
 }
 
+// Split proving: the rerandomization is a pure function of the membership request, which
+// the SAL request carries verbatim. Each SAL nonce is seeded with the whole SAL request.
+
+/// One split membership record: pseudo-output, key image, secret mask delta, sender authority.
+const SPLIT_MEMBERSHIP_RECORD_LEN: usize = 128;
+/// Schema, layers, reserved, signable hash, proving request length.
+const SPLIT_SAL_HEADER_LEN: usize = 40;
+
+type SplitRerandomization = (
+    RerandomizedOutput,
+    ScalarDecomposition<EdScalar>,
+    ScalarDecomposition<EdScalar>,
+    ScalarDecomposition<EdScalar>,
+    ScalarDecomposition<EdScalar>,
+);
+
+/// Rerandomize a membership request's witnesses on the combined prover's stream, so one
+/// (root, entropy, witness) set rerandomizes identically on both paths.
+fn split_rerandomize(proving: &[u8], witnesses: &[ProvingWitness]) -> Vec<SplitRerandomization> {
+    let mut rng = deterministic_rng(
+        RERANDOMIZE_RNG_DOMAIN,
+        &[
+            &proving[..MEMBERSHIP_HEADER_LEN],
+            &proving[MEMBERSHIP_HEADER_LEN..],
+        ],
+    );
+    witnesses
+        .iter()
+        .map(|witness| rerandomize_with_nonzero_blinds(&mut rng, &witness.path.output))
+        .collect()
+}
+
+fn membership_tuple(input: &monero_fcmp_plus_plus::Input) -> [u8; MEMBERSHIP_INPUT_LEN] {
+    let mut tuple = [0_u8; MEMBERSHIP_INPUT_LEN];
+    tuple[..32].copy_from_slice(&input.O_tilde());
+    tuple[32..64].copy_from_slice(&input.I_tilde());
+    tuple[64..96].copy_from_slice(&input.R());
+    tuple[96..].copy_from_slice(&input.C_tilde());
+    tuple
+}
+
+/// x*I from the leaf rather than from a SAL, so the membership half can publish it.
+fn split_key_image(witness: &ProvingWitness) -> [u8; 32] {
+    (witness.path.output.I() * witness.x).to_bytes()
+}
+
+struct SplitMembershipRecord {
+    pseudo_out: [u8; 32],
+    key_image: [u8; 32],
+    pseudo_out_mask_delta: [u8; 32],
+    sender_authority: [u8; 32],
+}
+
+impl Drop for SplitMembershipRecord {
+    fn drop(&mut self) {
+        self.pseudo_out_mask_delta.zeroize();
+    }
+}
+
+fn encode_split_membership_response(
+    records: &[SplitMembershipRecord],
+    instance: &[u8],
+) -> Result<Vec<u8>, ResultCode> {
+    let count = records.len();
+    validate_count(count)?;
+    let mut response = Vec::with_capacity(
+        RESPONSE_HEADER_LEN
+            .checked_add(count * SPLIT_MEMBERSHIP_RECORD_LEN)
+            .and_then(|size| size.checked_add(4 + instance.len()))
+            .ok_or(ResultCode::ResourceLimit)?,
+    );
+    response.extend_from_slice(&SCHEMA.to_le_bytes());
+    response.push(LAYERS);
+    response.push(u8::try_from(count).map_err(|_| ResultCode::ResourceLimit)?);
+    for record in records {
+        response.extend_from_slice(&record.pseudo_out);
+        response.extend_from_slice(&record.key_image);
+        response.extend_from_slice(&record.pseudo_out_mask_delta);
+        response.extend_from_slice(&record.sender_authority);
+    }
+    response.extend_from_slice(
+        &u32::try_from(instance.len())
+            .map_err(|_| ResultCode::ResourceLimit)?
+            .to_le_bytes(),
+    );
+    response.extend_from_slice(instance);
+    if response.len() > MAX_BYTES {
+        return Err(ResultCode::ResourceLimit);
+    }
+    Ok(response)
+}
+
+/// Prove the membership half alone, before any signable hash exists.
+///
+/// Request: a membership proving request. Response: `schema_u16 || layers_u8 || count_u8 ||
+/// count * (pseudo_out_32 || key_image_32 || mask_delta_32 || sender_authority_32) ||
+/// instance_len_u32_le || instance`. Pseudo-outputs and key images match the combined
+/// prover's for the same root, entropy and witnesses.
+pub(crate) fn prove_membership_only(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let ParsedMembershipProvingRequest {
+        root_bytes,
+        witnesses,
+    } = parse_membership_proving_request(request)?;
+    let count = witnesses.len();
+    let rerandomizations = split_rerandomize(request, &witnesses);
+    // Branch blinds and the proof itself are challenged under nothing, so their stream needs
+    // no hash; it still must not be the rerandomization stream, whose draws are fixed above.
+    let mut proof_rng = deterministic_rng(SPLIT_MEMBERSHIP_RNG_DOMAIN, &[request]);
+    let t_generator = monero_t();
+    let u_generator = EdwardsPoint((*FCMP_PLUS_PLUS_U).into());
+    let v_generator = EdwardsPoint((*FCMP_PLUS_PLUS_V).into());
+
+    let paths = witnesses
+        .iter()
+        .map(|witness| witness.path.clone())
+        .collect::<Vec<_>>();
+    let branches = Branches::new(paths).ok_or(ResultCode::ConsensusInvalid)?;
+    let c1_blinds = branches.necessary_c1_blinds();
+    let c2_blinds = branches.necessary_c2_blinds();
+
+    let mut output_blinds = Vec::with_capacity(count);
+    let mut tuples = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(count);
+    let mut unique_key_images = BTreeSet::new();
+    for (witness, (rerandomized, o, i, i_blind, c)) in witnesses.iter().zip(rerandomizations) {
+        let input = rerandomized.input();
+        let key_image = split_key_image(witness);
+        if !unique_key_images.insert(key_image) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        tuples.push(membership_tuple(&input));
+        records.push(SplitMembershipRecord {
+            pseudo_out: input.C_tilde(),
+            key_image,
+            pseudo_out_mask_delta: (-rerandomized.c_blind()).to_repr(),
+            sender_authority: (<Ed25519 as Ciphersuite>::generator() * witness.x).to_bytes(),
+        });
+        output_blinds.push(OutputBlinds::new(
+            OBlind::new(t_generator, o),
+            IBlind::new(u_generator, v_generator, i),
+            IBlindBlind::new(t_generator, i_blind),
+            CBlind::new(<Ed25519 as Ciphersuite>::generator(), c),
+        ));
+    }
+
+    let mut branch_1_blinds = Vec::with_capacity(c1_blinds);
+    for _ in 0..c1_blinds {
+        branch_1_blinds.push(BranchBlind::new(
+            SELENE_FCMP_GENERATORS.generators.h(),
+            random_c1_decomposition(&mut proof_rng),
+        ));
+    }
+    let mut branch_2_blinds = Vec::with_capacity(c2_blinds);
+    for _ in 0..c2_blinds {
+        branch_2_blinds.push(BranchBlind::new(
+            HELIOS_FCMP_GENERATORS.generators.h(),
+            random_c2_decomposition(&mut proof_rng),
+        ));
+    }
+
+    let blinded = branches
+        .blind(output_blinds, branch_1_blinds, branch_2_blinds)
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
+    let membership = Fcmp::prove(&mut proof_rng, &FCMP_PARAMS, blinded)
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
+    let expected_size = Fcmp::<Curves>::proof_size(count, usize::from(LAYERS));
+    let mut proof_bytes = Vec::with_capacity(expected_size);
+    membership
+        .write(&mut proof_bytes)
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+    if proof_bytes.len() != expected_size {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+
+    let instance = encode_membership_request(root_bytes, &tuples, &proof_bytes)?;
+    verify_membership(&instance)?;
+    encode_split_membership_response(&records, &instance)
+}
+
+struct ParsedSplitSal<'a> {
+    signable_hash: [u8; 32],
+    proving: &'a [u8],
+    instance: &'a [u8],
+}
+
+fn parse_split_sal_request(request: &[u8]) -> Result<ParsedSplitSal<'_>, ResultCode> {
+    if request.len() < SPLIT_SAL_HEADER_LEN {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    check_schema_and_layers(&mut reader)?;
+    reader.zeroes(1)?;
+    let signable_hash = reader.array()?;
+    let proving_len = usize::try_from(reader.u32()?).map_err(|_| ResultCode::ResourceLimit)?;
+    if proving_len < MEMBERSHIP_PROVE_HEADER_LEN {
+        return Err(ResultCode::BadLength);
+    }
+    if proving_len > MAX_BYTES {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let proving = reader.bytes(proving_len)?;
+    let instance_len = request
+        .len()
+        .checked_sub(SPLIT_SAL_HEADER_LEN + proving_len)
+        .ok_or(ResultCode::BadLength)?;
+    if instance_len < MEMBERSHIP_HEADER_LEN {
+        return Err(ResultCode::BadLength);
+    }
+    let instance = reader.bytes(instance_len)?;
+    reader.finish()?;
+    Ok(ParsedSplitSal {
+        signable_hash,
+        proving,
+        instance,
+    })
+}
+
+/// An instance's root, tuples and bare proof, read at the byte level so the tuples can be held
+/// against a fresh rerandomization before anything is decoded into a curve point.
+#[allow(clippy::type_complexity)]
+fn split_instance_parts(
+    instance: &[u8],
+) -> Result<([u8; 32], Vec<[u8; MEMBERSHIP_INPUT_LEN]>, &[u8]), ResultCode> {
+    let mut reader = Reader::new(instance);
+    check_schema_and_layers(&mut reader)?;
+    let root_curve = reader.u8()?;
+    let count = usize::from(reader.u8()?);
+    validate_count(count)?;
+    reader.zeroes(3)?;
+    let root_bytes = reader.array()?;
+    let _ = decode_root(root_curve, root_bytes)?;
+    let mut tuples = Vec::with_capacity(count);
+    for _ in 0..count {
+        tuples.push(reader.array::<MEMBERSHIP_INPUT_LEN>()?);
+    }
+    let proof_len = usize::try_from(reader.u32()?).map_err(|_| ResultCode::ResourceLimit)?;
+    if proof_len != Fcmp::<Curves>::proof_size(count, usize::from(LAYERS)) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let proof = reader.bytes(proof_len)?;
+    reader.finish()?;
+    Ok((root_bytes, tuples, proof))
+}
+
+/// Prove the SAL half over an existing membership half, once the signable hash exists.
+///
+/// Request: `schema_u16 || layers_u8 || reserved_u8_zero || signable_hash_32 ||
+/// proving_len_u32_le || membership proving request || instance`, the last two verbatim from
+/// the membership half. Response: identical in layout to the combined prover's.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn prove_sal_only(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let ParsedSplitSal {
+        signable_hash,
+        proving,
+        instance,
+    } = parse_split_sal_request(request)?;
+    let ParsedMembershipProvingRequest {
+        root_bytes,
+        witnesses,
+    } = parse_membership_proving_request(proving)?;
+    let entropy: [u8; 32] = proving[MEMBERSHIP_HEADER_LEN..MEMBERSHIP_PROVE_HEADER_LEN]
+        .try_into()
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+    let (instance_root, instance_tuples, membership_bytes) = split_instance_parts(instance)?;
+    let count = witnesses.len();
+    if instance_root != root_bytes || instance_tuples.len() != count {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let rerandomizations = split_rerandomize(proving, &witnesses);
+    // Seeded over the whole request: the hash, the witnesses and the instance. No nonce below
+    // exists apart from the hash it is challenged under.
+    let mut sal_rng = deterministic_rng(SPLIT_SAL_RNG_DOMAIN, &[request]);
+
+    let mut inputs_and_authorizations = Vec::with_capacity(count);
+    let mut response_records = Vec::with_capacity(count);
+    let mut unique_key_images = BTreeSet::new();
+    for (input_index, (witness, (rerandomized, ..))) in
+        witnesses.iter().zip(rerandomizations).enumerate()
+    {
+        let input = rerandomized.input();
+        // The tuple the instance proves is the only tuple this opening may sign for.
+        if membership_tuple(&input) != instance_tuples[input_index] {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let mut pseudo_out_mask_delta = -rerandomized.c_blind();
+        let mut rerandomized_y = witness.y - rerandomized.o_blind();
+        let opening = OpenedInputTuple::open(&rerandomized, &witness.x, &witness.y)
+            .ok_or(ResultCode::ConsensusInvalid)?;
+        let (key_image, authorization) =
+            SpendAuthAndLinkability::prove(&mut sal_rng, signable_hash, &opening);
+        let key_image_bytes = key_image.to_bytes();
+        // The membership half published x*I; the opening must reach the same point.
+        if key_image_bytes != split_key_image(witness) {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        if !unique_key_images.insert(key_image_bytes) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let pseudo_out = input.C_tilde();
+        let o_tilde = input.O_tilde();
+        let pseudo_out_mask_delta_bytes = pseudo_out_mask_delta.to_repr();
+        let sender_authority = (<Ed25519 as Ciphersuite>::generator() * witness.x).to_bytes();
+        let mut rerandomized_y_bytes = rerandomized_y.to_repr();
+        let input_index = u32::try_from(input_index).map_err(|_| ResultCode::ResourceLimit)?;
+        let sender_disclosure_proof = disclosure::prove_sender(
+            &sender_authority,
+            &o_tilde,
+            &witness.x.to_repr(),
+            &rerandomized_y_bytes,
+            &signable_hash,
+            input_index,
+            &entropy,
+        )
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+        let sender_disclosure_valid = disclosure::verify_sender(
+            &sender_authority,
+            &o_tilde,
+            &signable_hash,
+            input_index,
+            &sender_disclosure_proof,
+        )
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+        if !sender_disclosure_valid {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        response_records.push(ProvingResponseRecord {
+            pseudo_out,
+            key_image: key_image_bytes,
+            pseudo_out_mask_delta: pseudo_out_mask_delta_bytes,
+            sender_authority,
+            sender_disclosure_proof,
+        });
+        pseudo_out_mask_delta.zeroize();
+        rerandomized_y.zeroize();
+        rerandomized_y_bytes.zeroize();
+        inputs_and_authorizations.push((input, authorization));
+    }
+
+    let mut encoded = membership_bytes;
+    let membership = Fcmp::<Curves>::read(&mut encoded, count, usize::from(LAYERS))
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
+    if !encoded.is_empty() {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let proof = FcmpPlusPlus::new(inputs_and_authorizations, membership);
+    let expected_size = FcmpPlusPlus::proof_size(count, usize::from(LAYERS));
+    let mut proof_bytes = Vec::with_capacity(expected_size);
+    proof
+        .write(&mut proof_bytes)
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+    if proof_bytes.len() != expected_size {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+
+    let response = encode_proving_response(&response_records, &proof_bytes)?;
+    let verification = verification_request_from_response(root_bytes, signable_hash, &response)?;
+    verify(&verification)?;
+    Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -2152,6 +2519,247 @@ mod tests {
             });
             rejects_without_unwinding(label, "prover", || prove_membership(&request));
         }
+    }
+
+    const SPLIT_X: u64 = 61;
+    const SPLIT_Y: u64 = 67;
+
+    fn split_sal_request(signable_hash: [u8; 32], proving: &[u8], instance: &[u8]) -> Vec<u8> {
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(0);
+        request.extend_from_slice(&signable_hash);
+        request.extend_from_slice(
+            &u32::try_from(proving.len())
+                .expect("test request is bounded")
+                .to_le_bytes(),
+        );
+        request.extend_from_slice(proving);
+        request.extend_from_slice(instance);
+        request
+    }
+
+    fn split_instance(response: &[u8]) -> &[u8] {
+        let count = usize::from(response[3]);
+        let at = RESPONSE_HEADER_LEN + count * SPLIT_MEMBERSHIP_RECORD_LEN;
+        let len = usize::try_from(u32::from_le_bytes(
+            response[at..at + 4].try_into().expect("length is 4 bytes"),
+        ))
+        .expect("test instance is bounded");
+        &response[at + 4..at + 4 + len]
+    }
+
+    /// One membership half over one synthetic witness, proved once.
+    struct SplitMembership {
+        root_bytes: [u8; 32],
+        record: Vec<u8>,
+        proving: Vec<u8>,
+        response: Vec<u8>,
+    }
+
+    fn shared_split_membership() -> &'static SplitMembership {
+        static INSTANCE: OnceLock<SplitMembership> = OnceLock::new();
+        INSTANCE.get_or_init(|| {
+            let (root_bytes, record) =
+                synthetic_witness([0x24; 32], EdScalar::from(SPLIT_X), EdScalar::from(SPLIT_Y));
+            let proving = membership_proving_request(root_bytes, &[&record]);
+            let response =
+                prove_membership_only(&proving).expect("membership half must be produced");
+            SplitMembership {
+                root_bytes,
+                record,
+                proving,
+                response,
+            }
+        })
+    }
+
+    // Split and combined paths name the same pseudo-output, key image, mask delta and
+    // authority, and produce same-length proofs verifying under the same statement.
+    #[test]
+    fn split_halves_verify_like_the_combined_prover() {
+        let shared = shared_split_membership();
+        let root_bytes = shared.root_bytes;
+        let proving = &shared.proving;
+        let membership = &shared.response;
+        let signable_hash = [0x5d; 32];
+
+        let mut combined_request = Vec::new();
+        combined_request.extend_from_slice(&proving[..MEMBERSHIP_HEADER_LEN]);
+        combined_request.extend_from_slice(&signable_hash);
+        combined_request.extend_from_slice(&proving[MEMBERSHIP_HEADER_LEN..]);
+        let combined = prove(&combined_request).expect("combined proof");
+
+        let split = prove_sal_only(&split_sal_request(
+            signable_hash,
+            proving,
+            split_instance(membership),
+        ))
+        .expect("SAL half over the membership half");
+
+        assert_eq!(&membership[4..132], &combined[4..132]);
+        assert_eq!(&split[4..132], &combined[4..132]);
+        assert_eq!(split.len(), combined.len());
+
+        let combined_verification =
+            verification_request_from_response(root_bytes, signable_hash, &combined)
+                .expect("verification request");
+        let split_verification =
+            verification_request_from_response(root_bytes, signable_hash, &split)
+                .expect("verification request");
+        let statement = VERIFY_HEADER_LEN + 64 + 4;
+        assert_eq!(
+            &combined_verification[..statement],
+            &split_verification[..statement]
+        );
+        assert_ne!(combined_verification, split_verification);
+        verify(&combined_verification).expect("the combined proof verifies");
+        verify(&split_verification).expect("the split proof verifies");
+        assert!(verify(
+            &verification_request_from_response(root_bytes, [0x5e; 32], &split)
+                .expect("verification request"),
+        )
+        .is_err());
+    }
+
+    // The membership half is challenged under nothing: its request has no hash slot, its
+    // instance verifies alone and in a batch, and the key image the response reports is
+    // nowhere in what the verifier is handed.
+    #[test]
+    fn split_membership_half_verifies_before_any_hash_exists() {
+        let shared = shared_split_membership();
+        let proving = &shared.proving;
+        let membership = &shared.response;
+        assert_eq!(
+            proving.len(),
+            MEMBERSHIP_PROVE_HEADER_LEN + shared.record.len()
+        );
+        let instance = split_instance(membership);
+        assert_eq!(
+            instance.len(),
+            MEMBERSHIP_HEADER_LEN
+                + MEMBERSHIP_INPUT_LEN
+                + 4
+                + Fcmp::<Curves>::proof_size(1, usize::from(LAYERS))
+        );
+        verify_membership(instance).expect("the membership half verifies on its own");
+        verify_membership_batch(&batch_request(&[instance], 1), 1)
+            .expect("a one-item batch equals a single verification");
+
+        let key_image = &membership[36..68];
+        assert!(
+            !instance.windows(32).any(|window| window == key_image),
+            "the instance published the key image"
+        );
+
+        let mut malleated = instance.to_vec();
+        *malleated.last_mut().expect("the instance is nonempty") ^= 1;
+        assert_eq!(
+            verify_membership(&malleated),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // SAL retry under a new hash shares no commitment with the first proof; under one hash
+    // it is byte-identical; foreign membership bytes are refused.
+    #[test]
+    fn split_sal_retry_under_a_new_hash_shares_no_nonce() {
+        const SAL_COMMITMENTS: core::ops::Range<usize> = 96..288;
+        const S_BETA: usize = 320;
+        const S_Z: usize = 416;
+
+        let shared = shared_split_membership();
+        let root_bytes = shared.root_bytes;
+        let proving = &shared.proving;
+        let membership = &shared.response;
+        let instance = split_instance(membership);
+        let x = EdScalar::from(SPLIT_X);
+
+        let first_hash = [0x11; 32];
+        let second_hash = [0x22; 32];
+        let first = prove_sal_only(&split_sal_request(first_hash, proving, instance))
+            .expect("first SAL half");
+        let second = prove_sal_only(&split_sal_request(second_hash, proving, instance))
+            .expect("retried SAL half");
+        assert_eq!(&first[4..132], &second[4..132]);
+
+        let proof_at = RESPONSE_HEADER_LEN + RESPONSE_RECORD_LEN + 4;
+        let first_sal = &first[proof_at..];
+        let second_sal = &second[proof_at..];
+        assert_ne!(
+            &first_sal[SAL_COMMITMENTS], &second_sal[SAL_COMMITMENTS],
+            "the retry published the same SAL commitments, so a nonce was reused"
+        );
+        let delta = |at: usize| -> EdScalar {
+            let left = decode_scalar::<Ed25519>(
+                first_sal[at..at + 32]
+                    .try_into()
+                    .expect("SAL response is 32 bytes"),
+            )
+            .expect("canonical SAL response");
+            let right = decode_scalar::<Ed25519>(
+                second_sal[at..at + 32]
+                    .try_into()
+                    .expect("SAL response is 32 bytes"),
+            )
+            .expect("canonical SAL response");
+            left - right
+        };
+        let inverse = Option::<EdScalar>::from(delta(S_BETA).invert())
+            .expect("independent responses differ, so the difference is invertible");
+        let recovered = delta(S_Z) * inverse;
+        assert_ne!(
+            <Ed25519 as Ciphersuite>::generator() * recovered,
+            <Ed25519 as Ciphersuite>::generator() * x,
+            "the spend key was recovered from the two published proofs"
+        );
+
+        let again = prove_sal_only(&split_sal_request(first_hash, proving, instance))
+            .expect("the same hash proves again");
+        assert_eq!(again, first);
+
+        verify(
+            &verification_request_from_response(root_bytes, first_hash, &first)
+                .expect("verification request"),
+        )
+        .expect("first proof verifies under its own hash");
+        verify(
+            &verification_request_from_response(root_bytes, second_hash, &second)
+                .expect("verification request"),
+        )
+        .expect("retried proof verifies under its own hash");
+        assert!(verify(
+            &verification_request_from_response(root_bytes, second_hash, &first)
+                .expect("verification request"),
+        )
+        .is_err());
+
+        let mut other_entropy = proving.clone();
+        other_entropy[MEMBERSHIP_HEADER_LEN] ^= 1;
+        assert_eq!(
+            prove_sal_only(&split_sal_request(first_hash, &other_entropy, instance)),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut other_root = instance.to_vec();
+        other_root[MEMBERSHIP_HEADER_LEN - 1] ^= 1;
+        assert_eq!(
+            prove_sal_only(&split_sal_request(first_hash, proving, &other_root)),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    #[test]
+    fn malformed_split_requests_error_instead_of_unwinding() {
+        assert_eq!(prove_membership_only(&[1]), Err(ResultCode::BadLength));
+        assert_eq!(prove_sal_only(&[1]), Err(ResultCode::BadLength));
+        // A proving length that leaves no room for an instance.
+        let request = split_sal_request([0x11; 32], &[0; MEMBERSHIP_PROVE_HEADER_LEN], &[]);
+        assert_eq!(prove_sal_only(&request), Err(ResultCode::BadLength));
+        // A proving length past the end of the request.
+        let mut overrun = split_sal_request([0x11; 32], &[0; MEMBERSHIP_PROVE_HEADER_LEN], &[]);
+        overrun[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(prove_sal_only(&overrun), Err(ResultCode::ResourceLimit));
     }
 
     #[test]

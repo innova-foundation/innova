@@ -3,7 +3,7 @@
     "ownership": "caller_owned_outputs_only",
     "panic_strategy": "unwind_and_catch_unwind",
     "schema_path": "abi/innova_privacy_vnext_v2.txt",
-    "schema_sha256": "0196c601355fb4dd975b2529fee49e60a020f8b54d0a286aac4a80c9c2c964b4",
+    "schema_sha256": "85caddbd2fafa82e386b57b98f41abe40cf14140f7d06d1a3b297595274d9d0e",
     "version": 2
   },
   "consensus_enabled": true,
@@ -189,7 +189,7 @@
       },
       "abi": {
         "file_count": 2,
-        "sha256_tree": "6d53cc59b9473d5b6975148e2af30b8cc4647474dd2647e823e4290f37a620d7"
+        "sha256_tree": "8f7d3c13d3f10873f1b8a0f9e72185d12c5c4eb8005b9c8feae223a1eb2142c0"
       },
       "contract": {
         "file_count": 1,
@@ -197,15 +197,15 @@
       },
       "include": {
         "file_count": 1,
-        "sha256_tree": "12e08108df6ee1f677d200c0285e02e6c1256ee8ab76896454f6a3fb9ed2e32e"
+        "sha256_tree": "88069337df6576ca8b3b71d33ad24a1390403a762e4a736fdea8c22c64dfe961"
       },
       "src": {
         "file_count": 12,
-        "sha256_tree": "806a105dbe7900b1a36753282562aaad86d98e80f037f7ceb41b43f13533ecb8"
+        "sha256_tree": "39ed18054e5af34750e6f60fe016df529c9cd7fe0a9ce40abdf8b28085bac697"
       },
       "tests": {
         "file_count": 1,
-        "sha256_tree": "5dd938056fd45ee368ce328fcb21eb9c395fb980ec4235ade3c664c6daffd6c7"
+        "sha256_tree": "afac41a4f9e0cc30a05c7e2d98248caeb964cd6d812bce94dd101a3e9dd0f98d"
       }
     },
     "file_count": 18

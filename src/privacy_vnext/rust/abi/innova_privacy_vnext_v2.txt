@@ -18,6 +18,8 @@ functions:
   innova_privacy_vnext_fcmp_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_fcmp_verify(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_fcmp_batch_verify(const uint8_t *request, size_t request_len, uint32_t request_count)
+  innova_privacy_vnext_fcmp_membership_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_fcmp_sal_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_extend(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -79,7 +81,8 @@ capabilities:
   bit-22 vote-authorization-sigma
   bit-23 ed25519-point-combination
   bit-24 single-commitment-range-proof
-implemented-capabilities: bits 0 through 24
+  bit-25 fcmp-split-prove
+implemented-capabilities: bits 0 through 25
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)

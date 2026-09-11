@@ -14,9 +14,10 @@ _Static_assert(INNOVA_PRIVACY_VNEXT_REQUIRED_OPERATIONS == 0x7ffu,
 _Static_assert(sizeof(innova_privacy_vnext_contract) == 104u,
                "contract metadata layout changed");
 /* Bits 21-24 are the note-vote membership and sigma entries, the ed25519 point
-   combination and the single-commitment range proof. This is a tripwire, so
-   adding a capability is meant to require editing it here. */
-_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 33554431u,
+   combination and the single-commitment range proof; bit 25 is the split FCMP++
+   prover. This is a tripwire, so adding a capability is meant to require
+   editing it here. */
+_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 67108863u,
                "implemented capabilities changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_VALID == 0, "valid result changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE == 6,
@@ -43,6 +44,10 @@ int main(void)
         request, sizeof(request), NULL, 0, &proof_size);
     (void)innova_privacy_vnext_fcmp_verify(request, sizeof(request));
     (void)innova_privacy_vnext_fcmp_batch_verify(request, sizeof(request), 1);
+    (void)innova_privacy_vnext_fcmp_membership_prove(
+        request, sizeof(request), NULL, 0, &proof_size);
+    (void)innova_privacy_vnext_fcmp_sal_prove(
+        request, sizeof(request), NULL, 0, &proof_size);
     (void)innova_privacy_vnext_tree_update(request, sizeof(request), NULL, 0, &proof_size);
     (void)innova_privacy_vnext_tree_root(request, sizeof(request), NULL, 0, &proof_size);
     (void)innova_privacy_vnext_tree_witness(request, sizeof(request), NULL, 0, &proof_size);

@@ -90,6 +90,7 @@ pub const CAP_VOTE_MEMBERSHIP: u32 = 1 << 21;
 pub const CAP_VOTE_SIGMA: u32 = 1 << 22;
 pub const CAP_ED25519_COMBINE: u32 = 1 << 23;
 pub const CAP_RANGE_PROOF: u32 = 1 << 24;
+pub const CAP_FCMP_SPLIT_PROVE: u32 = 1 << 25;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -118,7 +119,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_VOTE_MEMBERSHIP
     | CAP_VOTE_SIGMA
     | CAP_ED25519_COMBINE
-    | CAP_RANGE_PROOF;
+    | CAP_RANGE_PROOF
+    | CAP_FCMP_SPLIT_PROVE;
 // Consensus relies on the verifier the crate implements. The FFI refuses a
 // contract whose consensus set is not a subset of the implemented set, so this
 // cannot silently outrun what is actually linked in.
@@ -887,6 +889,62 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_batch_verify(
         // SAFETY: request validation precedes this read.
         let request = unsafe { slice::from_raw_parts(request, request_len) };
         fcmp::verify_batch(request, request_count)
+    })
+}
+
+/// Prove the membership half of an FCMP++ alone, before any signable hash exists.
+///
+/// Request: a membership proving request, which is the spend proving request with the
+/// signable hash slot removed. Response: `schema_u16 || layers_u8 || count_u8 || count *
+/// (pseudo_out_32 || key_image_32 || mask_delta_32 || sender_authority_32) ||
+/// instance_len_u32_le || instance`, the instance being a canonical membership verification
+/// request. The mask delta is caller-secret construction material.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_fcmp_membership_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = fcmp::prove_membership_only(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
+    })
+}
+
+/// Prove the SAL half over a membership half already made, once the signable hash exists.
+///
+/// Request: `schema_u16 || layers_u8 || reserved_u8_zero || signable_hash_32 ||
+/// proving_len_u32_le || membership proving request || instance`, the last two verbatim from
+/// the membership half. Response: the `innova_privacy_vnext_fcmp_prove` response, in layout
+/// and in what verifies it. A retry under a new hash reuses the membership half; every nonce
+/// is drawn under the hash.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_fcmp_sal_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = fcmp::prove_sal_only(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
     })
 }
 /// Produce a canonical membership witness from caller-owned tree state.
