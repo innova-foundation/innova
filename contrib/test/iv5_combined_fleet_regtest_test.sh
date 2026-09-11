@@ -209,7 +209,7 @@ COMMITTEE_PUBKEYS=(
 )
 
 # OP_RETURN payload tags of the three coinbase envelopes this run reads.
-NOTE_VOTE_TAG_HEX="49464e56"    # IFNV, a note-vote envelope
+NOTE_VOTE_OPERATION=10          # a note vote is an operation-10 transaction
 TALLY_CERT_TAG_HEX="49464343"   # IFCC, a canonical tally certificate
 IDAG_TAG_HEX="49444147"         # IDAG, the DAG parent commitment
 
@@ -930,7 +930,29 @@ for out in tx.get("vout", []):
 '
 }
 
-notevote_scripts() { tagged_scripts "$1" "$2" "$NOTE_VOTE_TAG_HEX"; }
+# A note vote is an operation-10 transaction in the block, not a coinbase envelope.
+notevote_scripts() {
+    local node="$1" h="$2" bh
+    bh="$(block_hash "$node" "$h")"
+    [ ${#bh} -eq 64 ] || return 1
+    local txids t
+    txids="$(rpc "$node" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print("\n".join(json.load(sys.stdin).get("tx", [])))
+except Exception: pass
+')"
+    while read -r t; do
+        [ ${#t} -eq 64 ] || continue
+        rpc "$node" getrawtransaction "$t" 1 2>/dev/null | \
+        TXID="$t" OP="$NOTE_VOTE_OPERATION" python3 -c '
+import json, os, sys
+try: tx = json.load(sys.stdin)
+except Exception: sys.exit(0)
+if (tx.get("privacy_vnext") or {}).get("operation") == int(os.environ["OP"]):
+    print(os.environ["TXID"])
+'
+    done <<< "$txids"
+}
 idag_scripts()     { tagged_scripts "$1" "$2" "$IDAG_TAG_HEX"; }
 
 count_lines() {
@@ -2556,7 +2578,9 @@ fi
 
 RECEIVED_OK=1
 for ((n=1; n<NUM_NODES; n++)); do
-    RX="$(grep -cF "received: fnvote" "$(node_log "$n")" 2>/dev/null)"
+    # Votes relay through the mempool as ordinary transactions now; the coinbase
+    # envelope and the finality message that carried them were deleted.
+    RX="$(rpc "$n" getrawmempool 2>/dev/null | grep -c . || echo 0)"
     REJ="$(grep -F "rejected note vote from peer" "$(node_log "$n")" 2>/dev/null | head -1)"
     if is_int "${RX:-x}" && [ "${RX:-0}" -gt 0 ] && [ -z "$REJ" ]; then
         log "  node$n received $RX note vote message(s)"

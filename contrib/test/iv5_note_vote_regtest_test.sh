@@ -246,8 +246,10 @@ COMMITTEE_PUBKEYS=(
     "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
 )
 
-# OP_RETURN payload tag of a note-vote coinbase envelope ("IFNV").
-NOTE_VOTE_TAG_HEX="49464e56"
+# A note vote is an ordinary shielded transaction, operation 10, not a coinbase envelope:
+# it spends the note it votes with, so the ledger enforces one vote per note per epoch.
+# The coinbase-script lane it replaced was deleted.
+NOTE_VOTE_OPERATION=10
 # OP_RETURN payload tag of a canonical tally-certificate envelope ("IFCC").
 TALLY_CERT_TAG_HEX="49464343"
 
@@ -681,16 +683,42 @@ for out in tx.get("vout", []):
 '
 }
 
-notevote_scripts() { tagged_scripts "$1" "$2" "$NOTE_VOTE_TAG_HEX"; }
+# Every note-vote transaction in a block, by txid. A vote declares operation 10 in its
+# payload envelope and carries no transparent side at all, which is what the carrier rule
+# requires of it.
+notevote_txids() {
+    local node="$1" h="$2" bh
+    bh="$(block_hash "$node" "$h")"
+    [ ${#bh} -eq 64 ] || return 1
+    local txids
+    txids="$(rpc "$node" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print("\n".join(json.load(sys.stdin).get("tx", [])))
+except Exception: pass
+')"
+    local t
+    while read -r t; do
+        [ ${#t} -eq 64 ] || continue
+        rpc "$node" getrawtransaction "$t" 1 2>/dev/null | \
+        TXID="$t" OP="$NOTE_VOTE_OPERATION" python3 -c '
+import json, os, sys
+try: tx = json.load(sys.stdin)
+except Exception: sys.exit(0)
+pv = tx.get("privacy_vnext") or {}
+if pv.get("operation") == int(os.environ["OP"]):
+    print(os.environ["TXID"])
+'
+    done <<< "$txids"
+}
 
-# Every distinct note-vote envelope a node sees in [from, to], and the height of
-# the first block carrying each. Prints "height hex" lines.
+# Every note vote a node sees in [from, to], and the height carrying each.
+# Prints "height txid" lines.
 notevotes_in_range() {
     local node="$1" from="$2" to="$3" h s
     for ((h=from; h<=to; h++)); do
         while read -r s; do
             [ -n "$s" ] && echo "$h $s"
-        done < <(notevote_scripts "$node" "$h" 2>/dev/null)
+        done < <(notevote_txids "$node" "$h" 2>/dev/null)
     done
 }
 
@@ -1569,20 +1597,28 @@ header "9. (c) Peers receive the note vote"
 
 RECEIVED_OK=1
 for ((n=1; n<NUM_NODES; n++)); do
-    RX="$(grep -cF "received: fnvote" "$(node_log "$n")" 2>/dev/null)"
-    RX="${RX:-0}"
+    # A vote is an ordinary transaction now, so it reaches peers through the mempool
+    # rather than a finality message of its own. Seeing it in the peer's block is the
+    # end state that matters; seeing it in the peer's mempool first is the relay itself.
+    RX=0
+    for E in $NOTE_VOTE_EPOCHS; do
+        RB=$(( 11 + (E - 1) * 300 ))
+        C="$(notevotes_in_range "$n" "$RB" $((RB + NOTE_VOTE_WINDOW)) \
+             | awk 'NF{print $2}' | sort -u | grep -c . || true)"
+        is_int "$C" && RX=$((RX + C))
+    done
     REJ="$(grep -F "rejected note vote from peer" "$(node_log "$n")" 2>/dev/null | head -1)"
     if is_int "$RX" && [ "$RX" -gt 0 ] && [ -z "$REJ" ]; then
-        log "  node$n received $RX note vote message(s)"
+        log "  node$n carries $RX note vote transaction(s)"
     else
         RECEIVED_OK=0
         [ -n "$REJ" ] && fail "node$n rejected a relayed note vote: $REJ"
     fi
 done
 if [ "$RECEIVED_OK" -eq 1 ]; then
-    success "both peers received the note vote over $NUM_NODES-node relay and none rejected it"
+    success "both peers carry the note vote over $NUM_NODES-node relay and none rejected it"
 else
-    fail "the note vote did not reach both peers (no fnvote message on at least one node)"
+    fail "the note vote did not reach both peers (no operation-10 transaction on at least one node)"
 fi
 
 
