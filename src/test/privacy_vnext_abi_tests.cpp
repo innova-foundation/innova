@@ -173,6 +173,41 @@ BOOST_AUTO_TEST_CASE(key_and_address_round_trip_crosses_the_c_abi)
                                   components + sizeof(components));
 }
 
+// Pins the key derivation against vectors from a separate implementation:
+//   scalar = Blake2b-512(label || genesis || index_le32 || network || type || seed ||
+//                        counter_le32) reduced mod L, retried on zero
+BOOST_AUTO_TEST_CASE(the_key_derivation_matches_its_pinned_vector)
+{
+    PrivacyVNextDigest seed;
+    PrivacyVNextDigest genesis;
+    for (size_t i = 0; i < seed.size(); ++i)
+    {
+        seed[i] = static_cast<unsigned char>(i + 1);      // 01 02 .. 20
+        genesis[i] = static_cast<unsigned char>(0x80 + i);  // 80 81 .. 9f
+    }
+
+    std::string error;
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 17, 1, 0, keys, error), error);
+
+    BOOST_CHECK_EQUAL(
+        HexStr(keys.spendSecret.begin(), keys.spendSecret.end()),
+        "520dea51b21ed00ab237fe90f9a950449f82993897a53565fbda56da627beb0f");
+    BOOST_CHECK_EQUAL(
+        HexStr(keys.viewSecret.begin(), keys.viewSecret.end()),
+        "72846902d0aea78b4ac36a043458f4ae9513a098432915be3e6e6c521cb94306");
+    BOOST_CHECK_EQUAL(
+        HexStr(keys.outgoingViewSecret.begin(), keys.outgoingViewSecret.end()),
+        "7e1f48780681b6a4cf3b2e08e55aec0e1a0b04adfc2a46629767f97ae31fb804");
+    BOOST_CHECK_EQUAL(
+        HexStr(keys.nullifierSecret.begin(), keys.nullifierSecret.end()),
+        "79563228670c463994b75167eff9f00ecbae852d0ad26abac1c5caa766f27003");
+    BOOST_CHECK_EQUAL(
+        HexStr(keys.stakingSecret.begin(), keys.stakingSecret.end()),
+        "c3c0e469a6d0a0a2c6da1233c815979c20b421e252ff7980052d462d899ccf0f");
+}
+
 BOOST_AUTO_TEST_CASE(cpp_key_and_address_bridge_is_strict_and_deterministic)
 {
     PrivacyVNextDigest seed;

@@ -304,6 +304,7 @@ TEST_OBJS= \
     obj/test/smessage_bounds_tests.o \
     obj/test/base58_tests.o \
     obj/test/bip39_tests.o \
+    obj/test/hmac_sha512_tests.o \
     obj/test/bignum_tests.o \
     obj/test/key_tests.o \
     obj/test/uint160_tests.o \
