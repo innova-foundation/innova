@@ -12990,11 +12990,38 @@ bool CWallet::ExtendPrivacyVNextScanKeysForPayload(
     return true;
 }
 
-// The indices a note of ours can have been sent to that are known without reading a
-// payload: the issued range, then the legacy self-pay index. Both sit outside the bound
-// above, so a scan that covered only that bound would miss every note this wallet paid
-// itself. The rotated self-pay index is per payload and is appended by
-// ExtendPrivacyVNextScanKeysForPayload.
+// Raise the issued count to cover an index a scan found value at. Best effort: the
+// note is already credited. Self-pay keys are ignored.
+void CWallet::RaisePrivacyVNextScanIndexForMatch(uint16_t nKeyIndex,
+                                                size_t nAddressKeys)
+{
+    LOCK(cs_shielded);
+    if (privacyVNextSeedRecord.nGeneration == 0)
+        return;
+    const uint32_t nFound = (uint32_t)nKeyIndex;
+    // Only address indices raise the issued count; self-pay keys derive outside the
+    // issuable range.
+    if (nFound >= nAddressKeys)
+        return;
+    if (nFound >= PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
+        return;
+    if (nFound < privacyVNextSeedRecord.nNextAddressIndex)
+        return;
+
+    const uint32_t nRaised = nFound + 1;
+    CWalletDB walletdb(strWalletFile);
+    if (!walletdb.RaisePrivacyVNextSeedIndex(privacyVNextSeedRecord, nRaised))
+    {
+        printf("IV5 wallet: found a note at index %u but could not raise the issued "
+               "count to %u; the next scan will use the old window\n",
+               nFound, nRaised);
+        return;
+    }
+    privacyVNextSeedRecord.nNextAddressIndex = nRaised;
+    printf("IV5 wallet: note found at index %u; issued count raised to %u\n",
+           nFound, nRaised);
+}
+
 bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
                                         const PrivacyVNextDigest& genesis,
                                         uint8_t nNetwork,
@@ -13008,7 +13035,7 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
     // Reachable only for a wallet that issued into the whole scan budget under an
     // older bound. Refusing loudly leaves a gap the operator can act on; dropping an
     // index quietly would hide received value.
-    if ((size_t)nIssued + 2 > PRIVACY_VNEXT_MAX_SCAN_KEYS)
+    if ((size_t)nIssued + 2 > PRIVACY_VNEXT_MAX_SCAN_KEYS)  // issued, both self-pay slots
     {
         strErrorOut = strprintf(
             "IV5 wallet holds %u issued indices, more than a scan can carry alongside "
@@ -13017,8 +13044,18 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
         return false;
     }
 
-    vKeysOut.resize((size_t)nIssued + 1);
-    for (uint32_t i = 0; i < nIssued; ++i)
+    // Lookahead above the issued indices so a restored wallet finds notes at indices
+    // the original issued; a hit raises the issued count and slides the window.
+    uint32_t nDerive = nIssued;
+    if (nDerive < PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
+    {
+        const uint32_t nRoom = PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES - nDerive;
+        nDerive += (nRoom < PRIVACY_VNEXT_SCAN_LOOKAHEAD ? nRoom
+                                                         : PRIVACY_VNEXT_SCAN_LOOKAHEAD);
+    }
+
+    vKeysOut.resize((size_t)nDerive + 1);
+    for (uint32_t i = 0; i < nDerive; ++i)
     {
         PrivacyVNextDerivedKeys keys;
         std::string strKeyError;
@@ -13046,8 +13083,8 @@ bool CWallet::BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
         strErrorOut = "IV5 change key derivation failed: " + strChangeError;
         return false;
     }
-    vKeysOut[nIssued].scanSecret = changeKeys.viewSecret;
-    vKeysOut[nIssued].spendMaterial = changeKeys.spendSecret;
+    vKeysOut[nDerive].scanSecret = changeKeys.viewSecret;
+    vKeysOut[nDerive].spendMaterial = changeKeys.spendSecret;
     return true;
 }
 
@@ -13599,6 +13636,10 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                               vMatches[m].keyImage.begin() + 8).c_str());
                 continue;
             }
+
+            // A hit above the issued count raises it so the next scan looks further. Address
+            // indices only; self-pay keys are not issued indices.
+            RaisePrivacyVNextScanIndexForMatch(vMatches[m].nKeyIndex, nBaseKeys - 1);
 
             CPrivacyVNextWalletNote note;
             note.txhash = hashTx;

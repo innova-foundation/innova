@@ -387,6 +387,9 @@ public:
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
+    /** Raise the issued count to cover an address index a scan found value at, so a
+     *  restored wallet's lookahead window slides forward as it discovers notes. */
+    void RaisePrivacyVNextScanIndexForMatch(uint16_t nKeyIndex, size_t nAddressKeys);
     bool BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
                                    const PrivacyVNextDigest& genesis,
                                    uint8_t nNetwork,

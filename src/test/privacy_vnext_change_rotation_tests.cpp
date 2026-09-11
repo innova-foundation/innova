@@ -682,7 +682,8 @@ BOOST_AUTO_TEST_CASE(a_rotated_change_note_reopens_under_the_payload_scan_list)
         error);
     const uint32_t nIssued = localWallet.GetPrivacyVNextScanIndexCount();
     const size_t nBaseKeys = vBase.size();
-    BOOST_REQUIRE_EQUAL(nBaseKeys, (size_t)nIssued + 1);
+    BOOST_REQUIRE_EQUAL(nBaseKeys,
+                        (size_t)nIssued + (size_t)PRIVACY_VNEXT_SCAN_LOOKAHEAD + 1);
 
     const uint64_t nPaid = 1500;
     const uint64_t nFee = 100;
@@ -702,7 +703,9 @@ BOOST_AUTO_TEST_CASE(a_rotated_change_note_reopens_under_the_payload_scan_list)
     BOOST_REQUIRE_MESSAGE(ScanFinds(legacyPayload, vBase, vMatches, error), error);
     BOOST_REQUIRE_EQUAL(vMatches.size(), 1U);
     BOOST_CHECK_EQUAL(vMatches[0].nAmount, nChange);
-    BOOST_CHECK_EQUAL((size_t)vMatches[0].nKeyIndex, (size_t)nIssued);
+    // The pre-rotation self-pay key is the last of the built list, above every address
+    // index and the lookahead window; it is not an index anyone was paid at.
+    BOOST_CHECK_EQUAL((size_t)vMatches[0].nKeyIndex, vBase.size() - 1);
 
     // Now a rotated one, spending the other note, at the index that note's key image
     // names.
@@ -761,7 +764,7 @@ BOOST_AUTO_TEST_CASE(a_rotated_change_note_reopens_under_the_payload_scan_list)
     // The legacy payload still opens, now through the base list's own legacy key.
     BOOST_REQUIRE_MESSAGE(ScanFinds(legacyPayload, vKeys, vMatches, error), error);
     BOOST_REQUIRE_EQUAL(vMatches.size(), 1U);
-    BOOST_CHECK_EQUAL((size_t)vMatches[0].nKeyIndex, (size_t)nIssued);
+    BOOST_CHECK_EQUAL((size_t)vMatches[0].nKeyIndex, nBaseKeys - 1);
 }
 
 // A wallet issued to the bound must still be able to build a scan list, or it scans
@@ -782,9 +785,11 @@ BOOST_AUTO_TEST_CASE(the_scan_budget_carries_every_issued_index_and_both_self_pa
         localWallet.BuildPrivacyVNextScanKeys(seed, genesis, LocalNetwork(), vKeys,
                                               error),
         error);
+    // Issued indices, the lookahead window above them, and the pre-rotation self-pay key.
     const size_t nBaseKeys = vKeys.size();
     BOOST_REQUIRE_EQUAL(nBaseKeys,
-                        (size_t)localWallet.GetPrivacyVNextScanIndexCount() + 1);
+                        (size_t)localWallet.GetPrivacyVNextScanIndexCount() +
+                            (size_t)PRIVACY_VNEXT_SCAN_LOOKAHEAD + 1);
 
     // The ABI refuses a longer list than this, so the worst case a wallet at the
     // issuance bound reaches has to still fit.
@@ -970,8 +975,53 @@ BOOST_AUTO_TEST_CASE(the_wallet_block_scan_recovers_pre_rotation_and_rotated_cha
                             &legacyNote.vchKeyImage[0], 32) == 0);
 }
 
+// A restored wallet must scan a lookahead window above its issued indices; a note at a
+// higher index would otherwise match no key and owe no scan gap.
+BOOST_AUTO_TEST_CASE(a_restored_wallet_scans_a_lookahead_window_above_its_issued_indices)
+{
+    const PrivacyVNextDigest genesis = LocalGenesis();
+    const PrivacyVNextDigest seed = RotationDigest(0x6d);
+    std::string error;
+
+    CWallet restored;
+    std::vector<PrivacyVNextScanKey> vKeys;
+    BOOST_REQUIRE_MESSAGE(
+        restored.BuildPrivacyVNextScanKeys(seed, genesis, LocalNetwork(), vKeys, error),
+        error);
+
+    const uint32_t nIssued = restored.GetPrivacyVNextScanIndexCount();
+    BOOST_REQUIRE_EQUAL(vKeys.size(),
+                        (size_t)nIssued + (size_t)PRIVACY_VNEXT_SCAN_LOOKAHEAD + 1);
+    BOOST_REQUIRE(PRIVACY_VNEXT_SCAN_LOOKAHEAD > 0);
+
+    // Every key in the window is the address key for its own index, so a note paid to any
+    // of them opens. Checking the derivation rather than the count is the point: a window
+    // of the right SIZE holding the wrong keys would still lose the value.
+    for (uint32_t i = 0; i < nIssued + PRIVACY_VNEXT_SCAN_LOOKAHEAD; ++i)
+    {
+        PrivacyVNextDerivedKeys keys;
+        std::string strKeyError;
+        BOOST_REQUIRE_MESSAGE(
+            DerivePrivacyVNextKeys(seed, genesis, i, LocalNetwork(), 0, keys,
+                                   strKeyError),
+            strKeyError);
+        BOOST_CHECK_MESSAGE(vKeys[i].scanSecret == keys.viewSecret,
+                            "index " << i << " is not scanned by its own view key");
+        BOOST_CHECK(vKeys[i].spendMaterial == keys.spendSecret);
+    }
+
+    // The self-pay key stays last, above the whole window: it is not an index anyone was
+    // paid at, which is why a hit on it must never raise the issued count.
+    PrivacyVNextDerivedKeys changeKeys;
+    BOOST_REQUIRE(DerivePrivacyVNextChangeKeys(seed, genesis, LocalNetwork(),
+                                               PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX,
+                                               changeKeys, error));
+    BOOST_CHECK(vKeys.back().scanSecret == changeKeys.viewSecret);
+}
+
 // The budget claim is about a wallet at the issuance bound, so it has to be made at the
 // bound. A fresh wallet carries one issued index and clears every check by 1021.
+
 BOOST_AUTO_TEST_CASE(the_scan_budget_holds_at_the_issuance_bound)
 {
     const PrivacyVNextDigest genesis = LocalGenesis();

@@ -855,7 +855,8 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
                                               error),
         error);
     const uint32_t nIssued = localWallet.GetPrivacyVNextScanIndexCount();
-    BOOST_REQUIRE_EQUAL(vKeys.size(), (size_t)nIssued + 1);
+    BOOST_REQUIRE_EQUAL(vKeys.size(),
+                        (size_t)nIssued + (size_t)PRIVACY_VNEXT_SCAN_LOOKAHEAD + 1);
 
     PrivacyVNextDerivedKeys change;
     BOOST_REQUIRE_MESSAGE(
@@ -863,8 +864,9 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
                                      PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX, change,
                                      error),
         error);
-    BOOST_CHECK(vKeys[nIssued].scanSecret == change.viewSecret);
-    BOOST_CHECK(vKeys[nIssued].spendMaterial == change.spendSecret);
+    // The pre-rotation self-pay key is last, above the lookahead window.
+    BOOST_CHECK(vKeys.back().scanSecret == change.viewSecret);
+    BOOST_CHECK(vKeys.back().spendMaterial == change.spendSecret);
 
     // A note actually paid to change must reopen under that list, with the material a
     // spend needs and not merely the view of it.
@@ -900,7 +902,8 @@ BOOST_AUTO_TEST_CASE(a_change_note_stays_findable_and_spendable)
                                   scanned, strScanError))
             continue;
         fFound = true;
-        BOOST_CHECK_EQUAL(i, (size_t)nIssued);
+        // Last of the list: the self-pay key, above the address indices and the lookahead.
+        BOOST_CHECK_EQUAL(i, vKeys.size() - 1);
         BOOST_CHECK_EQUAL(scanned.nAmount, 777U);
         BOOST_CHECK(scanned.spendSecret != zero);
         BOOST_CHECK(scanned.keyImage != zero);

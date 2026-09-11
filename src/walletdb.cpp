@@ -1653,6 +1653,44 @@ bool CWalletDB::AdvancePrivacyVNextSeedIndex(
     return true;
 }
 
+bool CWalletDB::RaisePrivacyVNextSeedIndex(
+    const CPrivacyVNextSeedRecord& expected,
+    uint32_t nMinNextAddressIndex)
+{
+    if (activeTxn)
+        return error("RaisePrivacyVNextSeedIndex: active transaction is unsupported");
+    if (nMinNextAddressIndex <= expected.nNextAddressIndex)
+        return error("RaisePrivacyVNextSeedIndex: index does not raise");
+    if (nMinNextAddressIndex > PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
+        return error("RaisePrivacyVNextSeedIndex: index is outside the issuable bound");
+    if (!TxnBegin())
+        return error("RaisePrivacyVNextSeedIndex: transaction begin failed");
+
+    // The same compare-and-swap the sequential advance makes: a record that moved under
+    // us is a concurrent issue or a reload, and raising over it would overwrite a count
+    // this wallet arrived at by handing an address out.
+    CPrivacyVNextSeedRecord current;
+    if (!Read(std::string("iv5seed"), current) ||
+        current.nGeneration != expected.nGeneration ||
+        current.vchCryptedSeed != expected.vchCryptedSeed ||
+        current.hashSeedCommitment != expected.hashSeedCommitment ||
+        current.nNextAddressIndex != expected.nNextAddressIndex)
+    {
+        TxnAbort();
+        return error("RaisePrivacyVNextSeedIndex: persisted record mismatch");
+    }
+    current.nNextAddressIndex = nMinNextAddressIndex;
+    if (!Write(std::string("iv5seed"), current, true))
+    {
+        TxnAbort();
+        return error("RaisePrivacyVNextSeedIndex: transaction staging failed");
+    }
+    if (!TxnCommit(true))
+        return error("RaisePrivacyVNextSeedIndex: transaction commit failed");
+    nWalletDBUpdated++;
+    return true;
+}
+
 static bool IsKeyType(string strType)
 {
     return (strType== "key" || strType == "wkey" ||

@@ -37,6 +37,11 @@ static const uint32_t PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX =
 static const uint32_t PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES =
     PRIVACY_VNEXT_MAX_SCAN_KEYS - 2;
 
+// Indices a scan derives above the issued count, so a restored wallet finds notes paid to
+// higher indices. A hit raises the issued count and slides the window; discovery fails
+// only across a run of more than this many unused indices.
+static const uint32_t PRIVACY_VNEXT_SCAN_LOOKAHEAD = 64;
+
 static_assert(PRIVACY_VNEXT_MAX_SCAN_KEYS <= PRIVACY_VNEXT_INTERNAL_CHANGE_BASE,
               "IV5 self-pay must derive outside every issuable address index");
 static_assert((size_t)PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES + 2 <=

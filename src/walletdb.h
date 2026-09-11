@@ -385,6 +385,11 @@ public:
         const CPrivacyVNextSeedRecord& expected,
         uint32_t nextAddressIndex);
 
+    /** Raise the issued count to cover an index a scan found value at. Refuses to lower. */
+    bool RaisePrivacyVNextSeedIndex(
+        const CPrivacyVNextSeedRecord& expected,
+        uint32_t nMinNextAddressIndex);
+
     bool WriteShieldedKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key)
     {
         nWalletDBUpdated++;

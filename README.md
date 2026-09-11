@@ -88,7 +88,7 @@ today.
 * Encrypted Messaging (SecureMsg) — optional, disabled by default; enable with `smsg=1`
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
-* BIP39 Support (Coin Type 116)
+* SLIP-44 coin type 116 registered, so BIP39/BIP44 wallets can derive Innova keys; `innovad` itself has no recovery phrase yet
 * Proof of Data (Image/Data Timestamping)
 * ~15 second block times pre-DAG; ~1 second block ordering post-DAG (IDAG)
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
