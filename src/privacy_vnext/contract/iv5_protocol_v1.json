@@ -132,7 +132,10 @@
   },
   "collateral_attestation": {
     "amount_atomic_units": 2500000000000,
-    "operations": [8, 9],
+    "operations": [
+      8,
+      9
+    ],
     "rules": [
       "exactly-one-input-and-no-outputs",
       "transparent-value-balance-and-fee-are-zero",
@@ -157,6 +160,9 @@
       "the-stake-floor-is-a-range-statement-over-the-output-commitment-moved-down-by-the-floor-and-by-the-value-entering-carried-in-operation-proof"
     ],
     "minimum_vote_weight_atomic": 50000000000
+  },
+  "nullsend": {
+    "maximum_participants": 8
   },
   "finality_profiles": {
     "none": 0,
@@ -189,71 +195,261 @@
   },
   "envelope_capabilities": {
     "2000": {
-      "note_operations": [0, 1, 2],
-      "disclosure_masks": [7],
-      "finality_profiles": [0],
-      "authorization_modes": [0],
-      "finality_objects": [0]
+      "note_operations": [
+        0,
+        1,
+        2
+      ],
+      "disclosure_masks": [
+        7
+      ],
+      "finality_profiles": [
+        0
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0
+      ]
     },
     "2001": {
-      "note_operations": [0, 1, 2],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0],
-      "authorization_modes": [0],
-      "finality_objects": [0]
+      "note_operations": [
+        0,
+        1,
+        2
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0
+      ]
     },
     "2002": {
-      "note_operations": [2, 3],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0],
-      "authorization_modes": [0],
-      "finality_objects": [0]
+      "note_operations": [
+        2,
+        3
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0
+      ]
     },
     "2003": {
-      "note_operations": [255],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [1],
-      "authorization_modes": [0],
-      "finality_objects": [1, 2, 3, 4]
+      "note_operations": [
+        255
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        1
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        1,
+        2,
+        3,
+        4
+      ]
     },
     "2004": {
-      "note_operations": [255],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [2],
-      "authorization_modes": [0],
-      "finality_objects": [1, 2, 3, 4]
+      "note_operations": [
+        255
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        2
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        1,
+        2,
+        3,
+        4
+      ]
     },
     "2005": {
-      "note_operations": [4, 255],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0, 3],
-      "authorization_modes": [0],
-      "finality_objects": [0, 1, 2, 3, 4]
+      "note_operations": [
+        4,
+        255
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0,
+        3
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
     },
     "2006": {
-      "note_operations": [5],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0],
-      "authorization_modes": [2, 3],
-      "finality_objects": [0]
+      "note_operations": [
+        5
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0
+      ],
+      "authorization_modes": [
+        2,
+        3
+      ],
+      "finality_objects": [
+        0
+      ]
     },
     "2007": {
-      "note_operations": [6],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0],
-      "authorization_modes": [0],
-      "finality_objects": [0]
+      "note_operations": [
+        6
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0
+      ]
     },
     "2008": {
-      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 255],
-      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
-      "finality_profiles": [0, 1, 2, 3],
-      "authorization_modes": [0],
-      "finality_objects": [0, 1, 2, 3, 4],
-      "note_operation_8_and_9_disclosure_masks": [7],
-      "note_operation_8_and_9_authorization_modes": [0],
-      "note_operation_10_disclosure_masks": [7],
-      "note_operation_10_authorization_modes": [0]
+      "note_operations": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        255
+      ],
+      "disclosure_masks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "finality_profiles": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "authorization_modes": [
+        0
+      ],
+      "finality_objects": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "note_operation_8_and_9_disclosure_masks": [
+        7
+      ],
+      "note_operation_8_and_9_authorization_modes": [
+        0
+      ],
+      "note_operation_10_disclosure_masks": [
+        7
+      ],
+      "note_operation_10_authorization_modes": [
+        0
+      ]
     }
   },
   "payload": {
@@ -306,7 +502,10 @@
       "disclosure"
     ],
     "validation_request": {
-      "field_order": ["outer_wire_version_u32_le", "payload_to_eof"],
+      "field_order": [
+        "outer_wire_version_u32_le",
+        "payload_to_eof"
+      ],
       "minimum_bytes": 5,
       "maximum_bytes": 262148
     },

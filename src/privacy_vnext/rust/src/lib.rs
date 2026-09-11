@@ -207,6 +207,17 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
     )
 }
 
+/// Whether this operation is a NullSend mix: several participants spending into one
+/// payload, each proving its own input, so no party ever holds another's spend scalar.
+pub const fn is_nullsend_operation(operation: u8) -> bool {
+    operation == NOTE_NULLSEND
+}
+
+/// Participants a mix may carry. The membership section is one proof per input and the
+/// section cap is MAX_PROOF_SECTION_BYTES, so this is arithmetic rather than policy:
+/// nine one-input proofs do not fit.
+pub const MAX_NULLSEND_INPUTS: usize = 8;
+
 /// The one operation that spends a note as a finality vote. Shared by the parser and the
 /// shape rule.
 #[must_use]
@@ -323,6 +334,10 @@ pub const fn envelope_allows(
             authorization == AUTH_OWNER
                 && (!(is_attestation_operation(operation) || is_note_vote_operation(operation))
                     || disclosure_mask == 7)
+                // A mix discloses its amounts and nothing else: equal denominations are
+                // what make it a mix, and the sender and receiver stay hidden because
+                // that is the thing being mixed.
+                && (!is_nullsend_operation(operation) || disclosure_mask == 3)
         }
         _ => false,
     }
@@ -1775,6 +1790,55 @@ mod tests {
         assert_eq!(ResultCode::ResourceLimit as i32, 4);
         assert_eq!(ResultCode::ContainedPanic as i32, 5);
         assert_eq!(ResultCode::InternalLocalStateFailure as i32, 6);
+    }
+
+    #[test]
+    fn a_mix_is_admitted_only_with_its_amounts_disclosed() {
+        // A mix discloses its amounts and nothing else: equal denominations are what make it a mix,
+        // while sender and receiver stay hidden.
+        assert!(envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 3));
+
+        // Hiding the amounts would restore the aggregated range proof, whose single
+        // prover is what made the first construction custody rather than a mix.
+        assert!(!envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 7));
+        // And disclosing more than the amounts defeats the point of mixing at all.
+        for mask in [0_u8, 1, 2, 4, 5, 6] {
+            assert!(
+                !envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, mask),
+                "mask {mask} must not carry a mix"
+            );
+        }
+
+        // Owner authorization only, like every other 2008 operation: no verifier
+        // dispatches on the authorization field, so admitting a mode nothing enforces
+        // would take a fork to withdraw.
+        assert!(!envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_COLD_STAKER, FINALITY_OBJECT_NONE, 3));
+
+        // The transfer path is unchanged by the mix's arrival.
+        assert!(envelope_allows(2008, NOTE_TRANSFER, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 7));
+        assert!(envelope_allows(2008, NOTE_TRANSFER, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 3));
+    }
+
+    #[test]
+    fn the_mix_participant_bound_is_what_the_section_can_carry() {
+        // Arithmetic, not policy: the membership section is one proof per input under a
+        // fixed cap, so the bound is whatever fits. If either constant moves, this says
+        // so rather than letting a payload be built that no verifier can read.
+        let one = monero_fcmp_plus_plus::FcmpPlusPlus::proof_size(1, TREE_LAYERS as usize);
+        // The section cap is private to the payload module; it is 65,536 and the bound
+        // is whatever fits under it. Stated here so a change to either is caught.
+        const SECTION_CAP: usize = 65_536;
+        assert!(
+            MAX_NULLSEND_INPUTS * one <= SECTION_CAP,
+            "{MAX_NULLSEND_INPUTS} proofs of {one} exceed the section cap"
+        );
+        assert!(
+            (MAX_NULLSEND_INPUTS + 1) * one > SECTION_CAP,
+            "the bound is lower than the section can carry"
+        );
+        assert!(is_nullsend_operation(NOTE_NULLSEND));
+        assert!(!is_nullsend_operation(NOTE_TRANSFER));
+        assert!(!is_nullsend_operation(NOTE_FINALITY_VOTE));
     }
 
     #[test]

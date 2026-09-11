@@ -1838,6 +1838,57 @@ bool GetPrivacyVNextProofSize(uint32_t nInputs, size_t& nSizeOut,
     return true;
 }
 
+// One membership proof per input, concatenated in input order, so each mix participant
+// proves only its own input (the aggregated prover needs every spend scalar). Each input
+// draws its own entropy.
+bool ProvePrivacyVNextMembershipPerInput(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const std::vector<PrivacyVNextSpendInput>& inputs,
+    std::vector<PrivacyVNextSpendConstruction>& constructions,
+    std::vector<unsigned char>& vchProof,
+    std::string& error)
+{
+    constructions.clear();
+    vchProof.clear();
+    error.clear();
+    if (inputs.empty())
+    {
+        error = "a mix proves at least one input";
+        return false;
+    }
+
+    for (size_t i = 0; i < inputs.size(); ++i)
+    {
+        // Per-input entropy, derived so the assembly is reproducible while no two inputs
+        // share a stream. A real participant supplies its own and this never runs.
+        PrivacyVNextDigest inputEntropy;
+        {
+            CHashWriter ss(SER_GETHASH, 0);
+            ss.write((const char*)entropy.data(), entropy.size());
+            ss << (unsigned int)i;
+            const uint256 draw = ss.GetHash();
+            std::memcpy(inputEntropy.data(), draw.begin(), inputEntropy.size());
+        }
+
+        const std::vector<PrivacyVNextSpendInput> one(1, inputs[i]);
+        std::vector<PrivacyVNextSpendConstruction> oneConstruction;
+        std::vector<unsigned char> vchOne;
+        if (!ProvePrivacyVNextMembership(finalizedRoot, signableHash, inputEntropy, one,
+                                         oneConstruction, vchOne, error))
+            return false;
+        if (oneConstruction.size() != 1)
+        {
+            error = "a single-input membership proof returned the wrong construction count";
+            return false;
+        }
+        constructions.push_back(oneConstruction[0]);
+        vchProof.insert(vchProof.end(), vchOne.begin(), vchOne.end());
+    }
+    return true;
+}
+
 bool ProvePrivacyVNextMembership(
     const PrivacyVNextDigest& finalizedRoot,
     const PrivacyVNextDigest& signableHash,

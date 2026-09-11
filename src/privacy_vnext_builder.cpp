@@ -513,13 +513,24 @@ static bool BuildPrivacyVNextPayload(
                                        prefix, signingHash, strErrorOut))
         return false;
 
+    // A mix carries one proof per input; every other operation carries one over all of
+    // them. The aggregated form is smaller and verifies once, but its prover needs every
+    // input's spend scalar, which across participants is custody rather than a mix.
+    const bool fMix = iv5::IsNullSendOperation(nOperation);
     std::vector<PrivacyVNextSpendConstruction> vFinal;
     std::vector<unsigned char> vchMembership;
-    if (!vProveInputs.empty() &&
-        !ProvePrivacyVNextMembership(finalizedRoot, signingHash, entropy,
-                                     vProveInputs, vFinal, vchMembership,
-                                     strErrorOut))
-        return false;
+    if (!vProveInputs.empty())
+    {
+        const bool fProved =
+            fMix ? ProvePrivacyVNextMembershipPerInput(finalizedRoot, signingHash, entropy,
+                                                       vProveInputs, vFinal, vchMembership,
+                                                       strErrorOut)
+                 : ProvePrivacyVNextMembership(finalizedRoot, signingHash, entropy,
+                                               vProveInputs, vFinal, vchMembership,
+                                               strErrorOut);
+        if (!fProved)
+            return false;
+    }
     // Determinism in the entropy is what makes the two passes agree. If it ever failed to
     // hold, the prefix would name pseudo-outputs the proof does not open.
     if (vFinal.size() != vDraft.size())

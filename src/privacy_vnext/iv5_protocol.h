@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "94bfeb0ac74e8ce36c4385d3e673c212b7fd6b389ca5c14a1462758549448e7e";
+    "4bb0944d7cc347fdc0fd664fe592a7d80de910ffbc119d2a415bee40d7f60a74";
 // Contract texts earlier builds of this lineage published. Provenance only: no consensus
 // rule may branch on this list. LoadPrivacyVNextAbiInfo refuses a build whose C++ and
 // Rust lists disagree.
@@ -99,6 +99,18 @@ inline bool IsNoteFinalityVoteOperation(uint8_t operation)
 {
     return operation == NOTE_FINALITY_VOTE;
 }
+
+// A mix: several participants spending into one payload, each proving its own input. The
+// membership section is one proof per input rather than one over all of them, because the
+// aggregated form's prover would have to hold every participant's spend scalar.
+inline bool IsNullSendOperation(uint8_t operation)
+{
+    return operation == NOTE_NULLSEND;
+}
+
+// Participants a mix may carry, fixed by what the membership section holds: one proof per
+// input under the section cap. Mirrors MAX_NULLSEND_INPUTS in the crate.
+static const size_t MAX_NULLSEND_INPUTS = 8;
 
 enum FinalityProfile
 {

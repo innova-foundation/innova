@@ -107,6 +107,16 @@ def product_constant(text: str, name: str) -> int:
     return int(match.group(1).replace("_", "")) * int(match.group(2).replace("_", ""))
 
 
+def scalar_constant(text: str, name: str) -> int:
+    """Read a constant written as a plain integer on either side."""
+    match = re.search(
+        r"\b" + re.escape(name) + r"\s*(?::[^=]+)?=\s*([0-9_]+)(?:LL|L|u64|usize)?\s*;",
+        text,
+    )
+    require(match is not None, "missing scalar constant " + name)
+    return int(match.group(1).replace("_", ""))
+
+
 # The stake floor a note vote proves. The Rust decoder proves it as a range statement and
 # has no height to key on, while the C++ side keys the same figure by height; the one rung
 # reads this constant, so a rung that moves has to move both.
@@ -118,6 +128,19 @@ require(
 require(
     product_constant(rust, "NOTE_VOTE_MIN_WEIGHT") == floor_atomic,
     "Rust mismatch for NOTE_VOTE_MIN_WEIGHT",
+)
+
+# Participants a mix may carry. One proof per input under a fixed section cap fixes this,
+# and it is written down in both languages -- so the contract is what the two must agree
+# with, rather than each other. A bound that drifts builds payloads no verifier can read.
+mix_max = contract["nullsend"]["maximum_participants"]
+require(
+    scalar_constant(cpp, "MAX_NULLSEND_INPUTS") == mix_max,
+    "C++ mismatch for MAX_NULLSEND_INPUTS",
+)
+require(
+    scalar_constant(rust, "MAX_NULLSEND_INPUTS") == mix_max,
+    "Rust mismatch for MAX_NULLSEND_INPUTS",
 )
 
 abi_path = ROOT / "src/privacy_vnext/rust/abi/innova_privacy_vnext_v2.txt"

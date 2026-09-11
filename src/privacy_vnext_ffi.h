@@ -556,7 +556,17 @@ bool HashPrivacyVNextPayloadPrefix(
 // Exact upstream proof size for a given input count at the fixed layer depth.
 bool GetPrivacyVNextProofSize(uint32_t nInputs, size_t& nSizeOut, std::string& error);
 
-// Prove membership for every input against one finalized root.
+// One membership proof per input against one finalized root, concatenated in input
+// order (a mix cannot aggregate). Each input draws its own entropy.
+bool ProvePrivacyVNextMembershipPerInput(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const std::vector<PrivacyVNextSpendInput>& inputs,
+    std::vector<PrivacyVNextSpendConstruction>& constructions,
+    std::vector<unsigned char>& vchProof,
+    std::string& error);
+
 bool ProvePrivacyVNextMembership(
     const PrivacyVNextDigest& finalizedRoot,
     const PrivacyVNextDigest& signableHash,

@@ -9,6 +9,7 @@ use zeroize::Zeroize;
 
 use crate::{
     disclosure, envelope_allows, fcmp, is_attestation_operation, is_note_vote_operation,
+    is_nullsend_operation, MAX_NULLSEND_INPUTS,
     validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
     COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE,
     FINALITY_VOTE_CONTEXT_BYTES, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX,
@@ -342,7 +343,8 @@ fn parse_payload_prefix<'a>(
     if finality_object != FINALITY_OBJECT_NONE
         || !(matches!(operation, NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER)
             || is_attestation_operation(operation)
-            || is_note_vote_operation(operation))
+            || is_note_vote_operation(operation)
+            || is_nullsend_operation(operation))
     {
         return Err(ResultCode::UnsupportedFormat);
     }
@@ -570,6 +572,21 @@ fn validate_payload(
     {
         return Err(ResultCode::ConsensusInvalid);
     }
+    // A mix: several participants, each proving its own input. Amounts are disclosed
+    // (equal denominations), so no aggregated range proof. Requires at least two
+    // participants, one output per input, and nothing entering or leaving the pool.
+    let is_mix = is_nullsend_operation(operation);
+    if is_mix {
+        if input_count < 2
+            || input_count > MAX_NULLSEND_INPUTS
+            || output_count != input_count
+            || transparent_value_balance != 0
+            || disclosure_mask & 4 != 0
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+    }
+
     // A leaf is paid for by something the ledger retires once: a key image, or transparent
     // value behind a prevout. With neither, the input context is a constant and a second
     // identical payload would re-issue every one-time key the first created.
@@ -617,8 +634,13 @@ fn validate_payload(
     let signing_hash = signable_hash(wire_version, &payload[..cursor.position()]);
 
     let membership = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    // A mix carries one membership proof per input so no single prover needs every
+    // spend scalar; other operations use the aggregated proof.
+    let one_input_membership = FcmpPlusPlus::proof_size(1, TREE_LAYERS as usize);
     let expected_membership = if input_count == 0 {
         0
+    } else if is_mix {
+        input_count * one_input_membership
     } else {
         FcmpPlusPlus::proof_size(input_count, TREE_LAYERS as usize)
     };
@@ -626,13 +648,29 @@ fn validate_payload(
         return Err(ResultCode::ConsensusInvalid);
     }
     if verify && input_count != 0 {
-        fcmp::verify_components(
-            finalized_root,
-            signing_hash,
-            &pseudo_outs,
-            &key_images,
-            membership,
-        )?;
+        if is_mix {
+            // Each proof is checked against its own input alone, so a participant cannot
+            // borrow another's membership to stand for its own.
+            for index in 0..input_count {
+                let from = index * one_input_membership;
+                let to = from + one_input_membership;
+                fcmp::verify_components(
+                    finalized_root,
+                    signing_hash,
+                    &pseudo_outs[index..index + 1],
+                    &key_images[index..index + 1],
+                    membership.get(from..to).ok_or(ResultCode::ConsensusInvalid)?,
+                )?;
+            }
+        } else {
+            fcmp::verify_components(
+                finalized_root,
+                signing_hash,
+                &pseudo_outs,
+                &key_images,
+                membership,
+            )?;
+        }
     }
 
     let range = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
