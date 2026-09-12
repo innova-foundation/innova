@@ -336,6 +336,7 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/nullsend_transport_tests.o \
     obj/test/nullsend_round_key_tests.o \
     obj/test/nullsend_round_tests.o \
+    obj/test/background_verify_walk_tests.o \
     obj/test/drift_fork_rule_tests.o \
     obj/test/settlement_headroom_clamp_tests.o \
     obj/test/block_spacing_floor_tests.o \
@@ -586,6 +587,7 @@ check-drift-fork-rule: test_innova
 	./test_innova --run_test=nullsend_transport_tests
 	./test_innova --run_test=nullsend_round_key_tests
 	./test_innova --run_test=nullsend_round_tests
+	./test_innova --run_test=background_verify_walk_tests
 	./test_innova --run_test=drift_fork_rule_tests
 
 check-settlement-headroom-clamp: test_innova

@@ -3180,21 +3180,21 @@ int GetPrivacyVNextVerifiedHeight()
     return nHeight;
 }
 
-// Re-prove one block's payloads with the verifying decoder. Returns false only on a
-// payload that does NOT verify -- a block this node accepted and should not have.
-static bool VerifyPrivacyVNextBlockProofs(CBlockIndex* pindex, std::string& strErrorOut)
+// The active block a verification pass is owed, or a local reason there is none (pruned,
+// unreadable, or missing connect-time DAG view); a local gap is not a failed proof.
+static bool LoadPrivacyVNextActiveBlock(CBlockIndex* pindex, CBlock& activeBlockOut,
+                                        std::string& strLocalOut)
 {
-    strErrorOut.clear();
+    strLocalOut.clear();
+    activeBlockOut.SetNull();
     if (pindex == NULL)
-        return true;
+        return false;
 
     CBlock block;
     if (!block.ReadFromDisk(pindex, true))
     {
-        // Not a verification failure: a pruned or unreadable block is a local condition,
-        // and treating it as a bad proof would shut the node down for a disk problem.
-        strErrorOut = "unreadable";
-        return true;
+        strLocalOut = "unreadable";
+        return false;
     }
 
     std::set<uint256> setDAGSkippedTxs;
@@ -3207,12 +3207,18 @@ static bool VerifyPrivacyVNextBlockProofs(CBlockIndex* pindex, std::string& strE
         {
             // Without the connect-time view the verified set could differ from what connected;
             // stop as a local gap.
-            strErrorOut = "connect-time DAG active set unavailable";
-            return true;
+            strLocalOut = "connect-time DAG active set unavailable";
+            return false;
         }
     }
-    const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
+    activeBlockOut = GetDAGActiveBlock(block, setDAGSkippedTxs);
+    return true;
+}
 
+static bool VerifyPrivacyVNextActiveBlockProofs(const CBlock& activeBlock, int nHeight,
+                                                std::string& strErrorOut)
+{
+    strErrorOut.clear();
     for (size_t i = 0; i < activeBlock.vtx.size(); ++i)
     {
         const CTransaction& tx = activeBlock.vtx[i];
@@ -3226,7 +3232,7 @@ static bool VerifyPrivacyVNextBlockProofs(CBlockIndex* pindex, std::string& strE
         {
             strErrorOut = strprintf(
                 "payload of %s at height %d does not verify: %s",
-                tx.GetHash().ToString().substr(0, 16).c_str(), pindex->nHeight,
+                tx.GetHash().ToString().substr(0, 16).c_str(), nHeight,
                 validation.strError.c_str());
             return false;
         }
@@ -3251,45 +3257,116 @@ bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
     if (nFrom < nFloor)
         nFrom = nFloor;
 
-    for (int n = 0; n < nMaxBlocks && !fShutdown; ++n)
+    // Blocks are read and warmed in windows, then verified in order off the cache. One
+    // block at a time leaves most of the machine idle: a block carries a handful of
+    // payloads at most, and this walk re-proves the whole history below the assume-valid
+    // block, so it is the longest run of proof work on the node and the only one with no
+    // ordering requirement. Bounded by payload count rather than block count, because
+    // that is what the work and the memory both track.
+    static const size_t nWindowPayloads = 256;
+
+    int nBlocksThisPass = 0;
+    while (nBlocksThisPass < nMaxBlocks && !fShutdown)
     {
-        CBlockIndex* pindex = NULL;
+        std::vector<std::pair<int, CBlock> > vWindow;
+        size_t nQueued = 0;
+        bool fStop = false;
+
+        while (nBlocksThisPass + (int)vWindow.size() < nMaxBlocks && !fShutdown)
         {
-            LOCK(cs_main);
-            if (nFrom > nBestHeight)
-                break;
-            pindex = FindBlockByHeight(nFrom);
-            if (pindex == NULL || !pindex->IsInMainChain())
-                break;
-            // Only what the gate would have skipped is owed a second look. Above the
-            // assume-valid block every payload was proved when it connected.
-            if (!IsPrivacyVNextAssumeValidAncestor(pindex))
+            CBlockIndex* pindex = NULL;
             {
-                CTxDB txdb("rw");
-                txdb.WritePrivacyVNextVerifiedHeight(nBestHeight);
-                return true;
+                LOCK(cs_main);
+                if (nFrom + (int)vWindow.size() > nBestHeight)
+                {
+                    fStop = true;
+                    break;
+                }
+                pindex = FindBlockByHeight(nFrom + (int)vWindow.size());
+                if (pindex == NULL || !pindex->IsInMainChain())
+                {
+                    fStop = true;
+                    break;
+                }
+                // Only what the gate would have skipped is owed a second look. Above the
+                // assume-valid block every payload was proved when it connected.
+                if (!IsPrivacyVNextAssumeValidAncestor(pindex))
+                {
+                    if (vWindow.empty())
+                    {
+                        CTxDB txdb("rw");
+                        txdb.WritePrivacyVNextVerifiedHeight(nBestHeight);
+                        return true;
+                    }
+                    fStop = true;
+                    break;
+                }
             }
+
+            CBlock activeBlock;
+            std::string strLocal;
+            if (!LoadPrivacyVNextActiveBlock(pindex, activeBlock, strLocal))
+            {
+                // A local gap still counts as walked; a disk problem must not be treated as a bad
+                // proof.
+                activeBlock.SetNull();
+            }
+            for (size_t i = 0; i < activeBlock.vtx.size(); ++i)
+                if (activeBlock.vtx[i].IsPrivacyVNext() &&
+                    !activeBlock.vtx[i].privacyVNext.vchPayload.empty())
+                    ++nQueued;
+            vWindow.push_back(std::make_pair(pindex->nHeight, activeBlock));
+            if (nQueued >= nWindowPayloads)
+                break;
         }
 
-        std::string strBlockError;
-        if (!VerifyPrivacyVNextBlockProofs(pindex, strBlockError))
+        if (vWindow.empty())
+            break;
+
+        // Pointers into vWindow, which outlives the call. Filling the cache is all this
+        // does; every verdict below is still taken one payload at a time, and a payload
+        // that does not verify is simply left uncached for that loop to reject.
         {
-            // A block this node accepted carries a payload that does not prove. It was
-            // admitted on the binary's word, and that word was wrong: there is no safe
-            // way to keep serving a chain built on it.
-            strErrorOut = strBlockError;
-            return false;
+            std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
+            vWarm.reserve(nQueued);
+            for (size_t b = 0; b < vWindow.size(); ++b)
+                for (size_t i = 0; i < vWindow[b].second.vtx.size(); ++i)
+                {
+                    const CTransaction& tx = vWindow[b].second.vtx[i];
+                    if (tx.IsPrivacyVNext() && !tx.privacyVNext.vchPayload.empty())
+                        vWarm.push_back(std::make_pair(
+                            static_cast<uint32_t>(tx.nVersion),
+                            &tx.privacyVNext.vchPayload));
+                }
+            WarmPrivacyVNextEffectsCache(vWarm, (int)GetArg("-parverify", 0));
         }
 
-        CTxDB txdb("rw");
-        if (!txdb.WritePrivacyVNextVerifiedHeight(nFrom))
+        for (size_t b = 0; b < vWindow.size(); ++b)
         {
-            strErrorOut = strprintf("could not record verification progress at height %d",
-                                    nFrom);
-            return false;
+            std::string strBlockError;
+            if (!VerifyPrivacyVNextActiveBlockProofs(vWindow[b].second, vWindow[b].first,
+                                                     strBlockError))
+            {
+                // An accepted block carries a payload that does not prove: the node cannot safely keep
+                // serving this chain.
+                strErrorOut = strBlockError;
+                return false;
+            }
+
+            CTxDB txdb("rw");
+            if (!txdb.WritePrivacyVNextVerifiedHeight(nFrom))
+            {
+                strErrorOut = strprintf("could not record verification progress at height %d",
+                                        nFrom);
+                return false;
+            }
+            ++nVerifiedOut;
+            ++nFrom;
+            ++nBlocksThisPass;
         }
-        ++nVerifiedOut;
-        ++nFrom;
+
+        if (fStop)
+            break;
     }
     return true;
 }
@@ -3355,15 +3432,19 @@ bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex)
 
     static bool fResolved = false;
     static uint256 hashAssumeValid = 0;
-    if (!fResolved)
+    // Resolved once, because the value cannot change under a running node. Regtest
+    // re-reads it every call: it is the only network where a case needs to move the
+    // gate, and it is the only network where nothing is riding on the answer.
+    if (!fResolved || fRegTest)
     {
         fResolved = true;
+        hashAssumeValid = 0;
         const std::string strArg =
             GetArg("-assumevalid", (fTestNet || fRegTest) ? std::string("0")
                                                           : std::string(MAINNET_ASSUME_VALID_BLOCK));
         if (strArg != "0" && !strArg.empty())
             hashAssumeValid.SetHex(strArg);
-        if (hashAssumeValid != 0)
+        if (hashAssumeValid != 0 && !fRegTest)
             printf("IV5: assume-valid below %s (-assumevalid=0 to verify every proof)\n",
                    hashAssumeValid.ToString().substr(0, 16).c_str());
     }
