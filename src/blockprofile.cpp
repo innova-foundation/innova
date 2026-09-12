@@ -35,7 +35,7 @@ int64_t NowMicros()
         .count();
 }
 
-const char* kPhaseNames[BP_PHASE_COUNT] = {
+const char* kPhaseNames[] = {
     "process_block",
     "check_block",
     "pow_hash",
@@ -50,6 +50,12 @@ const char* kPhaseNames[BP_PHASE_COUNT] = {
     "dag_write",
     "set_best_chain",
     "connect_block",
+    "cb_activeset",
+    "cb_notevotes",
+    "cb_txloop",
+    "cb_finality",
+    "cb_cnpay",
+    "cb_pool",
     "fetch_inputs",
     "connect_inputs",
     "sig_verify",
@@ -71,6 +77,9 @@ const int kMaxCounters = 24;
 const char* g_counterName[kMaxCounters];
 int64_t g_counterValue[kMaxCounters];
 int g_nCounters = 0;
+
+static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == BP_PHASE_COUNT,
+              "every BlockPhase needs a name here; the two lists are written by hand");
 
 } // namespace
 

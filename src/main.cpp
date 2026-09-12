@@ -10049,7 +10049,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                       tx.GetHash().ToString().substr(0,10).c_str()));
         }
     }
-    CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
+    CBlock activeBlock;
+    {
+        BLOCK_PHASE(BP_CB_ACTIVESET);
+        activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
+    }
 
     std::vector<CFinalityVote> vFinalityVotes;
     FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
@@ -10119,7 +10123,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     for (CTransaction& tx : vtx)
     {
-        //const CTransaction &tx = vtx[i];
+        BLOCK_PHASE(BP_CB_TXLOOP);
         int64_t nTxValidateStart = GetTimeMicros();
         uint256 hashTx = tx.GetHash();
         unsigned int nTxSize = ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
@@ -10510,6 +10514,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     for (const CFinalityTallyCertificate& cert : vFinalityCerts)
     {
+        BLOCK_PHASE(BP_CB_FINALITY);
         std::string strCertError;
         if (!cert.IsValidBasic(&strCertError))
             return DoS(100, error("ConnectBlock() : finality tally certificate invalid: %s", strCertError.c_str()));
@@ -10519,6 +10524,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     }
     for (const CFinalityTallyShare& share : vFinalityShares)
     {
+        BLOCK_PHASE(BP_CB_FINALITY);
         // Strict vote resolution (connected votes or this block's votes only):
         // pending relay state differs between nodes, so consulting it here
         // would make block validity node-dependent and allow chain splits.
@@ -11062,6 +11068,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
                                          CollateralnodePayments))
     {
+        BLOCK_PHASE(BP_CB_CNPAY);
         LOCK2(cs_main, mempool.cs);
 
         CScript burnPayee;
@@ -11377,6 +11384,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {
+        BLOCK_PHASE(BP_CB_POOL);
         // Verify the block's payloads concurrently before validating them in order. Each
         // costs tens of milliseconds cold, so a block of them cannot be connected serially
         // inside a block interval during a sync, where nothing has been seen before. This

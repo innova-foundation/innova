@@ -22,6 +22,14 @@ enum BlockPhase
     BP_DAG_WRITE,
     BP_SETBESTCHAIN,
     BP_CONNECTBLOCK,
+    // ConnectBlock's own stages. Its exclusive time was 46% of a cold sync with nothing
+    // under it named, so the breakdown is the point of these.
+    BP_CB_ACTIVESET,
+    BP_CB_NOTEVOTES,
+    BP_CB_TXLOOP,
+    BP_CB_FINALITY,
+    BP_CB_CNPAY,
+    BP_CB_POOL,
     BP_FETCHINPUTS,
     BP_CONNECTINPUTS,
     BP_SIGVERIFY,
