@@ -306,4 +306,27 @@ BOOST_AUTO_TEST_CASE(the_warm_set_is_every_payload_in_window_order)
     BOOST_CHECK(vWarm.empty());
 }
 
+// The pacing rule, which dominates the walk's wall-clock time.
+BOOST_AUTO_TEST_CASE(the_walk_waits_only_when_something_else_wants_the_verifier)
+{
+    const int64_t nSleep = 500;
+
+    // Work left and the tip standing still: nothing is competing, so go straight on.
+    BOOST_CHECK_MESSAGE(PrivacyVNextVerifyPacingMs(true, false, nSleep) == 0,
+                        "the walk waited while it had work and nothing else was running, "
+                        "which is where a fixed wait spends almost all of the wall clock");
+
+    // The tip moved, so blocks are connecting and they have the verifier first.
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(true, true, nSleep), nSleep);
+
+    // Nothing found: there is no hurry to ask again, whatever the tip did.
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(false, false, nSleep), nSleep);
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(false, true, nSleep), nSleep);
+
+    // The interval is settable, including to nothing, and a negative one is not a wait.
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(true, true, 0), 0);
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(false, false, 25), 25);
+    BOOST_CHECK_EQUAL(PrivacyVNextVerifyPacingMs(true, true, -1), 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

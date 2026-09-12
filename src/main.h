@@ -1412,6 +1412,10 @@ bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
  *  derived from the same ancestry the gate uses, so nothing records which blocks were
  *  skipped; progress is one height. */
 void ThreadPrivacyVNextBackgroundVerify(void* parg);
+/** How long the background verification walk waits before its next pass: nothing when it
+ *  found work and the tip stood still, the full interval otherwise. */
+int64_t PrivacyVNextVerifyPacingMs(bool fWorkRemained, bool fTipMoved, int64_t nSleepMs);
+
 /** Every payload in a window of blocks, in block order and then transaction order.
  *  The pointers are into the window, which must outlive the warm call it feeds. */
 void CollectPrivacyVNextWarmSet(

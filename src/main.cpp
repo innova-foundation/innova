@@ -3258,9 +3258,16 @@ static bool VerifyPrivacyVNextActiveBlockProofs(const CBlock& activeBlock, int n
     return true;
 }
 
-// One pass of the walk. Bounded so the thread yields: this competes with block connection
-// for the same verifier, and a node that cannot keep up with the tip because it is
-// re-proving history has traded one problem for another.
+// Wait before the next pass: none if the pass found work and the tip did not move,
+// otherwise the full interval, so the walk yields to block connection.
+int64_t PrivacyVNextVerifyPacingMs(bool fWorkRemained, bool fTipMoved, int64_t nSleepMs)
+{
+    if (nSleepMs < 0)
+        nSleepMs = 0;
+    return (fWorkRemained && !fTipMoved) ? 0 : nSleepMs;
+}
+
+// One pass of the walk. Bounded so the thread yields.
 bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
                                            std::string& strErrorOut)
 {
@@ -3388,14 +3395,23 @@ void ThreadPrivacyVNextBackgroundVerify(void* parg)
         return;
     }
 
+    // Both settable, because the right pace depends on what else the node is doing and
+    // the defaults are a guess at a middle. The batch also bounds how long one pass holds
+    // the verifier without yielding, so it is not simply "higher is better".
+    const int nBatch = std::max(1, (int)GetArg("-iv5verifybatch", 64));
+    const int64_t nSleepMs = std::max((int64_t)0, GetArg("-iv5verifysleep", 500));
+
     bool fReported = false;
     while (!fShutdown)
     {
+        bool fWorkRemained = false;
+        bool fTipMoved = false;
         if (!IsInitialBlockDownload())
         {
+            const int nTipBefore = nBestHeight;
             int nVerified = 0;
             std::string strError;
-            if (!RunPrivacyVNextBackgroundVerification(64, nVerified, strError))
+            if (!RunPrivacyVNextBackgroundVerification(nBatch, nVerified, strError))
             {
                 printf("IV5 background verification FAILED: %s\n"
                        "This node connected that block on the assume-valid assertion "
@@ -3409,6 +3425,7 @@ void ThreadPrivacyVNextBackgroundVerify(void* parg)
             if (nVerified > 0)
             {
                 fReported = false;
+                fWorkRemained = true;
             }
             else if (!fReported)
             {
@@ -3416,9 +3433,11 @@ void ThreadPrivacyVNextBackgroundVerify(void* parg)
                        GetPrivacyVNextVerifiedHeight());
                 fReported = true;
             }
+            fTipMoved = (nBestHeight != nTipBefore);
         }
-        // Slow on purpose: this is catch-up work, not a race.
-        MilliSleep(500);
+        const int64_t nWaitMs = PrivacyVNextVerifyPacingMs(fWorkRemained, fTipMoved, nSleepMs);
+        if (nWaitMs > 0)
+            MilliSleep(nWaitMs);
     }
 }
 
