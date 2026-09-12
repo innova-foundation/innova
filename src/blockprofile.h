@@ -30,6 +30,11 @@ enum BlockPhase
     BP_CB_FINALITY,
     BP_CB_CNPAY,
     BP_CB_POOL,
+    BP_CB_TXINDEX_READ,
+    BP_CB_VNEXT_FLOW,
+    // CheckTransaction's own stages: it is 20% of a cold sync and runs twice per block.
+    BP_CHECKTX_VNEXT,
+    BP_CHECKTX_SIZE,
     BP_FETCHINPUTS,
     BP_CONNECTINPUTS,
     BP_SIGVERIFY,

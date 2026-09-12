@@ -1916,10 +1916,13 @@ bool CTransaction::CheckTransaction() const
             return DoS(100, error("CTransaction::CheckTransaction() : an IV5 payload "
                                   "may not ride legacy pool version %d", nVersion));
 
-        const PrivacyVNextPayloadValidation validation =
-            ValidatePrivacyVNextPayload(
+        PrivacyVNextPayloadValidation validation;
+        {
+            BLOCK_PHASE(BP_CHECKTX_VNEXT);
+            validation = ValidatePrivacyVNextPayload(
                 static_cast<uint32_t>(nVersion),
                 privacyVNext.vchPayload);
+        }
         if (validation.fLocalFailure)
         {
             StartShutdown();
@@ -1974,7 +1977,12 @@ bool CTransaction::CheckTransaction() const
     if (vout.empty() && !IsShielded() && !IsPrivacyVNext())
         return DoS(10, error("CTransaction::CheckTransaction() : vout empty"));
     // Size limits
-    if (::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
+    size_t nSerializedSize;
+    {
+        BLOCK_PHASE(BP_CHECKTX_SIZE);
+        nSerializedSize = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
+    }
+    if (nSerializedSize > MAX_BLOCK_SIZE)
         return DoS(100, error("CTransaction::CheckTransaction() : size limits failed"));
 
     // Check for negative or overflow output values
@@ -10153,7 +10161,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         // two in the chain that violate it. This prevents exploiting the issue against nodes in their
         // initial block download.
         CTxIndex txindexOld;
-        if (txdb.ReadTxIndex(hashTx, txindexOld)) {
+        bool fHadTxIndex;
+        {
+            BLOCK_PHASE(BP_CB_TXINDEX_READ);
+            fHadTxIndex = txdb.ReadTxIndex(hashTx, txindexOld);
+        }
+        if (fHadTxIndex) {
             for (CDiskTxPos &pos : txindexOld.vSpent)
                 if (pos.IsNull())
                     return DoS(100, error("ConnectBlock() : transaction %s overwrites an unspent transaction",
@@ -10189,9 +10202,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 int64_t nCoinbaseReleased = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
-                if (!GetPrivacyVNextTransparentFlow(tx, nCoinbaseAbsorbed,
-                                                    nCoinbaseReleased,
-                                                    fFlowLocalFailure, strFlowError))
+                bool fFlowOk;
+                {
+                    BLOCK_PHASE(BP_CB_VNEXT_FLOW);
+                    fFlowOk = GetPrivacyVNextTransparentFlow(tx, nCoinbaseAbsorbed,
+                                                             nCoinbaseReleased,
+                                                             fFlowLocalFailure, strFlowError);
+                }
+                if (!fFlowOk)
                 {
                     if (fFlowLocalFailure)
                     {
