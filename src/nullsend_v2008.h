@@ -89,4 +89,63 @@ public:
                             const std::vector<unsigned char>& vchRSA_E) const;
 };
 
+// Framing: typed, length-bounded frames only. No version handshake, address or clock, since
+// the P2P handshake would leak the local address and time into the Tor circuit.
+
+static const unsigned char MIX_FRAME_MAGIC[4] = { 0xA5, 0x1D, 0x5E, 0x01 };
+static const size_t MIX_FRAME_HEADER_BYTES = 4 + 1 + 4;
+/** A frame never has to be larger than the largest thing a phase sends, and a
+ *  decoder that would allocate on a length it has not received is a free
+ *  denial of service. */
+static const uint32_t MIX_FRAME_MAX_PAYLOAD = 1 << 20;
+
+enum MixFrameType
+{
+    MIX_FRAME_NONE            = 0,
+    MIX_FRAME_JOIN            = 1,   // register an input, and the session key with it
+    MIX_FRAME_KEY             = 2,   // the coordinator's blind-signature key
+    MIX_FRAME_BLIND_REQUEST   = 3,
+    MIX_FRAME_BLIND_SIGNATURE = 4,
+    MIX_FRAME_OUTPUT          = 5,
+    MIX_FRAME_TRANSACTION     = 6,
+    MIX_FRAME_ABORT           = 7,
+    MIX_FRAME_TYPE_MAX        = 7,
+};
+
+enum MixFrameDecode
+{
+    MIX_DECODE_OK = 0,
+    MIX_DECODE_INCOMPLETE,   // not an error: the caller reads more and retries
+    MIX_DECODE_INVALID,
+};
+
+/** Serialize one frame. Returns false for a type or size that has no encoding. */
+bool BuildMixFrame(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
+                   std::vector<unsigned char>& vchOut);
+
+/** Read one frame from the front of a buffer. nConsumedOut is set only on MIX_DECODE_OK.
+ *  A length past the bound is INVALID, not INCOMPLETE. */
+MixFrameDecode ReadMixFrame(const std::vector<unsigned char>& vchBuffer,
+                            MixFrameType& nTypeOut,
+                            std::vector<unsigned char>& vchPayloadOut,
+                            size_t& nConsumedOut);
+
+// Per-participant authentication: a participant registers a session key with its input and
+// signs every later message, so each phase can use its own circuit. secp256k1 because no
+// ed25519 signer is callable from C++ here.
+
+/** What a participant signs: the round, the frame type and the payload. The round
+ *  and type are inside it so a message cannot be replayed into another round or
+ *  presented as another phase. */
+uint256 MixSessionSigHash(const uint256& hashRound, MixFrameType nType,
+                          const std::vector<unsigned char>& vchPayload);
+
+bool SignMixSessionFrame(const CKey& key, const uint256& hashRound, MixFrameType nType,
+                         const std::vector<unsigned char>& vchPayload,
+                         std::vector<unsigned char>& vchSigOut);
+
+bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFrameType nType,
+                          const std::vector<unsigned char>& vchPayload,
+                          const std::vector<unsigned char>& vchSig);
+
 #endif // INNOVA_NULLSEND_V2008_H

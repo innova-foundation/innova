@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../netbase.h"
+#include "../nullsend_v2008.h"
 #include "../util.h"
 
 #ifndef WIN32
@@ -307,6 +308,181 @@ BOOST_AUTO_TEST_CASE(a_rejected_pair_fails_the_dial)
                         "the dial proceeded past a rejected pair onto an unisolated stream");
     BOOST_CHECK(proxy.AuthSeen());
     BOOST_CHECK(!proxy.ConnectSeen());
+}
+
+// ---------------------------------------------------------------------------
+// Framing
+// ---------------------------------------------------------------------------
+
+// The stream carries a type, a bounded length and a payload. It carries no
+// version, no address and no clock, which is the reason it is not the node's own
+// protocol.
+BOOST_AUTO_TEST_CASE(a_frame_round_trips_and_carries_no_identity)
+{
+    std::vector<unsigned char> vchPayload;
+    for (int i = 0; i < 40; i++)
+        vchPayload.push_back((unsigned char)i);
+
+    std::vector<unsigned char> vchFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_JOIN, vchPayload, vchFrame));
+    BOOST_REQUIRE_EQUAL(vchFrame.size(), MIX_FRAME_HEADER_BYTES + vchPayload.size());
+    BOOST_CHECK_EQUAL((int)vchFrame[4], (int)MIX_FRAME_JOIN);
+
+    MixFrameType nType = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchBack;
+    size_t nConsumed = 0;
+    BOOST_REQUIRE_EQUAL(ReadMixFrame(vchFrame, nType, vchBack, nConsumed), MIX_DECODE_OK);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_JOIN);
+    BOOST_CHECK(vchBack == vchPayload);
+    BOOST_CHECK_EQUAL(nConsumed, vchFrame.size());
+
+    // An empty payload is a frame, not a decode failure: a phase that only needs
+    // its type has nothing to say.
+    std::vector<unsigned char> vchEmptyFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_ABORT, std::vector<unsigned char>(), vchEmptyFrame));
+    BOOST_REQUIRE_EQUAL(ReadMixFrame(vchEmptyFrame, nType, vchBack, nConsumed), MIX_DECODE_OK);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_ABORT);
+    BOOST_CHECK(vchBack.empty());
+}
+
+// A short read is not a bad frame. Telling the two apart is what lets a reader
+// keep going instead of dropping a round on a partial packet.
+BOOST_AUTO_TEST_CASE(a_partial_frame_is_incomplete_not_invalid)
+{
+    std::vector<unsigned char> vchPayload(64, 0x7e);
+    std::vector<unsigned char> vchFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_OUTPUT, vchPayload, vchFrame));
+
+    MixFrameType nType;
+    std::vector<unsigned char> vchBack;
+    size_t nConsumed = 0;
+    for (size_t n = 0; n < vchFrame.size(); n++)
+    {
+        const std::vector<unsigned char> vchShort(vchFrame.begin(), vchFrame.begin() + n);
+        BOOST_CHECK_MESSAGE(ReadMixFrame(vchShort, nType, vchBack, nConsumed) == MIX_DECODE_INCOMPLETE,
+                            "a prefix of " << n << " bytes was not judged incomplete");
+    }
+    BOOST_CHECK_EQUAL(ReadMixFrame(vchFrame, nType, vchBack, nConsumed), MIX_DECODE_OK);
+
+    // Two frames back to back: the reader takes the first and says where it ended.
+    std::vector<unsigned char> vchSecond;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_ABORT, std::vector<unsigned char>(), vchSecond));
+    std::vector<unsigned char> vchBoth(vchFrame);
+    vchBoth.insert(vchBoth.end(), vchSecond.begin(), vchSecond.end());
+    BOOST_REQUIRE_EQUAL(ReadMixFrame(vchBoth, nType, vchBack, nConsumed), MIX_DECODE_OK);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_OUTPUT);
+    BOOST_CHECK_EQUAL(nConsumed, vchFrame.size());
+}
+
+// A declared length past the bound is refused on the header alone. Waiting for
+// bytes a peer will never send is a free way to hold a reader open.
+BOOST_AUTO_TEST_CASE(an_oversized_length_is_refused_on_the_header)
+{
+    std::vector<unsigned char> vchFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_KEY, std::vector<unsigned char>(4, 0x01), vchFrame));
+    const uint32_t nHuge = MIX_FRAME_MAX_PAYLOAD + 1;
+    vchFrame[5] = (unsigned char)(nHuge & 0xFF);
+    vchFrame[6] = (unsigned char)((nHuge >> 8) & 0xFF);
+    vchFrame[7] = (unsigned char)((nHuge >> 16) & 0xFF);
+    vchFrame[8] = (unsigned char)((nHuge >> 24) & 0xFF);
+
+    MixFrameType nType;
+    std::vector<unsigned char> vchBack;
+    size_t nConsumed = 0;
+    BOOST_CHECK_MESSAGE(ReadMixFrame(vchFrame, nType, vchBack, nConsumed) == MIX_DECODE_INVALID,
+                        "an over-long declared length was treated as a short read, so a "
+                        "peer can hold the reader open on bytes it never sends");
+
+    // 0xFFFFFFFF is the same finding at the end of the range, where a length that
+    // is added to a header size would wrap.
+    for (int i = 5; i <= 8; i++)
+        vchFrame[i] = 0xFF;
+    BOOST_CHECK_EQUAL(ReadMixFrame(vchFrame, nType, vchBack, nConsumed), MIX_DECODE_INVALID);
+
+    // A builder will not produce one either.
+    std::vector<unsigned char> vchRefused;
+    BOOST_CHECK(!BuildMixFrame(MIX_FRAME_KEY, std::vector<unsigned char>(MIX_FRAME_MAX_PAYLOAD + 1, 0), vchRefused));
+}
+
+// A stream pointed at the wrong service, or a type with no handler, is refused
+// rather than dispatched.
+BOOST_AUTO_TEST_CASE(a_foreign_stream_or_unknown_type_is_refused)
+{
+    std::vector<unsigned char> vchFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_JOIN, std::vector<unsigned char>(2, 0x09), vchFrame));
+
+    MixFrameType nType;
+    std::vector<unsigned char> vchBack;
+    size_t nConsumed = 0;
+
+    std::vector<unsigned char> vchForeign(vchFrame);
+    vchForeign[0] ^= 0xFF;
+    BOOST_CHECK_EQUAL(ReadMixFrame(vchForeign, nType, vchBack, nConsumed), MIX_DECODE_INVALID);
+
+    std::vector<unsigned char> vchUnknown(vchFrame);
+    vchUnknown[4] = (unsigned char)(MIX_FRAME_TYPE_MAX + 1);
+    BOOST_CHECK_EQUAL(ReadMixFrame(vchUnknown, nType, vchBack, nConsumed), MIX_DECODE_INVALID);
+
+    std::vector<unsigned char> vchZeroType(vchFrame);
+    vchZeroType[4] = 0;
+    BOOST_CHECK_EQUAL(ReadMixFrame(vchZeroType, nType, vchBack, nConsumed), MIX_DECODE_INVALID);
+
+    BOOST_CHECK(!BuildMixFrame(MIX_FRAME_NONE, std::vector<unsigned char>(), vchFrame));
+    BOOST_CHECK(!BuildMixFrame((MixFrameType)(MIX_FRAME_TYPE_MAX + 1), std::vector<unsigned char>(), vchFrame));
+}
+
+// ---------------------------------------------------------------------------
+// Per-participant authentication
+// ---------------------------------------------------------------------------
+
+// The point of the session key: a participant is recognised by key, so a phase can
+// arrive on a fresh connection -- which is what lets each phase have its own
+// circuit. Identifying by socket is what forces them all onto one.
+BOOST_AUTO_TEST_CASE(a_session_key_authenticates_across_connections)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    const uint256 hashRound = uint256(4242);
+    std::vector<unsigned char> vchPayload(32, 0x5a);
+
+    std::vector<unsigned char> vchSig;
+    BOOST_REQUIRE(SignMixSessionFrame(key, hashRound, MIX_FRAME_OUTPUT, vchPayload, vchSig));
+    BOOST_CHECK(CheckMixSessionFrame(pubkey, hashRound, MIX_FRAME_OUTPUT, vchPayload, vchSig));
+
+    CKey other;
+    other.MakeNewKey(true);
+    BOOST_CHECK(!CheckMixSessionFrame(other.GetPubKey(), hashRound, MIX_FRAME_OUTPUT, vchPayload, vchSig));
+
+    std::vector<unsigned char> vchEdited(vchPayload);
+    vchEdited[0] ^= 0x01;
+    BOOST_CHECK(!CheckMixSessionFrame(pubkey, hashRound, MIX_FRAME_OUTPUT, vchEdited, vchSig));
+    BOOST_CHECK(!CheckMixSessionFrame(pubkey, hashRound, MIX_FRAME_OUTPUT, vchPayload,
+                                      std::vector<unsigned char>()));
+}
+
+// The round and the frame type are inside the signed hash, so a message cannot be
+// lifted into another round or re-presented as another phase.
+BOOST_AUTO_TEST_CASE(a_signed_frame_does_not_move_between_rounds_or_phases)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pubkey = key.GetPubKey();
+    const uint256 hashRound = uint256(7);
+    std::vector<unsigned char> vchPayload(16, 0x33);
+
+    std::vector<unsigned char> vchSig;
+    BOOST_REQUIRE(SignMixSessionFrame(key, hashRound, MIX_FRAME_JOIN, vchPayload, vchSig));
+
+    BOOST_CHECK_MESSAGE(!CheckMixSessionFrame(pubkey, uint256(8), MIX_FRAME_JOIN, vchPayload, vchSig),
+                        "a join from one round verified in another");
+    BOOST_CHECK_MESSAGE(!CheckMixSessionFrame(pubkey, hashRound, MIX_FRAME_OUTPUT, vchPayload, vchSig),
+                        "a join verified as an output registration");
+
+    BOOST_CHECK(MixSessionSigHash(hashRound, MIX_FRAME_JOIN, vchPayload) !=
+                MixSessionSigHash(hashRound, MIX_FRAME_OUTPUT, vchPayload));
+    BOOST_CHECK(MixSessionSigHash(hashRound, MIX_FRAME_JOIN, vchPayload) !=
+                MixSessionSigHash(uint256(8), MIX_FRAME_JOIN, vchPayload));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
