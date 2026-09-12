@@ -1,3 +1,8 @@
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, PoisonError},
+};
+
 use blake2::{Blake2b512, Digest};
 use curve25519_dalek::{
     constants::ED25519_BASEPOINT_POINT,
@@ -9,8 +14,9 @@ use monero_bulletproofs::Bulletproof;
 use monero_ed25519::{Commitment, CompressedPoint, Scalar as MoneroScalar};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
+use zeroize::Zeroize;
 
-use crate::{ResultCode, PAYLOAD_SCHEMA_U16};
+use crate::{ResultCode, MAX_NULLSEND_INPUTS, PAYLOAD_SCHEMA_U16};
 
 pub(crate) const MAX_VALUE_COMMITMENTS: usize = 16;
 
@@ -20,6 +26,8 @@ pub(crate) enum ValueError {
     InvalidEncoding,
     InvalidProof,
     ResourceLimit,
+    /// A mix nonce this process already signed with, offered a different aggregate.
+    NonceReuse,
 }
 
 fn hash_to_scalar(domain: &[u8], fields: &[&[u8]]) -> Scalar {
@@ -399,6 +407,7 @@ pub(crate) fn result_code(error: ValueError) -> ResultCode {
         ValueError::BadLength => ResultCode::BadLength,
         ValueError::ResourceLimit => ResultCode::ResourceLimit,
         ValueError::InvalidEncoding | ValueError::InvalidProof => ResultCode::ConsensusInvalid,
+        ValueError::NonceReuse => ResultCode::InternalLocalStateFailure,
     }
 }
 
@@ -487,6 +496,395 @@ pub(crate) fn prove_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     response.extend_from_slice(&range_proof);
     response.extend_from_slice(&balance_proof);
     Ok(response)
+}
+
+// Multi-party mix balance proof: s_i = k_i + c*x_i, proof (sum R_i, sum s_i). Reusing k_i
+// under two aggregates reveals the mask, so `mix_share_sign` pins each nonce to one
+// aggregate (process state only: request entropy must be fresh per signing).
+
+const MIX_NONCE_DOMAIN: &[u8] = b"Innova/IV5/MixBalance/Nonce/v1";
+/// The domain `prove_balance` and `verify_balance` use; the joint proof must land on it.
+const BALANCE_CHALLENGE_DOMAIN: &[u8] = b"Innova/IV5/BalanceProof/Challenge/v1";
+
+/// The facts a balance proof is over, as the payload states them.
+#[derive(Clone, Copy)]
+pub(crate) struct BalanceInstance<'a> {
+    pub(crate) pseudo_outs: &'a [[u8; 32]],
+    pub(crate) outputs: &'a [[u8; 32]],
+    pub(crate) transparent_value_balance: i64,
+    pub(crate) fee: u64,
+    pub(crate) signable_hash: &'a [u8; 32],
+}
+
+impl BalanceInstance<'_> {
+    fn excess_encoded(&self) -> Result<[u8; 32], ValueError> {
+        Ok(excess_point(
+            self.pseudo_outs,
+            self.outputs,
+            self.transparent_value_balance,
+            self.fee,
+        )?
+        .compress()
+        .to_bytes())
+    }
+
+    /// `pseudo_out - output - fee_share*H`: `x*G` exactly when the input funds the output
+    /// with `fee_share` left over.
+    fn share_statement(
+        &self,
+        input_index: usize,
+        output_index: usize,
+        fee_share: u64,
+    ) -> Result<EdwardsPoint, ValueError> {
+        let pseudo_out = self
+            .pseudo_outs
+            .get(input_index)
+            .ok_or(ValueError::BadLength)?;
+        let output = self
+            .outputs
+            .get(output_index)
+            .ok_or(ValueError::BadLength)?;
+        Ok(canonical_point(pseudo_out, false)?
+            - canonical_point(output, false)?
+            - monero_h() * Scalar::from(fee_share))
+    }
+
+    /// Sum of the nonce points, one per input in input order, in the encoding the challenge
+    /// and the proof carry. An identity sum is refused: `verify_balance` refuses it.
+    fn aggregate_nonce(&self, nonces: &[[u8; 32]]) -> Result<[u8; 32], ValueError> {
+        if nonces.len() != self.pseudo_outs.len() {
+            return Err(ValueError::BadLength);
+        }
+        if nonces.len() > MAX_NULLSEND_INPUTS {
+            return Err(ValueError::ResourceLimit);
+        }
+        if nonces.len() < 2 {
+            return Err(ValueError::InvalidProof);
+        }
+        let mut total = EdwardsPoint::identity();
+        for nonce in nonces {
+            total += canonical_point(nonce, false)?;
+        }
+        if total.is_identity() {
+            return Err(ValueError::InvalidProof);
+        }
+        Ok(total.compress().to_bytes())
+    }
+
+    fn challenge(&self, excess_encoded: &[u8; 32], aggregate: &[u8; 32]) -> Scalar {
+        hash_to_scalar(
+            BALANCE_CHALLENGE_DOMAIN,
+            &[self.signable_hash, excess_encoded, aggregate],
+        )
+    }
+}
+
+/// One participant's side of a mix.
+#[derive(Clone, Copy)]
+pub(crate) struct MixShare<'a> {
+    pub(crate) input_index: usize,
+    pub(crate) output_index: usize,
+    /// Input amount less output amount: this participant's part of the fee.
+    pub(crate) fee_share: u64,
+    /// Pseudo-output mask less output mask: this participant's part of the excess mask.
+    pub(crate) mask: &'a [u8; 32],
+    pub(crate) entropy: &'a [u8; 32],
+}
+
+impl MixShare<'_> {
+    /// The mask and the nonce, once the mask is known to open the share's pair.
+    fn secrets(
+        &self,
+        instance: &BalanceInstance<'_>,
+        excess_encoded: &[u8; 32],
+    ) -> Result<(Scalar, Scalar), ValueError> {
+        let mask = canonical_scalar(self.mask)?;
+        let statement =
+            instance.share_statement(self.input_index, self.output_index, self.fee_share)?;
+        if statement != ED25519_BASEPOINT_POINT * mask {
+            return Err(ValueError::InvalidProof);
+        }
+        let mut nonce = hash_to_scalar(
+            MIX_NONCE_DOMAIN,
+            &[
+                self.entropy,
+                self.mask,
+                instance.signable_hash,
+                excess_encoded,
+            ],
+        );
+        if nonce == Scalar::ZERO {
+            nonce = Scalar::ONE;
+        }
+        Ok((mask, nonce))
+    }
+}
+
+/// Nonce points this process has signed with, each with the aggregate it signed under.
+static SIGNED_MIX_NONCES: Mutex<BTreeMap<[u8; 32], [u8; 32]>> = Mutex::new(BTreeMap::new());
+/// Past this the process refuses new mix signings rather than forget one: a forgotten
+/// record is the second signature the record exists to refuse.
+const MAX_SIGNED_MIX_NONCES: usize = 1 << 16;
+
+fn record_signing(own: &[u8; 32], aggregate: &[u8; 32]) -> Result<(), ValueError> {
+    // A poisoned lock is a panic between lock and unlock. The map is only read or given
+    // one entry under it, so its contents are whole either way.
+    let mut signed = SIGNED_MIX_NONCES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    match signed.get(own) {
+        Some(previous) if previous == aggregate => Ok(()),
+        Some(_) => Err(ValueError::NonceReuse),
+        None if signed.len() >= MAX_SIGNED_MIX_NONCES => Err(ValueError::ResourceLimit),
+        None => {
+            signed.insert(*own, *aggregate);
+            Ok(())
+        }
+    }
+}
+
+/// Round one: the participant's nonce point, a pure function of the share.
+pub(crate) fn mix_share_nonce(
+    instance: &BalanceInstance<'_>,
+    share: &MixShare<'_>,
+) -> Result<[u8; 32], ValueError> {
+    let excess_encoded = instance.excess_encoded()?;
+    let (_, nonce) = share.secrets(instance, &excess_encoded)?;
+    Ok((ED25519_BASEPOINT_POINT * nonce).compress().to_bytes())
+}
+
+/// Round two: the participant's response under every nonce point, its own listed at its
+/// input index. One nonce signs under one aggregate for the life of the process.
+pub(crate) fn mix_share_sign(
+    instance: &BalanceInstance<'_>,
+    share: &MixShare<'_>,
+    nonces: &[[u8; 32]],
+) -> Result<[u8; 32], ValueError> {
+    let excess_encoded = instance.excess_encoded()?;
+    let (mask, nonce) = share.secrets(instance, &excess_encoded)?;
+    let own = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
+    if nonces.get(share.input_index) != Some(&own) {
+        return Err(ValueError::InvalidProof);
+    }
+    let aggregate = instance.aggregate_nonce(nonces)?;
+    let challenge = instance.challenge(&excess_encoded, &aggregate);
+    record_signing(&own, &aggregate)?;
+    Ok((nonce + challenge * mask).to_bytes())
+}
+
+/// Whether one response is right for the pair and fee share its participant claims.
+/// Amounts in a mix are disclosed, so whoever knows the pairing can name a bad share
+/// rather than a bad proof. Not carried by the FFI; the tests use it to show that.
+#[cfg(test)]
+fn mix_share_verify(
+    instance: &BalanceInstance<'_>,
+    input_index: usize,
+    output_index: usize,
+    fee_share: u64,
+    nonces: &[[u8; 32]],
+    response: &[u8; 32],
+) -> Result<bool, ValueError> {
+    let statement = instance.share_statement(input_index, output_index, fee_share)?;
+    let own = canonical_point(nonces.get(input_index).ok_or(ValueError::BadLength)?, false)?;
+    let aggregate = instance.aggregate_nonce(nonces)?;
+    let challenge = instance.challenge(&instance.excess_encoded()?, &aggregate);
+    let response = canonical_scalar(response)?;
+    Ok(ED25519_BASEPOINT_POINT * response == own + statement * challenge)
+}
+
+/// The joint proof in the layout `verify_balance` reads, verified before it is returned so
+/// a wrong share yields no proof rather than a bad one.
+pub(crate) fn mix_balance_combine(
+    instance: &BalanceInstance<'_>,
+    nonces: &[[u8; 32]],
+    responses: &[[u8; 32]],
+) -> Result<[u8; 64], ValueError> {
+    if responses.len() != nonces.len() {
+        return Err(ValueError::BadLength);
+    }
+    let aggregate = instance.aggregate_nonce(nonces)?;
+    let mut total = Scalar::ZERO;
+    for response in responses {
+        total += canonical_scalar(response)?;
+    }
+    let mut proof = [0_u8; 64];
+    proof[..32].copy_from_slice(&aggregate);
+    proof[32..].copy_from_slice(&total.to_bytes());
+    if !verify_balance(
+        instance.pseudo_outs,
+        instance.outputs,
+        instance.transparent_value_balance,
+        instance.fee,
+        instance.signable_hash,
+        &proof,
+    )? {
+        return Err(ValueError::InvalidProof);
+    }
+    Ok(proof)
+}
+
+/// Bytes of a mix instance before its pseudo-outputs.
+const MIX_INSTANCE_HEADER_BYTES: usize = 52;
+/// Bytes of one participant's share block.
+const MIX_SHARE_BYTES: usize = 76;
+
+/// `schema_u16 || output_count_u8 || input_count_u8 || transparent_value_balance_i64_le ||
+/// fee_u64_le || signable_hash_32`, then the pseudo-outputs and the outputs.
+struct MixInstanceBytes {
+    pseudo_outs: Vec<[u8; 32]>,
+    outputs: Vec<[u8; 32]>,
+    transparent_value_balance: i64,
+    fee: u64,
+    signable_hash: [u8; 32],
+}
+
+impl MixInstanceBytes {
+    fn read(reader: &mut Reader<'_>) -> Result<Self, ResultCode> {
+        if reader.u16()? != PAYLOAD_SCHEMA_U16 {
+            return Err(ResultCode::UnsupportedFormat);
+        }
+        let output_count = usize::from(reader.u8()?);
+        let input_count = usize::from(reader.u8()?);
+        if output_count > MAX_VALUE_COMMITMENTS || input_count > MAX_NULLSEND_INPUTS {
+            return Err(ResultCode::ResourceLimit);
+        }
+        if input_count < 2 || output_count == 0 {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let transparent_value_balance = reader.i64()?;
+        let fee = reader.u64()?;
+        let signable_hash: [u8; 32] = reader.array()?;
+        if signable_hash.iter().all(|byte| *byte == 0) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let mut pseudo_outs = Vec::with_capacity(input_count);
+        for _ in 0..input_count {
+            let pseudo_out = reader.array()?;
+            canonical_point(&pseudo_out, false).map_err(result_code)?;
+            pseudo_outs.push(pseudo_out);
+        }
+        let mut outputs = Vec::with_capacity(output_count);
+        for _ in 0..output_count {
+            let output = reader.array()?;
+            canonical_point(&output, false).map_err(result_code)?;
+            outputs.push(output);
+        }
+        Ok(Self {
+            pseudo_outs,
+            outputs,
+            transparent_value_balance,
+            fee,
+            signable_hash,
+        })
+    }
+
+    fn view(&self) -> BalanceInstance<'_> {
+        BalanceInstance {
+            pseudo_outs: &self.pseudo_outs,
+            outputs: &self.outputs,
+            transparent_value_balance: self.transparent_value_balance,
+            fee: self.fee,
+            signable_hash: &self.signable_hash,
+        }
+    }
+
+    /// One 32-byte field per input, in input order.
+    fn per_input(&self, reader: &mut Reader<'_>) -> Result<Vec<[u8; 32]>, ResultCode> {
+        let mut fields = Vec::with_capacity(self.pseudo_outs.len());
+        for _ in 0..self.pseudo_outs.len() {
+            fields.push(reader.array()?);
+        }
+        Ok(fields)
+    }
+}
+
+/// `input_index_u8 || output_index_u8 || reserved_u16_zero || fee_share_u64_le || mask_32 ||
+/// entropy_32`.
+struct MixShareBytes {
+    input_index: usize,
+    output_index: usize,
+    fee_share: u64,
+    mask: [u8; 32],
+    entropy: [u8; 32],
+}
+
+impl Drop for MixShareBytes {
+    fn drop(&mut self) {
+        self.mask.zeroize();
+        self.entropy.zeroize();
+    }
+}
+
+impl MixShareBytes {
+    fn read(reader: &mut Reader<'_>, instance: &MixInstanceBytes) -> Result<Self, ResultCode> {
+        let input_index = usize::from(reader.u8()?);
+        let output_index = usize::from(reader.u8()?);
+        if reader.u16()? != 0 {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        if input_index >= instance.pseudo_outs.len() || output_index >= instance.outputs.len() {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let fee_share = reader.u64()?;
+        let mask: [u8; 32] = reader.array()?;
+        canonical_scalar(&mask).map_err(result_code)?;
+        let entropy: [u8; 32] = reader.array()?;
+        if entropy.iter().all(|byte| *byte == 0) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        Ok(Self {
+            input_index,
+            output_index,
+            fee_share,
+            mask,
+            entropy,
+        })
+    }
+
+    fn view(&self) -> MixShare<'_> {
+        MixShare {
+            input_index: self.input_index,
+            output_index: self.output_index,
+            fee_share: self.fee_share,
+            mask: &self.mask,
+            entropy: &self.entropy,
+        }
+    }
+}
+
+pub(crate) fn mix_nonce_request(request: &[u8]) -> Result<[u8; 32], ResultCode> {
+    if request.len() < MIX_INSTANCE_HEADER_BYTES + MIX_SHARE_BYTES {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    let instance = MixInstanceBytes::read(&mut reader)?;
+    let share = MixShareBytes::read(&mut reader, &instance)?;
+    reader.finish()?;
+    mix_share_nonce(&instance.view(), &share.view()).map_err(result_code)
+}
+
+pub(crate) fn mix_sign_request(request: &[u8]) -> Result<[u8; 32], ResultCode> {
+    if request.len() < MIX_INSTANCE_HEADER_BYTES + MIX_SHARE_BYTES {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    let instance = MixInstanceBytes::read(&mut reader)?;
+    let share = MixShareBytes::read(&mut reader, &instance)?;
+    let nonces = instance.per_input(&mut reader)?;
+    reader.finish()?;
+    mix_share_sign(&instance.view(), &share.view(), &nonces).map_err(result_code)
+}
+
+pub(crate) fn mix_combine_request(request: &[u8]) -> Result<[u8; 64], ResultCode> {
+    if request.len() < MIX_INSTANCE_HEADER_BYTES {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    let instance = MixInstanceBytes::read(&mut reader)?;
+    let nonces = instance.per_input(&mut reader)?;
+    let responses = instance.per_input(&mut reader)?;
+    reader.finish()?;
+    mix_balance_combine(&instance.view(), &nonces, &responses).map_err(result_code)
 }
 
 #[cfg(test)]
@@ -714,5 +1112,455 @@ mod tests {
 
         let recovered = (response_one - response_two) * (challenge_one - challenge_two).invert();
         assert_eq!(recovered, excess_mask);
+    }
+
+    /// A mix: equal outputs of one denomination, input `i` paying `fee_shares[i]` over it
+    /// and funding output `permutation[i]`. `tag` separates tests, since the signing
+    /// record is process-wide.
+    struct Mix {
+        pseudo_outs: Vec<[u8; 32]>,
+        outputs: Vec<[u8; 32]>,
+        fee: u64,
+        signable_hash: [u8; 32],
+        fee_shares: Vec<u64>,
+        permutation: Vec<usize>,
+        masks: Vec<[u8; 32]>,
+        entropy: Vec<[u8; 32]>,
+    }
+
+    impl Mix {
+        const DENOMINATION: u64 = 10_000_000_000;
+
+        fn new(tag: u8, fee_shares: &[u64], permutation: &[usize]) -> Self {
+            let count = fee_shares.len();
+            let base = 1000 * u64::from(tag);
+            let pseudo_masks: Vec<[u8; 32]> = (0..count)
+                .map(|index| scalar(base + 1 + u64::try_from(index).unwrap()))
+                .collect();
+            let output_masks: Vec<[u8; 32]> = (0..count)
+                .map(|index| scalar(base + 100 + u64::try_from(index).unwrap()))
+                .collect();
+            let pseudo_outs = fee_shares
+                .iter()
+                .zip(&pseudo_masks)
+                .map(|(fee_share, mask)| commitment(Self::DENOMINATION + fee_share, mask).unwrap())
+                .collect();
+            let outputs = output_masks
+                .iter()
+                .map(|mask| commitment(Self::DENOMINATION, mask).unwrap())
+                .collect();
+            let masks = permutation
+                .iter()
+                .zip(&pseudo_masks)
+                .map(|(&output_index, pseudo_mask)| {
+                    (canonical_scalar(pseudo_mask).unwrap()
+                        - canonical_scalar(&output_masks[output_index]).unwrap())
+                    .to_bytes()
+                })
+                .collect();
+            let entropy = (0..count)
+                .map(|index| {
+                    let mut bytes = [tag; 32];
+                    bytes[0] = u8::try_from(index).unwrap();
+                    bytes
+                })
+                .collect();
+            Self {
+                pseudo_outs,
+                outputs,
+                fee: fee_shares.iter().sum(),
+                signable_hash: [tag; 32],
+                fee_shares: fee_shares.to_vec(),
+                permutation: permutation.to_vec(),
+                masks,
+                entropy,
+            }
+        }
+
+        fn instance(&self) -> BalanceInstance<'_> {
+            BalanceInstance {
+                pseudo_outs: &self.pseudo_outs,
+                outputs: &self.outputs,
+                transparent_value_balance: 0,
+                fee: self.fee,
+                signable_hash: &self.signable_hash,
+            }
+        }
+
+        fn share(&self, index: usize) -> MixShare<'_> {
+            MixShare {
+                input_index: index,
+                output_index: self.permutation[index],
+                fee_share: self.fee_shares[index],
+                mask: &self.masks[index],
+                entropy: &self.entropy[index],
+            }
+        }
+
+        fn verify(&self, proof: &[u8]) -> bool {
+            verify_balance(
+                &self.pseudo_outs,
+                &self.outputs,
+                0,
+                self.fee,
+                &self.signable_hash,
+                proof,
+            )
+            .unwrap()
+        }
+
+        fn round(&self) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+            let instance = self.instance();
+            let nonces: Vec<[u8; 32]> = (0..self.pseudo_outs.len())
+                .map(|index| mix_share_nonce(&instance, &self.share(index)).unwrap())
+                .collect();
+            let responses = (0..self.pseudo_outs.len())
+                .map(|index| mix_share_sign(&instance, &self.share(index), &nonces).unwrap())
+                .collect();
+            (nonces, responses)
+        }
+
+        fn instance_bytes(&self) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            bytes.push(u8::try_from(self.outputs.len()).unwrap());
+            bytes.push(u8::try_from(self.pseudo_outs.len()).unwrap());
+            bytes.extend_from_slice(&0_i64.to_le_bytes());
+            bytes.extend_from_slice(&self.fee.to_le_bytes());
+            bytes.extend_from_slice(&self.signable_hash);
+            for point in self.pseudo_outs.iter().chain(&self.outputs) {
+                bytes.extend_from_slice(point);
+            }
+            bytes
+        }
+
+        fn share_bytes(&self, index: usize) -> Vec<u8> {
+            let mut bytes = vec![
+                u8::try_from(index).unwrap(),
+                u8::try_from(self.permutation[index]).unwrap(),
+                0,
+                0,
+            ];
+            bytes.extend_from_slice(&self.fee_shares[index].to_le_bytes());
+            bytes.extend_from_slice(&self.masks[index]);
+            bytes.extend_from_slice(&self.entropy[index]);
+            bytes
+        }
+    }
+
+    #[test]
+    fn a_three_party_mix_signs_one_balance_proof() {
+        let mix = Mix::new(0x41, &[1, 1, 0], &[2, 0, 1]);
+        let instance = mix.instance();
+        let (nonces, responses) = mix.round();
+        let proof = mix_balance_combine(&instance, &nonces, &responses).unwrap();
+        assert!(mix.verify(&proof), "the joint proof must verify unchanged");
+        assert!(
+            !verify_balance(
+                &mix.pseudo_outs,
+                &mix.outputs,
+                0,
+                mix.fee,
+                &[0x40; 32],
+                &proof
+            )
+            .unwrap(),
+            "a joint proof must not verify under another payload's hash"
+        );
+        assert!(
+            !verify_balance(
+                &mix.pseudo_outs,
+                &mix.outputs,
+                0,
+                mix.fee + 1,
+                &mix.signable_hash,
+                &proof
+            )
+            .unwrap(),
+            "a joint proof must not verify with another fee"
+        );
+        for index in 0..3 {
+            assert!(mix_share_verify(
+                &instance,
+                index,
+                mix.permutation[index],
+                mix.fee_shares[index],
+                &nonces,
+                &responses[index],
+            )
+            .unwrap());
+        }
+
+        // Same round, same bytes: a retransmit learns nothing and answers nothing new.
+        assert_eq!(
+            mix_share_nonce(&instance, &mix.share(0)).unwrap(),
+            nonces[0]
+        );
+        assert_eq!(
+            mix_share_sign(&instance, &mix.share(0), &nonces).unwrap(),
+            responses[0]
+        );
+        // The mix bounds: a joint proof over one participant is not a mix.
+        assert_eq!(
+            instance.aggregate_nonce(&nonces[..1]),
+            Err(ValueError::BadLength)
+        );
+    }
+
+    #[test]
+    fn a_tampered_share_yields_no_proof_and_is_attributable() {
+        let mix = Mix::new(0x42, &[2, 0, 1], &[1, 2, 0]);
+        let instance = mix.instance();
+        let (nonces, responses) = mix.round();
+
+        let mut tampered = responses.clone();
+        tampered[1] = (canonical_scalar(&tampered[1]).unwrap() + Scalar::ONE).to_bytes();
+        assert_eq!(
+            mix_balance_combine(&instance, &nonces, &tampered),
+            Err(ValueError::InvalidProof),
+            "a bad share must yield no proof, not a proof that fails on the network"
+        );
+        let verdicts: Vec<bool> = (0..3)
+            .map(|index| {
+                mix_share_verify(
+                    &instance,
+                    index,
+                    mix.permutation[index],
+                    mix.fee_shares[index],
+                    &nonces,
+                    &tampered[index],
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(verdicts, [true, false, true]);
+
+        // A participant cannot sign for a pair its mask does not open, nor claim a fee
+        // share it did not leave: both are refused before a nonce exists.
+        let one = scalar(1);
+        let wrong_mask = MixShare {
+            mask: &one,
+            ..mix.share(0)
+        };
+        assert_eq!(
+            mix_share_nonce(&instance, &wrong_mask),
+            Err(ValueError::InvalidProof)
+        );
+        let wrong_fee = MixShare {
+            fee_share: mix.fee_shares[0] + 1,
+            ..mix.share(0)
+        };
+        assert_eq!(
+            mix_share_nonce(&instance, &wrong_fee),
+            Err(ValueError::InvalidProof)
+        );
+        // Nor sign under a list that does not carry its own point at its input index.
+        let mut swapped = nonces.clone();
+        swapped.swap(0, 1);
+        assert_eq!(
+            mix_share_sign(&instance, &mix.share(0), &swapped),
+            Err(ValueError::InvalidProof)
+        );
+        // Shares that each open but do not cover the fee produce no proof either.
+        let short = Mix {
+            fee: mix.fee + 1,
+            ..Mix::new(0x42, &[2, 0, 1], &[1, 2, 0])
+        };
+        let (short_nonces, short_responses) = short.round();
+        assert_eq!(
+            mix_balance_combine(&short.instance(), &short_nonces, &short_responses),
+            Err(ValueError::InvalidProof)
+        );
+    }
+
+    /// Two-aggregate nonce reuse recovers the mask; the signing record refuses it.
+    #[test]
+    fn an_adaptive_coordinator_is_refused_a_second_signature() {
+        let mix = Mix::new(0x43, &[1, 1, 1], &[0, 1, 2]);
+        let instance = mix.instance();
+        let victim = mix.share(0);
+        let victim_nonce = mix_share_nonce(&instance, &victim).unwrap();
+        // The coordinator holds inputs 1 and 2 and publishes whatever points it likes.
+        let sybil = |round: u64, index: u64| {
+            (ED25519_BASEPOINT_POINT * Scalar::from(round * 1000 + index))
+                .compress()
+                .to_bytes()
+        };
+        let first = [victim_nonce, sybil(1, 1), sybil(1, 2)];
+        let second = [victim_nonce, sybil(2, 1), sybil(2, 2)];
+        let response = mix_share_sign(&instance, &victim, &first).unwrap();
+
+        // What the second response would give away, from the derivation directly.
+        let excess_encoded = instance.excess_encoded().unwrap();
+        let (mask, nonce) = victim.secrets(&instance, &excess_encoded).unwrap();
+        let first_challenge =
+            instance.challenge(&excess_encoded, &instance.aggregate_nonce(&first).unwrap());
+        let second_challenge =
+            instance.challenge(&excess_encoded, &instance.aggregate_nonce(&second).unwrap());
+        assert_ne!(first_challenge, second_challenge);
+        let would_be = nonce + second_challenge * mask;
+        let recovered = (canonical_scalar(&response).unwrap() - would_be)
+            * (first_challenge - second_challenge).invert();
+        assert_eq!(
+            recovered, mask,
+            "one nonce under two challenges is the mask"
+        );
+
+        assert_eq!(
+            mix_share_sign(&instance, &victim, &second),
+            Err(ValueError::NonceReuse),
+            "the second round must be refused, not answered"
+        );
+        assert_eq!(
+            mix_share_sign(&instance, &victim, &first),
+            Ok(response),
+            "the refusal must not lock the honest round out"
+        );
+        // A permutation of the same points is the same aggregate and the same challenge.
+        let permuted = [victim_nonce, sybil(1, 2), sybil(1, 1)];
+        assert_eq!(mix_share_sign(&instance, &victim, &permuted), Ok(response));
+
+        // Fresh entropy is a fresh nonce: it may sign under a new aggregate, and solving
+        // the two responses as if they shared a nonce yields nothing.
+        let fresh_entropy = [0x44; 32];
+        let fresh = MixShare {
+            entropy: &fresh_entropy,
+            ..victim
+        };
+        let fresh_nonce = mix_share_nonce(&instance, &fresh).unwrap();
+        assert_ne!(fresh_nonce, victim_nonce);
+        let third = [fresh_nonce, sybil(2, 1), sybil(2, 2)];
+        let fresh_response = mix_share_sign(&instance, &fresh, &third).unwrap();
+        let third_challenge =
+            instance.challenge(&excess_encoded, &instance.aggregate_nonce(&third).unwrap());
+        let naive = (canonical_scalar(&response).unwrap()
+            - canonical_scalar(&fresh_response).unwrap())
+            * (first_challenge - third_challenge).invert();
+        assert_ne!(naive, mask);
+    }
+
+    /// The single-party prover is pinned to its known bytes.
+    #[test]
+    fn the_single_party_balance_proof_is_byte_identical() {
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        }
+        let input = commitment(100, &scalar(5)).unwrap();
+        let output = commitment(90, &scalar(2)).unwrap();
+        let transfer = prove_balance(
+            &[input],
+            &[output],
+            0,
+            10,
+            &scalar(3),
+            &[21_u8; 32],
+            &[22_u8; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            hex(&transfer),
+            "8dc26217fcdb6989397c6628ad3598682e69b4bdefba6f5cfb11c93dfc62438a\
+             bce053c167e02e4ccbf895d558253998cc0c11ce79e00d063f33a72dfaf7d40a"
+        );
+        let shielded = commitment(50, &scalar(7)).unwrap();
+        let shield = prove_balance(
+            &[],
+            &[shielded],
+            51,
+            1,
+            &(-Scalar::from(7_u64)).to_bytes(),
+            &[21_u8; 32],
+            &[23_u8; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            hex(&shield),
+            "8bed74f9d23b0d130e351dbd9a7a0cd8af49473968e4e9fd9ee0aac17b5703f0\
+             57714e81f18fe0ab43e0bc4b23734faccdd234b3a8a174f760d6876c7f7aa501"
+        );
+    }
+
+    #[test]
+    fn mix_requests_follow_their_layouts() {
+        let mix = Mix::new(0x45, &[1, 0], &[1, 0]);
+        let instance = mix.instance();
+        let facts = mix.instance_bytes();
+        assert_eq!(facts.len(), MIX_INSTANCE_HEADER_BYTES + 4 * 32);
+        assert_eq!(mix.share_bytes(0).len(), MIX_SHARE_BYTES);
+
+        let nonce_request = |index: usize| [facts.clone(), mix.share_bytes(index)].concat();
+        let nonces = [
+            mix_nonce_request(&nonce_request(0)).unwrap(),
+            mix_nonce_request(&nonce_request(1)).unwrap(),
+        ];
+        assert_eq!(
+            nonces[0],
+            mix_share_nonce(&instance, &mix.share(0)).unwrap()
+        );
+        let sign_request =
+            |index: usize| [nonce_request(index), nonces[0].to_vec(), nonces[1].to_vec()].concat();
+        let responses = [
+            mix_sign_request(&sign_request(0)).unwrap(),
+            mix_sign_request(&sign_request(1)).unwrap(),
+        ];
+        assert_eq!(
+            responses[1],
+            mix_share_sign(&instance, &mix.share(1), &nonces).unwrap()
+        );
+        let combine_request = [facts.clone(), nonces.concat(), responses.concat()].concat();
+        let proof = mix_combine_request(&combine_request).unwrap();
+        assert!(mix.verify(&proof));
+
+        // Every layout is exact.
+        let exact = |parse: &dyn Fn(&[u8]) -> Option<ResultCode>, request: &[u8]| {
+            let mut longer = request.to_vec();
+            longer.push(0);
+            assert_eq!(parse(&longer), Some(ResultCode::BadLength));
+            assert_eq!(
+                parse(&request[..request.len() - 1]),
+                Some(ResultCode::BadLength)
+            );
+        };
+        exact(&|bytes| mix_nonce_request(bytes).err(), &nonce_request(0));
+        exact(&|bytes| mix_sign_request(bytes).err(), &sign_request(0));
+        exact(&|bytes| mix_combine_request(bytes).err(), &combine_request);
+        let mut wrong_schema = nonce_request(0);
+        wrong_schema[0] = 2;
+        assert_eq!(
+            mix_nonce_request(&wrong_schema),
+            Err(ResultCode::UnsupportedFormat)
+        );
+        let mut reserved = nonce_request(0);
+        reserved[facts.len() + 2] = 1;
+        assert_eq!(
+            mix_nonce_request(&reserved),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut zero_entropy = nonce_request(0);
+        zero_entropy[facts.len() + 44..].fill(0);
+        assert_eq!(
+            mix_nonce_request(&zero_entropy),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut out_of_range = nonce_request(0);
+        out_of_range[facts.len()] = 2;
+        assert_eq!(
+            mix_nonce_request(&out_of_range),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut tampered = combine_request;
+        tampered[facts.len() + 64] ^= 1;
+        assert_eq!(
+            mix_combine_request(&tampered),
+            Err(ResultCode::ConsensusInvalid)
+        );
+
+        // The participant bounds are read before any point is.
+        let mut alone = facts.clone();
+        alone[3] = 1;
+        assert_eq!(mix_nonce_request(&alone), Err(ResultCode::ConsensusInvalid));
+        let mut crowd = facts;
+        crowd[3] = u8::try_from(MAX_NULLSEND_INPUTS + 1).unwrap();
+        assert_eq!(mix_nonce_request(&crowd), Err(ResultCode::ResourceLimit));
     }
 }

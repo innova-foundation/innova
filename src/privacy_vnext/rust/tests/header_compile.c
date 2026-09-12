@@ -13,11 +13,9 @@ _Static_assert(INNOVA_PRIVACY_VNEXT_REQUIRED_OPERATIONS == 0x7ffu,
                "required operations changed");
 _Static_assert(sizeof(innova_privacy_vnext_contract) == 104u,
                "contract metadata layout changed");
-/* Bits 21-24 are the note-vote membership and sigma entries, the ed25519 point
-   combination and the single-commitment range proof; bit 25 is the split FCMP++
-   prover. This is a tripwire, so adding a capability is meant to require
-   editing it here. */
-_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 67108863u,
+/* Tripwire: bits 21-24 note-vote membership/sigma, point combination, range proof;
+   25 split FCMP++ prover; 26 mix joint balance proof. A new capability edits this. */
+_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 134217727u,
                "implemented capabilities changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_VALID == 0, "valid result changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE == 6,

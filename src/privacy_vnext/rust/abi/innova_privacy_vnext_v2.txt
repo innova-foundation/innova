@@ -40,6 +40,9 @@ functions:
   innova_privacy_vnext_value_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_receiver_disclosure_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_amount_equality_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_mix_balance_nonce(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_mix_balance_sign(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_mix_balance_combine(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_vote_membership_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_vote_membership_verify(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_vote_sigma_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -82,6 +85,7 @@ capabilities:
   bit-23 ed25519-point-combination
   bit-24 single-commitment-range-proof
   bit-25 fcmp-split-prove
+  bit-26 mix-balance-proof
 implemented-capabilities: bits 0 through 25
 consensus-capabilities: none
 fixed-output-length: 32

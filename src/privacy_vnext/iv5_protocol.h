@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "4bb0944d7cc347fdc0fd664fe592a7d80de910ffbc119d2a415bee40d7f60a74";
+    "da90b08e174b297af8295ce7fc90b25c6ee26b8a3d1ad6e7839644fccc8d6feb";
 // Contract texts earlier builds of this lineage published. Provenance only: no consensus
 // rule may branch on this list. LoadPrivacyVNextAbiInfo refuses a build whose C++ and
 // Rust lists disagree.
@@ -30,7 +30,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "374b89d973c7bc359746314b88839c9b288e5f3c471cda2c6dfcb1f6e6f50c5c";
+    "04184fdba1eafcd260bc1081ac54b37ca4327a70c3a62e592d1076f100470388";
 // The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
 // payload is judged against below that epoch.
 //

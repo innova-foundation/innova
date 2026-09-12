@@ -2211,8 +2211,10 @@ mod tests {
 
     #[test]
     fn extended_operations_are_fail_closed_until_typed_proofs_exist() {
+        // An operation with no typed frame and verifier is refused before any proof
+        // runs. NullSend is refused by its own shape instead (see the mix assertions).
         let mut request = valid_request();
-        request[VALIDATION_PREFIX_SIZE + 2] = crate::NOTE_NULLSEND;
+        request[VALIDATION_PREFIX_SIZE + 2] = crate::NOTE_DELEGATION_CREATE;
         assert_eq!(validate(&request), Err(ResultCode::UnsupportedFormat));
     }
 
@@ -2720,8 +2722,15 @@ mod tests {
             Err(ResultCode::ConsensusInvalid),
             "a shield relabeled as a vote is refused by the vote shape, not by the gate"
         );
+        // Same for a mix: it passes the operation gate now, so what refuses a relabeled
+        // shield is the mix shape -- two participants, one output each, amounts
+        // disclosed -- rather than the gate.
         request[VALIDATION_PREFIX_SIZE + 2] = crate::NOTE_NULLSEND;
-        assert_eq!(validate(&request), Err(ResultCode::UnsupportedFormat));
+        assert_eq!(
+            validate(&request),
+            Err(ResultCode::ConsensusInvalid),
+            "a shield relabeled as a mix is refused by the mix shape, not by the gate"
+        );
     }
 
     // The vote fields are read only under operation 10, sit after the outputs, and are

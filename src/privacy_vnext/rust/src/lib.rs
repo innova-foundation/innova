@@ -91,6 +91,7 @@ pub const CAP_VOTE_SIGMA: u32 = 1 << 22;
 pub const CAP_ED25519_COMBINE: u32 = 1 << 23;
 pub const CAP_RANGE_PROOF: u32 = 1 << 24;
 pub const CAP_FCMP_SPLIT_PROVE: u32 = 1 << 25;
+pub const CAP_MIX_BALANCE: u32 = 1 << 26;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -120,7 +121,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_VOTE_SIGMA
     | CAP_ED25519_COMBINE
     | CAP_RANGE_PROOF
-    | CAP_FCMP_SPLIT_PROVE;
+    | CAP_FCMP_SPLIT_PROVE
+    | CAP_MIX_BALANCE;
 // Consensus relies on the verifier the crate implements. The FFI refuses a
 // contract whose consensus set is not a subset of the implemented set, so this
 // cannot silently outrun what is actually linked in.
@@ -1564,6 +1566,88 @@ pub unsafe extern "C" fn innova_privacy_vnext_amount_equality_prove(
         {
             return Err(ResultCode::InternalLocalStateFailure);
         }
+        write_variable_output(&proof, out, out_capacity, out_written)
+    })
+}
+
+/// Round one of a mix's joint balance proof: this participant's nonce point.
+///
+/// Request: `schema_u16 || output_count_u8 || input_count_u8 ||
+/// transparent_value_balance_i64_le || fee_u64_le || signable_hash_32 || input_count *
+/// pseudo_out_32 || output_count * output_32 || input_index_u8 || output_index_u8 ||
+/// reserved_u16_zero || fee_share_u64_le || mask_32 || entropy_32`. The mask is the
+/// pseudo-output mask less the output mask and must open `pseudo_out - output -
+/// fee_share*H`. Response: the 32-byte nonce point, a pure function of the request.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_nonce(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let nonce = value::mix_nonce_request(request)?;
+        write_variable_output(&nonce, out, out_capacity, out_written)
+    })
+}
+
+/// Round two: this participant's response under every participant's nonce point.
+///
+/// Request: the nonce request, then `input_count * nonce_32` in input order with the
+/// caller's own at its input index. Response: the 32-byte response scalar. One nonce signs
+/// under one aggregate per process: a different aggregate returns
+/// `INTERNAL_LOCAL_STATE_FAILURE`. Entropy must be fresh per signing (see `value.rs`).
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_sign(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = value::mix_sign_request(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
+    })
+}
+
+/// Combine a mix's shares into the balance proof the payload carries.
+///
+/// Request: the facts as in the nonce request, then `input_count * nonce_32 || input_count
+/// * response_32` in input order. Response: the 64-byte proof `payload_validate` verifies,
+/// verified here first so a wrong share yields no proof rather than a bad one.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_combine(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let proof = value::mix_combine_request(request)?;
         write_variable_output(&proof, out, out_capacity, out_written)
     })
 }

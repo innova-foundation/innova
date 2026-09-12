@@ -88,6 +88,7 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE (1u << 23)
 #define INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF (1u << 24)
 #define INNOVA_PRIVACY_VNEXT_CAP_FCMP_SPLIT_PROVE (1u << 25)
+#define INNOVA_PRIVACY_VNEXT_CAP_MIX_BALANCE (1u << 26)
 #define INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES \
     (INNOVA_PRIVACY_VNEXT_CAP_PROTOCOL_CONTRACT | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_PROOF_SIZE | \
@@ -114,6 +115,7 @@ extern "C" {
      INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE | \
      INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_SPLIT_PROVE | \
+     INNOVA_PRIVACY_VNEXT_CAP_MIX_BALANCE | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN)
 
 #define INNOVA_PRIVACY_VNEXT_OP_SHIELD (1u << 0)
@@ -368,6 +370,36 @@ int32_t innova_privacy_vnext_receiver_disclosure_prove(
  * Request: schema_u16 || reserved_u16_zero || amount_u64_le || commitment_32 ||
  * mask_32 || signable_hash_32 || entropy_32. */
 int32_t innova_privacy_vnext_amount_equality_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* A mix's joint balance proof. Facts: schema_u16 || output_count_u8 ||
+ * input_count_u8 || transparent_value_balance_i64_le || fee_u64_le ||
+ * signable_hash_32 || input_count * pseudo_out_32 || output_count * output_32.
+ * Share: input_index_u8 || output_index_u8 || reserved_u16_zero ||
+ * fee_share_u64_le || mask_32 || entropy_32.
+ * nonce:   facts || share                              -> nonce point (32)
+ * sign:    facts || share || input_count * nonce_32    -> response (32)
+ * combine: facts || input_count * (nonce_32) || input_count * (response_32)
+ *                                                      -> proof (64)
+ * One nonce signs under one aggregate per process; another aggregate returns
+ * INTERNAL_LOCAL_STATE_FAILURE. Draw the entropy fresh per signing. */
+int32_t innova_privacy_vnext_mix_balance_nonce(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+int32_t innova_privacy_vnext_mix_balance_sign(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+int32_t innova_privacy_vnext_mix_balance_combine(
     const uint8_t *request,
     size_t request_len,
     uint8_t *out,
