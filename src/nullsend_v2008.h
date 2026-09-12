@@ -172,8 +172,14 @@ public:
     CPubKey pubkeySession;
     uint256 keyImage;
     bool fTokenIssued;
+    /** This seat's position in the frozen, sorted key image set. The joint signature
+     *  reads the nonce points in this order, so both sides must agree on it before
+     *  any nonce exists. Set by CloseJoin; -1 until then. */
+    int nInputIndex;
+    std::vector<unsigned char> vchNonce;
+    std::vector<unsigned char> vchResponse;
 
-    CMixParticipant() : fTokenIssued(false) {}
+    CMixParticipant() : fTokenIssued(false), nInputIndex(-1) {}
 };
 
 class CMixRound
@@ -221,6 +227,34 @@ public:
      *  by arrival. */
     bool CanPublish(int64_t nNow) const;
 
+    // -- The joint balance signature. No one holds the total excess mask: each seat publishes a
+    // nonce point and responds under the aggregate challenge. A round signs once; a second
+    // attempt (which could extract a reused nonce's mask) ends it.
+
+    /** Move to signing. Only once the window has closed with every seat's output in,
+     *  because the signable hash covers the outputs. */
+    bool OpenSigning(int64_t nNow, std::string* pstrError = NULL);
+
+    bool SubmitNonce(const CPubKey& pubkeySession,
+                     const std::vector<unsigned char>& vchNonce,
+                     std::string* pstrError = NULL);
+
+    /** Fix the aggregate. After this no nonce may be added or replaced: moving one
+     *  would move the challenge every seat already responded under. */
+    bool FreezeNonces(std::string* pstrError = NULL);
+    bool NoncesAreFrozen() const { return fNoncesFrozen; }
+
+    bool SubmitResponse(const CPubKey& pubkeySession,
+                        const std::vector<unsigned char>& vchResponse,
+                        std::string* pstrError = NULL);
+
+    bool SigningComplete() const;
+
+    /** Nonce points in input-index order, which is what the combine reads. Empty
+     *  until every seat has submitted. */
+    std::vector<std::vector<unsigned char> > NoncesInInputOrder() const;
+    std::vector<std::vector<unsigned char> > ResponsesInInputOrder() const;
+
     /** A participant that goes away. Before the input set is frozen this is an
      *  ordinary withdrawal; after it the index no longer matches, so the round ends
      *  rather than producing a payload nobody can spend. */
@@ -246,6 +280,8 @@ private:
     std::vector<unsigned char> vchRSA_N;
     std::vector<unsigned char> vchRSA_E;
     bool fStreamIsolated;
+    bool fNoncesFrozen;
+    bool fHasSigned;
     int64_t nOpened;
     int64_t nWindowCloses;
     std::string strAbortReason;

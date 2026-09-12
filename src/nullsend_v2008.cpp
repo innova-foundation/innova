@@ -176,7 +176,8 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
 
 CMixRound::CMixRound()
     : nPhase(MIX_PHASE_ABORTED), hashRound(0), nTargetParticipants(0),
-      fStreamIsolated(false), nOpened(0), nWindowCloses(0)
+      fStreamIsolated(false), fNoncesFrozen(false), fHasSigned(false),
+      nOpened(0), nWindowCloses(0)
 {
     strAbortReason = "not opened";
 }
@@ -215,6 +216,8 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
     vchRSA_N = vchRSA_N_In;
     vchRSA_E = vchRSA_E_In;
     fStreamIsolated = fStreamIsolatedIn;
+    fNoncesFrozen = false;
+    fHasSigned = false;
     nOpened = nNow;
     nWindowCloses = 0;
     strAbortReason.clear();
@@ -268,6 +271,16 @@ bool CMixRound::CloseJoin(int64_t nNow, std::string* pstrError)
     // Sorted, because the index is derived from the set and not from arrival order:
     // two coordinators reading the same seats must reach the same index.
     std::sort(vFinalKeyImages.begin(), vFinalKeyImages.end());
+    // Each seat learns its position in that set now, before any nonce exists. The
+    // joint signature reads the nonce points in this order, so it cannot be settled
+    // later by whoever happens to submit first.
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        vParticipants[i].nInputIndex = -1;
+        for (size_t j = 0; j < vFinalKeyImages.size(); j++)
+            if (vFinalKeyImages[j] == vParticipants[i].keyImage)
+                vParticipants[i].nInputIndex = (int)j;
+    }
     nPhase = MIX_PHASE_KEYED;
     (void)nNow;
     return true;
@@ -378,6 +391,130 @@ void CMixRound::Abort(const std::string& strReason)
 {
     nPhase = MIX_PHASE_ABORTED;
     strAbortReason = strReason;
+}
+
+bool CMixRound::OpenSigning(int64_t nNow, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    // A round signs once. Signing again over one payload with a different set of
+    // nonce points is how a coordinator recovers a participant's mask from two
+    // responses under two challenges, so the second attempt ends the round instead
+    // of producing the pair that leaks.
+    if (fHasSigned)
+    {
+        Abort("signing was opened twice; a second aggregate would solve for a share");
+        FAIL("signing was opened twice");
+    }
+    if (!Require(MIX_PHASE_OUTPUT, pstrError))
+        return false;
+    if (!CanPublish(nNow))
+        FAIL("the output set is not final; the signable hash covers it");
+    fHasSigned = true;
+    nPhase = MIX_PHASE_SIGN;
+    return true;
+    #undef FAIL
+}
+
+bool CMixRound::SubmitNonce(const CPubKey& pubkeySession,
+                            const std::vector<unsigned char>& vchNonce,
+                            std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    if (fNoncesFrozen)
+        FAIL("the aggregate is fixed; a nonce cannot move under it");
+    if (vchNonce.size() != 32)
+        FAIL("a nonce point is 32 bytes");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        if (!vParticipants[i].vchNonce.empty())
+            FAIL("seat already published a nonce");
+        vParticipants[i].vchNonce = vchNonce;
+        return true;
+    }
+    FAIL("no seat under that session key");
+    #undef FAIL
+}
+
+bool CMixRound::FreezeNonces(std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    if (fNoncesFrozen)
+        FAIL("the aggregate is already fixed");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].vchNonce.empty())
+            FAIL("a seat has not published a nonce; the aggregate is incomplete");
+    fNoncesFrozen = true;
+    return true;
+    #undef FAIL
+}
+
+bool CMixRound::SubmitResponse(const CPubKey& pubkeySession,
+                               const std::vector<unsigned char>& vchResponse,
+                               std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    // A response under an aggregate that is not yet fixed is a response under a
+    // challenge that can still move, which is the second signature the guard exists
+    // to refuse.
+    if (!fNoncesFrozen)
+        FAIL("the aggregate is not fixed; there is no challenge to respond under");
+    if (vchResponse.size() != 32)
+        FAIL("a response is 32 bytes");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        if (!vParticipants[i].vchResponse.empty())
+            FAIL("seat already responded");
+        vParticipants[i].vchResponse = vchResponse;
+        return true;
+    }
+    FAIL("no seat under that session key");
+    #undef FAIL
+}
+
+bool CMixRound::SigningComplete() const
+{
+    if (nPhase != MIX_PHASE_SIGN || !fNoncesFrozen)
+        return false;
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].vchResponse.empty())
+            return false;
+    return true;
+}
+
+std::vector<std::vector<unsigned char> > CMixRound::NoncesInInputOrder() const
+{
+    std::vector<std::vector<unsigned char> > vOut(vParticipants.size());
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        const CMixParticipant& p = vParticipants[i];
+        if (p.nInputIndex < 0 || p.nInputIndex >= (int)vOut.size() || p.vchNonce.empty())
+            return std::vector<std::vector<unsigned char> >();
+        vOut[p.nInputIndex] = p.vchNonce;
+    }
+    return vOut;
+}
+
+std::vector<std::vector<unsigned char> > CMixRound::ResponsesInInputOrder() const
+{
+    std::vector<std::vector<unsigned char> > vOut(vParticipants.size());
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        const CMixParticipant& p = vParticipants[i];
+        if (p.nInputIndex < 0 || p.nInputIndex >= (int)vOut.size() || p.vchResponse.empty())
+            return std::vector<std::vector<unsigned char> >();
+        vOut[p.nInputIndex] = p.vchResponse;
+    }
+    return vOut;
 }
 
 bool CMixRound::IsExpired(int64_t nNow) const

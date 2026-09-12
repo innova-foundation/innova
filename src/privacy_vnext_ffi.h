@@ -619,6 +619,61 @@ bool ProvePrivacyVNextValue(
 //
 // The commitment must be the re-randomized one from the same proving instance: a proof run
 // against a leaf commitment names the leaf the membership proof exists to hide.
+// A mix's joint balance proof. Nobody holds the total excess mask -- it is the sum of
+// each participant's own (input mask - output mask) -- so the proof is produced in two
+// passes and lands on the layout the existing single-party verifier reads.
+struct PrivacyVNextMixBalanceFacts
+{
+    uint8_t nOutputCount;
+    uint8_t nInputCount;
+    int64_t nTransparentValueBalance;
+    uint64_t nFee;
+    PrivacyVNextDigest signableHash;
+    std::vector<PrivacyVNextDigest> vPseudoOuts;   // nInputCount of them
+    std::vector<PrivacyVNextDigest> vOutputs;      // nOutputCount of them
+
+    PrivacyVNextMixBalanceFacts();
+};
+
+// One participant's side. The entropy must be drawn fresh for every signing attempt:
+// deriving it from the session would make the nonce identical across a restart, and the
+// guard that refuses a second aggregate is process state a restart clears.
+struct PrivacyVNextMixBalanceShare
+{
+    uint8_t nInputIndex;
+    uint8_t nOutputIndex;
+    uint64_t nFeeShare;
+    PrivacyVNextDigest mask;
+    PrivacyVNextDigest entropy;
+
+    PrivacyVNextMixBalanceShare();
+};
+
+bool PrivacyVNextMixBalanceNonce(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const PrivacyVNextMixBalanceShare& share,
+    PrivacyVNextDigest& nonceOut,
+    std::string& error);
+
+// vNonces is every participant's nonce point in input-index order. One nonce signs under
+// one aggregate for the life of the process; another aggregate is an error rather than a
+// second signature, because the two responses would solve for this participant's mask.
+bool PrivacyVNextMixBalanceSign(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const PrivacyVNextMixBalanceShare& share,
+    const std::vector<PrivacyVNextDigest>& vNonces,
+    PrivacyVNextDigest& responseOut,
+    std::string& error);
+
+// The combined (R, s). Verified before it is returned, so a wrong share yields no proof
+// rather than a bad one.
+bool PrivacyVNextMixBalanceCombine(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const std::vector<PrivacyVNextDigest>& vNonces,
+    const std::vector<PrivacyVNextDigest>& vResponses,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error);
+
 bool ProvePrivacyVNextAmountEquality(
     const PrivacyVNextDigest& commitment,
     uint64_t nAmount,

@@ -2473,6 +2473,180 @@ bool ProvePrivacyVNextAmountEquality(
     return true;
 }
 
+PrivacyVNextMixBalanceFacts::PrivacyVNextMixBalanceFacts()
+{
+    nOutputCount = 0;
+    nInputCount = 0;
+    nTransparentValueBalance = 0;
+    nFee = 0;
+    signableHash.fill(0);
+}
+
+PrivacyVNextMixBalanceShare::PrivacyVNextMixBalanceShare()
+{
+    nInputIndex = 0;
+    nOutputIndex = 0;
+    nFeeShare = 0;
+    mask.fill(0);
+    entropy.fill(0);
+}
+
+namespace
+{
+
+const size_t MIX_BALANCE_FACTS_HEADER = 52;
+const size_t MIX_BALANCE_SHARE_BYTES = 76;
+const size_t MIX_BALANCE_PROOF_BYTES = 64;
+
+bool EncodeMixBalanceFacts(const PrivacyVNextMixBalanceFacts& facts,
+                           std::vector<uint8_t>& vchOut, std::string& error)
+{
+    vchOut.clear();
+    if (facts.nInputCount == 0 || facts.nOutputCount == 0)
+    {
+        error = "IV5 mix balance: a mix declares at least one input and one output";
+        return false;
+    }
+    if (facts.vPseudoOuts.size() != facts.nInputCount ||
+        facts.vOutputs.size() != facts.nOutputCount)
+    {
+        error = "IV5 mix balance: the declared counts do not match the commitments given";
+        return false;
+    }
+    vchOut.assign(MIX_BALANCE_FACTS_HEADER +
+                      32 * (facts.vPseudoOuts.size() + facts.vOutputs.size()),
+                  0);
+    vchOut[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    vchOut[1] = 0;
+    vchOut[2] = facts.nOutputCount;
+    vchOut[3] = facts.nInputCount;
+    PutLE64(&vchOut[4], static_cast<uint64_t>(facts.nTransparentValueBalance));
+    PutLE64(&vchOut[12], facts.nFee);
+    std::memcpy(&vchOut[20], facts.signableHash.data(), 32);
+    size_t nCursor = MIX_BALANCE_FACTS_HEADER;
+    for (size_t i = 0; i < facts.vPseudoOuts.size(); i++, nCursor += 32)
+        std::memcpy(&vchOut[nCursor], facts.vPseudoOuts[i].data(), 32);
+    for (size_t i = 0; i < facts.vOutputs.size(); i++, nCursor += 32)
+        std::memcpy(&vchOut[nCursor], facts.vOutputs[i].data(), 32);
+    return true;
+}
+
+void AppendMixBalanceShare(const PrivacyVNextMixBalanceShare& share,
+                           std::vector<uint8_t>& vchOut)
+{
+    const size_t nAt = vchOut.size();
+    vchOut.resize(nAt + MIX_BALANCE_SHARE_BYTES, 0);
+    vchOut[nAt] = share.nInputIndex;
+    vchOut[nAt + 1] = share.nOutputIndex;
+    PutLE64(&vchOut[nAt + 4], share.nFeeShare);
+    std::memcpy(&vchOut[nAt + 12], share.mask.data(), 32);
+    std::memcpy(&vchOut[nAt + 44], share.entropy.data(), 32);
+}
+
+bool AppendMixBalanceDigests(const std::vector<PrivacyVNextDigest>& vDigests,
+                             size_t nExpected, const char* pszWhat,
+                             std::vector<uint8_t>& vchOut, std::string& error)
+{
+    if (vDigests.size() != nExpected)
+    {
+        error = strprintf("IV5 mix balance: %zu %s for %zu inputs",
+                          vDigests.size(), pszWhat, nExpected);
+        return false;
+    }
+    for (size_t i = 0; i < vDigests.size(); i++)
+    {
+        const size_t nAt = vchOut.size();
+        vchOut.resize(nAt + 32, 0);
+        std::memcpy(&vchOut[nAt], vDigests[i].data(), 32);
+    }
+    return true;
+}
+
+bool CallMixBalance(int32_t (*pfn)(const uint8_t*, size_t, uint8_t*, size_t, size_t*),
+                    std::vector<uint8_t>& request, size_t nOutBytes,
+                    const char* pszWhat, std::vector<unsigned char>& vchOut,
+                    std::string& error)
+{
+    std::vector<uint8_t> response(nOutBytes, 0);
+    size_t written = 0;
+    const int32_t result =
+        pfn(&request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
+    {
+        error = ResultError(pszWhat, result);
+        return false;
+    }
+    vchOut.assign(response.begin(), response.end());
+    return true;
+}
+
+} // namespace
+
+bool PrivacyVNextMixBalanceNonce(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const PrivacyVNextMixBalanceShare& share,
+    PrivacyVNextDigest& nonceOut,
+    std::string& error)
+{
+    nonceOut.fill(0);
+    error.clear();
+    std::vector<uint8_t> request;
+    if (!EncodeMixBalanceFacts(facts, request, error))
+        return false;
+    AppendMixBalanceShare(share, request);
+    std::vector<unsigned char> vchOut;
+    if (!CallMixBalance(&innova_privacy_vnext_mix_balance_nonce, request, 32,
+                        "IV5 mix balance nonce", vchOut, error))
+        return false;
+    std::memcpy(nonceOut.data(), &vchOut[0], 32);
+    return true;
+}
+
+bool PrivacyVNextMixBalanceSign(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const PrivacyVNextMixBalanceShare& share,
+    const std::vector<PrivacyVNextDigest>& vNonces,
+    PrivacyVNextDigest& responseOut,
+    std::string& error)
+{
+    responseOut.fill(0);
+    error.clear();
+    std::vector<uint8_t> request;
+    if (!EncodeMixBalanceFacts(facts, request, error))
+        return false;
+    AppendMixBalanceShare(share, request);
+    if (!AppendMixBalanceDigests(vNonces, facts.nInputCount, "nonce points", request, error))
+        return false;
+    std::vector<unsigned char> vchOut;
+    if (!CallMixBalance(&innova_privacy_vnext_mix_balance_sign, request, 32,
+                        "IV5 mix balance signature share", vchOut, error))
+        return false;
+    std::memcpy(responseOut.data(), &vchOut[0], 32);
+    return true;
+}
+
+bool PrivacyVNextMixBalanceCombine(
+    const PrivacyVNextMixBalanceFacts& facts,
+    const std::vector<PrivacyVNextDigest>& vNonces,
+    const std::vector<PrivacyVNextDigest>& vResponses,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error)
+{
+    vchProofOut.clear();
+    error.clear();
+    std::vector<uint8_t> request;
+    if (!EncodeMixBalanceFacts(facts, request, error))
+        return false;
+    if (!AppendMixBalanceDigests(vNonces, facts.nInputCount, "nonce points", request, error))
+        return false;
+    if (!AppendMixBalanceDigests(vResponses, facts.nInputCount, "responses", request, error))
+        return false;
+    return CallMixBalance(&innova_privacy_vnext_mix_balance_combine, request,
+                          MIX_BALANCE_PROOF_BYTES, "IV5 mix balance proof",
+                          vchProofOut, error);
+}
+
 PrivacyVNextCombineTerm::PrivacyVNextCombineTerm()
 {
     nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
