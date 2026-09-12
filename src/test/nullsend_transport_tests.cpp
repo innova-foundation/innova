@@ -485,4 +485,149 @@ BOOST_AUTO_TEST_CASE(a_signed_frame_does_not_move_between_rounds_or_phases)
                 MixSessionSigHash(uint256(8), MIX_FRAME_JOIN, vchPayload));
 }
 
+// ---------------------------------------------------------------------------
+// Framed connections
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A connected pair, so the stream is exercised over a real socket rather than a
+// buffer standing in for one.
+struct StreamPair
+{
+    CMixStream a;
+    CMixStream b;
+    int hRaw[2];
+
+    StreamPair()
+    {
+        hRaw[0] = hRaw[1] = -1;
+        BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hRaw), 0);
+        a.Adopt(hRaw[0]);
+        b.Adopt(hRaw[1]);
+    }
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(a_stream_carries_frames_both_ways)
+{
+    StreamPair pair;
+    std::string strError;
+
+    std::vector<unsigned char> vchPayload(100, 0x2b);
+    BOOST_REQUIRE_MESSAGE(pair.a.Send(MIX_FRAME_JOIN, vchPayload, &strError), strError);
+
+    MixFrameType nType = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchBack;
+    BOOST_REQUIRE_MESSAGE(pair.b.Receive(nType, vchBack, 2000, &strError), strError);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_JOIN);
+    BOOST_CHECK(vchBack == vchPayload);
+
+    BOOST_REQUIRE(pair.b.Send(MIX_FRAME_KEY, std::vector<unsigned char>(8, 0x3c), &strError));
+    BOOST_REQUIRE(pair.a.Receive(nType, vchBack, 2000, &strError));
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_KEY);
+    BOOST_CHECK_EQUAL(vchBack.size(), 8u);
+}
+
+// A stream is bytes, not messages. Two frames written together come back one at a
+// time, and one frame written in pieces is reassembled -- neither of which a reader
+// that assumed one read is one frame would get right.
+BOOST_AUTO_TEST_CASE(a_stream_reassembles_and_splits)
+{
+    StreamPair pair;
+    std::string strError;
+    MixFrameType nType;
+    std::vector<unsigned char> vchBack;
+
+    BOOST_REQUIRE(pair.a.Send(MIX_FRAME_OUTPUT, std::vector<unsigned char>(4, 0x01), &strError));
+    BOOST_REQUIRE(pair.a.Send(MIX_FRAME_ABORT, std::vector<unsigned char>(), &strError));
+    BOOST_REQUIRE(pair.b.Receive(nType, vchBack, 2000, &strError));
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_OUTPUT);
+    BOOST_CHECK_EQUAL(vchBack.size(), 4u);
+    BOOST_REQUIRE(pair.b.Receive(nType, vchBack, 2000, &strError));
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_ABORT);
+    BOOST_CHECK(vchBack.empty());
+
+    // Written by hand in two pieces, the split landing inside the header.
+    std::vector<unsigned char> vchFrame;
+    BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_BLIND_SIGNATURE,
+                                std::vector<unsigned char>(60, 0x7a), vchFrame));
+    BOOST_REQUIRE_EQUAL(send(pair.hRaw[0], (const char*)&vchFrame[0], 5, 0), 5);
+    BOOST_REQUIRE_EQUAL(send(pair.hRaw[0], (const char*)&vchFrame[5], vchFrame.size() - 5, 0),
+                        (ssize_t)(vchFrame.size() - 5));
+    BOOST_REQUIRE_MESSAGE(pair.b.Receive(nType, vchBack, 2000, &strError), strError);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_BLIND_SIGNATURE);
+    BOOST_CHECK_EQUAL(vchBack.size(), 60u);
+}
+
+// A peer that is not speaking this protocol, or that stops mid-frame, is an error
+// rather than a reader that waits forever.
+BOOST_AUTO_TEST_CASE(a_stream_gives_up_on_a_peer_that_is_not_speaking_frames)
+{
+    std::string strError;
+    MixFrameType nType;
+    std::vector<unsigned char> vchBack;
+
+    {
+        StreamPair pair;
+        const unsigned char pchGarbage[16] = { 0x00 };
+        BOOST_REQUIRE_EQUAL(send(pair.hRaw[0], (const char*)pchGarbage, 16, 0), 16);
+        BOOST_CHECK(!pair.b.Receive(nType, vchBack, 2000, &strError));
+        BOOST_CHECK(strError.find("not a frame") != std::string::npos);
+    }
+    {
+        // A header promising bytes that never come: the deadline ends it.
+        StreamPair pair;
+        std::vector<unsigned char> vchFrame;
+        BOOST_REQUIRE(BuildMixFrame(MIX_FRAME_JOIN, std::vector<unsigned char>(200, 0x5e), vchFrame));
+        BOOST_REQUIRE_EQUAL(send(pair.hRaw[0], (const char*)&vchFrame[0], 20, 0), 20);
+        BOOST_CHECK_MESSAGE(!pair.b.Receive(nType, vchBack, 200, &strError),
+                            "a half-written frame did not end at the deadline");
+    }
+    {
+        StreamPair pair;
+        pair.a.Close();
+        BOOST_CHECK(!pair.b.Receive(nType, vchBack, 2000, &strError));
+        BOOST_CHECK(!pair.a.Send(MIX_FRAME_ABORT, std::vector<unsigned char>(), &strError));
+    }
+}
+
+// One phase, one connection, and with isolation a fresh credential pair every time.
+// Reusing a pair would put every phase on one circuit, which is one exit address,
+// which is the mapping the blind signature exists to deny.
+BOOST_AUTO_TEST_CASE(each_phase_dials_its_own_circuit)
+{
+    ScriptedProxy first(0x02, 0x00);
+    BOOST_REQUIRE(first.Start());
+    ScriptedProxy second(0x02, 0x00);
+    BOOST_REQUIRE(second.Start());
+
+    std::string strError;
+    CMixStream phaseOne;
+    BOOST_REQUIRE_MESSAGE(
+        DialMixPhase(CService("127.0.0.1", (unsigned short)first.Port()),
+                     "coordinator.onion", 8443, true, 5000, phaseOne, &strError),
+        strError);
+    BOOST_CHECK(phaseOne.IsOpen());
+
+    CMixStream phaseTwo;
+    BOOST_REQUIRE(DialMixPhase(CService("127.0.0.1", (unsigned short)second.Port()),
+                               "coordinator.onion", 8443, true, 5000, phaseTwo, &strError));
+
+    BOOST_REQUIRE(first.AuthSeen());
+    BOOST_REQUIRE(second.AuthSeen());
+    BOOST_CHECK_MESSAGE(first.Auth() != second.Auth(),
+                        "two phases dialled with the same credentials, so Tor puts them "
+                        "on one circuit and one exit address serves both");
+
+    // A proxy that will not isolate fails the phase rather than carrying it.
+    ScriptedProxy refuses(0x00, 0x00, true);
+    BOOST_REQUIRE(refuses.Start());
+    CMixStream refused;
+    BOOST_CHECK(!DialMixPhase(CService("127.0.0.1", (unsigned short)refuses.Port()),
+                              "coordinator.onion", 8443, true, 5000, refused, &strError));
+    BOOST_CHECK(!refused.IsOpen());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

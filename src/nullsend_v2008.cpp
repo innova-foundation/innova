@@ -523,3 +523,310 @@ bool CMixRound::IsExpired(int64_t nNow) const
         return false;
     return (nNow - nOpened) > NULLSEND_QUEUE_TIMEOUT;
 }
+
+// ---------------------------------------------------------------------------
+// Framed connections
+// ---------------------------------------------------------------------------
+
+CMixStream::CMixStream() : hSocket(INVALID_SOCKET) {}
+
+CMixStream::~CMixStream()
+{
+    Close();
+}
+
+void CMixStream::Adopt(SOCKET hSocketIn)
+{
+    Close();
+    hSocket = hSocketIn;
+    vchBuffer.clear();
+}
+
+void CMixStream::Close()
+{
+    if (hSocket != INVALID_SOCKET)
+        CloseSocket(hSocket);
+    hSocket = INVALID_SOCKET;
+    vchBuffer.clear();
+}
+
+bool CMixStream::Send(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
+                      std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (hSocket == INVALID_SOCKET)
+        FAIL("stream is not open");
+    std::vector<unsigned char> vchFrame;
+    if (!BuildMixFrame(nType, vchPayload, vchFrame))
+        FAIL("frame has no encoding");
+    size_t nSent = 0;
+    while (nSent < vchFrame.size())
+    {
+        const ssize_t nWrote = send(hSocket, (const char*)&vchFrame[nSent],
+                                    vchFrame.size() - nSent, MSG_NOSIGNAL);
+        if (nWrote <= 0)
+            FAIL("the peer went away mid-frame");
+        nSent += (size_t)nWrote;
+    }
+    return true;
+    #undef FAIL
+}
+
+bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vchPayloadOut,
+                         int nTimeoutMs, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    nTypeOut = MIX_FRAME_NONE;
+    vchPayloadOut.clear();
+    if (hSocket == INVALID_SOCKET)
+        FAIL("stream is not open");
+
+    struct timeval tv;
+    tv.tv_sec = nTimeoutMs / 1000;
+    tv.tv_usec = (nTimeoutMs % 1000) * 1000;
+    setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+
+    const size_t nCeiling = MIX_FRAME_HEADER_BYTES + MIX_FRAME_MAX_PAYLOAD;
+    while (true)
+    {
+        size_t nConsumed = 0;
+        const MixFrameDecode nDecode =
+            ReadMixFrame(vchBuffer, nTypeOut, vchPayloadOut, nConsumed);
+        if (nDecode == MIX_DECODE_OK)
+        {
+            vchBuffer.erase(vchBuffer.begin(), vchBuffer.begin() + nConsumed);
+            return true;
+        }
+        if (nDecode == MIX_DECODE_INVALID)
+            FAIL("the peer sent something that is not a frame");
+        // Incomplete. A buffer already holding a whole maximum frame's worth without
+        // decoding one cannot be waiting on a legal frame.
+        if (vchBuffer.size() >= nCeiling)
+            FAIL("the peer sent more than one frame's worth without a frame in it");
+        unsigned char pchRead[4096];
+        const ssize_t nRead = recv(hSocket, (char*)pchRead, sizeof(pchRead), 0);
+        if (nRead == 0)
+            FAIL("the peer closed the connection");
+        if (nRead < 0)
+            FAIL("the peer sent nothing before the deadline");
+        vchBuffer.insert(vchBuffer.end(), pchRead, pchRead + nRead);
+    }
+    #undef FAIL
+}
+
+bool DialMixPhase(const CService& addrProxy, const std::string& strEndpoint, int nPort,
+                  bool fIsolate, int nTimeoutMs, CMixStream& streamOut,
+                  std::string* pstrError)
+{
+    streamOut.Close();
+    SOCKET hSocket = INVALID_SOCKET;
+    bool fDialed = false;
+    if (fIsolate)
+    {
+        // A fresh pair per phase. Reusing one would put every phase on one circuit,
+        // which is the same exit address, which is the mapping this is here to deny.
+        const ProxyCredentials auth = RandomProxyCredentials();
+        fDialed = ConnectSocks5ByName(addrProxy, strEndpoint, nPort, hSocket, nTimeoutMs, &auth);
+    }
+    else
+    {
+        fDialed = ConnectSocks5ByName(addrProxy, strEndpoint, nPort, hSocket, nTimeoutMs);
+    }
+    if (!fDialed)
+    {
+        if (pstrError)
+            *pstrError = "could not reach the coordinator";
+        return false;
+    }
+    streamOut.Adopt(hSocket);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void PutU16(std::vector<unsigned char>& vch, size_t n)
+{
+    vch.push_back((unsigned char)(n & 0xFF));
+    vch.push_back((unsigned char)((n >> 8) & 0xFF));
+}
+
+bool TakeU16(const std::vector<unsigned char>& vch, size_t& nAt, size_t& nOut)
+{
+    if (nAt + 2 > vch.size())
+        return false;
+    nOut = (size_t)vch[nAt] | ((size_t)vch[nAt + 1] << 8);
+    nAt += 2;
+    return true;
+}
+
+bool TakeBytes(const std::vector<unsigned char>& vch, size_t& nAt, size_t nLen,
+               std::vector<unsigned char>& vchOut)
+{
+    if (nAt + nLen > vch.size())
+        return false;
+    vchOut.assign(vch.begin() + nAt, vch.begin() + nAt + nLen);
+    nAt += nLen;
+    return true;
+}
+
+const size_t MIX_SESSION_PUBKEY_BYTES = 33;
+
+bool TakeSessionKey(const std::vector<unsigned char>& vchBody, size_t& nAt, CPubKey& pubkeyOut)
+{
+    std::vector<unsigned char> vchKey;
+    if (!TakeBytes(vchBody, nAt, MIX_SESSION_PUBKEY_BYTES, vchKey))
+        return false;
+    pubkeyOut = CPubKey(vchKey);
+    return pubkeyOut.IsValid();
+}
+
+} // namespace
+
+bool SplitAuthedMixFrame(const std::vector<unsigned char>& vchPayload,
+                         std::vector<unsigned char>& vchBodyOut,
+                         std::vector<unsigned char>& vchSigOut)
+{
+    vchBodyOut.clear();
+    vchSigOut.clear();
+    if (vchPayload.empty())
+        return false;
+    const size_t nSigLen = vchPayload.back();
+    if (nSigLen == 0 || nSigLen + 1 > vchPayload.size())
+        return false;
+    const size_t nBody = vchPayload.size() - 1 - nSigLen;
+    vchBodyOut.assign(vchPayload.begin(), vchPayload.begin() + nBody);
+    vchSigOut.assign(vchPayload.begin() + nBody, vchPayload.end() - 1);
+    return true;
+}
+
+bool BuildAuthedMixFrame(const CKey& key, const uint256& hashRound, MixFrameType nType,
+                         const std::vector<unsigned char>& vchBody,
+                         std::vector<unsigned char>& vchPayloadOut)
+{
+    vchPayloadOut.clear();
+    std::vector<unsigned char> vchSig;
+    // The signature is over the body under this round and this frame type, so a
+    // message cannot be lifted into another round or presented as another phase.
+    if (!SignMixSessionFrame(key, hashRound, nType, vchBody, vchSig))
+        return false;
+    if (vchSig.empty() || vchSig.size() > 255)
+        return false;
+    vchPayloadOut = vchBody;
+    vchPayloadOut.insert(vchPayloadOut.end(), vchSig.begin(), vchSig.end());
+    vchPayloadOut.push_back((unsigned char)vchSig.size());
+    return true;
+}
+
+bool BuildMixJoinBody(const CPubKey& pubkeySession, const uint256& keyImage,
+                      std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (!pubkeySession.IsValid())
+        return false;
+    const std::vector<unsigned char> vchKey = pubkeySession.Raw();
+    if (vchKey.size() != MIX_SESSION_PUBKEY_BYTES)
+        return false;
+    vchOut.insert(vchOut.end(), vchKey.begin(), vchKey.end());
+    vchOut.insert(vchOut.end(), keyImage.begin(), keyImage.end());
+    return true;
+}
+
+bool BuildMixScalarBody(const CPubKey& pubkeySession, const std::vector<unsigned char>& vch32,
+                        std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (!pubkeySession.IsValid() || vch32.size() != 32)
+        return false;
+    const std::vector<unsigned char> vchKey = pubkeySession.Raw();
+    if (vchKey.size() != MIX_SESSION_PUBKEY_BYTES)
+        return false;
+    vchOut.insert(vchOut.end(), vchKey.begin(), vchKey.end());
+    vchOut.insert(vchOut.end(), vch32.begin(), vch32.end());
+    return true;
+}
+
+bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
+                        const std::vector<unsigned char>& vchBlindSignature,
+                        const uint256& outputKey,
+                        std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vchCredential.empty() || vchCredential.size() > 0xFFFF)
+        return false;
+    if (vchBlindSignature.empty() || vchBlindSignature.size() > 0xFFFF)
+        return false;
+    PutU16(vchOut, vchCredential.size());
+    vchOut.insert(vchOut.end(), vchCredential.begin(), vchCredential.end());
+    PutU16(vchOut, vchBlindSignature.size());
+    vchOut.insert(vchOut.end(), vchBlindSignature.begin(), vchBlindSignature.end());
+    vchOut.insert(vchOut.end(), outputKey.begin(), outputKey.end());
+    return true;
+}
+
+MixDispatch DispatchMixFrame(CMixRound& round, const uint256& hashRound,
+                             MixFrameType nType,
+                             const std::vector<unsigned char>& vchPayload,
+                             int64_t nNow, std::string& strError)
+{
+    strError.clear();
+    #define REFUSE(msg) do { strError = (msg); return MIX_DISPATCH_REFUSED; } while (0)
+
+    // An output registration carries only a token: no session key, so it cannot name the
+    // seat it came from.
+    if (nType == MIX_FRAME_OUTPUT)
+    {
+        size_t nAt = 0, nLen = 0;
+        std::vector<unsigned char> vchCredential, vchBlindSignature, vchKey;
+        if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchCredential))
+            REFUSE("output frame is malformed");
+        if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchBlindSignature))
+            REFUSE("output frame is malformed");
+        if (!TakeBytes(vchPayload, nAt, 32, vchKey) || nAt != vchPayload.size())
+            REFUSE("output frame is malformed");
+        uint256 outputKey;
+        memcpy(outputKey.begin(), &vchKey[0], 32);
+        if (!round.RegisterOutput(vchCredential, vchBlindSignature, outputKey, nNow, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+
+    if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE)
+        REFUSE("a participant does not send that frame");
+
+    std::vector<unsigned char> vchBody, vchSig;
+    if (!SplitAuthedMixFrame(vchPayload, vchBody, vchSig))
+        REFUSE("frame carries no session signature");
+    size_t nAt = 0;
+    CPubKey pubkeySession;
+    if (!TakeSessionKey(vchBody, nAt, pubkeySession))
+        REFUSE("frame carries no session key");
+    if (!CheckMixSessionFrame(pubkeySession, hashRound, nType, vchBody, vchSig))
+        REFUSE("session signature does not verify");
+
+    std::vector<unsigned char> vchTail;
+    if (!TakeBytes(vchBody, nAt, 32, vchTail) || nAt != vchBody.size())
+        REFUSE("frame body is malformed");
+
+    if (nType == MIX_FRAME_JOIN)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), &vchTail[0], 32);
+        if (!round.Join(pubkeySession, keyImage, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+    if (nType == MIX_FRAME_NONCE)
+    {
+        if (!round.SubmitNonce(pubkeySession, vchTail, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+    if (!round.SubmitResponse(pubkeySession, vchTail, &strError))
+        return round.Phase() == MIX_PHASE_ABORTED ? MIX_DISPATCH_ABORTED : MIX_DISPATCH_REFUSED;
+    return MIX_DISPATCH_OK;
+    #undef REFUSE
+}

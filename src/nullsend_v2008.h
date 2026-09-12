@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "key.h"
+#include "netbase.h"
 #include "serialize.h"
 #include "uint256.h"
 #include "util.h"
@@ -109,7 +110,9 @@ enum MixFrameType
     MIX_FRAME_OUTPUT          = 5,
     MIX_FRAME_TRANSACTION     = 6,
     MIX_FRAME_ABORT           = 7,
-    MIX_FRAME_TYPE_MAX        = 7,
+    MIX_FRAME_NONCE           = 8,   // round one of the joint balance signature
+    MIX_FRAME_RESPONSE        = 9,   // round two
+    MIX_FRAME_TYPE_MAX        = 9,
 };
 
 enum MixFrameDecode
@@ -129,6 +132,44 @@ MixFrameDecode ReadMixFrame(const std::vector<unsigned char>& vchBuffer,
                             MixFrameType& nTypeOut,
                             std::vector<unsigned char>& vchPayloadOut,
                             size_t& nConsumedOut);
+
+/** A framed connection. One phase uses one of these and then drops it: reusing a
+ *  connection across phases hands the coordinator the input-to-output mapping for
+ *  free, whatever the blind signature did. */
+class CMixStream
+{
+public:
+    CMixStream();
+    ~CMixStream();
+
+    /** Takes ownership of an already-connected socket. */
+    void Adopt(SOCKET hSocketIn);
+    void Close();
+    bool IsOpen() const { return hSocket != INVALID_SOCKET; }
+
+    bool Send(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
+              std::string* pstrError = NULL);
+
+    /** Reads until one whole frame is available or nTimeoutMs passes. The buffer is
+     *  bounded by one maximum frame, so a peer that sends a header and stops cannot
+     *  grow it. */
+    bool Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vchPayloadOut,
+                 int nTimeoutMs, std::string* pstrError = NULL);
+
+private:
+    CMixStream(const CMixStream&);
+    CMixStream& operator=(const CMixStream&);
+
+    SOCKET hSocket;
+    std::vector<unsigned char> vchBuffer;
+};
+
+/** Open one phase's connection through a SOCKS proxy. With fIsolate the dial draws
+ *  a fresh username/password pair, so Tor puts this phase on its own circuit and a
+ *  new connection from the same host is not the same exit address. */
+bool DialMixPhase(const CService& addrProxy, const std::string& strEndpoint, int nPort,
+                  bool fIsolate, int nTimeoutMs, CMixStream& streamOut,
+                  std::string* pstrError = NULL);
 
 // Per-participant authentication: a participant registers a session key with its input and
 // signs every later message, so each phase can use its own circuit. secp256k1 because no
@@ -290,5 +331,50 @@ private:
     std::vector<uint256> vOutputs;
     std::vector<uint256> vSpentCredentials;
 };
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+//
+// Which frames carry a session key is the whole design, not a detail. JOIN, NONCE
+// and RESPONSE are authenticated: they act on a named seat, so the coordinator has
+// to know which. OUTPUT is not, and there is nowhere in its body to put a key --
+// an authenticated output registration would hand over the input-to-output mapping
+// the blind signature exists to withhold.
+
+/** Body of an authenticated frame, with the session signature split off its tail.
+ *  Returns false on any payload that is not exactly one body plus one signature. */
+bool SplitAuthedMixFrame(const std::vector<unsigned char>& vchPayload,
+                         std::vector<unsigned char>& vchBodyOut,
+                         std::vector<unsigned char>& vchSigOut);
+
+bool BuildAuthedMixFrame(const CKey& key, const uint256& hashRound, MixFrameType nType,
+                         const std::vector<unsigned char>& vchBody,
+                         std::vector<unsigned char>& vchPayloadOut);
+
+/** A seat's join: its session public key and the key image of the note it spends. */
+bool BuildMixJoinBody(const CPubKey& pubkeySession, const uint256& keyImage,
+                      std::vector<unsigned char>& vchOut);
+/** A 32-byte scalar or point under a session key: NONCE and RESPONSE share the shape. */
+bool BuildMixScalarBody(const CPubKey& pubkeySession, const std::vector<unsigned char>& vch32,
+                        std::vector<unsigned char>& vchOut);
+/** An output registration: a token and a one-time key, and no identity. */
+bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
+                        const std::vector<unsigned char>& vchBlindSignature,
+                        const uint256& outputKey,
+                        std::vector<unsigned char>& vchOut);
+
+enum MixDispatch
+{
+    MIX_DISPATCH_OK = 0,
+    MIX_DISPATCH_REFUSED,     // the frame was not acted on; the round is unharmed
+    MIX_DISPATCH_ABORTED,     // the round ended as a result
+};
+
+/** Act on one frame from a participant. */
+MixDispatch DispatchMixFrame(CMixRound& round, const uint256& hashRound,
+                             MixFrameType nType,
+                             const std::vector<unsigned char>& vchPayload,
+                             int64_t nNow, std::string& strError);
 
 #endif // INNOVA_NULLSEND_V2008_H

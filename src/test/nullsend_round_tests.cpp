@@ -11,6 +11,11 @@
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../privacy_vnext_ffi.h"
 
+#ifndef WIN32
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 extern bool fRegTest;
 
 namespace {
@@ -636,6 +641,318 @@ BOOST_AUTO_TEST_CASE(one_nonce_signs_under_one_aggregate)
         PrivacyVNextMixBalanceSign(mix.facts, mix.vShares[0], vNonces, again, strError),
         strError);
     BOOST_CHECK(again == first);
+}
+
+// -- Dispatch, over the wire format -------------------------------------------
+
+namespace {
+
+// One authenticated frame payload, as a participant would put it on the wire.
+std::vector<unsigned char> AuthedFrame(const Seat& seat, const uint256& hashRound,
+                                       MixFrameType nType,
+                                       const std::vector<unsigned char>& vchBody)
+{
+    std::vector<unsigned char> vchPayload;
+    BOOST_REQUIRE(BuildAuthedMixFrame(seat.key, hashRound, nType, vchBody, vchPayload));
+    return vchPayload;
+}
+
+std::vector<unsigned char> JoinFrame(const Seat& seat, const uint256& hashRound)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixJoinBody(seat.pubkey, seat.keyImage, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_JOIN, vchBody);
+}
+
+std::vector<unsigned char> ScalarFrame(const Seat& seat, const uint256& hashRound,
+                                       MixFrameType nType, unsigned char ch)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixScalarBody(seat.pubkey, std::vector<unsigned char>(32, ch), vchBody));
+    return AuthedFrame(seat, hashRound, nType, vchBody);
+}
+
+std::vector<unsigned char> OutputFrame(const Token& token, const uint256& outputKey)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixOutputBody(token.vchCredential, token.vchSignature, outputKey, vchBody));
+    return vchBody;
+}
+
+} // namespace
+
+// A whole two-seat round driven through the wire format and a pair of connected
+// sockets: nothing here calls the round directly except the coordinator's own phase
+// transitions, which no participant sends a frame for.
+BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
+{
+    const uint256 hashRound = uint256(0xBEEF);
+    const int64_t nNow = 12000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+
+    std::vector<Seat> vSeats;
+    vSeats.push_back(MakeSeat(100));
+    vSeats.push_back(MakeSeat(99));
+
+    // Each phase on its own connection, which is the point of the transport.
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        int hPair[2];
+        BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hPair), 0);
+        CMixStream participant, coordinator;
+        participant.Adopt(hPair[0]);
+        coordinator.Adopt(hPair[1]);
+        BOOST_REQUIRE(participant.Send(MIX_FRAME_JOIN, JoinFrame(vSeats[i], hashRound), &strError));
+        MixFrameType nType;
+        std::vector<unsigned char> vchPayload;
+        BOOST_REQUIRE_MESSAGE(coordinator.Receive(nType, vchPayload, 2000, &strError), strError);
+        BOOST_REQUIRE_EQUAL(
+            (int)DispatchMixFrame(round, hashRound, nType, vchPayload, nNow, strError),
+            (int)MIX_DISPATCH_OK);
+    }
+    BOOST_REQUIRE_EQUAL(round.Seats(), 2u);
+
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
+    BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    for (int i = 0; i < 2; i++)
+    {
+        const Token token = MintToken(12001 + i);
+        int hPair[2];
+        BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hPair), 0);
+        CMixStream participant, coordinator;
+        participant.Adopt(hPair[0]);
+        coordinator.Adopt(hPair[1]);
+        BOOST_REQUIRE(participant.Send(MIX_FRAME_OUTPUT, OutputFrame(token, uint256(70 + i)), &strError));
+        MixFrameType nType;
+        std::vector<unsigned char> vchPayload;
+        BOOST_REQUIRE(coordinator.Receive(nType, vchPayload, 2000, &strError));
+        BOOST_REQUIRE_EQUAL(
+            (int)DispatchMixFrame(round, hashRound, nType, vchPayload, nNow, strError),
+            (int)MIX_DISPATCH_OK);
+    }
+
+    const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
+    BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_EQUAL(
+            (int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+                                  ScalarFrame(vSeats[i], hashRound, MIX_FRAME_NONCE,
+                                              (unsigned char)(0x80 + i)),
+                                  nClosed, strError),
+            (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.FreezeNonces(&strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_EQUAL(
+            (int)DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE,
+                                  ScalarFrame(vSeats[i], hashRound, MIX_FRAME_RESPONSE,
+                                              (unsigned char)(0x90 + i)),
+                                  nClosed, strError),
+            (int)MIX_DISPATCH_OK);
+    BOOST_CHECK(round.SigningComplete());
+}
+
+// The dispatcher's shape is the design. An output frame has nowhere to put a session
+// key and no branch that reads one, so there is no way for the coordinator to learn
+// which seat registered which output.
+BOOST_AUTO_TEST_CASE(an_output_frame_cannot_name_a_seat)
+{
+    const uint256 hashRound = uint256(0xC0DE);
+    const int64_t nNow = 13000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    const Seat a = MakeSeat(50), b = MakeSeat(51);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+                                              JoinFrame(a, hashRound), nNow, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+                                              JoinFrame(b, hashRound), nNow, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    BOOST_REQUIRE(round.IssueToken(a.pubkey, &strError));
+    BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    const Token token = MintToken(13001);
+    const std::vector<unsigned char> vchBody = OutputFrame(token, uint256(60));
+
+    // An output with a session signature appended is not a longer output frame; it is
+    // a malformed one, because the body ends where the key would have to start.
+    std::vector<unsigned char> vchNamed;
+    BOOST_REQUIRE(BuildAuthedMixFrame(a.key, hashRound, MIX_FRAME_OUTPUT, vchBody, vchNamed));
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchNamed, nNow, strError)
+            == MIX_DISPATCH_REFUSED,
+        "an output frame carrying a session key was accepted, so the coordinator learns "
+        "which seat registered which output");
+
+    // The unnamed one is the one that works.
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchBody,
+                                            nNow, strError),
+                      (int)MIX_DISPATCH_OK);
+}
+
+// Everything a participant can put on the wire that should not move the round.
+BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
+{
+    const uint256 hashRound = uint256(0xFEED);
+    const int64_t nNow = 14000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    const Seat a = MakeSeat(40);
+
+    // A join signed for another round.
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, JoinFrame(a, uint256(0xFEEE)),
+                         nNow, strError) == MIX_DISPATCH_REFUSED,
+        "a join signed for another round was accepted");
+    BOOST_CHECK_EQUAL(round.Seats(), 0u);
+
+    // A nonce body presented as a response: the type is inside the signed hash.
+    const std::vector<unsigned char> vchNonce =
+        ScalarFrame(a, hashRound, MIX_FRAME_NONCE, 0xA1);
+    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE, vchNonce, nNow, strError)
+                == MIX_DISPATCH_REFUSED);
+
+    // Frames only a coordinator sends.
+    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_KEY, vchNonce, nNow, strError)
+                == MIX_DISPATCH_REFUSED);
+    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_TRANSACTION, vchNonce, nNow, strError)
+                == MIX_DISPATCH_REFUSED);
+
+    // Truncations, at each place a length is read.
+    std::vector<unsigned char> vchJoin = JoinFrame(a, hashRound);
+    for (size_t n = 0; n < vchJoin.size(); n++)
+    {
+        const std::vector<unsigned char> vchShort(vchJoin.begin(), vchJoin.begin() + n);
+        BOOST_CHECK_MESSAGE(
+            DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchShort, nNow, strError)
+                == MIX_DISPATCH_REFUSED,
+            "a join truncated to " << n << " bytes was acted on");
+    }
+    std::vector<unsigned char> vchOutput;
+    BOOST_REQUIRE(BuildMixOutputBody(std::vector<unsigned char>(8, 1),
+                                     std::vector<unsigned char>(8, 2), uint256(9), vchOutput));
+    for (size_t n = 0; n < vchOutput.size(); n++)
+    {
+        const std::vector<unsigned char> vchShort(vchOutput.begin(), vchOutput.begin() + n);
+        BOOST_CHECK_MESSAGE(
+            DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchShort, nNow, strError)
+                == MIX_DISPATCH_REFUSED,
+            "an output truncated to " << n << " bytes was acted on");
+    }
+
+    // Trailing bytes are a different frame, not a longer one.
+    std::vector<unsigned char> vchLong = vchJoin;
+    vchLong.insert(vchLong.begin() + 65, 0x00);
+    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchLong, nNow, strError)
+                == MIX_DISPATCH_REFUSED);
+
+    BOOST_CHECK_EQUAL(round.Seats(), 0u);
+    BOOST_CHECK_EQUAL((int)round.Phase(), (int)MIX_PHASE_JOIN);
+}
+
+// A signature made for one frame type must not reach another type's handler; an
+// unrecognised type must not fall through to the response branch.
+BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
+{
+    const uint256 hashRound = uint256(0xDEAD);
+    const int64_t nNow = 15000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    const Seat a = MakeSeat(30), b = MakeSeat(31);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+                                              JoinFrame(a, hashRound), nNow, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+                                              JoinFrame(b, hashRound), nNow, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    BOOST_REQUIRE(round.IssueToken(a.pubkey, &strError));
+    BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+    for (int i = 0; i < 2; i++)
+    {
+        const Token t = MintToken(15001 + i);
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT,
+                                                  OutputFrame(t, uint256(40 + i)), nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+    const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
+    BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+                                              ScalarFrame(a, hashRound, MIX_FRAME_NONCE, 0xB1),
+                                              nClosed, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+                                              ScalarFrame(b, hashRound, MIX_FRAME_NONCE, 0xB2),
+                                              nClosed, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.FreezeNonces(&strError));
+
+    // Signed as a key announcement, which no participant sends. Everything about it is
+    // valid except which frame it is, and at this point a response would be accepted.
+    const std::vector<unsigned char> vchAsKey = ScalarFrame(a, hashRound, MIX_FRAME_KEY, 0xC1);
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, hashRound, MIX_FRAME_KEY, vchAsKey, nClosed, strError)
+            == MIX_DISPATCH_REFUSED,
+        "a frame signed as a key announcement was spent as this seat's response");
+    BOOST_CHECK_MESSAGE(!round.SigningComplete(),
+                        "a seat responded without ever sending a response");
+
+    // The real response still works, so the refusal above is about the type and not
+    // about the seat.
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE,
+                                              ScalarFrame(a, hashRound, MIX_FRAME_RESPONSE, 0xC2),
+                                              nClosed, strError),
+                        (int)MIX_DISPATCH_OK);
+}
+
+// One signed body has one reading. A body signed with bytes after the scalar must not
+// be read as the shorter frame and acted on, or the same signature covers two meanings.
+BOOST_AUTO_TEST_CASE(a_signed_body_with_trailing_bytes_is_refused)
+{
+    const uint256 hashRound = uint256(0xBADD);
+    const int64_t nNow = 16000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    const Seat a = MakeSeat(20);
+
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixJoinBody(a.pubkey, a.keyImage, vchBody));
+    vchBody.push_back(0x00);   // signed as part of the body, not appended to the frame
+    const std::vector<unsigned char> vchPayload =
+        AuthedFrame(a, hashRound, MIX_FRAME_JOIN, vchBody);
+
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchPayload, nNow, strError)
+            == MIX_DISPATCH_REFUSED,
+        "a signed body with a trailing byte was read as the shorter frame, so one "
+        "signature covers more than one message");
+    BOOST_CHECK_EQUAL(round.Seats(), 0u);
+
+    // Without the trailing byte the same seat joins, so the refusal is about the length.
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+                                            JoinFrame(a, hashRound), nNow, strError),
+                      (int)MIX_DISPATCH_OK);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
