@@ -3275,12 +3275,8 @@ bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
     if (nFrom < nFloor)
         nFrom = nFloor;
 
-    // Blocks are read and warmed in windows, then verified in order off the cache. One
-    // block at a time leaves most of the machine idle: a block carries a handful of
-    // payloads at most, and this walk re-proves the whole history below the assume-valid
-    // block, so it is the longest run of proof work on the node and the only one with no
-    // ordering requirement. Bounded by payload count rather than block count, because
-    // that is what the work and the memory both track.
+    // Read and warm blocks in windows, then verify in order off the cache. Bounded by
+    // payload count, which tracks both work and memory.
     static const size_t nWindowPayloads = 256;
 
     int nBlocksThisPass = 0;
