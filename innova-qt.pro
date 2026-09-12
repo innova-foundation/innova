@@ -425,6 +425,9 @@ HEADERS += src/qt/bitcoingui.h \
     src/miner.h \
     src/net.h \
     src/key.h \
+    src/bip39.h \
+    src/bip39_wordlist.h \
+    src/hdroot.h \
     src/db.h \
     src/txdb.h \
     src/walletdb.h \
@@ -499,6 +502,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/bitcoinunits.h \
     src/qt/qvaluecombobox.h \
     src/qt/askpassphrasedialog.h \
+    src/qt/recoveryphrasedialog.h \
     src/protocol.h \
     src/qt/notificator.h \
     src/qt/qtipcserver.h \
@@ -587,6 +591,9 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/util.cpp \
     src/netbase.cpp \
     src/key.cpp \
+    src/bip39.cpp \
+    src/bip39_wordlist.cpp \
+    src/hdroot.cpp \
     src/script.cpp \
     src/main.cpp \
     src/core.cpp \
@@ -639,6 +646,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/bitcoinunits.cpp \
     src/qt/qvaluecombobox.cpp \
     src/qt/askpassphrasedialog.cpp \
+    src/qt/recoveryphrasedialog.cpp \
     src/protocol.cpp \
     src/qt/notificator.cpp \
     src/qt/qtipcserver.cpp \

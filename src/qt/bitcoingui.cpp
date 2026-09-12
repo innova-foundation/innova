@@ -32,6 +32,7 @@
 #include "bitcoinunits.h"
 #include "guiconstants.h"
 #include "askpassphrasedialog.h"
+#include "recoveryphrasedialog.h"
 #include "notificator.h"
 #include "guiutil.h"
 #include "rpcconsole.h"
@@ -140,6 +141,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     clientModel(0),
     walletModel(0),
     encryptWalletAction(0),
+    showPhraseAction(0),
+    restorePhraseAction(0),
     changePassphraseAction(0),
     unlockWalletAction(0),
     lockWalletAction(0),
@@ -559,6 +562,12 @@ void BitcoinGUI::createActions()
     encryptWalletAction->setCheckable(true);
     backupWalletAction = new QAction(QIcon(":/icons/filesave"), tr("&Backup Wallet..."), this);
     backupWalletAction->setToolTip(tr("Backup wallet to another location"));
+    showPhraseAction = new QAction(QIcon(":/icons/key"), tr("Show &Recovery Phrase..."), this);
+    showPhraseAction->setToolTip(tr("Show the 24 words that restore this wallet's shielded notes"));
+    showPhraseAction->setStatusTip(tr("Show recovery phrase"));
+    restorePhraseAction = new QAction(QIcon(":/icons/key"), tr("Restore from &Phrase..."), this);
+    restorePhraseAction->setToolTip(tr("Rebuild a wallet's shielded identity from its 24 words"));
+    restorePhraseAction->setStatusTip(tr("Restore from recovery phrase"));
     changePassphraseAction = new QAction(QIcon(":/icons/key"), tr("&Change Passphrase..."), this);
     changePassphraseAction->setToolTip(tr("Change the passphrase used for wallet encryption"));
 	changePassphraseAction->setStatusTip(tr("Change your passphrase"));
@@ -597,6 +606,8 @@ void BitcoinGUI::createActions()
     connect(toggleHideAction, SIGNAL(triggered()), this, SLOT(toggleHidden()));
     connect(encryptWalletAction, SIGNAL(triggered(bool)), this, SLOT(encryptWallet(bool)));
     connect(backupWalletAction, SIGNAL(triggered()), this, SLOT(backupWallet()));
+    connect(showPhraseAction, SIGNAL(triggered()), this, SLOT(showRecoveryPhrase()));
+    connect(restorePhraseAction, SIGNAL(triggered()), this, SLOT(restoreRecoveryPhrase()));
     connect(changePassphraseAction, SIGNAL(triggered()), this, SLOT(changePassphrase()));
     connect(unlockWalletAction, SIGNAL(triggered()), this, SLOT(unlockWallet()));
     connect(lockWalletAction, SIGNAL(triggered()), this, SLOT(lockWallet()));
@@ -637,6 +648,8 @@ void BitcoinGUI::createMenuBar()
     QMenu *settings = appMenuBar->addMenu(tr("&Settings"));
     settings->addAction(encryptWalletAction);
     settings->addAction(backupWalletAction);
+    settings->addAction(showPhraseAction);
+    settings->addAction(restorePhraseAction);
     settings->addAction(changePassphraseAction);
     settings->addSeparator();
     settings->addAction(toggleThemeAction);
@@ -1605,6 +1618,20 @@ void BitcoinGUI::encryptWallet(bool status)
     dlg.exec();
 
     setEncryptionStatus(walletModel->getEncryptionStatus());
+}
+
+void BitcoinGUI::showRecoveryPhrase()
+{
+    RecoveryPhraseDialog dlg(RecoveryPhraseDialog::ShowPhrase, this);
+    dlg.setModel(walletModel);
+    dlg.exec();
+}
+
+void BitcoinGUI::restoreRecoveryPhrase()
+{
+    RecoveryPhraseDialog dlg(RecoveryPhraseDialog::RestoreFromPhrase, this);
+    dlg.setModel(walletModel);
+    dlg.exec();
 }
 
 void BitcoinGUI::backupWallet()

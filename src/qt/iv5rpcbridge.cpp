@@ -24,6 +24,9 @@ const char* kAllowedMethods[] = {
     "z_getnewiv5address",
     "z_getshieldedinfo",
     "z_rescaniv5",
+    "z_createiv5seed",
+    "z_exportphrase",
+    "z_importphrase",
     "getfinalityinfo",
     "collateralnode",
     NULL
