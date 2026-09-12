@@ -175,6 +175,7 @@ OBJS= \
     obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
+    obj/nullsend_v2008.o \
     obj/shielded.o \
     obj/privacy_vnext_ffi.o \
     obj/privacy_vnext_store.o \
@@ -333,6 +334,7 @@ TEST_OBJS= \
 obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/nullstake_generation_gate_tests.o \
     obj/test/nullsend_transport_tests.o \
+    obj/test/nullsend_round_key_tests.o \
     obj/test/drift_fork_rule_tests.o \
     obj/test/settlement_headroom_clamp_tests.o \
     obj/test/block_spacing_floor_tests.o \
@@ -581,6 +583,7 @@ check-nullstake-generation-gate: test_innova
 
 check-drift-fork-rule: test_innova
 	./test_innova --run_test=nullsend_transport_tests
+	./test_innova --run_test=nullsend_round_key_tests
 	./test_innova --run_test=drift_fork_rule_tests
 
 check-settlement-headroom-clamp: test_innova
