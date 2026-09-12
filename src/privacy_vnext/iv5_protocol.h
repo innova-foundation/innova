@@ -141,6 +141,10 @@ static const uint8_t DISCLOSURE_HIDE_SENDER = 1;
 static const uint8_t DISCLOSURE_HIDE_RECEIVER = 2;
 static const uint8_t DISCLOSURE_HIDE_AMOUNT = 4;
 static const uint8_t DISCLOSURE_MASK = 7;
+// A mix discloses its amounts and nothing else: equal denominations are what make it a
+// mix, and the sender and receiver stay hidden because that is the thing being mixed.
+// Mirrors the 2008 clause in the crate's envelope_allows.
+static const uint8_t NULLSEND_DISCLOSURE_MASK = 3;
 static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 
 // The only mask a coinbase fee note may carry: amount disclosed (it equals the block's
@@ -243,7 +247,9 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
         return authorization == AUTH_OWNER &&
                (!(IsAttestationOperation(operation) ||
                   IsNoteFinalityVoteOperation(operation)) ||
-                disclosureMask == DISCLOSURE_MASK);
+                disclosureMask == DISCLOSURE_MASK) &&
+               (!IsNullSendOperation(operation) ||
+                disclosureMask == NULLSEND_DISCLOSURE_MASK);
     default:
         return false;
     }

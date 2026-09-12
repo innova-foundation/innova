@@ -1812,9 +1812,11 @@ BOOST_AUTO_TEST_CASE(a_v2008_payload_acts_on_no_finality_object_and_no_unbuilt_o
     }
 
     // And the operations the envelope admits that no v2008 verifier was written for.
-    const uint8_t vUnbuilt[4] = {iv5::NOTE_NULLSEND, iv5::NOTE_DELEGATION_CREATE,
+    // NOTE_NULLSEND left this list when the mix was built; it is checked below, where
+    // its own mask is.
+    const uint8_t vUnbuilt[3] = {iv5::NOTE_DELEGATION_CREATE,
                                  iv5::NOTE_M_OF_N_MINT, iv5::NOTE_RECLAIM};
-    for (size_t i = 0; i < 4; ++i)
+    for (size_t i = 0; i < 3; ++i)
     {
         const std::vector<unsigned char> payload =
             EnvelopeOnly(vUnbuilt[i], iv5::FINALITY_NONE, iv5::AUTH_OWNER,
@@ -1823,6 +1825,30 @@ BOOST_AUTO_TEST_CASE(a_v2008_payload_acts_on_no_finality_object_and_no_unbuilt_o
             ValidationResult(payload) == kUnsupported,
             strprintf("operation %u answered %d", (unsigned)vUnbuilt[i],
                       (int)ValidationResult(payload)));
+    }
+
+    // A mix at its own mask (amounts disclosed) passes the envelope and runs out of bytes; at
+    // the fully private mask the envelope refuses it.
+    {
+        const std::vector<unsigned char> payloadAtMixMask =
+            EnvelopeOnly(iv5::NOTE_NULLSEND, iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                         iv5::FINALITY_OBJECT_NONE, iv5::NULLSEND_DISCLOSURE_MASK);
+        BOOST_CHECK_MESSAGE(
+            ValidationResult(payloadAtMixMask) == kConsensusInvalid,
+            strprintf("a mix at its own mask answered %d",
+                      (int)ValidationResult(payloadAtMixMask)));
+        // The mask rule is read off the table rather than the validator: a refused
+        // envelope and a refused shape are both ConsensusInvalid, so the answer alone
+        // would not say which one refused.
+        for (int nMask = 0; nMask <= (int)iv5::DISCLOSURE_MASK; ++nMask)
+        {
+            const bool fAllowed = iv5::EnvelopeAllows(
+                2008, iv5::NOTE_NULLSEND, iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                iv5::FINALITY_OBJECT_NONE, (uint8_t)nMask);
+            BOOST_CHECK_MESSAGE(fAllowed == (nMask == (int)iv5::NULLSEND_DISCLOSURE_MASK),
+                                strprintf("a mix at mask %d was %s", nMask,
+                                          fAllowed ? "admitted" : "refused"));
+        }
     }
 
     // The control. The five operations a v2008 payload may act on get past the branch and
