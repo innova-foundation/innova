@@ -187,9 +187,22 @@ bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest
  *  Exposed so a caller can assert on the bytes: a hostname CONNECT carries the
  *  name and no address, so the client neither learns nor sends the peer's IP. */
 bool BuildSocks5ConnectRequest(const std::string& strDest, int port, std::vector<unsigned char>& vchOut);
-/** Dial strDest:port through the SOCKS5 proxy at addrProxy, by hostname.
- *  strDest is never resolved locally and there is no direct-connection fallback. */
-bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout);
+/** SOCKS5 username/password credentials (RFC 1929). Tor keys stream isolation on
+ *  the pair, so a distinct pair is a distinct circuit. A mix phase that dials with
+ *  its own pair cannot be correlated with another phase by exit path. */
+struct ProxyCredentials
+{
+    std::string strUser;
+    std::string strPassword;
+};
+/** A fresh pair, so the caller lands on its own circuit. */
+ProxyCredentials RandomProxyCredentials();
+/** SOCKS5 username/password sub-negotiation request (RFC 1929).
+ *  Exposed so a caller can assert on the bytes. */
+bool BuildSocks5AuthRequest(const ProxyCredentials& auth, std::vector<unsigned char>& vchOut);
+/** Dial strDest:port through SOCKS5 by hostname: never resolved locally, no direct fallback.
+ *  With credentials only username/password is offered, so a non-isolating proxy fails. */
+bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout, const ProxyCredentials* pAuth = NULL);
 /** Return readable error string for a network error code */
 std::string NetworkErrorString(int err);
 /** Close socket and set hSocket to INVALID_SOCKET */

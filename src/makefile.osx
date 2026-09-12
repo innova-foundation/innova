@@ -332,6 +332,7 @@ TEST_OBJS= \
     obj/test/cn_selection_tests.o \
 obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/nullstake_generation_gate_tests.o \
+    obj/test/nullsend_transport_tests.o \
     obj/test/drift_fork_rule_tests.o \
     obj/test/settlement_headroom_clamp_tests.o \
     obj/test/block_spacing_floor_tests.o \
@@ -579,6 +580,7 @@ check-nullstake-generation-gate: test_innova
 	./test_innova --run_test=nullstake_generation_gate_tests
 
 check-drift-fork-rule: test_innova
+	./test_innova --run_test=nullsend_transport_tests
 	./test_innova --run_test=drift_fork_rule_tests
 
 check-settlement-headroom-clamp: test_innova

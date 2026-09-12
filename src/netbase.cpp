@@ -232,7 +232,36 @@ bool BuildSocks5ConnectRequest(const string& strDest, int port, std::vector<unsi
     return true;
 }
 
-bool static Socks5(string strDest, int port, SOCKET& hSocket)
+// SOCKS5 username/password sub-negotiation (RFC 1929). The version byte here is
+// the sub-negotiation's own, 0x01, not SOCKS5's 0x05.
+bool BuildSocks5AuthRequest(const ProxyCredentials& auth, std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (auth.strUser.empty() || auth.strUser.size() > 255)
+        return false;
+    if (auth.strPassword.empty() || auth.strPassword.size() > 255)
+        return false;
+    vchOut.push_back(0x01);                              // sub-negotiation version
+    vchOut.push_back((unsigned char)auth.strUser.size());
+    vchOut.insert(vchOut.end(), auth.strUser.begin(), auth.strUser.end());
+    vchOut.push_back((unsigned char)auth.strPassword.size());
+    vchOut.insert(vchOut.end(), auth.strPassword.begin(), auth.strPassword.end());
+    return true;
+}
+
+ProxyCredentials RandomProxyCredentials()
+{
+    unsigned char vchUser[16];
+    unsigned char vchPassword[16];
+    GetRandBytes(vchUser, sizeof(vchUser));
+    GetRandBytes(vchPassword, sizeof(vchPassword));
+    ProxyCredentials auth;
+    auth.strUser = HexStr(vchUser, vchUser + sizeof(vchUser));
+    auth.strPassword = HexStr(vchPassword, vchPassword + sizeof(vchPassword));
+    return auth;
+}
+
+bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredentials* pAuth = NULL)
 {
     printf("SOCKS5 connecting %s\n", strDest.c_str());
     std::vector<unsigned char> vchRequest;
@@ -241,11 +270,20 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket)
         closesocket(hSocket);
         return error("Invalid SOCKS5 destination");
     }
-    char pszSocks5Init[] = "\5\1\0";
-    char *pszSocks5 = pszSocks5Init;
-    ssize_t nSize = sizeof(pszSocks5Init) - 1;
+    // Exactly one method is offered, so a proxy that cannot do it fails the dial.
+    // Offering no-auth alongside would let the proxy pick it and drop the isolation
+    // the credentials were passed for, without the caller seeing anything go wrong.
+    std::vector<unsigned char> vchAuthRequest;
+    const unsigned char chMethod = pAuth ? 0x02 : 0x00;
+    if (pAuth && !BuildSocks5AuthRequest(*pAuth, vchAuthRequest))
+    {
+        closesocket(hSocket);
+        return error("Invalid SOCKS5 credentials");
+    }
+    char pszSocks5Init[3] = { 0x05, 0x01, (char)chMethod };
+    ssize_t nSize = sizeof(pszSocks5Init);
 
-    ssize_t ret = send(hSocket, pszSocks5, nSize, MSG_NOSIGNAL);
+    ssize_t ret = send(hSocket, pszSocks5Init, nSize, MSG_NOSIGNAL);
     if (ret != nSize)
     {
         closesocket(hSocket);
@@ -257,10 +295,30 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket)
         closesocket(hSocket);
         return error("Error reading proxy response");
     }
-    if (pchRet1[0] != 0x05 || pchRet1[1] != 0x00)
+    if (pchRet1[0] != 0x05 || (unsigned char)pchRet1[1] != chMethod)
     {
         closesocket(hSocket);
         return error("Proxy failed to initialize");
+    }
+    if (pAuth)
+    {
+        ret = send(hSocket, (const char*)&vchAuthRequest[0], vchAuthRequest.size(), MSG_NOSIGNAL);
+        if (ret != (ssize_t)vchAuthRequest.size())
+        {
+            closesocket(hSocket);
+            return error("Error sending to proxy");
+        }
+        char pchRetAuth[2];
+        if (recv(hSocket, pchRetAuth, 2, 0) != 2)
+        {
+            closesocket(hSocket);
+            return error("Error reading proxy response");
+        }
+        if (pchRetAuth[0] != 0x01 || pchRetAuth[1] != 0x00)
+        {
+            closesocket(hSocket);
+            return error("Proxy authentication failed");
+        }
     }
     ret = send(hSocket, (const char*)&vchRequest[0], vchRequest.size(), MSG_NOSIGNAL);
     if (ret != (ssize_t)vchRequest.size())
@@ -568,7 +626,7 @@ bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest
 
 // Dial a hostname through one named SOCKS5 proxy, independent of the global proxy tables.
 // The destination is never resolved locally, so it can be an onion and cannot leak to DNS.
-bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout)
+bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout, const ProxyCredentials* pAuth)
 {
     hSocketRet = INVALID_SOCKET;
 
@@ -581,7 +639,7 @@ bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, 
     SOCKET hSocket = INVALID_SOCKET;
     if (!ConnectSocketDirectly(addrProxy, hSocket, nTimeout))
         return false;
-    if (!Socks5(strDest, port, hSocket))
+    if (!Socks5(strDest, port, hSocket, pAuth))
         return false;
 
     hSocketRet = hSocket;
