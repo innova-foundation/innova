@@ -10316,10 +10316,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 int64_t nDeclaredPayloadFee = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
-                if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
-                                                    fFlowLocalFailure, strFlowError,
-                                                    &nDeclaredPayloadFee, NULL,
-                                                    &nTxNoteVoteMint))
+                bool fFlowOkInLoop;
+                {
+                    BLOCK_PHASE(BP_CB_VNEXT_FLOW);
+                    fFlowOkInLoop = GetPrivacyVNextTransparentFlow(
+                        tx, nAbsorbed, nReleased, fFlowLocalFailure, strFlowError,
+                        &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint);
+                }
+                if (!fFlowOkInLoop)
                 {
                     if (fFlowLocalFailure)
                     {
