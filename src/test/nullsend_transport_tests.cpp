@@ -35,10 +35,13 @@ public:
     // client's own refusal can stop that, so the stub must never close first --
     // otherwise the dial fails on a dead socket and the check under test is never
     // the reason.
+    // nBindNameLen serves the CONNECT reply as a DOMAIN NAME of that length instead of
+    // an IPv4 literal. A length of 0x80 or more is the case that matters: read as a
+    // signed char it is negative, and a negative length handed to recv becomes enormous.
     ScriptedProxy(unsigned char chMethodReply, unsigned char chAuthStatus,
-                  bool fAuthAnywayIn = false)
+                  bool fAuthAnywayIn = false, int nBindNameLenIn = -1)
         : hListen(-1), nPort(0), chMethod(chMethodReply), chAuth(chAuthStatus),
-          fAuthAnyway(fAuthAnywayIn),
+          fAuthAnyway(fAuthAnywayIn), nBindNameLen(nBindNameLenIn),
           fGreetingSeen(false), fAuthSeen(false), fConnectSeen(false) {}
 
     bool Start()
@@ -151,9 +154,26 @@ private:
                 break;
             fConnectSeen = true;
 
-            const unsigned char pchOk[10] = { 0x05, 0x00, 0x00, 0x01,
-                                              0x7f, 0x00, 0x00, 0x01, 0x00, 0x00 };
-            send(hSocket, (const char*)pchOk, 10, 0);
+            if (nBindNameLen >= 0)
+            {
+                std::vector<unsigned char> vchReply;
+                vchReply.push_back(0x05);
+                vchReply.push_back(0x00);
+                vchReply.push_back(0x00);
+                vchReply.push_back(0x03);                       // ATYP: domain name
+                vchReply.push_back((unsigned char)nBindNameLen);
+                for (int i = 0; i < nBindNameLen; i++)
+                    vchReply.push_back('a');
+                vchReply.push_back(0x00);
+                vchReply.push_back(0x00);                       // port
+                send(hSocket, (const char*)&vchReply[0], vchReply.size(), 0);
+            }
+            else
+            {
+                const unsigned char pchOk[10] = { 0x05, 0x00, 0x00, 0x01,
+                                                  0x7f, 0x00, 0x00, 0x01, 0x00, 0x00 };
+                send(hSocket, (const char*)pchOk, 10, 0);
+            }
         } while (false);
         close(hSocket);
     }
@@ -163,6 +183,7 @@ private:
     unsigned char chMethod;
     unsigned char chAuth;
     bool fAuthAnyway;
+    int nBindNameLen;
     bool fGreetingSeen;
     bool fAuthSeen;
     bool fConnectSeen;
@@ -628,6 +649,53 @@ BOOST_AUTO_TEST_CASE(each_phase_dials_its_own_circuit)
     BOOST_CHECK(!DialMixPhase(CService("127.0.0.1", (unsigned short)refuses.Port()),
                               "coordinator.onion", 8443, true, 5000, refused, &strError));
     BOOST_CHECK(!refused.IsOpen());
+}
+
+// A SOCKS5 bound-address domain length is one unsigned byte (up to 255). Read as a
+// signed char it goes negative at 0x80 and becomes an enormous size_t in recv,
+// overrunning a 256-byte stack buffer.
+BOOST_AUTO_TEST_CASE(a_long_bound_name_in_a_proxy_reply_is_read_as_unsigned)
+{
+    std::string strError;
+
+    // 0xFF: the largest a length byte can state, and the most negative as a signed char.
+    {
+        ScriptedProxy proxy(0x00, 0x00, false, 255);
+        BOOST_REQUIRE(proxy.Start());
+        SOCKET hSocket = INVALID_SOCKET;
+        const bool fDialed = ConnectSocks5ByName(
+            CService("127.0.0.1", (unsigned short)proxy.Port()),
+            "example.onion", 8443, hSocket, 5000);
+        BOOST_CHECK_MESSAGE(fDialed,
+                            "a 255-byte bound name failed the dial; it is a legal reply and "
+                            "the length must be read as unsigned");
+        if (fDialed)
+            CloseSocket(hSocket);
+        BOOST_CHECK(proxy.ConnectSeen());
+    }
+
+    // 0x80: the first length that is negative as a signed char.
+    {
+        ScriptedProxy proxy(0x00, 0x00, false, 128);
+        BOOST_REQUIRE(proxy.Start());
+        SOCKET hSocket = INVALID_SOCKET;
+        const bool fDialed = ConnectSocks5ByName(
+            CService("127.0.0.1", (unsigned short)proxy.Port()),
+            "example.onion", 8443, hSocket, 5000);
+        BOOST_CHECK_MESSAGE(fDialed, "a 128-byte bound name failed the dial");
+        if (fDialed)
+            CloseSocket(hSocket);
+    }
+
+    // And the ordinary short name still works, so the cases above are about the sign.
+    {
+        ScriptedProxy proxy(0x00, 0x00, false, 12);
+        BOOST_REQUIRE(proxy.Start());
+        SOCKET hSocket = INVALID_SOCKET;
+        BOOST_CHECK(ConnectSocks5ByName(CService("127.0.0.1", (unsigned short)proxy.Port()),
+                                        "example.onion", 8443, hSocket, 5000));
+        CloseSocket(hSocket);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

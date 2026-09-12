@@ -370,8 +370,9 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
                 closesocket(hSocket);
                 return error("Error reading from proxy");
             }
-            int nRecv = pchRet3[0];
-            ret = recv(hSocket, pchRet3, nRecv, 0) != nRecv;
+            // Unsigned: a signed char length >= 0x80 converts to a huge size_t and overruns the buffer.
+            const unsigned int nRecv = (unsigned char)pchRet3[0];
+            ret = recv(hSocket, pchRet3, nRecv, 0) != (ssize_t)nRecv;
             break;
         }
         default: closesocket(hSocket); return error("Error: malformed proxy response");
