@@ -17,8 +17,14 @@
 #   - z_listaddresses is empty afterwards. That lists LEGACY shielded addresses; the IV5
 #     ones come from z_getnewiv5address.
 #
+# A second arm covers restore WHILE LOCKED: the seed only exists in an encrypted wallet, so
+# every restore begins locked, and a wallet that cannot read its own notes must not report a
+# complete view. It records a durable scan gap, refuses spends over it, and closes it on
+# unlock -- a silent incomplete view is how a user spends what they think they have.
+#
 # Result 2026-09-12 (48-core Linux, regtest, Boundary B 311): 120 notes and 12,304.94 INN
-# restored from the words alone, matching the chain's pool value exactly.
+# restored from the words alone, matching the chain's pool value exactly. The locked restart
+# kept a complete view (no gap to declare) and refused a spend until unlocked.
 
 set -u
 BIN=${1:-$(dirname "$0")/../../src/innovad}
@@ -136,4 +142,47 @@ else
   echo "RESTORE: FAIL -- notes $NOTES_BEFORE->$NOTES_AFTER value $UNCONF_BEFORE->$UNCONF_AFTER"
 fi
 $R z_listaddresses 2>/dev/null | head -4
+
+# ---------------------------------------------------------------------------
+# Restore while LOCKED: the rescan records a scan gap, refuses spends over it, closes on unlock.
+# ---------------------------------------------------------------------------
+echo "STEP --- locked restore ---"
+gap ()   { $R z_getshieldedinfo 2>/dev/null | sed -n 's/.*"privacy_vnext_scan_gap_height" *: *\(-*[0-9]*\).*/\1/p'; }
+gapdur() { $R z_getshieldedinfo 2>/dev/null | sed -n 's/.*"privacy_vnext_scan_gap_persisted" *: *\([a-z]*\).*/\1/p'; }
+
+down
+rm -f $D/regtest/wallet.dat
+up || { echo "FAIL: node did not start for the locked arm"; exit 1; }
+$R encryptwallet "$PASS" >/dev/null 2>&1; sleep 8
+up || { echo "FAIL: no restart after encryptwallet (locked arm)"; exit 1; }
+$R walletpassphrase "$PASS" 36000 >/dev/null 2>&1
+$R z_importphrase "$PHRASE" >/dev/null 2>&1
+$R walletpassphrase "$PASS" 36000 >/dev/null 2>&1
+$R z_rescaniv5 >/dev/null 2>&1
+sleep 8
+echo "STEP unlocked restore: notes=$(iv5notes) gap=$(gap) persisted=$(gapdur)"
+
+# Now restart with the wallet LOCKED and see what the node says about its own view.
+$R walletlock >/dev/null 2>&1
+down
+up || { echo "FAIL: node did not restart locked"; exit 1; }
+LOCKED_NOTES=$(iv5notes); LOCKED_GAP=$(gap); LOCKED_DUR=$(gapdur)
+echo "STEP restarted LOCKED: notes=$LOCKED_NOTES gap=$LOCKED_GAP persisted=$LOCKED_DUR"
+
+# A locked wallet must refuse to spend over a view it knows is incomplete.
+SPEND=$($R z_iv5transfer "$ADDR" 1.0 2>&1 | head -2 | tr "\n" " ")
+echo "STEP locked spend attempt: $SPEND"
+
+$R walletpassphrase "$PASS" 36000 >/dev/null 2>&1
+sleep 10
+UNLOCKED_NOTES=$(iv5notes); UNLOCKED_GAP=$(gap)
+echo "STEP after unlock: notes=$UNLOCKED_NOTES gap=$UNLOCKED_GAP"
+
+if [ "$LOCKED_GAP" != "-1" ] && [ "$UNLOCKED_GAP" = "-1" ] && [ "$UNLOCKED_NOTES" = "$NOTES_BEFORE" ]; then
+  echo "LOCKED: PASS -- a locked restart declared its view incomplete (gap $LOCKED_GAP) and closed it on unlock"
+elif [ "$LOCKED_GAP" = "-1" ] && [ "$LOCKED_NOTES" = "$NOTES_BEFORE" ]; then
+  echo "LOCKED: PASS -- the locked restart kept a complete view, so there was no gap to declare"
+else
+  echo "LOCKED: REVIEW -- locked gap=$LOCKED_GAP notes=$LOCKED_NOTES / unlocked gap=$UNLOCKED_GAP notes=$UNLOCKED_NOTES (expected $NOTES_BEFORE)"
+fi
 down
