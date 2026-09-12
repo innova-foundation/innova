@@ -1412,6 +1412,12 @@ bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
  *  derived from the same ancestry the gate uses, so nothing records which blocks were
  *  skipped; progress is one height. */
 void ThreadPrivacyVNextBackgroundVerify(void* parg);
+/** Every payload in a window of blocks, in block order and then transaction order.
+ *  The pointers are into the window, which must outlive the warm call it feeds. */
+void CollectPrivacyVNextWarmSet(
+    const std::vector<std::pair<int, CBlock> >& vWindow,
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >& vWarmOut);
+
 bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
                                            std::string& strErrorOut);
 int GetPrivacyVNextVerifiedHeight();

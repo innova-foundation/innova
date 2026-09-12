@@ -3215,6 +3215,24 @@ static bool LoadPrivacyVNextActiveBlock(CBlockIndex* pindex, CBlock& activeBlock
     return true;
 }
 
+// Every payload in a window, in block then transaction order. The pointers are into the
+// window, which outlives the warm call.
+void CollectPrivacyVNextWarmSet(
+    const std::vector<std::pair<int, CBlock> >& vWindow,
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >& vWarmOut)
+{
+    vWarmOut.clear();
+    for (size_t b = 0; b < vWindow.size(); ++b)
+        for (size_t i = 0; i < vWindow[b].second.vtx.size(); ++i)
+        {
+            const CTransaction& tx = vWindow[b].second.vtx[i];
+            if (tx.IsPrivacyVNext() && !tx.privacyVNext.vchPayload.empty())
+                vWarmOut.push_back(std::make_pair(
+                    static_cast<uint32_t>(tx.nVersion),
+                    &tx.privacyVNext.vchPayload));
+        }
+}
+
 static bool VerifyPrivacyVNextActiveBlockProofs(const CBlock& activeBlock, int nHeight,
                                                 std::string& strErrorOut)
 {
@@ -3323,21 +3341,12 @@ bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
         if (vWindow.empty())
             break;
 
-        // Pointers into vWindow, which outlives the call. Filling the cache is all this
-        // does; every verdict below is still taken one payload at a time, and a payload
-        // that does not verify is simply left uncached for that loop to reject.
+        // Filling the cache is all this does; every verdict below is still taken one
+        // payload at a time, and a payload that does not verify is simply left uncached
+        // for that loop to reject.
         {
             std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
-            vWarm.reserve(nQueued);
-            for (size_t b = 0; b < vWindow.size(); ++b)
-                for (size_t i = 0; i < vWindow[b].second.vtx.size(); ++i)
-                {
-                    const CTransaction& tx = vWindow[b].second.vtx[i];
-                    if (tx.IsPrivacyVNext() && !tx.privacyVNext.vchPayload.empty())
-                        vWarm.push_back(std::make_pair(
-                            static_cast<uint32_t>(tx.nVersion),
-                            &tx.privacyVNext.vchPayload));
-                }
+            CollectPrivacyVNextWarmSet(vWindow, vWarm);
             WarmPrivacyVNextEffectsCache(vWarm, (int)GetArg("-parverify", 0));
         }
 

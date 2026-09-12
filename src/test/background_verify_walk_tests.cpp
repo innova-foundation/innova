@@ -10,6 +10,7 @@
 
 #include "../main.h"
 #include "../miner.h"
+#include "../shielded.h"
 #include "../txdb.h"
 #include "../wallet.h"
 
@@ -240,6 +241,69 @@ BOOST_AUTO_TEST_CASE(the_walk_starts_at_the_boundary_not_at_zero)
     BOOST_CHECK_MESSAGE(GetPrivacyVNextVerifiedHeight() == walk.nFloor + 1,
                         "the walk started below the boundary, so it read blocks that "
                         "carry no payload at all");
+}
+
+// The walk's own chain carries no payload on regtest, so the window loop above proves the
+// bookkeeping and this proves what the window hands to the warm pass. Between them there
+// is no half that is wired but never run.
+BOOST_AUTO_TEST_CASE(the_warm_set_is_every_payload_in_window_order)
+{
+    std::vector<std::pair<int, CBlock> > vWindow;
+
+    // Payloads in the first and last block with an empty block between, so stopping early
+    // gives a strict subset. The last block also has a vNext tx with no payload.
+    const unsigned char vTags[3][3] = {
+        { 0x01, 0x00, 0x02 },   // payload, plain, payload
+        { 0x00, 0x00, 0x00 },   // no payloads at all
+        { 0x00, 0x03, 0xFF },   // plain, payload, vNext with an empty payload
+    };
+    for (int b = 0; b < 3; ++b)
+    {
+        CBlock block;
+        for (int i = 0; i < 3; ++i)
+        {
+            CTransaction tx;
+            const unsigned char chTag = vTags[b][i];
+            if (chTag == 0x00)
+            {
+                tx.nVersion = 1;
+            }
+            else if (chTag == 0xFF)
+            {
+                tx.nVersion = SHIELDED_TX_VERSION_DSP;
+                tx.privacyVNext.vchPayload.clear();
+            }
+            else
+            {
+                tx.nVersion = SHIELDED_TX_VERSION_DSP;
+                tx.privacyVNext.vchPayload.assign(4, chTag);
+            }
+            block.vtx.push_back(tx);
+        }
+        vWindow.push_back(std::make_pair(100 + b, block));
+    }
+
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
+    CollectPrivacyVNextWarmSet(vWindow, vWarm);
+
+    BOOST_REQUIRE_EQUAL(vWarm.size(), 3u);
+    // Block order, then transaction order.
+    BOOST_CHECK_EQUAL((int)(*vWarm[0].second)[0], 0x01);
+    BOOST_CHECK_EQUAL((int)(*vWarm[1].second)[0], 0x02);
+    BOOST_CHECK_MESSAGE((int)(*vWarm[2].second)[0] == 0x03,
+                        "a payload in a later block of the window was not collected, so "
+                        "every block after the first is verified cold");
+    for (size_t i = 0; i < vWarm.size(); ++i)
+        BOOST_CHECK_EQUAL((int)vWarm[i].first, SHIELDED_TX_VERSION_DSP);
+
+    // The pointers are into the window, not into a copy: a warm pass reading a dangling
+    // one would be reading whatever the allocator left behind.
+    BOOST_CHECK(vWarm[0].second == &vWindow[0].second.vtx[0].privacyVNext.vchPayload);
+    BOOST_CHECK(vWarm[2].second == &vWindow[2].second.vtx[1].privacyVNext.vchPayload);
+
+    std::vector<std::pair<int, CBlock> > vEmpty;
+    CollectPrivacyVNextWarmSet(vEmpty, vWarm);
+    BOOST_CHECK(vWarm.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
