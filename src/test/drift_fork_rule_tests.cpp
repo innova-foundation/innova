@@ -385,27 +385,20 @@ BOOST_AUTO_TEST_CASE(strict_script_flags_apply_from_the_gate)
     const int64_t nFee = CENT;
     BOOST_REQUIRE(nFundValue > 8 * nFee);
 
-    // Three pay-to-script-hash outputs, distinguished only by the script the
-    // hash commits to. The wrapper is what makes the arms comparable: none of
-    // them carries a signature, so nothing but the wrapped script's own result
-    // can separate them.
-    //
-    //   accepted  the wrapped script leaves true
-    //   refused   the wrapped script leaves false, which is visible only if the
-    //             wrapped script is evaluated at all -- SCRIPT_VERIFY_P2SH
-    //   refused   the wrapped script demands a lock time the spend does not
-    //             meet, which is a no-op opcode without
-    //             SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY
-    CScript vRedeem[3];
+    // P2SH outputs differing only in the wrapped script: [0] accepted; [1] needs P2SH,
+    // [2] needs CHECKLOCKTIMEVERIFY, [3] needs STRICTENC (not mandatory).
+    CScript vRedeem[4];
     vRedeem[0] = CScript() << OP_1;
     vRedeem[1] = CScript() << OP_0;
     vRedeem[2] = CScript() << 500 << OP_CHECKLOCKTIMEVERIFY << OP_DROP << OP_1;
+    vRedeem[3] = CScript() << valtype() << valtype(33, 0x00)
+                           << OP_CHECKSIG << OP_DROP << OP_1;
 
     CTransaction txP2SH;
     txP2SH.nTime = (unsigned int)BestIndex()->GetBlockTime();
     txP2SH.vin.push_back(CTxIn(txFund.GetHash(), nFundOut));
-    const int64_t nEach = (nFundValue - nFee) / 3;
-    for (int i = 0; i < 3; i++)
+    const int64_t nEach = (nFundValue - nFee) / 4;
+    for (int i = 0; i < 4; i++)
         txP2SH.vout.push_back(
             CTxOut(nEach, GetScriptForDestination(vRedeem[i].GetID())));
     BOOST_REQUIRE(SignSignature(*pwalletMain, txFund, txP2SH, 0, SIGHASH_ALL));
@@ -434,10 +427,10 @@ BOOST_AUTO_TEST_CASE(strict_script_flags_apply_from_the_gate)
                               "so the arms below are unreachable; log: " << strMineLog);
     }
 
-    CBlock::ConnectResult vResults[3];
-    std::string vLogs[3];
+    CBlock::ConnectResult vResults[4];
+    std::string vLogs[4];
 
-    for (int a = 0; a < 3; a++)
+    for (int a = 0; a < 4; a++)
     {
         Candidate cb;
         BOOST_REQUIRE(BuildCandidate(cb));
@@ -475,6 +468,15 @@ BOOST_AUTO_TEST_CASE(strict_script_flags_apply_from_the_gate)
     BOOST_CHECK_MESSAGE(vLogs[2].find("VerifySignature failed") != std::string::npos,
                         "the refusal did not come from script verification; log: "
                         << vLogs[2]);
+    BOOST_CHECK_MESSAGE(vResults[3] != CBlock::CONNECT_RESULT_OK,
+                        "a spend whose wrapped script runs OP_CHECKSIG over an "
+                        "unencodable signature and public key and discards the result "
+                        "must be refused: without SCRIPT_VERIFY_STRICTENC the bad "
+                        "encoding only makes OP_CHECKSIG push false, which OP_DROP "
+                        "removes; got result " << (int)vResults[3] << "; log: " << vLogs[3]);
+    BOOST_CHECK_MESSAGE(vLogs[3].find("VerifySignature failed") != std::string::npos,
+                        "the refusal did not come from script verification; log: "
+                        << vLogs[3]);
 }
 
 // R-DRIFT-005. Each input's contribution to coin age is capped at one year, so
