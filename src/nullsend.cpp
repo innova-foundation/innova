@@ -731,8 +731,12 @@ bool CNullSendSession::BlindSign(const std::vector<unsigned char>& vchBlinded,
     return fOk;
 }
 
-bool CNullSendSession::VerifyCredential(const std::vector<unsigned char>& vchCredential,
-                                         const std::vector<unsigned char>& vchSignature)
+// Extracted so the v2008 round can check a token with the same code the legacy
+// session does, rather than a second copy of the BN arithmetic.
+bool VerifyMixCredential(const std::vector<unsigned char>& vchRSA_N,
+                         const std::vector<unsigned char>& vchRSA_E,
+                         const std::vector<unsigned char>& vchCredential,
+                         const std::vector<unsigned char>& vchSignature)
 {
     if (vchRSA_N.empty() || vchRSA_E.empty())
         return false;
@@ -778,6 +782,12 @@ bool CNullSendSession::VerifyCredential(const std::vector<unsigned char>& vchCre
     BN_CTX_free(ctx);
 
     return fOk;
+}
+
+bool CNullSendSession::VerifyCredential(const std::vector<unsigned char>& vchCredential,
+                                         const std::vector<unsigned char>& vchSignature)
+{
+    return VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchSignature);
 }
 
 bool CNullSendSession::AcceptInputReg(const CNullSendInputReg& reg, CNode* pfrom)

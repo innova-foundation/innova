@@ -148,4 +148,111 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
                           const std::vector<unsigned char>& vchPayload,
                           const std::vector<unsigned char>& vchSig);
 
+// The round. Blind signatures make the token unlinkable but not the connection, so these
+// rules govern who may send what, when, and under which identity.
+
+enum MixRoundPhase
+{
+    MIX_PHASE_JOIN = 0,     // collecting inputs; the set is not final
+    MIX_PHASE_KEYED,        // input set frozen, blind-signature key handed out
+    MIX_PHASE_OUTPUT,       // output-registration window open
+    MIX_PHASE_SIGN,         // joint balance signature, two passes
+    MIX_PHASE_COMPLETE,
+    MIX_PHASE_ABORTED,
+};
+
+/** How long the output-registration window stays open. Participants wait a random
+ *  interval inside it, and the round publishes nothing until it closes, so arrival
+ *  order carries no information. */
+static const int64_t MIX_OUTPUT_WINDOW = 120;
+
+class CMixParticipant
+{
+public:
+    CPubKey pubkeySession;
+    uint256 keyImage;
+    bool fTokenIssued;
+
+    CMixParticipant() : fTokenIssued(false) {}
+};
+
+class CMixRound
+{
+public:
+    CMixRound();
+
+    /** fStreamIsolated is whether every phase will dial its own circuit. A round
+     *  without it shows the coordinator the participant's real address at every
+     *  phase, which links them trivially, so it does not open unless the operator
+     *  said so in as many words. */
+    bool Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
+              const std::vector<unsigned char>& vchRSA_N_In,
+              const std::vector<unsigned char>& vchRSA_E_In,
+              bool fStreamIsolatedIn, bool fAllowUnisolatedIn,
+              int64_t nNow, std::string* pstrError = NULL);
+
+    /** Register an input under a session key. The key is the participant's identity
+     *  for every later authenticated phase, so a phase may arrive on a fresh
+     *  connection -- which is what lets each phase have its own circuit. */
+    bool Join(const CPubKey& pubkeySession, const uint256& keyImage,
+              std::string* pstrError = NULL);
+
+    /** Freeze the input set. The self-pay index every participant derives its output
+     *  at binds the sorted key image set, so nothing may join after this and a
+     *  participant lost after it invalidates the index for everyone. */
+    bool CloseJoin(int64_t nNow, std::string* pstrError = NULL);
+
+    /** Hand a participant the blind-signature key's token. One per participant:
+     *  the token is what authorises an output, and two tokens is two outputs. */
+    bool IssueToken(const CPubKey& pubkeySession, std::string* pstrError = NULL);
+
+    bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
+
+    /** Register an output against a token, NOT against a session key. Naming the
+     *  session here would hand the coordinator the input-to-output mapping the blind
+     *  signature exists to withhold, so this call cannot see one. */
+    bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
+                        const std::vector<unsigned char>& vchBlindSignature,
+                        const uint256& outputKey, int64_t nNow,
+                        std::string* pstrError = NULL);
+
+    /** Whether the assembled transaction may be handed out: only once the window has
+     *  closed and every seat has an output. Publishing earlier orders the two lists
+     *  by arrival. */
+    bool CanPublish(int64_t nNow) const;
+
+    /** A participant that goes away. Before the input set is frozen this is an
+     *  ordinary withdrawal; after it the index no longer matches, so the round ends
+     *  rather than producing a payload nobody can spend. */
+    void Drop(const CPubKey& pubkeySession);
+
+    void Abort(const std::string& strReason);
+
+    MixRoundPhase Phase() const { return nPhase; }
+    const std::string& AbortReason() const { return strAbortReason; }
+    size_t Seats() const { return vParticipants.size(); }
+    size_t Outputs() const { return vOutputs.size(); }
+    /** The frozen input set, sorted, which the self-pay index binds. Empty until
+     *  CloseJoin. */
+    const std::vector<uint256>& FinalKeyImages() const { return vFinalKeyImages; }
+    bool IsExpired(int64_t nNow) const;
+
+private:
+    bool Require(MixRoundPhase nExpected, std::string* pstrError);
+
+    MixRoundPhase nPhase;
+    uint256 hashRound;
+    int nTargetParticipants;
+    std::vector<unsigned char> vchRSA_N;
+    std::vector<unsigned char> vchRSA_E;
+    bool fStreamIsolated;
+    int64_t nOpened;
+    int64_t nWindowCloses;
+    std::string strAbortReason;
+    std::vector<CMixParticipant> vParticipants;
+    std::vector<uint256> vFinalKeyImages;
+    std::vector<uint256> vOutputs;
+    std::vector<uint256> vSpentCredentials;
+};
+
 #endif // INNOVA_NULLSEND_V2008_H

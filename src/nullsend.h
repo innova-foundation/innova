@@ -44,6 +44,13 @@ static const int64_t NULLSEND_FEE = 100000;
 static const int NULLSEND_RSA_BITS = 2048;
 
 
+/** Whether an RSA full-domain-hash blind signature over vchCredential verifies
+ *  under the key (N, E). Shared by the legacy session and the v2008 round. */
+bool VerifyMixCredential(const std::vector<unsigned char>& vchRSA_N,
+                         const std::vector<unsigned char>& vchRSA_E,
+                         const std::vector<unsigned char>& vchCredential,
+                         const std::vector<unsigned char>& vchSignature);
+
 class CNullSendQueue
 {
 public:
