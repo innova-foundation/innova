@@ -220,6 +220,10 @@ bool ApplyPrivacyVNextNullifiers(
 // cleared, so entries from an abandoned chain cannot be carried into a new one.
 void ClearPrivacyVNextEffectsCache();
 
+// How many payloads the effects cache holds. For tests: the assume-valid extraction must
+// never add to it, and the only way to see that from outside is to count.
+size_t PrivacyVNextEffectsCacheSize();
+
 // Validate payloads concurrently to prefill the effects cache; results are discarded
 // and the sequential validator still decides. Pointers must outlive the call;
 // `nThreads` of zero picks a count from the machine.
@@ -610,18 +614,9 @@ bool ProvePrivacyVNextValue(
     PrivacyVNextValueProof& proof,
     std::string& error);
 
-// Prove that a disclosed recipient address is the address one output actually pays.
-//
-// Proving membership already yields each input's sender disclosure, so only the receiver
-// side needs a call of its own. The Rust side verifies the proof before returning, so a
-// success means it checks against the same signing hash consensus will recompute.
-// Prove one commitment opens to a fixed amount without publishing its opening.
-//
-// The commitment must be the re-randomized one from the same proving instance: a proof run
-// against a leaf commitment names the leaf the membership proof exists to hide.
-// A mix's joint balance proof. Nobody holds the total excess mask -- it is the sum of
-// each participant's own (input mask - output mask) -- so the proof is produced in two
-// passes and lands on the layout the existing single-party verifier reads.
+// A mix's joint balance proof, produced in two passes onto the single-party verifier's
+// layout. Each seat signs with its pseudo-output mask alone; the combiner folds in the
+// output openings (public, since a mix discloses amounts).
 struct PrivacyVNextMixBalanceFacts
 {
     uint8_t nOutputCount;
@@ -643,7 +638,10 @@ struct PrivacyVNextMixBalanceShare
     uint8_t nInputIndex;
     uint8_t nOutputIndex;
     uint64_t nFeeShare;
+    // The pseudo-output mask, which is what this seat signs with.
     PrivacyVNextDigest mask;
+    // This seat's own output opening. Checked against the pair, never signed over.
+    PrivacyVNextDigest outputMask;
     PrivacyVNextDigest entropy;
 
     PrivacyVNextMixBalanceShare();
@@ -665,12 +663,14 @@ bool PrivacyVNextMixBalanceSign(
     PrivacyVNextDigest& responseOut,
     std::string& error);
 
-// The combined (R, s). Verified before it is returned, so a wrong share yields no proof
+// The combined (R, s). vOutputMasks is every output's opening in output order; only their
+// sum enters the proof. Verified before it is returned, so a wrong share yields no proof
 // rather than a bad one.
 bool PrivacyVNextMixBalanceCombine(
     const PrivacyVNextMixBalanceFacts& facts,
     const std::vector<PrivacyVNextDigest>& vNonces,
     const std::vector<PrivacyVNextDigest>& vResponses,
+    const std::vector<PrivacyVNextDigest>& vOutputMasks,
     std::vector<unsigned char>& vchProofOut,
     std::string& error);
 

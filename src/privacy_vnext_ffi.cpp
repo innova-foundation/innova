@@ -1187,6 +1187,12 @@ void ClearPrivacyVNextEffectsCache()
     dequeVNextEffects.clear();
 }
 
+size_t PrivacyVNextEffectsCacheSize()
+{
+    LOCK(cs_vnextEffects);
+    return mapVNextEffects.size();
+}
+
 void WarmPrivacyVNextEffectsCache(
     const std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >& vPayloads,
     int nThreads)
@@ -2488,6 +2494,7 @@ PrivacyVNextMixBalanceShare::PrivacyVNextMixBalanceShare()
     nOutputIndex = 0;
     nFeeShare = 0;
     mask.fill(0);
+    outputMask.fill(0);
     entropy.fill(0);
 }
 
@@ -2495,7 +2502,7 @@ namespace
 {
 
 const size_t MIX_BALANCE_FACTS_HEADER = 52;
-const size_t MIX_BALANCE_SHARE_BYTES = 76;
+const size_t MIX_BALANCE_SHARE_BYTES = 108;
 const size_t MIX_BALANCE_PROOF_BYTES = 64;
 
 bool EncodeMixBalanceFacts(const PrivacyVNextMixBalanceFacts& facts,
@@ -2540,7 +2547,8 @@ void AppendMixBalanceShare(const PrivacyVNextMixBalanceShare& share,
     vchOut[nAt + 1] = share.nOutputIndex;
     PutLE64(&vchOut[nAt + 4], share.nFeeShare);
     std::memcpy(&vchOut[nAt + 12], share.mask.data(), 32);
-    std::memcpy(&vchOut[nAt + 44], share.entropy.data(), 32);
+    std::memcpy(&vchOut[nAt + 44], share.outputMask.data(), 32);
+    std::memcpy(&vchOut[nAt + 76], share.entropy.data(), 32);
 }
 
 bool AppendMixBalanceDigests(const std::vector<PrivacyVNextDigest>& vDigests,
@@ -2549,7 +2557,7 @@ bool AppendMixBalanceDigests(const std::vector<PrivacyVNextDigest>& vDigests,
 {
     if (vDigests.size() != nExpected)
     {
-        error = strprintf("IV5 mix balance: %zu %s for %zu inputs",
+        error = strprintf("IV5 mix balance: %zu %s for %zu seats",
                           vDigests.size(), pszWhat, nExpected);
         return false;
     }
@@ -2630,6 +2638,7 @@ bool PrivacyVNextMixBalanceCombine(
     const PrivacyVNextMixBalanceFacts& facts,
     const std::vector<PrivacyVNextDigest>& vNonces,
     const std::vector<PrivacyVNextDigest>& vResponses,
+    const std::vector<PrivacyVNextDigest>& vOutputMasks,
     std::vector<unsigned char>& vchProofOut,
     std::string& error)
 {
@@ -2641,6 +2650,9 @@ bool PrivacyVNextMixBalanceCombine(
     if (!AppendMixBalanceDigests(vNonces, facts.nInputCount, "nonce points", request, error))
         return false;
     if (!AppendMixBalanceDigests(vResponses, facts.nInputCount, "responses", request, error))
+        return false;
+    if (!AppendMixBalanceDigests(vOutputMasks, facts.nOutputCount, "output openings",
+                                 request, error))
         return false;
     return CallMixBalance(&innova_privacy_vnext_mix_balance_combine, request,
                           MIX_BALANCE_PROOF_BYTES, "IV5 mix balance proof",

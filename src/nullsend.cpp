@@ -1524,20 +1524,23 @@ void CNullSendClient::ProcessFinalTx(const CNullSendBroadcastTx& msg)
 bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vchN,
                                               const std::vector<unsigned char>& vchE)
 {
+    CHashWriter ss(SER_GETHASH, 0);
+    for (const CShieldedOutputDescription& output : vMyOutputsDeferred)
+        ss << output;
+    ss << nMyOutputValue;
+    return BlindCredentialMessage(vchN, vchE, ss.GetHash());
+}
+
+bool CNullSendClient::BlindCredentialMessage(const std::vector<unsigned char>& vchN,
+                                             const std::vector<unsigned char>& vchE,
+                                             const uint256& hashMessage)
+{
     if (!IsMixRoundKeyWellFormed(vchN, vchE))
         return false;
 
     vchSessionRSA_N = vchN;
     vchSessionRSA_E = vchE;
-
-    {
-        CHashWriter ss(SER_GETHASH, 0);
-        for (const CShieldedOutputDescription& output : vMyOutputsDeferred)
-            ss << output;
-        ss << nMyOutputValue;
-        uint256 hash = ss.GetHash();
-        vchCredentialHash.assign(hash.begin(), hash.end());
-    }
+    vchCredentialHash.assign(hashMessage.begin(), hashMessage.end());
 
     BN_CTX* ctx = BN_CTX_new();
     BIGNUM* n_bn = NS_VecToBN(vchN);

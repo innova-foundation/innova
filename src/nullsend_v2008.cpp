@@ -17,12 +17,45 @@ uint256 MixRoundKeyCommitment(const std::vector<unsigned char>& vchRSA_N,
     return ss.GetHash();
 }
 
+bool IsMixOnionEndpoint(const std::string& strEndpoint)
+{
+    static const std::string strSuffix = ".onion";
+    if (strEndpoint.size() != 56 + strSuffix.size())
+        return false;
+    if (strEndpoint.compare(56, strSuffix.size(), strSuffix) != 0)
+        return false;
+    for (size_t i = 0; i < 56; i++)
+    {
+        const char ch = strEndpoint[i];
+        const bool fBase32 = (ch >= 'a' && ch <= 'z') || (ch >= '2' && ch <= '7');
+        if (!fBase32)
+            return false;
+    }
+    return true;
+}
+
 uint256 CMixRoundAnnouncement::GetSignatureHash() const
 {
     CHashWriter ss(SER_GETHASH, 0);
     ss << std::string("innova/iv5/mix/announce/v1");
     ss << nVersion;
     ss << hashRound;
+    ss << hashRoundKey;
+    ss << strEndpoint;
+    ss << nPort;
+    ss << nParticipants;
+    ss << nTime;
+    ss << pubkeyCoordinator;
+    return ss.GetHash();
+}
+
+uint256 CMixRoundAnnouncement::DerivedRoundId() const
+{
+    // Every field but hashRound and the signature. Including hashRound would be
+    // circular; including the signature would make the identifier depend on the nonce.
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/round-id/v1");
+    ss << nVersion;
     ss << hashRoundKey;
     ss << strEndpoint;
     ss << nPort;
@@ -40,6 +73,7 @@ bool CMixRoundAnnouncement::Sign(const CKey& key)
     pubkeyCoordinator = key.GetPubKey();
     if (!pubkeyCoordinator.IsValid())
         return false;
+    hashRound = DerivedRoundId();
     return key.Sign(GetSignatureHash(), vchSig);
 }
 
@@ -61,8 +95,14 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     // opens to no key, so accepting it would mean accepting any key at all.
     if (hashRoundKey == 0)
         FAIL("round key commitment is zero");
+    // Derived, not declared: this is what makes two announcements naming one round with
+    // two different key commitments impossible to build rather than merely detectable.
+    if (hashRound != DerivedRoundId())
+        FAIL("round identifier is not the one this announcement's contents derive");
     if (strEndpoint.empty() || strEndpoint.size() > MIX_ROUND_ENDPOINT_MAX)
         FAIL("endpoint is empty or too long");
+    if (!IsMixOnionEndpoint(strEndpoint))
+        FAIL("endpoint is not a v3 onion, so the stream has nothing protecting it");
     if (nPort < 1 || nPort > 65535)
         FAIL("port is out of range");
     if (nParticipants < NULLSEND_MIN_PARTICIPANTS || nParticipants > (int)iv5::MAX_NULLSEND_INPUTS)
@@ -144,6 +184,15 @@ uint256 MixSessionSigHash(const uint256& hashRound, MixFrameType nType,
     ss << hashRound;
     ss << (unsigned char)nType;
     ss << vchPayload;
+    return ss.GetHash();
+}
+
+uint256 MixOutputCredentialHash(const uint256& hashRound, const uint256& outputKey)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/token/v1");
+    ss << hashRound;
+    ss << outputKey;
     return ss.GetHash();
 }
 
@@ -333,6 +382,13 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
         FAIL("output has no key");
     if (vchCredential.empty() || vchBlindSignature.empty())
         FAIL("output carries no token");
+    // The token names the key it authorises, so rewriting the key in flight makes the
+    // token stop verifying and a token from another round never verifies here at all.
+    // Checked before the signature: this is arithmetic-free and the signature is not.
+    const uint256 hashExpected = MixOutputCredentialHash(hashRound, outputKey);
+    if (vchCredential.size() != 32 ||
+        !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
+        FAIL("token does not authorise this output key in this round");
     if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
         FAIL("token does not verify under the round key");
     // One token, once. Nothing else limits how many outputs an unlinkable caller may
@@ -369,6 +425,18 @@ void CMixRound::Drop(const CPubKey& pubkeySession)
 {
     if (nPhase == MIX_PHASE_COMPLETE || nPhase == MIX_PHASE_ABORTED)
         return;
+    // Membership before phase. Past JOIN a drop ends the round, so a key that holds no
+    // seat could otherwise abort a round it never joined -- a one-frame denial of
+    // service against every other participant.
+    size_t nSeat = vParticipants.size();
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].pubkeySession == pubkeySession)
+        {
+            nSeat = i;
+            break;
+        }
+    if (nSeat == vParticipants.size())
+        return;
     if (nPhase != MIX_PHASE_JOIN)
     {
         // The self-pay index binds the key image set, so losing a seat re-points
@@ -377,14 +445,7 @@ void CMixRound::Drop(const CPubKey& pubkeySession)
         Abort("a seat was lost after the input set was frozen");
         return;
     }
-    for (size_t i = 0; i < vParticipants.size(); i++)
-    {
-        if (vParticipants[i].pubkeySession == pubkeySession)
-        {
-            vParticipants.erase(vParticipants.begin() + i);
-            return;
-        }
-    }
+    vParticipants.erase(vParticipants.begin() + nSeat);
 }
 
 void CMixRound::Abort(const std::string& strReason)
@@ -572,6 +633,14 @@ bool CMixStream::Send(MixFrameType nType, const std::vector<unsigned char>& vchP
     #undef FAIL
 }
 
+int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs)
+{
+    if (nNowMs >= nDeadlineMs)
+        return 0;
+    const int64_t nLeft = nDeadlineMs - nNowMs;
+    return nLeft > 0x7fffffffLL ? 0x7fffffff : (int)nLeft;
+}
+
 bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vchPayloadOut,
                          int nTimeoutMs, std::string* pstrError)
 {
@@ -581,10 +650,10 @@ bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vch
     if (hSocket == INVALID_SOCKET)
         FAIL("stream is not open");
 
-    struct timeval tv;
-    tv.tv_sec = nTimeoutMs / 1000;
-    tv.tv_usec = (nTimeoutMs % 1000) * 1000;
-    setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    // The deadline bounds the FRAME, not each recv. Refreshing it per call let a peer
+    // that sent one byte just inside every timeout hold the reader for a million
+    // timeouts -- the buffer ceiling bounds bytes, and nothing bounded time.
+    const int64_t nDeadline = GetTimeMillis() + (nTimeoutMs > 0 ? nTimeoutMs : 0);
 
     const size_t nCeiling = MIX_FRAME_HEADER_BYTES + MIX_FRAME_MAX_PAYLOAD;
     while (true)
@@ -603,6 +672,13 @@ bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vch
         // decoding one cannot be waiting on a legal frame.
         if (vchBuffer.size() >= nCeiling)
             FAIL("the peer sent more than one frame's worth without a frame in it");
+        const int nSlice = MixReceiveSliceMs(nDeadline, GetTimeMillis());
+        if (nSlice <= 0)
+            FAIL("the peer did not finish a frame before the deadline");
+        struct timeval tv;
+        tv.tv_sec = nSlice / 1000;
+        tv.tv_usec = (nSlice % 1000) * 1000;
+        setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
         unsigned char pchRead[4096];
         const ssize_t nRead = recv(hSocket, (char*)pchRead, sizeof(pchRead), 0);
         if (nRead == 0)

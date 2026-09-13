@@ -39,7 +39,7 @@ CMixRoundAnnouncement Announce(CKey& keyOut, const std::vector<unsigned char>& v
 {
     keyOut.MakeNewKey(true);
     CMixRoundAnnouncement announce;
-    announce.hashRound = uint256(77);
+    // hashRound is not set here: Sign derives it from the contents.
     announce.hashRoundKey = MixRoundKeyCommitment(vchN, Exponent());
     announce.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
     announce.nPort = 8443;
@@ -207,6 +207,85 @@ BOOST_AUTO_TEST_CASE(an_announcement_survives_the_wire)
     BOOST_CHECK(received.hashRoundKey == sent.hashRoundKey);
     BOOST_CHECK(received.KeyOpensCommitment(vchN, Exponent()));
     BOOST_CHECK(!received.KeyOpensCommitment(Modulus(0x42), Exponent()));
+}
+
+// The round identifier is derived from the announcement, so one coordinator cannot
+// issue per-participant announcements with different key commitments.
+BOOST_AUTO_TEST_CASE(one_round_identifier_names_one_key_commitment)
+{
+    CKey key;
+    const CMixRoundAnnouncement first = Announce(key, Modulus(0x51));
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(first.IsValidBasic(&strError), strError);
+    BOOST_CHECK(first.hashRound == first.DerivedRoundId());
+
+    // The equivocation, built as carefully as a coordinator could: same round, same
+    // everything, another key commitment, freshly and validly signed.
+    CMixRoundAnnouncement second = first;
+    second.hashRoundKey = MixRoundKeyCommitment(Modulus(0x52), Exponent());
+    second.hashRound = first.hashRound;
+    BOOST_REQUIRE(key.Sign(second.GetSignatureHash(), second.vchSig));
+    BOOST_CHECK_MESSAGE(second.CheckSignature(),
+                        "the setup is wrong if the equivocating announcement does not "
+                        "even carry a valid signature");
+    BOOST_CHECK_MESSAGE(!second.IsValidBasic(&strError),
+                        "two announcements named one round with two different key "
+                        "commitments, so the coordinator can key each participant apart");
+    BOOST_CHECK(strError.find("identifier") != std::string::npos);
+
+    // Signing it properly is allowed and is the point: it is then a DIFFERENT round,
+    // whose seats and tokens do not interoperate with the first.
+    BOOST_REQUIRE(second.Sign(key));
+    BOOST_REQUIRE(second.IsValidBasic(&strError));
+    BOOST_CHECK(second.hashRound != first.hashRound);
+
+    // Every field the identifier covers moves it.
+    const char* pszWhat[] = { "endpoint", "port", "seats", "time" };
+    for (int i = 0; i < 4; i++)
+    {
+        CMixRoundAnnouncement edited = first;
+        if (i == 0)
+            edited.strEndpoint = "2bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion";
+        else if (i == 1)
+            edited.nPort = first.nPort + 1;
+        else if (i == 2)
+            edited.nParticipants = first.nParticipants + 1;
+        else
+            edited.nTime = first.nTime + 1;
+        BOOST_CHECK_MESSAGE(edited.DerivedRoundId() != first.hashRound,
+                            pszWhat[i] << " moved and the round identifier did not");
+    }
+}
+
+// The OUTPUT frame is a bearer token on a stream with no MAC of its own. A clearnet
+// endpoint reached through Tor puts the exit on that path, so an announcement that
+// names one is not a round a participant should join.
+BOOST_AUTO_TEST_CASE(an_announcement_must_name_an_onion)
+{
+    CKey key;
+    const CMixRoundAnnouncement good = Announce(key, Modulus(0x53));
+    std::string strError;
+    BOOST_REQUIRE(good.IsValidBasic(&strError));
+    BOOST_CHECK(IsMixOnionEndpoint(good.strEndpoint));
+
+    const char* pszBad[] = {
+        "coordinator.onion",                                                // too short
+        "mix.example.com",                                                  // clearnet
+        "203.0.113.9",                                                      // a literal
+        "WQ3WLXJLPVXHUXPE5X6DTNRHRXVGKFXKVXMMWPNRFEXBBXBXBXBXBXBD.onion",   // not base32
+        "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxb1.onion",   // 1 is not base32
+        "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onions",  // suffix
+    };
+    for (size_t i = 0; i < sizeof(pszBad) / sizeof(pszBad[0]); i++)
+    {
+        BOOST_CHECK_MESSAGE(!IsMixOnionEndpoint(pszBad[i]),
+                            pszBad[i] << " was taken for an onion");
+        CMixRoundAnnouncement a = good;
+        a.strEndpoint = pszBad[i];
+        BOOST_REQUIRE(a.Sign(key));
+        BOOST_CHECK_MESSAGE(!a.IsValidBasic(&strError),
+                            pszBad[i] << " was announced as a round endpoint");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

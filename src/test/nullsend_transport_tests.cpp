@@ -698,4 +698,33 @@ BOOST_AUTO_TEST_CASE(a_long_bound_name_in_a_proxy_reply_is_read_as_unsigned)
     }
 }
 
+// The reader's deadline covers the whole frame, not each recv, so a peer trickling one
+// byte per timeout cannot extend it.
+BOOST_AUTO_TEST_CASE(a_frame_deadline_does_not_reset_on_a_trickled_byte)
+{
+    const int64_t nDeadline = 1000;
+
+    // Before it, what is left; at and after it, nothing.
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, 0), 1000);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, 999), 1);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, 1000), 0);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, 5000), 0);
+
+    // The slice shrinks as the frame is assembled: three reads of a third of the budget
+    // leave nothing, where a per-recv deadline would have granted the full budget each
+    // time.
+    int64_t nNow = 0;
+    int nGranted = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        nGranted = MixReceiveSliceMs(nDeadline, nNow);
+        BOOST_CHECK(nGranted > 0);
+        nNow += 334;   // a byte arrives just inside the slice
+    }
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, nNow), 0);
+
+    // No overflow when a caller hands it a far deadline.
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs((int64_t)1 << 62, 0), 0x7fffffff);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

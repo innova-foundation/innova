@@ -30,7 +30,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "04184fdba1eafcd260bc1081ac54b37ca4327a70c3a62e592d1076f100470388";
+    "93fb7391a2716f335f0a3517c559048c2f79fc79b10a53daccdc2dd2a7026081";
 // The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
 // payload is judged against below that epoch.
 //

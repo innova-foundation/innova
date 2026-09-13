@@ -505,6 +505,12 @@ public:
 
     bool BlindOutputCredential(const std::vector<unsigned char>& vchRSA_N,
                                const std::vector<unsigned char>& vchRSA_E);
+    /** Blind an arbitrary credential message under a round key. The legacy lane's
+     *  message is the deferred outputs and the value; the v2008 lane's is the round
+     *  and the output key the token authorises. */
+    bool BlindCredentialMessage(const std::vector<unsigned char>& vchRSA_N,
+                                const std::vector<unsigned char>& vchRSA_E,
+                                const uint256& hashMessage);
     bool UnblindSignature(const std::vector<unsigned char>& vchBlindSig);
     bool SubmitOutputsAnonymously();
 

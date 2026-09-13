@@ -380,11 +380,15 @@ int32_t innova_privacy_vnext_amount_equality_prove(
  * input_count_u8 || transparent_value_balance_i64_le || fee_u64_le ||
  * signable_hash_32 || input_count * pseudo_out_32 || output_count * output_32.
  * Share: input_index_u8 || output_index_u8 || reserved_u16_zero ||
- * fee_share_u64_le || mask_32 || entropy_32.
+ * fee_share_u64_le || mask_32 || output_mask_32 || entropy_32.
+ * The mask is the pseudo-output mask and is what the seat signs with; the
+ * output mask is its own output's opening, checked against the declared pair
+ * and never signed over, so a response names no output. The combiner folds the
+ * output openings in, which are public because a mix discloses amounts.
  * nonce:   facts || share                              -> nonce point (32)
  * sign:    facts || share || input_count * nonce_32    -> response (32)
  * combine: facts || input_count * (nonce_32) || input_count * (response_32)
- *                                                      -> proof (64)
+ *                || output_count * (output_mask_32)    -> proof (64)
  * One nonce signs under one aggregate per process; another aggregate returns
  * INTERNAL_LOCAL_STATE_FAILURE. Draw the entropy fresh per signing. */
 int32_t innova_privacy_vnext_mix_balance_nonce(

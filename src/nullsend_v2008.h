@@ -25,6 +25,10 @@ static const size_t MIX_ROUND_ENDPOINT_MAX = 255;
 uint256 MixRoundKeyCommitment(const std::vector<unsigned char>& vchRSA_N,
                               const std::vector<unsigned char>& vchRSA_E);
 
+/** Whether a name is a v3 onion: 56 base32 characters and the suffix. The OUTPUT frame has
+ *  no MAC of its own, so a clearnet endpoint over Tor would put the exit on its path. */
+bool IsMixOnionEndpoint(const std::string& strEndpoint);
+
 class CMixRoundAnnouncement
 {
 public:
@@ -76,6 +80,13 @@ public:
      *  commitment could be edited in flight would commit to nothing. */
     uint256 GetSignatureHash() const;
 
+    /** The identifier derived from this announcement's contents. Deriving it means a
+     *  different key commitment is a different round, so a coordinator cannot sign
+     *  equivocating announcements under one round id. */
+    uint256 DerivedRoundId() const;
+
+    /** Sets hashRound from the contents before signing: the identifier is derived, never
+     *  maintained alongside what it names. */
     bool Sign(const CKey& key);
     bool CheckSignature() const;
 
@@ -150,9 +161,8 @@ public:
     bool Send(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
               std::string* pstrError = NULL);
 
-    /** Reads until one whole frame is available or nTimeoutMs passes. The buffer is
-     *  bounded by one maximum frame, so a peer that sends a header and stops cannot
-     *  grow it. */
+    /** Reads until one whole frame is available or nTimeoutMs passes. The timeout bounds the
+     *  whole frame, not each recv, and the buffer is bounded by one maximum frame. */
     bool Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vchPayloadOut,
                  int nTimeoutMs, std::string* pstrError = NULL);
 
@@ -188,6 +198,19 @@ bool SignMixSessionFrame(const CKey& key, const uint256& hashRound, MixFrameType
 bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFrameType nType,
                           const std::vector<unsigned char>& vchPayload,
                           const std::vector<unsigned char>& vchSig);
+
+/** What a token is signed over: the round and the output key it authorises. An
+ *  unbound token is a bearer token -- an on-path party rewrites the key in an OUTPUT
+ *  frame and keeps the value, and a token left over from an earlier round spends in
+ *  this one. Binding costs no unlinkability: the coordinator signs this blinded and
+ *  sees the opening only at registration, where the output key is what it is being
+ *  handed anyway. The participant must therefore choose its output key before it
+ *  asks for a token, which it already does. */
+uint256 MixOutputCredentialHash(const uint256& hashRound, const uint256& outputKey);
+
+/** Milliseconds a reader may still spend on the frame it is assembling; zero past the frame's
+ *  deadline. The deadline is per frame, not per recv, so a trickling peer cannot extend it. */
+int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs);
 
 // The round. Blind signatures make the token unlinkable but not the connection, so these
 // rules govern who may send what, when, and under which identity.
@@ -257,7 +280,9 @@ public:
 
     /** Register an output against a token, NOT against a session key. Naming the
      *  session here would hand the coordinator the input-to-output mapping the blind
-     *  signature exists to withhold, so this call cannot see one. */
+     *  signature exists to withhold, so this call cannot see one. The token must open
+     *  as MixOutputCredentialHash(round, outputKey), so it authorises this key in this
+     *  round and no other. */
     bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey, int64_t nNow,

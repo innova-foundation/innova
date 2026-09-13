@@ -1575,9 +1575,11 @@ pub unsafe extern "C" fn innova_privacy_vnext_amount_equality_prove(
 /// Request: `schema_u16 || output_count_u8 || input_count_u8 ||
 /// transparent_value_balance_i64_le || fee_u64_le || signable_hash_32 || input_count *
 /// pseudo_out_32 || output_count * output_32 || input_index_u8 || output_index_u8 ||
-/// reserved_u16_zero || fee_share_u64_le || mask_32 || entropy_32`. The mask is the
-/// pseudo-output mask less the output mask and must open `pseudo_out - output -
-/// fee_share*H`. Response: the 32-byte nonce point, a pure function of the request.
+/// reserved_u16_zero || fee_share_u64_le || mask_32 || output_mask_32 || entropy_32`. The
+/// mask is the pseudo-output mask and is what this seat signs with; the output mask is its
+/// own output's opening, checked against `pseudo_out - output - fee_share*H` and never
+/// signed over, so the response names no output. Response: the 32-byte nonce point, a pure
+/// function of the request.
 ///
 /// # Safety
 ///
@@ -1629,8 +1631,11 @@ pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_sign(
 /// Combine a mix's shares into the balance proof the payload carries.
 ///
 /// Request: the facts as in the nonce request, then `input_count * nonce_32 || input_count
-/// * response_32` in input order. Response: the 64-byte proof `payload_validate` verifies,
-/// verified here first so a wrong share yields no proof rather than a bad one.
+/// * response_32` in input order, then `output_count * output_mask_32` in output order.
+/// Each seat signs with its pseudo-output mask alone, so the combiner folds the output
+/// openings in here; only their sum enters the proof. Response: the 64-byte proof
+/// `payload_validate` verifies, verified here first so a wrong share yields no proof rather
+/// than a bad one.
 ///
 /// # Safety
 ///
