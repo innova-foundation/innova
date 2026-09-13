@@ -2,6 +2,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -363,6 +365,46 @@ BOOST_AUTO_TEST_CASE(a_key_that_holds_no_seat_cannot_drop_a_round)
     // And a real seat still ends it, so the guard is about membership and not the phase.
     round.Drop(vSeats[0].pubkey);
     BOOST_CHECK_EQUAL((int)round.Phase(), (int)MIX_PHASE_ABORTED);
+}
+
+// The frozen set is sorted as BYTES, as PrivacyVNextChangeIndexFor derives it (uint256
+// compares little-endian). The other order derives an input_context the scanner never rebuilds.
+BOOST_AUTO_TEST_CASE(the_frozen_set_is_ordered_the_way_the_index_derives_it)
+{
+    // The pair the two orders disagree on: as bytes B < A, as an integer A < B.
+    uint256 hiFirst, loFirst;
+    hiFirst = 0; loFirst = 0;
+    hiFirst.begin()[0] = 0x01;    // 0x01 00 .. 00
+    loFirst.begin()[31] = 0x02;   // 0x00 .. 00 02
+    BOOST_REQUIRE_MESSAGE(hiFirst < loFirst,
+                          "the fixture must pick a pair uint256 orders the other way, or "
+                          "this case proves nothing");
+
+    const int64_t nNow = 3200000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(ROUND_HASH, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    Seat a = MakeSeat(1); a.keyImage = hiFirst;
+    Seat b = MakeSeat(2); b.keyImage = loFirst;
+    BOOST_REQUIRE(round.Join(a.pubkey, a.keyImage, &strError));
+    BOOST_REQUIRE(round.Join(b.pubkey, b.keyImage, &strError));
+    BOOST_REQUIRE_MESSAGE(round.CloseJoin(nNow, &strError), strError);
+
+    const std::vector<uint256>& vFrozen = round.FinalKeyImages();
+    BOOST_REQUIRE_EQUAL(vFrozen.size(), 2u);
+
+    // What the index derivation would do with the same set, held as it holds it.
+    std::vector<PrivacyVNextDigest> vAsDigests(2);
+    std::memcpy(vAsDigests[0].data(), hiFirst.begin(), 32);
+    std::memcpy(vAsDigests[1].data(), loFirst.begin(), 32);
+    std::sort(vAsDigests.begin(), vAsDigests.end());
+
+    for (size_t i = 0; i < 2; i++)
+        BOOST_CHECK_MESSAGE(
+            std::memcmp(vFrozen[i].begin(), vAsDigests[i].data(), 32) == 0,
+            "the frozen set and the index derivation disagree at position " << i);
 }
 
 // Two coordinators reading the same seats must reach the same index, so the frozen

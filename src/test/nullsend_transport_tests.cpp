@@ -29,19 +29,15 @@ namespace {
 class ScriptedProxy
 {
 public:
-    // fAuthAnyway separates what the proxy ANSWERS from what it then DOES. A proxy
-    // that names no-auth, or that rejects the pair, and forwards the stream anyway
-    // is the adversary here: it carries the phase without isolating it. Only the
-    // client's own refusal can stop that, so the stub must never close first --
-    // otherwise the dial fails on a dead socket and the check under test is never
-    // the reason.
-    // nBindNameLen serves the CONNECT reply as a DOMAIN NAME of that length instead of
-    // an IPv4 literal. A length of 0x80 or more is the case that matters: read as a
-    // signed char it is negative, and a negative length handed to recv becomes enormous.
+    // fAuthAnyway: forward even after refusing auth; the stub never closes first.
+    // nBindNameLen: CONNECT reply as a domain name of that length (>= 0x80 tests sign).
+    // fSilentAfterGreeting: answer the method greeting, then say nothing.
     ScriptedProxy(unsigned char chMethodReply, unsigned char chAuthStatus,
-                  bool fAuthAnywayIn = false, int nBindNameLenIn = -1)
+                  bool fAuthAnywayIn = false, int nBindNameLenIn = -1,
+                  bool fSilentAfterGreetingIn = false)
         : hListen(-1), nPort(0), chMethod(chMethodReply), chAuth(chAuthStatus),
           fAuthAnyway(fAuthAnywayIn), nBindNameLen(nBindNameLenIn),
+          fSilentAfterGreeting(fSilentAfterGreetingIn),
           fGreetingSeen(false), fAuthSeen(false), fConnectSeen(false) {}
 
     bool Start()
@@ -118,6 +114,12 @@ private:
             unsigned char pchReply[2] = { 0x05, chMethod };
             if (send(hSocket, (const char*)pchReply, 2, 0) != 2)
                 break;
+            if (fSilentAfterGreeting)
+            {
+                // Hold the connection open and answer nothing further.
+                MilliSleep(4000);
+                break;
+            }
             if (chMethod == 0x02 || fAuthAnyway)
             {
                 // Sub-negotiation: its own version byte, then two length-prefixed
@@ -184,6 +186,7 @@ private:
     unsigned char chAuth;
     bool fAuthAnyway;
     int nBindNameLen;
+    bool fSilentAfterGreeting;
     bool fGreetingSeen;
     bool fAuthSeen;
     bool fConnectSeen;
@@ -725,6 +728,32 @@ BOOST_AUTO_TEST_CASE(a_frame_deadline_does_not_reset_on_a_trickled_byte)
 
     // No overflow when a caller hands it a far deadline.
     BOOST_CHECK_EQUAL(MixReceiveSliceMs((int64_t)1 << 62, 0), 0x7fffffff);
+}
+
+// Every recv in the Socks5 handshake is bounded by the deadline, not only the select()
+// around connect(); a proxy that accepts and goes quiet must not hold the caller.
+BOOST_AUTO_TEST_CASE(a_silent_proxy_cannot_hold_the_dial_open)
+{
+    ScriptedProxy proxy(0x00, 0x00, false, -1, true);   // greets, then says nothing
+    BOOST_REQUIRE(proxy.Start());
+
+    const int64_t nBudget = 700;
+    SOCKET hSocket = INVALID_SOCKET;
+    const int64_t nStart = GetTimeMillis();
+    const bool fDialed = ConnectSocks5ByName(
+        CService("127.0.0.1", (unsigned short)proxy.Port()),
+        "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion", 8443,
+        hSocket, (int)nBudget);
+    const int64_t nElapsed = GetTimeMillis() - nStart;
+    if (fDialed)
+        CloseSocket(hSocket);
+
+    BOOST_CHECK_MESSAGE(!fDialed, "a proxy that answered nothing produced a dial");
+    // Generous: the point is that it RETURNS, not that it returns to the millisecond.
+    BOOST_CHECK_MESSAGE(nElapsed < 3000,
+                        "the dial took " << nElapsed << " ms against a " << nBudget
+                        << " ms budget, so the handshake is not bounded by it");
+    BOOST_CHECK(proxy.GreetingSeen());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

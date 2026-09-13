@@ -261,8 +261,40 @@ ProxyCredentials RandomProxyCredentials()
     return auth;
 }
 
-bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredentials* pAuth = NULL)
+// Read exactly nLen bytes, or fail, bounded by a deadline covering the WHOLE handshake.
+// Short reads are continued, since a segmented proxy reply is normal on a real network.
+static bool Socks5Recv(SOCKET hSocket, char* pchDest, size_t nLen, int64_t nDeadlineMs)
 {
+    size_t nGot = 0;
+    while (nGot < nLen)
+    {
+        const int64_t nLeft = nDeadlineMs - GetTimeMillis();
+        if (nLeft <= 0)
+            return false;
+        SetSocketReceiveTimeout(hSocket, nLeft);
+        const ssize_t nRead = recv(hSocket, pchDest + nGot, nLen - nGot, 0);
+        if (nRead > 0)
+        {
+            nGot += (size_t)nRead;
+            continue;
+        }
+        if (nRead == 0)
+            return false;               // the proxy closed
+#ifndef WIN32
+        if (errno == EINTR)
+            continue;                   // a signal, not the deadline; the deadline still holds
+#endif
+        return false;
+    }
+    return true;
+}
+
+bool static Socks5(string strDest, int port, SOCKET& hSocket, int nTimeout,
+                   const ProxyCredentials* pAuth = NULL)
+{
+    // One budget for the whole exchange, so a proxy cannot buy more time by answering
+    // each read just inside its own timeout.
+    const int64_t nDeadline = GetTimeMillis() + (nTimeout > 0 ? nTimeout : 0);
     printf("SOCKS5 connecting %s\n", strDest.c_str());
     std::vector<unsigned char> vchRequest;
     if (!BuildSocks5ConnectRequest(strDest, port, vchRequest))
@@ -290,7 +322,7 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
         return error("Error sending to proxy");
     }
     char pchRet1[2];
-    if (recv(hSocket, pchRet1, 2, 0) != 2)
+    if (!Socks5Recv(hSocket, pchRet1, 2, nDeadline))
     {
         closesocket(hSocket);
         return error("Error reading proxy response");
@@ -309,7 +341,7 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
             return error("Error sending to proxy");
         }
         char pchRetAuth[2];
-        if (recv(hSocket, pchRetAuth, 2, 0) != 2)
+        if (!Socks5Recv(hSocket, pchRetAuth, 2, nDeadline))
         {
             closesocket(hSocket);
             return error("Error reading proxy response");
@@ -327,7 +359,7 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
         return error("Error sending to proxy");
     }
     char pchRet2[4];
-    if (recv(hSocket, pchRet2, 4, 0) != 4)
+    if (!Socks5Recv(hSocket, pchRet2, 4, nDeadline))
     {
         closesocket(hSocket);
         return error("Error reading proxy response");
@@ -361,18 +393,18 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
     char pchRet3[256];
     switch (pchRet2[3])
     {
-        case 0x01: ret = recv(hSocket, pchRet3, 4, 0) != 4; break;
-        case 0x04: ret = recv(hSocket, pchRet3, 16, 0) != 16; break;
+        case 0x01: ret = !Socks5Recv(hSocket, pchRet3, 4, nDeadline); break;
+        case 0x04: ret = !Socks5Recv(hSocket, pchRet3, 16, nDeadline); break;
         case 0x03:
         {
-            ret = recv(hSocket, pchRet3, 1, 0) != 1;
+            ret = !Socks5Recv(hSocket, pchRet3, 1, nDeadline);
             if (ret) {
                 closesocket(hSocket);
                 return error("Error reading from proxy");
             }
             // Unsigned: a signed char length >= 0x80 converts to a huge size_t and overruns the buffer.
             const unsigned int nRecv = (unsigned char)pchRet3[0];
-            ret = recv(hSocket, pchRet3, nRecv, 0) != (ssize_t)nRecv;
+            ret = !Socks5Recv(hSocket, pchRet3, nRecv, nDeadline);
             break;
         }
         default: closesocket(hSocket); return error("Error: malformed proxy response");
@@ -382,7 +414,7 @@ bool static Socks5(string strDest, int port, SOCKET& hSocket, const ProxyCredent
         closesocket(hSocket);
         return error("Error reading from proxy");
     }
-    if (recv(hSocket, pchRet3, 2, 0) != 2)
+    if (!Socks5Recv(hSocket, pchRet3, 2, nDeadline))
     {
         closesocket(hSocket);
         return error("Error reading from proxy");
@@ -571,7 +603,7 @@ bool ConnectSocket(const CService &addrDest, SOCKET& hSocketRet, int nTimeout, b
             return false;
         break;
     case 5:
-        if (!Socks5(addrDest.ToStringIP(), addrDest.GetPort(), hSocket))
+        if (!Socks5(addrDest.ToStringIP(), addrDest.GetPort(), hSocket, nTimeout))
             return false;
         break;
     default:
@@ -616,7 +648,7 @@ bool ConnectSocketByName(CService &addr, SOCKET& hSocketRet, const char *pszDest
             closesocket(hSocket);
             return false;
         case 5:
-            if (!Socks5(strDest, port, hSocket))
+            if (!Socks5(strDest, port, hSocket, nTimeout))
                 return false;
             break;
     }
@@ -640,7 +672,7 @@ bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, 
     SOCKET hSocket = INVALID_SOCKET;
     if (!ConnectSocketDirectly(addrProxy, hSocket, nTimeout))
         return false;
-    if (!Socks5(strDest, port, hSocket, pAuth))
+    if (!Socks5(strDest, port, hSocket, nTimeout, pAuth))
         return false;
 
     hSocketRet = hSocket;
@@ -1307,6 +1339,21 @@ bool CloseSocket(SOCKET& hSocket)
 #endif
     hSocket = INVALID_SOCKET;
     return ret != SOCKET_ERROR;
+}
+
+void SetSocketReceiveTimeout(SOCKET hSocket, int64_t nMilliseconds)
+{
+    if (nMilliseconds < 0)
+        nMilliseconds = 0;
+#ifdef WIN32
+    DWORD nTimeout = (DWORD)(nMilliseconds > 0xfffffffeLL ? 0xfffffffeLL : nMilliseconds);
+    setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&nTimeout, sizeof(nTimeout));
+#else
+    struct timeval tv;
+    tv.tv_sec = (long)(nMilliseconds / 1000);
+    tv.tv_usec = (long)((nMilliseconds % 1000) * 1000);
+    setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+#endif
 }
 
 bool SetSocketNonBlocking(SOCKET& hSocket, bool fNonBlocking)

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "netbase.h"
 #include "nullsend.h"
 #include "privacy_vnext/iv5_protocol.h"
 
@@ -318,9 +319,13 @@ bool CMixRound::CloseJoin(int64_t nNow, std::string* pstrError)
     vFinalKeyImages.clear();
     for (size_t i = 0; i < vParticipants.size(); i++)
         vFinalKeyImages.push_back(vParticipants[i].keyImage);
-    // Sorted, because the index is derived from the set and not from arrival order:
-    // two coordinators reading the same seats must reach the same index.
-    std::sort(vFinalKeyImages.begin(), vFinalKeyImages.end());
+    // Sorted in BYTE order, not uint256::operator<, to match PrivacyVNextChangeIndexFor;
+    // otherwise the participant cannot see its own output.
+    std::sort(vFinalKeyImages.begin(), vFinalKeyImages.end(),
+              [](const uint256& a, const uint256& b) {
+                  return std::lexicographical_compare(a.begin(), a.end(),
+                                                      b.begin(), b.end());
+              });
     // Each seat learns its position in that set now, before any nonce exists. The
     // joint signature reads the nonce points in this order, so it cannot be settled
     // later by whoever happens to submit first.
@@ -677,16 +682,22 @@ bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vch
         const int nSlice = MixReceiveSliceMs(nDeadline, GetTimeMillis());
         if (nSlice <= 0)
             FAIL("the peer did not finish a frame before the deadline");
-        struct timeval tv;
-        tv.tv_sec = nSlice / 1000;
-        tv.tv_usec = (nSlice % 1000) * 1000;
-        setsockopt(hSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+        // Portably: Winsock reads a DWORD of milliseconds here, so a timeval would set
+        // the timeout to tv_sec and a sub-second slice would arm a non-blocking socket.
+        SetSocketReceiveTimeout(hSocket, nSlice);
         unsigned char pchRead[4096];
         const ssize_t nRead = recv(hSocket, (char*)pchRead, sizeof(pchRead), 0);
         if (nRead == 0)
             FAIL("the peer closed the connection");
         if (nRead < 0)
+        {
+#ifndef WIN32
+            // A signal is not the deadline. The deadline above still bounds the loop.
+            if (errno == EINTR)
+                continue;
+#endif
             FAIL("the peer sent nothing before the deadline");
+        }
         vchBuffer.insert(vchBuffer.end(), pchRead, pchRead + nRead);
     }
     #undef FAIL
