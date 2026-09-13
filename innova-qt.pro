@@ -444,6 +444,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/spork.h \
     src/shielded.h \
     src/nullsend.h \
+    src/nullsend_v2008.h \
     src/zkproof.h \
     src/verifycache.h \
     src/lelantus.h \
@@ -683,6 +684,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/shielded.cpp \
     src/privacy_vnext_ffi.cpp \
     src/nullsend.cpp \
+    src/nullsend_v2008.cpp \
     src/rpcshielded.cpp \
     src/zkproof.cpp \
     src/verifycache.cpp \
