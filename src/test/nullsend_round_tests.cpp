@@ -955,4 +955,71 @@ BOOST_AUTO_TEST_CASE(a_signed_body_with_trailing_bytes_is_refused)
                       (int)MIX_DISPATCH_OK);
 }
 
+// The late-output check must fire on the window, not the seat count, so the round here
+// still has a free slot.
+BOOST_AUTO_TEST_CASE(a_late_output_is_refused_while_a_slot_is_still_free)
+{
+    const int64_t nNow = 17000000;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+    std::string strError;
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    // One of three slots used, so the seat count cannot be what refuses anything below.
+    const Token first = MintToken(17001);
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
+                                       uint256(310), nNow, &strError));
+    BOOST_REQUIRE_EQUAL(round.Outputs(), 1u);
+
+    const Token late = MintToken(17002);
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(late.vchCredential, late.vchSignature,
+                                              uint256(311),
+                                              nNow + MIX_OUTPUT_WINDOW + 1, &strError),
+                        "an output arriving after the window closed was accepted into a "
+                        "round with slots to spare, so the window decorrelates nothing");
+    BOOST_CHECK(strError.find("window") != std::string::npos);
+    BOOST_CHECK_EQUAL(round.Outputs(), 1u);
+
+    // The same token inside the window is taken, so the refusal was about the deadline.
+    BOOST_CHECK(round.RegisterOutput(late.vchCredential, late.vchSignature,
+                                     uint256(311), nNow + MIX_OUTPUT_WINDOW, &strError));
+}
+
+// Two seats naming one output key would make one seat's value payable to another's key.
+BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
+{
+    const int64_t nNow = 18000000;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+    std::string strError;
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    const Token first = MintToken(18001);
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
+                                       uint256(320), nNow, &strError));
+
+    // A DIFFERENT token -- so this is not the one-token-once rule -- naming the same key,
+    // with a slot still free so it is not the seat count either.
+    const Token second = MintToken(18002);
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(second.vchCredential, second.vchSignature,
+                                              uint256(320), nNow, &strError),
+                        "two outputs named one key, so one seat's value is payable to "
+                        "another seat's key");
+    BOOST_CHECK(strError.find("already registered") != std::string::npos);
+    BOOST_CHECK_EQUAL(round.Outputs(), 1u);
+
+    // The same token with its own key is taken, so the refusal was about the key.
+    BOOST_CHECK(round.RegisterOutput(second.vchCredential, second.vchSignature,
+                                     uint256(321), nNow, &strError));
+    BOOST_CHECK_EQUAL(round.Outputs(), 2u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
