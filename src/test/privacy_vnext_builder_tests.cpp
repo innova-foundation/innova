@@ -747,6 +747,46 @@ BOOST_AUTO_TEST_CASE(an_assume_valid_extraction_agrees_and_stays_out_of_the_cach
                     verified.outputLeaves[i].commitment);
     }
 
+    // The default verifies (protects the mempool). Corrupt a byte that passes the structure
+    // check but fails a proof verdict.
+    std::vector<unsigned char> corrupt;
+    bool fFound = false;
+    const size_t nScan = payload.size() < 512 ? payload.size() : 512;
+    for (size_t i = 1; i <= nScan && !fFound; i++)
+    {
+        corrupt = payload;
+        corrupt[payload.size() - i] ^= 0x01;
+        PrivacyVNextStateEffects a, b;
+        const bool fVerifying = ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, corrupt, a).IsValid();
+        const bool fSkipped = ExtractPrivacyVNextPayloadEffectsAssumeValid(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, corrupt, b).IsValid();
+        fFound = !fVerifying && fSkipped;
+    }
+    BOOST_REQUIRE_MESSAGE(fFound,
+                          "no byte separates a proof verdict from the structure check, so "
+                          "this case cannot say what it claims");
+
+    CTransaction tx;
+    tx.nVersion = INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION;
+    tx.privacyVNext.vchPayload = corrupt;
+    BOOST_REQUIRE(tx.IsPrivacyVNext());
+
+    int64_t nAbsorbed = 0;
+    int64_t nReleased = 0;
+    bool fFlowLocalFailure = false;
+    std::string strFlowError;
+    BOOST_CHECK_MESSAGE(
+        !GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased, fFlowLocalFailure,
+                                        strFlowError),
+        "the pool flow skipped a proof verdict by default, so an unverified payload "
+        "reaches CTxMemPool::accept and the relay path");
+    BOOST_CHECK_MESSAGE(
+        GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased, fFlowLocalFailure,
+                                       strFlowError, NULL, NULL, NULL, true),
+        "the same payload was refused with assume-valid on, so the two paths differ by "
+        "more than the proof verdicts");
+
     ClearPrivacyVNextEffectsCache();
 }
 
