@@ -367,6 +367,54 @@ BOOST_AUTO_TEST_CASE(a_key_that_holds_no_seat_cannot_drop_a_round)
     BOOST_CHECK_EQUAL((int)round.Phase(), (int)MIX_PHASE_ABORTED);
 }
 
+// The credential must name the OUTPUT KEY and nothing else. Naming the round as well was
+// committed once and was a privacy defect: a coordinator handing each seat its own round
+// identifier reads the seat straight off an unauthenticated OUTPUT by trying every
+// identifier it minted against the key it was just handed. The property that says the round
+// is absent is that ONE credential opens in ANY round issued under the same key.
+BOOST_AUTO_TEST_CASE(a_token_does_not_name_the_round_it_is_spent_in)
+{
+    const int64_t nNow = 3300000;
+    CNullSendSession& server = Coordinator();
+    std::string strError;
+
+    const uint256 outputKey = uint256(0x515);
+    const Token token = MintToken(outputKey);
+    BOOST_REQUIRE_EQUAL(token.vchCredential.size(), 32u);
+
+    // The credential is exactly H(tag || outputKey): no round, no seat, nothing else.
+    const uint256 hashExpected = MixOutputCredentialHash(outputKey);
+    BOOST_CHECK(std::equal(hashExpected.begin(), hashExpected.end(),
+                           token.vchCredential.begin()));
+
+    // Two rounds with DIFFERENT identifiers, one key. The same token opens in both, which
+    // is what proves the credential carries no round. If it named the round, the second
+    // registration would fail -- and that failure is exactly the tag.
+    const uint256 vRounds[2] = { uint256(0xA11CE), uint256(0xB0B) };
+    BOOST_REQUIRE(vRounds[0] != vRounds[1]);
+    for (int i = 0; i < 2; i++)
+    {
+        CMixRound round;
+        BOOST_REQUIRE(round.Open(vRounds[i], 2, server.vchRSA_N, server.vchRSA_E,
+                                 true, false, nNow, &strError));
+        const Seat a = MakeSeat((unsigned int)(0x900 + i * 2));
+        const Seat b = MakeSeat((unsigned int)(0x901 + i * 2));
+        BOOST_REQUIRE(round.Join(a.pubkey, a.keyImage, &strError));
+        BOOST_REQUIRE(round.Join(b.pubkey, b.keyImage, &strError));
+        BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+        BOOST_REQUIRE(round.IssueToken(a.pubkey, &strError));
+        BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
+        BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+        BOOST_CHECK_MESSAGE(
+            round.RegisterOutput(token.vchCredential, token.vchSignature, outputKey,
+                                 nNow, &strError),
+            "round " << i << " refused a token minted without naming it: " << strError);
+    }
+
+    // Round separation therefore comes from the KEY, which a driver must draw fresh per
+    // round. That obligation is stated in the header and cannot be enforced here.
+}
+
 // The frozen set is sorted as BYTES, as PrivacyVNextChangeIndexFor derives it (uint256
 // compares little-endian). The other order derives an input_context the scanner never rebuilds.
 BOOST_AUTO_TEST_CASE(the_frozen_set_is_ordered_the_way_the_index_derives_it)
