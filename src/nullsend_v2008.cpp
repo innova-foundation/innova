@@ -1,6 +1,7 @@
 #include "nullsend_v2008.h"
 
 #include <algorithm>
+#include <limits>
 
 #include "netbase.h"
 #include "nullsend.h"
@@ -644,8 +645,9 @@ int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs)
 {
     if (nNowMs >= nDeadlineMs)
         return 0;
-    const int64_t nLeft = nDeadlineMs - nNowMs;
-    return nLeft > 0x7fffffffLL ? 0x7fffffff : (int)nLeft;
+    // Unsigned: the signed difference can overflow; the order above guarantees it is positive.
+    const uint64_t nLeft = (uint64_t)nDeadlineMs - (uint64_t)nNowMs;
+    return nLeft > 0x7fffffffULL ? 0x7fffffff : (int)nLeft;
 }
 
 bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vchPayloadOut,
@@ -657,10 +659,13 @@ bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vch
     if (hSocket == INVALID_SOCKET)
         FAIL("stream is not open");
 
-    // The deadline bounds the FRAME, not each recv. Refreshing it per call let a peer
-    // that sent one byte just inside every timeout hold the reader for a million
-    // timeouts -- the buffer ceiling bounds bytes, and nothing bounded time.
-    const int64_t nDeadline = GetTimeMillis() + (nTimeoutMs > 0 ? nTimeoutMs : 0);
+    // The deadline bounds the whole FRAME, not each recv; saturating.
+    const int64_t nNow = GetTimeMillis();
+    const int64_t nBudget = nTimeoutMs > 0 ? (int64_t)nTimeoutMs : 0;
+    const int64_t nDeadline =
+        (nNow > std::numeric_limits<int64_t>::max() - nBudget)
+            ? std::numeric_limits<int64_t>::max()
+            : nNow + nBudget;
 
     const size_t nCeiling = MIX_FRAME_HEADER_BYTES + MIX_FRAME_MAX_PAYLOAD;
     while (true)

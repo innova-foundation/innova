@@ -4,6 +4,7 @@
 #include <boost/test/unit_test.hpp>
 #include <boost/thread.hpp>
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -726,8 +727,17 @@ BOOST_AUTO_TEST_CASE(a_frame_deadline_does_not_reset_on_a_trickled_byte)
     }
     BOOST_CHECK_EQUAL(MixReceiveSliceMs(nDeadline, nNow), 0);
 
-    // No overflow when a caller hands it a far deadline.
+    // No overflow when a caller hands it a far deadline -- including the pair whose
+    // signed difference is 2^64-1, which is undefined behaviour to compute as int64_t.
     BOOST_CHECK_EQUAL(MixReceiveSliceMs((int64_t)1 << 62, 0), 0x7fffffff);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(std::numeric_limits<int64_t>::max(),
+                                        std::numeric_limits<int64_t>::min()), 0x7fffffff);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(std::numeric_limits<int64_t>::max(), -1), 0x7fffffff);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(0, std::numeric_limits<int64_t>::min()), 0x7fffffff);
+    // Negative clocks are ordinary, not a special case.
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(-1, -2), 1);
+    BOOST_CHECK_EQUAL(MixReceiveSliceMs(std::numeric_limits<int64_t>::min(),
+                                        std::numeric_limits<int64_t>::min()), 0);
 }
 
 // Every recv in the Socks5 handshake is bounded by the deadline, not only the select()

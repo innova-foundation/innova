@@ -288,11 +288,12 @@ BOOST_AUTO_TEST_CASE(regtest_tuning_cannot_move_mainnet_or_testnet)
         NetworkGuard guard(false, false);
         // The launch ladder, every height.
         BOOST_CHECK_EQUAL(ScheduleDigest(0, 20000, 1), 3287823252898471772ULL);
-        // Across the DAG fork, every height.
-        BOOST_CHECK_EQUAL(ScheduleDigest(8279000, 8281000, 1), 13042136771815616088ULL);
+        // Across the DAG fork, every height. The window tracks the gate; the digest
+        // is invariant to shifting both within the same 0.15 rung.
+        BOOST_CHECK_EQUAL(ScheduleDigest(8369000, 8371000, 1), 13042136771815616088ULL);
         // The whole curve: pre-DAG rungs, every stretched rung, and the tail
         // past the last one at 34,920,000.
-        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 14593981568717240737ULL);
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 11591231757345120808ULL);
     }
     {
         NetworkGuard guard(false, true);
