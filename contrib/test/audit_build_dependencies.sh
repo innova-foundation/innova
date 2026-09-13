@@ -42,7 +42,8 @@ for name in makefile.unix makefile.osx; do
     # that is added but never wired compiles clean and silently never runs.
     sed -n '/^TEST_OBJS=/,/^$/p' "$makefile" \
         | grep -oE 'obj/test/[^[:space:]\\]+\.o' \
-        | sed 's|obj/test/||; s|\.o$||' | sort -u > "$tmp_objects"
+        | sed 's|obj/test/||; s|\.o$||' \
+        | grep -v '%' | sort -u > "$tmp_objects"
     find "$ROOT/src/test" -maxdepth 1 -name '*.cpp' -exec basename {} .cpp ';' \
         | sort -u > "$tmp_sources"
 
