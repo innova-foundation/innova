@@ -720,11 +720,8 @@ pub(crate) fn mix_balance_combine(
     for response in responses {
         total += canonical_scalar(response)?;
     }
-    // Each seat signed with its pseudo-output mask, so the sum is over those alone. The
-    // excess the verifier reads is (sum of pseudo-out masks) less (sum of output masks), and
-    // every output opening is public in a mix -- amounts are disclosed -- so the combiner
-    // subtracts that sum here rather than asking each seat to fold its own output in, which
-    // is what used to carry the pairing.
+    // Seats sign with pseudo-output masks; the public output masks' sum is subtracted here.
+    // Checks the SUM only (y_1 + d, y_2 - d pass); a wrong opening set fails the same way.
     let excess_encoded = instance.excess_encoded()?;
     let challenge = instance.challenge(&excess_encoded, &aggregate);
     let mut output_total = Scalar::ZERO;
@@ -1559,15 +1556,30 @@ mod tests {
             );
         }
 
-        // And the combiner still cannot fold in openings it does not hold. Only their sum
-        // enters the proof, so a permutation of the set is not a wrong set -- a changed
-        // value is.
+        // Changing the SUM of the openings is refused.
         let mut wrong = mix.output_masks.clone();
         wrong[0] = (canonical_scalar(&wrong[0]).unwrap() + Scalar::ONE).to_bytes();
         assert_eq!(
             mix_balance_combine(&instance, &nonces, &responses, &wrong),
             Err(ValueError::InvalidProof)
         );
+
+        // A set that preserves the sum is accepted, openings or not: moving d between
+        // openings cancels in the residual.
+        let mut same_sum = mix.output_masks.clone();
+        let delta = Scalar::from(7_u64);
+        same_sum[0] = (canonical_scalar(&same_sum[0]).unwrap() + delta).to_bytes();
+        same_sum[1] = (canonical_scalar(&same_sum[1]).unwrap() - delta).to_bytes();
+        assert_ne!(same_sum, mix.output_masks);
+        let from_wrong_set =
+            mix_balance_combine(&instance, &nonces, &responses, &same_sum).unwrap();
+        assert_eq!(
+            from_wrong_set,
+            mix_balance_combine(&instance, &nonces, &responses, &mix.output_masks).unwrap(),
+            "a same-sum substitution must produce the identical proof, which is why the \
+             combiner cannot be said to validate the openings it is handed"
+        );
+        assert!(mix.verify(&from_wrong_set));
         assert_eq!(
             mix_balance_combine(&instance, &nonces, &responses, &mix.output_masks[..1]),
             Err(ValueError::BadLength)

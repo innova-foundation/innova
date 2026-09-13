@@ -782,8 +782,8 @@ BOOST_AUTO_TEST_CASE(an_assume_valid_extraction_agrees_and_stays_out_of_the_cach
         "the pool flow skipped a proof verdict by default, so an unverified payload "
         "reaches CTxMemPool::accept and the relay path");
     BOOST_CHECK_MESSAGE(
-        GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased, fFlowLocalFailure,
-                                       strFlowError, NULL, NULL, NULL, true),
+        GetPrivacyVNextTransparentFlowAssumeValid(tx, nAbsorbed, nReleased,
+                                                  fFlowLocalFailure, strFlowError),
         "the same payload was refused with assume-valid on, so the two paths differ by "
         "more than the proof verdicts");
 

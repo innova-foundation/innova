@@ -663,9 +663,8 @@ bool PrivacyVNextMixBalanceSign(
     PrivacyVNextDigest& responseOut,
     std::string& error);
 
-// The combined (R, s). vOutputMasks is every output's opening in output order; only their
-// sum enters the proof. Verified before it is returned, so a wrong share yields no proof
-// rather than a bad one.
+// The combined (R, s). Only the SUM of vOutputMasks enters the proof, so individual
+// openings are not validated. Verified before return; a failure does not identify a seat.
 bool PrivacyVNextMixBalanceCombine(
     const PrivacyVNextMixBalanceFacts& facts,
     const std::vector<PrivacyVNextDigest>& vNonces,

@@ -1348,24 +1348,9 @@ bool CheckPrivacyVNextParameterDigest(
     const std::vector<unsigned char>& vchChainDigest,
     std::string& strError);
 
-/** Transparent value an IV5 transaction moves across the pool boundary: what the
- *  pool absorbs must be covered by the transparent inputs, what it releases is
- *  available to the transparent outputs. Fee accounting must apply this wherever
- *  it applies the legacy nValueBalance, or a shield's inputs read as fee. */
-/*  pnDeclaredFeeOut/pnDeclaredBalanceOut return the payload's own cleartext fields
- *  from the same extraction the flow is derived from. Post-fork the coinbase note
- *  and the transparent coinbase allowance are both keyed on the declared fee, so
- *  taking it from a second extraction would be a second derivation of one value.
- *
- *  pnNoteVoteMintOut is how much of the absorbed value is a note finality vote's mint,
- *  which no transparent input paid for. Every fee accumulator has to credit it or the
- *  block's producer is charged for the epoch's own reserve; the value is pinned to the
- *  epoch's entitlement here, so a caller that ignores it still cannot be over-claimed at.
- *
- *  fAssumeValid skips the seven proof verdicts and is for ConnectBlock alone, which
- *  answers it by ANCESTRY against the compiled-in hash. It defaults off, so the mempool,
- *  the relay path and the wallet keep verifying -- a transaction that has not been in a
- *  block has no ancestry to be below anything. The effects are identical either way. */
+/** Transparent value an IV5 tx absorbs into / releases from the pool; fee accounting must
+ *  apply it wherever it applies nValueBalance. pnNoteVoteMintOut is the note-vote mint every
+ *  fee accumulator must credit. Always verifies proofs. */
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nAbsorbedOut,
                                     int64_t& nReleasedOut,
@@ -1373,8 +1358,19 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     std::string& strError,
                                     int64_t* pnDeclaredFeeOut = NULL,
                                     int64_t* pnDeclaredBalanceOut = NULL,
-                                    int64_t* pnNoteVoteMintOut = NULL,
-                                    bool fAssumeValid = false);
+                                    int64_t* pnNoteVoteMintOut = NULL);
+
+/** The same flow with the seven proof verdicts skipped, for ConnectBlock only. The
+ *  caller must establish by ancestry (never height) that the block is at or below the
+ *  assume-valid block; mempool and relay paths must not call this. */
+bool GetPrivacyVNextTransparentFlowAssumeValid(const CTransaction& tx,
+                                               int64_t& nAbsorbedOut,
+                                               int64_t& nReleasedOut,
+                                               bool& fLocalFailure,
+                                               std::string& strError,
+                                               int64_t* pnDeclaredFeeOut = NULL,
+                                               int64_t* pnDeclaredBalanceOut = NULL,
+                                               int64_t* pnNoteVoteMintOut = NULL);
 
 /** What a payload may mint into the pool with no transparent side. Zero except for a
  *  note finality vote (op 10), where it is GetFinalityNoteVoteReward of the vote's epoch

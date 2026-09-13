@@ -3575,15 +3575,15 @@ bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,
 
 // Transparent value an IV5 transaction moves across the pool boundary. The pool delta
 // is the pool's share; whatever the transparent side contributes beyond it is the fee.
-bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
-                                    int64_t& nAbsorbedOut,
-                                    int64_t& nReleasedOut,
-                                    bool& fLocalFailure,
-                                    std::string& strError,
-                                    int64_t* pnDeclaredFeeOut,
-                                    int64_t* pnDeclaredBalanceOut,
-                                    int64_t* pnNoteVoteMintOut,
-                                    bool fAssumeValid)
+static bool GetPrivacyVNextTransparentFlowInner(const CTransaction& tx,
+                                                int64_t& nAbsorbedOut,
+                                                int64_t& nReleasedOut,
+                                                bool& fLocalFailure,
+                                                std::string& strError,
+                                                int64_t* pnDeclaredFeeOut,
+                                                int64_t* pnDeclaredBalanceOut,
+                                                int64_t* pnNoteVoteMintOut,
+                                                bool fAssumeValid)
 {
     nAbsorbedOut = 0;
     nReleasedOut = 0;
@@ -3597,9 +3597,9 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         *pnNoteVoteMintOut = 0;
 
     PrivacyVNextStateEffects effects;
-    // fAssumeValid is a BLOCK-CONNECT-only concession and defaults off, so the mempool,
-    // the relay path and the wallet keep verifying. The effects are identical either
-    // way; what differs is whether the seven proof verdicts were computed.
+    // Private. The two public entry points below differ only in what they pass here, so
+    // which one a call site named is visible at the call site rather than in an argument
+    // it may have omitted.
     const PrivacyVNextPayloadValidation validation =
         fAssumeValid
             ? ExtractPrivacyVNextPayloadEffectsAssumeValid(
@@ -3650,6 +3650,34 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
     else
         nReleasedOut = -nDelta;
     return true;
+}
+
+bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
+                                    int64_t& nAbsorbedOut,
+                                    int64_t& nReleasedOut,
+                                    bool& fLocalFailure,
+                                    std::string& strError,
+                                    int64_t* pnDeclaredFeeOut,
+                                    int64_t* pnDeclaredBalanceOut,
+                                    int64_t* pnNoteVoteMintOut)
+{
+    return GetPrivacyVNextTransparentFlowInner(
+        tx, nAbsorbedOut, nReleasedOut, fLocalFailure, strError,
+        pnDeclaredFeeOut, pnDeclaredBalanceOut, pnNoteVoteMintOut, false);
+}
+
+bool GetPrivacyVNextTransparentFlowAssumeValid(const CTransaction& tx,
+                                               int64_t& nAbsorbedOut,
+                                               int64_t& nReleasedOut,
+                                               bool& fLocalFailure,
+                                               std::string& strError,
+                                               int64_t* pnDeclaredFeeOut,
+                                               int64_t* pnDeclaredBalanceOut,
+                                               int64_t* pnNoteVoteMintOut)
+{
+    return GetPrivacyVNextTransparentFlowInner(
+        tx, nAbsorbedOut, nReleasedOut, fLocalFailure, strError,
+        pnDeclaredFeeOut, pnDeclaredBalanceOut, pnNoteVoteMintOut, true);
 }
 
 // An attestation has no transparent side and no pool flow, so it pays no fee; callers
@@ -10213,11 +10241,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 bool fFlowOk;
                 {
                     BLOCK_PHASE(BP_CB_VNEXT_FLOW);
-                    fFlowOk = GetPrivacyVNextTransparentFlow(tx, nCoinbaseAbsorbed,
-                                                             nCoinbaseReleased,
-                                                             fFlowLocalFailure, strFlowError,
-                                                             NULL, NULL, NULL,
-                                                             fAssumeValidBlock);
+                    fFlowOk = fAssumeValidBlock
+                        ? GetPrivacyVNextTransparentFlowAssumeValid(
+                              tx, nCoinbaseAbsorbed, nCoinbaseReleased,
+                              fFlowLocalFailure, strFlowError)
+                        : GetPrivacyVNextTransparentFlow(
+                              tx, nCoinbaseAbsorbed, nCoinbaseReleased,
+                              fFlowLocalFailure, strFlowError);
                 }
                 if (!fFlowOk)
                 {
@@ -10329,10 +10359,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 bool fFlowOkInLoop;
                 {
                     BLOCK_PHASE(BP_CB_VNEXT_FLOW);
-                    fFlowOkInLoop = GetPrivacyVNextTransparentFlow(
-                        tx, nAbsorbed, nReleased, fFlowLocalFailure, strFlowError,
-                        &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint,
-                        fAssumeValidBlock);
+                    fFlowOkInLoop = fAssumeValidBlock
+                        ? GetPrivacyVNextTransparentFlowAssumeValid(
+                              tx, nAbsorbed, nReleased, fFlowLocalFailure, strFlowError,
+                              &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint)
+                        : GetPrivacyVNextTransparentFlow(
+                              tx, nAbsorbed, nReleased, fFlowLocalFailure, strFlowError,
+                              &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint);
                 }
                 if (!fFlowOkInLoop)
                 {
