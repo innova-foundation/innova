@@ -44,6 +44,12 @@ static const int64_t NULLSEND_FEE = 100000;
 static const int NULLSEND_RSA_BITS = 2048;
 
 
+/** Whether a round key has a shape honest key generation could have produced.
+ *  A participant cannot prove N is a two-prime product without factoring it; this
+ *  refuses the shapes that stop the blind signature being a permutation of Z_N*. */
+bool IsMixRoundKeyWellFormed(const std::vector<unsigned char>& vchRSA_N,
+                             const std::vector<unsigned char>& vchRSA_E);
+
 /** Whether an RSA full-domain-hash blind signature over vchCredential verifies
  *  under the key (N, E). Shared by the legacy session and the v2008 round. */
 bool VerifyMixCredential(const std::vector<unsigned char>& vchRSA_N,

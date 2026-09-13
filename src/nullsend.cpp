@@ -731,6 +731,28 @@ bool CNullSendSession::BlindSign(const std::vector<unsigned char>& vchBlinded,
     return fOk;
 }
 
+// A round key whose shape honest key generation cannot produce.
+//
+// Not a proof that N is a product of two primes -- a participant cannot have that without
+// factoring it. It refuses the shapes that make the blind signature stop being a
+// permutation of Z_N*, which is what unlinkability rests on, at no cost: the honest
+// generator emits exactly one modulus width and exactly one exponent.
+bool IsMixRoundKeyWellFormed(const std::vector<unsigned char>& vchRSA_N,
+                             const std::vector<unsigned char>& vchRSA_E)
+{
+    if (vchRSA_N.size() != (size_t)(NULLSEND_RSA_BITS / 8))
+        return false;
+    if ((vchRSA_N[0] & 0x80) == 0)          // full-width modulus
+        return false;
+    if ((vchRSA_N.back() & 0x01) == 0)      // a product of odd primes is odd
+        return false;
+    // 65537, byte-exact, which is what the generator encodes and what the commitment
+    // is taken over.
+    static const unsigned char vchE65537[3] = { 0x01, 0x00, 0x01 };
+    return vchRSA_E.size() == sizeof(vchE65537) &&
+           memcmp(&vchRSA_E[0], vchE65537, sizeof(vchE65537)) == 0;
+}
+
 // Extracted so the v2008 round can check a token with the same code the legacy
 // session does, rather than a second copy of the BN arithmetic.
 bool VerifyMixCredential(const std::vector<unsigned char>& vchRSA_N,
@@ -1505,7 +1527,7 @@ void CNullSendClient::ProcessFinalTx(const CNullSendBroadcastTx& msg)
 bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vchN,
                                               const std::vector<unsigned char>& vchE)
 {
-    if (vchN.empty() || vchE.empty())
+    if (!IsMixRoundKeyWellFormed(vchN, vchE))
         return false;
 
     vchSessionRSA_N = vchN;
@@ -1542,11 +1564,14 @@ bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vc
         goto ns_blind_cleanup;
 
     {
-        int nBits = BN_num_bits(n_bn);
+        // r must be uniform over Z_N*; a fixed-width BN_rand with the top bit set
+        // lands in a sub-interval the signer could test against.
         for (int tries = 0; tries < 100; tries++)
         {
-            if (!BN_rand(r, nBits - 1, BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ANY))
+            if (!BN_priv_rand_range(r, n_bn))
                 goto ns_blind_cleanup;
+            if (BN_cmp(r, BN_value_one()) <= 0)
+                continue;   // 0 and 1 blind nothing
 
             BIGNUM* gcd = BN_new();
             if (!gcd) goto ns_blind_cleanup;
@@ -1610,8 +1635,17 @@ bool CNullSendClient::UnblindSignature(const std::vector<unsigned char>& vchBlin
     if (!BN_mod_mul(s, s_prime, r_inv, n_bn, ctx))
         goto ns_unblind_cleanup;
 
-    vchUnblindedSig = NS_BNToVec(s, (int)vchSessionRSA_N.size());
-    fOk = true;
+    {
+        // Only the participant can verify its token (the payload does not carry it); a
+        // per-seat value in place of a signature would link seat to output.
+        const std::vector<unsigned char> vchCandidate =
+            NS_BNToVec(s, (int)vchSessionRSA_N.size());
+        if (!VerifyMixCredential(vchSessionRSA_N, vchSessionRSA_E, vchCredentialHash,
+                                 vchCandidate))
+            goto ns_unblind_cleanup;
+        vchUnblindedSig = vchCandidate;
+        fOk = true;
+    }
 
 ns_unblind_cleanup:
     BN_free(s_prime);

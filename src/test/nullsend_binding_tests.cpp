@@ -261,4 +261,92 @@ BOOST_AUTO_TEST_CASE(fdh_credential_resists_multiplicative_malleability)
     BOOST_CHECK(!server.VerifyCredential(cb.vchCredentialHash, vchSC));
 }
 
+// Only the holder verifies the token, so the participant must check it is a valid
+// signature under the committed key; otherwise per-seat values would link seats to outputs.
+BOOST_AUTO_TEST_CASE(a_token_the_round_key_did_not_sign_is_never_presented)
+{
+    CNullSendSession server = MakeKeyedSession();
+    CNullSendClient client = MakeCredentialClient(server.vchRSA_N, server.vchRSA_E, 4242);
+
+    // The control: a real blind signature unblinds and is kept.
+    {
+        CNullSendClient honest = MakeCredentialClient(server.vchRSA_N, server.vchRSA_E, 4243);
+        std::vector<unsigned char> blindSig;
+        BOOST_REQUIRE(server.BlindSign(honest.vchBlindedCredential, blindSig));
+        BOOST_REQUIRE(honest.UnblindSignature(blindSig));
+        BOOST_CHECK(!honest.vchUnblindedSig.empty());
+        BOOST_CHECK(server.VerifyCredential(honest.vchCredentialHash, honest.vchUnblindedSig));
+    }
+
+    // A non-signature return must leave the participant with nothing to present.
+    std::vector<unsigned char> vchNotASignature(server.vchRSA_N.size(), 0);
+    vchNotASignature[vchNotASignature.size() - 1] = 0x2a;
+    vchNotASignature[0] = 0x01;
+    BOOST_CHECK_MESSAGE(!client.UnblindSignature(vchNotASignature),
+                        "a value that is not a signature under the round key was accepted");
+    BOOST_CHECK_MESSAGE(client.vchUnblindedSig.empty(),
+                        "an unverified token was kept, so it can still be presented and the "
+                        "coordinator can recognise it");
+    BOOST_CHECK_MESSAGE(!client.SubmitOutputsAnonymously(),
+                        "an output was submitted with no verified token");
+}
+
+// A participant cannot prove N is a two-prime product without factoring it, but it can
+// refuse the shapes honest generation never produces -- which is where the blind signature
+// stops being a permutation of Z_N* and stops hiding anything.
+BOOST_AUTO_TEST_CASE(a_round_key_of_the_wrong_shape_is_refused)
+{
+    CNullSendSession server = MakeKeyedSession();
+    BOOST_REQUIRE(IsMixRoundKeyWellFormed(server.vchRSA_N, server.vchRSA_E));
+
+    std::vector<unsigned char> vchE3;
+    vchE3.push_back(0x03);
+    BOOST_CHECK_MESSAGE(!IsMixRoundKeyWellFormed(server.vchRSA_N, vchE3),
+                        "an exponent other than 65537 was accepted");
+
+    std::vector<unsigned char> vchEven = server.vchRSA_N;
+    vchEven[vchEven.size() - 1] &= 0xFE;
+    BOOST_CHECK_MESSAGE(!IsMixRoundKeyWellFormed(vchEven, server.vchRSA_E),
+                        "an even modulus was accepted");
+
+    std::vector<unsigned char> vchNarrow = server.vchRSA_N;
+    vchNarrow[0] &= 0x7F;
+    BOOST_CHECK(!IsMixRoundKeyWellFormed(vchNarrow, server.vchRSA_E));
+
+    std::vector<unsigned char> vchShort(server.vchRSA_N.begin(), server.vchRSA_N.end() - 1);
+    BOOST_CHECK(!IsMixRoundKeyWellFormed(vchShort, server.vchRSA_E));
+
+    // And a participant refuses to blind under one.
+    CNullSendClient client;
+    client.vMyOutputsDeferred.push_back(CShieldedOutputDescription());
+    client.nMyOutputValue = 7;
+    BOOST_CHECK_MESSAGE(!client.BlindOutputCredential(server.vchRSA_N, vchE3),
+                        "a participant blinded under a key of the wrong shape");
+}
+
+// Blinding hides the credential only when r is uniform on Z_N*.
+BOOST_AUTO_TEST_CASE(the_blinding_factor_spans_the_whole_modulus)
+{
+    CNullSendSession server = MakeKeyedSession();
+    const size_t nBytes = server.vchRSA_N.size();
+
+    // Over many draws, r's leading byte must fall both below and at/above 0x80.
+    bool fSawTopBitClear = false;
+    bool fSawTopBitSet = false;
+    for (int i = 0; i < 48 && !(fSawTopBitClear && fSawTopBitSet); i++)
+    {
+        CNullSendClient client = MakeCredentialClient(server.vchRSA_N, server.vchRSA_E,
+                                                      1000 + i);
+        BOOST_REQUIRE_EQUAL(client.vchBlindingFactor.size(), nBytes);
+        if (client.vchBlindingFactor[0] & 0x80)
+            fSawTopBitSet = true;
+        else
+            fSawTopBitClear = true;
+    }
+    BOOST_CHECK_MESSAGE(fSawTopBitClear,
+                        "every blinding factor had its top bit set, so r is drawn from a "
+                        "fixed sub-interval of Z_N rather than uniformly");
+    BOOST_CHECK(fSawTopBitSet);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
