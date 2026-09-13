@@ -731,12 +731,9 @@ bool CNullSendSession::BlindSign(const std::vector<unsigned char>& vchBlinded,
     return fOk;
 }
 
-// A round key whose shape honest key generation cannot produce.
-//
-// Not a proof that N is a product of two primes -- a participant cannot have that without
-// factoring it. It refuses the shapes that make the blind signature stop being a
-// permutation of Z_N*, which is what unlinkability rests on, at no cost: the honest
-// generator emits exactly one modulus width and exactly one exponent.
+// Shape fence against a grossly malformed round key. Pinning e = 65537 does not make
+// x -> x^e a permutation of Z_N*; unlinkability rests on the participant verifying its
+// own token (UnblindSignature), not on this check.
 bool IsMixRoundKeyWellFormed(const std::vector<unsigned char>& vchRSA_N,
                              const std::vector<unsigned char>& vchRSA_E)
 {

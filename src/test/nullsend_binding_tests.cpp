@@ -291,9 +291,8 @@ BOOST_AUTO_TEST_CASE(a_token_the_round_key_did_not_sign_is_never_presented)
                         "an output was submitted with no verified token");
 }
 
-// A participant cannot prove N is a two-prime product without factoring it, but it can
-// refuse the shapes honest generation never produces -- which is where the blind signature
-// stops being a permutation of Z_N* and stops hiding anything.
+// Refuses malformed key shapes only; e = 65537 does not imply gcd(e, phi(N)) = 1, so
+// unlinkability rests on the local token check above.
 BOOST_AUTO_TEST_CASE(a_round_key_of_the_wrong_shape_is_refused)
 {
     CNullSendSession server = MakeKeyedSession();
