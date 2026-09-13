@@ -187,11 +187,12 @@ uint256 MixSessionSigHash(const uint256& hashRound, MixFrameType nType,
     return ss.GetHash();
 }
 
-uint256 MixOutputCredentialHash(const uint256& hashRound, const uint256& outputKey)
+uint256 MixOutputCredentialHash(const uint256& outputKey)
 {
+    // The round is deliberately absent: see the header. Including it turned the credential
+    // into a per-seat tag under a coordinator that gives each seat its own round id.
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/token/v1");
-    ss << hashRound;
+    ss << std::string("innova/iv5/mix/token/v2");
     ss << outputKey;
     return ss.GetHash();
 }
@@ -383,9 +384,10 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     if (vchCredential.empty() || vchBlindSignature.empty())
         FAIL("output carries no token");
     // The token names the key it authorises, so rewriting the key in flight makes the
-    // token stop verifying and a token from another round never verifies here at all.
-    // Checked before the signature: this is arithmetic-free and the signature is not.
-    const uint256 hashExpected = MixOutputCredentialHash(hashRound, outputKey);
+    // token stop opening. A token from another round is refused by the signature check
+    // below instead, because it was signed under that round's modulus -- which is why the
+    // round must not appear in the message. Checked first: this is arithmetic-free.
+    const uint256 hashExpected = MixOutputCredentialHash(outputKey);
     if (vchCredential.size() != 32 ||
         !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
         FAIL("token does not authorise this output key in this round");
@@ -843,11 +845,14 @@ bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
     return true;
 }
 
-MixDispatch DispatchMixFrame(CMixRound& round, const uint256& hashRound,
+MixDispatch DispatchMixFrame(CMixRound& round,
                              MixFrameType nType,
                              const std::vector<unsigned char>& vchPayload,
                              int64_t nNow, std::string& strError)
 {
+    // The round's own id, never one the caller names: the two disagreeing is what would
+    // let a coordinator run one round while telling each seat it is in a different one.
+    const uint256& hashRound = round.RoundId();
     strError.clear();
     #define REFUSE(msg) do { strError = (msg); return MIX_DISPATCH_REFUSED; } while (0)
 

@@ -199,14 +199,21 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
                           const std::vector<unsigned char>& vchPayload,
                           const std::vector<unsigned char>& vchSig);
 
-/** What a token is signed over: the round and the output key it authorises. An
- *  unbound token is a bearer token -- an on-path party rewrites the key in an OUTPUT
- *  frame and keeps the value, and a token left over from an earlier round spends in
- *  this one. Binding costs no unlinkability: the coordinator signs this blinded and
- *  sees the opening only at registration, where the output key is what it is being
- *  handed anyway. The participant must therefore choose its output key before it
- *  asks for a token, which it already does. */
-uint256 MixOutputCredentialHash(const uint256& hashRound, const uint256& outputKey);
+/** What a token is signed over: the output key it authorises, and NOTHING ELSE.
+ *
+ *  An unbound token is a bearer token -- an on-path party rewrites the key in an OUTPUT
+ *  frame and keeps the value. Binding the key closes that, and costs no unlinkability,
+ *  because the coordinator sees this opening only at registration where the key is what
+ *  it is being handed anyway.
+ *
+ *  The round MUST NOT be in here. A first version hashed the round id too, and that made
+ *  the credential a seat tag: a coordinator that hands each seat an announcement differing
+ *  only in nTime gives each a different round id, then recovers the seat from an
+ *  unauthenticated OUTPUT by trying every id it minted against the key it was handed --
+ *  one hash per seat. Rounds are separated by the KEY instead: a token verifies only under
+ *  the round's own modulus, so a driver must generate a fresh key per round and never
+ *  reuse one. That is a driver obligation this function cannot enforce. */
+uint256 MixOutputCredentialHash(const uint256& outputKey);
 
 /** Milliseconds a reader may still spend on the frame it is assembling; zero past the frame's
  *  deadline. The deadline is per frame, not per recv, so a trickling peer cannot extend it. */
@@ -280,9 +287,9 @@ public:
 
     /** Register an output against a token, NOT against a session key. Naming the
      *  session here would hand the coordinator the input-to-output mapping the blind
-     *  signature exists to withhold, so this call cannot see one. The token must open
-     *  as MixOutputCredentialHash(round, outputKey), so it authorises this key in this
-     *  round and no other. */
+     *  signature exists to withhold, so this call cannot see one. The token must open as
+     *  MixOutputCredentialHash(outputKey), so it authorises this key and no other; the
+     *  round it belongs to is settled by which modulus verifies it, not by the message. */
     bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey, int64_t nNow,
@@ -329,6 +336,10 @@ public:
     void Abort(const std::string& strReason);
 
     MixRoundPhase Phase() const { return nPhase; }
+    /** The round this object is. Every frame is judged against THIS, never against an id
+     *  a caller passes in: a driver holding several rounds with one stale id variable would
+     *  otherwise let one round's frames verify in another. */
+    const uint256& RoundId() const { return hashRound; }
     const std::string& AbortReason() const { return strAbortReason; }
     size_t Seats() const { return vParticipants.size(); }
     size_t Outputs() const { return vOutputs.size(); }
@@ -397,7 +408,7 @@ enum MixDispatch
 };
 
 /** Act on one frame from a participant. */
-MixDispatch DispatchMixFrame(CMixRound& round, const uint256& hashRound,
+MixDispatch DispatchMixFrame(CMixRound& round,
                              MixFrameType nType,
                              const std::vector<unsigned char>& vchPayload,
                              int64_t nNow, std::string& strError);

@@ -48,12 +48,12 @@ struct Token
     std::vector<unsigned char> vchSignature;
 };
 
-Token MintToken(const uint256& hashRound, const uint256& outputKey)
+Token MintToken(const uint256& outputKey)
 {
     CNullSendSession& server = Coordinator();
     CNullSendClient client;
     BOOST_REQUIRE(client.BlindCredentialMessage(server.vchRSA_N, server.vchRSA_E,
-                                                MixOutputCredentialHash(hashRound, outputKey)));
+                                                MixOutputCredentialHash(outputKey)));
     std::vector<unsigned char> vchBlindSig;
     BOOST_REQUIRE(server.BlindSign(client.vchBlindedCredential, vchBlindSig));
     BOOST_REQUIRE(client.UnblindSignature(vchBlindSig));
@@ -206,7 +206,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_from_join_to_publish)
 
     for (int i = 0; i < 3; i++)
     {
-        const Token token = MintToken(ROUND_HASH, uint256(500 + i));
+        const Token token = MintToken(uint256(500 + i));
         BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
                                                    uint256(500 + i), nNow + 1, &strError),
                               strError);
@@ -233,7 +233,7 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
     // Any valid token registers any output. That is the property, not a gap: if the
     // round could tell which seat a token came from, the blind signature would be
     // doing nothing.
-    const Token first = MintToken(ROUND_HASH, uint256(900));
+    const Token first = MintToken(uint256(900));
     BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
                                        uint256(900), nNow, &strError));
 
@@ -250,11 +250,35 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
                         "a token authorised an output key it was not minted for");
     BOOST_CHECK(strError.find("does not authorise") != std::string::npos);
 
-    // Nor does a token minted for another round, however well it verifies there.
-    const Token elsewhere = MintToken(uint256(0xFEED), uint256(905));
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(elsewhere.vchCredential, elsewhere.vchSignature,
+    // A token minted under ANOTHER round's key is refused, which is where round
+    // separation comes from: the message names only the key, so nothing but the modulus
+    // tells the two rounds apart. A fresh key per round is therefore a driver obligation.
+    CNullSendSession other;
+    other.nSessionID = 98;
+    BOOST_REQUIRE(other.GenerateSessionRSAKey());
+    CNullSendClient elsewhere;
+    BOOST_REQUIRE(elsewhere.BlindCredentialMessage(other.vchRSA_N, other.vchRSA_E,
+                                                   MixOutputCredentialHash(uint256(905))));
+    std::vector<unsigned char> vchOtherBlindSig;
+    BOOST_REQUIRE(other.BlindSign(elsewhere.vchBlindedCredential, vchOtherBlindSig));
+    BOOST_REQUIRE(elsewhere.UnblindSignature(vchOtherBlindSig));
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(elsewhere.vchCredentialHash,
+                                              elsewhere.vchUnblindedSig,
                                               uint256(905), nNow, &strError),
-                        "a token from another round registered an output");
+                        "a token from another round's key registered an output");
+
+    // And the credential must carry NO round id: if it did, a coordinator handing each
+    // seat its own round id would read the seat straight off an unauthenticated OUTPUT by
+    // trying every id it minted against the key it was handed.
+    BOOST_CHECK(MixOutputCredentialHash(uint256(900)) != MixOutputCredentialHash(uint256(901)));
+    {
+        CMixRound otherRound;
+        std::vector<Seat> vOtherSeats;
+        BOOST_REQUIRE(OpenAndFill(otherRound, vOtherSeats, 2, nNow));
+        BOOST_CHECK_MESSAGE(otherRound.RoundId() == round.RoundId(),
+                            "the fixture must open both rounds under one id for the next "
+                            "assertion to mean anything");
+    }
 
     // A token the round's key did not sign is refused.
     CNullSendSession stranger;
@@ -262,8 +286,7 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
     BOOST_REQUIRE(stranger.GenerateSessionRSAKey());
     CNullSendClient outsider;
     BOOST_REQUIRE(outsider.BlindCredentialMessage(stranger.vchRSA_N, stranger.vchRSA_E,
-                                                  MixOutputCredentialHash(ROUND_HASH,
-                                                                          uint256(902))));
+                                                  MixOutputCredentialHash(uint256(902))));
     std::vector<unsigned char> vchForeignBlindSig;
     BOOST_REQUIRE(stranger.BlindSign(outsider.vchBlindedCredential, vchForeignBlindSig));
     BOOST_REQUIRE(outsider.UnblindSignature(vchForeignBlindSig));
@@ -273,10 +296,10 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
                         "a token from another round's key was accepted");
 
     // And no more outputs than seats, whatever the tokens say.
-    const Token second = MintToken(ROUND_HASH, uint256(903));
+    const Token second = MintToken(uint256(903));
     BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature,
                                        uint256(903), nNow, &strError));
-    const Token third = MintToken(ROUND_HASH, uint256(904));
+    const Token third = MintToken(uint256(904));
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(third.vchCredential, third.vchSignature,
                                               uint256(904), nNow, &strError),
                         "a third output landed in a two-seat round");
@@ -440,11 +463,11 @@ BOOST_AUTO_TEST_CASE(nothing_publishes_before_the_window_closes)
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token first = MintToken(ROUND_HASH, uint256(800));
+    const Token first = MintToken(uint256(800));
     BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
                                        uint256(800), nNow, &strError));
     BOOST_CHECK(!round.CanPublish(nNow + 1));
-    const Token second = MintToken(ROUND_HASH, uint256(801));
+    const Token second = MintToken(uint256(801));
     BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature,
                                        uint256(801), nNow + 1, &strError));
 
@@ -455,7 +478,7 @@ BOOST_AUTO_TEST_CASE(nothing_publishes_before_the_window_closes)
     BOOST_CHECK(round.CanPublish(nNow + MIX_OUTPUT_WINDOW + 1));
 
     // A late output is refused rather than reopening the window.
-    const Token late = MintToken(ROUND_HASH, uint256(802));
+    const Token late = MintToken(uint256(802));
     BOOST_CHECK(!round.RegisterOutput(late.vchCredential, late.vchSignature,
                                       uint256(802), nNow + MIX_OUTPUT_WINDOW + 1, &strError));
 }
@@ -469,7 +492,7 @@ BOOST_AUTO_TEST_CASE(the_phases_run_in_order)
     BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
     std::string strError;
 
-    const Token early = MintToken(ROUND_HASH, uint256(1));
+    const Token early = MintToken(uint256(1));
     BOOST_CHECK(!round.RegisterOutput(early.vchCredential, early.vchSignature,
                                       uint256(1), nNow, &strError));
     BOOST_CHECK(!round.OpenOutputWindow(nNow, &strError));
@@ -502,9 +525,9 @@ BOOST_AUTO_TEST_CASE(a_round_signs_once)
     BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
-    const Token a = MintToken(ROUND_HASH, uint256(1));
+    const Token a = MintToken(uint256(1));
     BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, uint256(1), nNow, &strError));
-    const Token b = MintToken(ROUND_HASH, uint256(2));
+    const Token b = MintToken(uint256(2));
     BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, uint256(2), nNow, &strError));
 
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
@@ -536,9 +559,9 @@ BOOST_AUTO_TEST_CASE(the_aggregate_is_fixed_before_any_response)
     BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
-    const Token a = MintToken(ROUND_HASH, uint256(3));
+    const Token a = MintToken(uint256(3));
     BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, uint256(3), nNow, &strError));
-    const Token b = MintToken(ROUND_HASH, uint256(4));
+    const Token b = MintToken(uint256(4));
     BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, uint256(4), nNow, &strError));
 
     // Not before the output set is final: the signable hash covers the outputs.
@@ -586,7 +609,7 @@ BOOST_AUTO_TEST_CASE(the_nonce_order_is_the_frozen_input_order)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (int i = 0; i < 3; i++)
     {
-        const Token t = MintToken(ROUND_HASH, uint256(20 + i));
+        const Token t = MintToken(uint256(20 + i));
         BOOST_REQUIRE(round.RegisterOutput(t.vchCredential, t.vchSignature,
                                            uint256(20 + i), nNow, &strError));
     }
@@ -778,7 +801,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
         std::vector<unsigned char> vchPayload;
         BOOST_REQUIRE_MESSAGE(coordinator.Receive(nType, vchPayload, 2000, &strError), strError);
         BOOST_REQUIRE_EQUAL(
-            (int)DispatchMixFrame(round, hashRound, nType, vchPayload, nNow, strError),
+            (int)DispatchMixFrame(round, nType, vchPayload, nNow, strError),
             (int)MIX_DISPATCH_OK);
     }
     BOOST_REQUIRE_EQUAL(round.Seats(), 2u);
@@ -790,7 +813,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
 
     for (int i = 0; i < 2; i++)
     {
-        const Token token = MintToken(hashRound, uint256(70 + i));
+        const Token token = MintToken(uint256(70 + i));
         int hPair[2];
         BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hPair), 0);
         CMixStream participant, coordinator;
@@ -801,7 +824,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
         std::vector<unsigned char> vchPayload;
         BOOST_REQUIRE(coordinator.Receive(nType, vchPayload, 2000, &strError));
         BOOST_REQUIRE_EQUAL(
-            (int)DispatchMixFrame(round, hashRound, nType, vchPayload, nNow, strError),
+            (int)DispatchMixFrame(round, nType, vchPayload, nNow, strError),
             (int)MIX_DISPATCH_OK);
     }
 
@@ -809,7 +832,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
     BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
     for (size_t i = 0; i < vSeats.size(); i++)
         BOOST_REQUIRE_EQUAL(
-            (int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+            (int)DispatchMixFrame(round, MIX_FRAME_NONCE,
                                   ScalarFrame(vSeats[i], hashRound, MIX_FRAME_NONCE,
                                               (unsigned char)(0x80 + i)),
                                   nClosed, strError),
@@ -817,7 +840,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
     BOOST_REQUIRE(round.FreezeNonces(&strError));
     for (size_t i = 0; i < vSeats.size(); i++)
         BOOST_REQUIRE_EQUAL(
-            (int)DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE,
+            (int)DispatchMixFrame(round, MIX_FRAME_RESPONSE,
                                   ScalarFrame(vSeats[i], hashRound, MIX_FRAME_RESPONSE,
                                               (unsigned char)(0x90 + i)),
                                   nClosed, strError),
@@ -838,10 +861,10 @@ BOOST_AUTO_TEST_CASE(an_output_frame_cannot_name_a_seat)
     BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
                              true, false, nNow, &strError));
     const Seat a = MakeSeat(50), b = MakeSeat(51);
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
                                               JoinFrame(a, hashRound), nNow, strError),
                         (int)MIX_DISPATCH_OK);
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
                                               JoinFrame(b, hashRound), nNow, strError),
                         (int)MIX_DISPATCH_OK);
     BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
@@ -849,7 +872,7 @@ BOOST_AUTO_TEST_CASE(an_output_frame_cannot_name_a_seat)
     BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token token = MintToken(hashRound, uint256(60));
+    const Token token = MintToken(uint256(60));
     const std::vector<unsigned char> vchBody = OutputFrame(token, uint256(60));
 
     // An output with a session signature appended is not a longer output frame; it is
@@ -857,13 +880,13 @@ BOOST_AUTO_TEST_CASE(an_output_frame_cannot_name_a_seat)
     std::vector<unsigned char> vchNamed;
     BOOST_REQUIRE(BuildAuthedMixFrame(a.key, hashRound, MIX_FRAME_OUTPUT, vchBody, vchNamed));
     BOOST_CHECK_MESSAGE(
-        DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchNamed, nNow, strError)
+        DispatchMixFrame(round, MIX_FRAME_OUTPUT, vchNamed, nNow, strError)
             == MIX_DISPATCH_REFUSED,
         "an output frame carrying a session key was accepted, so the coordinator learns "
         "which seat registered which output");
 
     // The unnamed one is the one that works.
-    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchBody,
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT, vchBody,
                                             nNow, strError),
                       (int)MIX_DISPATCH_OK);
 }
@@ -882,7 +905,7 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
 
     // A join signed for another round.
     BOOST_CHECK_MESSAGE(
-        DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, JoinFrame(a, uint256(0xFEEE)),
+        DispatchMixFrame(round, MIX_FRAME_JOIN, JoinFrame(a, uint256(0xFEEE)),
                          nNow, strError) == MIX_DISPATCH_REFUSED,
         "a join signed for another round was accepted");
     BOOST_CHECK_EQUAL(round.Seats(), 0u);
@@ -890,13 +913,13 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
     // A nonce body presented as a response: the type is inside the signed hash.
     const std::vector<unsigned char> vchNonce =
         ScalarFrame(a, hashRound, MIX_FRAME_NONCE, 0xA1);
-    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE, vchNonce, nNow, strError)
+    BOOST_CHECK(DispatchMixFrame(round, MIX_FRAME_RESPONSE, vchNonce, nNow, strError)
                 == MIX_DISPATCH_REFUSED);
 
     // Frames only a coordinator sends.
-    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_KEY, vchNonce, nNow, strError)
+    BOOST_CHECK(DispatchMixFrame(round, MIX_FRAME_KEY, vchNonce, nNow, strError)
                 == MIX_DISPATCH_REFUSED);
-    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_TRANSACTION, vchNonce, nNow, strError)
+    BOOST_CHECK(DispatchMixFrame(round, MIX_FRAME_TRANSACTION, vchNonce, nNow, strError)
                 == MIX_DISPATCH_REFUSED);
 
     // Truncations, at each place a length is read.
@@ -905,7 +928,7 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
     {
         const std::vector<unsigned char> vchShort(vchJoin.begin(), vchJoin.begin() + n);
         BOOST_CHECK_MESSAGE(
-            DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchShort, nNow, strError)
+            DispatchMixFrame(round, MIX_FRAME_JOIN, vchShort, nNow, strError)
                 == MIX_DISPATCH_REFUSED,
             "a join truncated to " << n << " bytes was acted on");
     }
@@ -916,7 +939,7 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
     {
         const std::vector<unsigned char> vchShort(vchOutput.begin(), vchOutput.begin() + n);
         BOOST_CHECK_MESSAGE(
-            DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT, vchShort, nNow, strError)
+            DispatchMixFrame(round, MIX_FRAME_OUTPUT, vchShort, nNow, strError)
                 == MIX_DISPATCH_REFUSED,
             "an output truncated to " << n << " bytes was acted on");
     }
@@ -924,7 +947,7 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
     // Trailing bytes are a different frame, not a longer one.
     std::vector<unsigned char> vchLong = vchJoin;
     vchLong.insert(vchLong.begin() + 65, 0x00);
-    BOOST_CHECK(DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchLong, nNow, strError)
+    BOOST_CHECK(DispatchMixFrame(round, MIX_FRAME_JOIN, vchLong, nNow, strError)
                 == MIX_DISPATCH_REFUSED);
 
     BOOST_CHECK_EQUAL(round.Seats(), 0u);
@@ -943,10 +966,10 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
     BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
                              true, false, nNow, &strError));
     const Seat a = MakeSeat(30), b = MakeSeat(31);
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
                                               JoinFrame(a, hashRound), nNow, strError),
                         (int)MIX_DISPATCH_OK);
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
                                               JoinFrame(b, hashRound), nNow, strError),
                         (int)MIX_DISPATCH_OK);
     BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
@@ -955,18 +978,18 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (int i = 0; i < 2; i++)
     {
-        const Token t = MintToken(hashRound, uint256(40 + i));
-        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_OUTPUT,
+        const Token t = MintToken(uint256(40 + i));
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT,
                                                   OutputFrame(t, uint256(40 + i)), nNow, strError),
                             (int)MIX_DISPATCH_OK);
     }
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
     BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_NONCE,
                                               ScalarFrame(a, hashRound, MIX_FRAME_NONCE, 0xB1),
                                               nClosed, strError),
                         (int)MIX_DISPATCH_OK);
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_NONCE,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_NONCE,
                                               ScalarFrame(b, hashRound, MIX_FRAME_NONCE, 0xB2),
                                               nClosed, strError),
                         (int)MIX_DISPATCH_OK);
@@ -976,7 +999,7 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
     // valid except which frame it is, and at this point a response would be accepted.
     const std::vector<unsigned char> vchAsKey = ScalarFrame(a, hashRound, MIX_FRAME_KEY, 0xC1);
     BOOST_CHECK_MESSAGE(
-        DispatchMixFrame(round, hashRound, MIX_FRAME_KEY, vchAsKey, nClosed, strError)
+        DispatchMixFrame(round, MIX_FRAME_KEY, vchAsKey, nClosed, strError)
             == MIX_DISPATCH_REFUSED,
         "a frame signed as a key announcement was spent as this seat's response");
     BOOST_CHECK_MESSAGE(!round.SigningComplete(),
@@ -984,7 +1007,7 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
 
     // The real response still works, so the refusal above is about the type and not
     // about the seat.
-    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_RESPONSE,
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_RESPONSE,
                                               ScalarFrame(a, hashRound, MIX_FRAME_RESPONSE, 0xC2),
                                               nClosed, strError),
                         (int)MIX_DISPATCH_OK);
@@ -1010,14 +1033,14 @@ BOOST_AUTO_TEST_CASE(a_signed_body_with_trailing_bytes_is_refused)
         AuthedFrame(a, hashRound, MIX_FRAME_JOIN, vchBody);
 
     BOOST_CHECK_MESSAGE(
-        DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN, vchPayload, nNow, strError)
+        DispatchMixFrame(round, MIX_FRAME_JOIN, vchPayload, nNow, strError)
             == MIX_DISPATCH_REFUSED,
         "a signed body with a trailing byte was read as the shorter frame, so one "
         "signature covers more than one message");
     BOOST_CHECK_EQUAL(round.Seats(), 0u);
 
     // Without the trailing byte the same seat joins, so the refusal is about the length.
-    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, hashRound, MIX_FRAME_JOIN,
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
                                             JoinFrame(a, hashRound), nNow, strError),
                       (int)MIX_DISPATCH_OK);
 }
@@ -1037,12 +1060,12 @@ BOOST_AUTO_TEST_CASE(a_late_output_is_refused_while_a_slot_is_still_free)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
     // One of three slots used, so the seat count cannot be what refuses anything below.
-    const Token first = MintToken(ROUND_HASH, uint256(310));
+    const Token first = MintToken(uint256(310));
     BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
                                        uint256(310), nNow, &strError));
     BOOST_REQUIRE_EQUAL(round.Outputs(), 1u);
 
-    const Token late = MintToken(ROUND_HASH, uint256(311));
+    const Token late = MintToken(uint256(311));
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(late.vchCredential, late.vchSignature,
                                               uint256(311),
                                               nNow + MIX_OUTPUT_WINDOW + 1, &strError),
@@ -1069,7 +1092,7 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
         BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token first = MintToken(ROUND_HASH, uint256(320));
+    const Token first = MintToken(uint256(320));
     BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
                                        uint256(320), nNow, &strError));
 
@@ -1077,7 +1100,7 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
     // refuses it. Since the token binds the key, a second token for one key IS the first
     // token, so the one-token-once rule is what fires; the duplicate-key check behind it
     // is defence in depth against a token issued some other way.
-    const Token second = MintToken(ROUND_HASH, uint256(320));
+    const Token second = MintToken(uint256(320));
     BOOST_CHECK(second.vchCredential == first.vchCredential);
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(second.vchCredential, second.vchSignature,
                                               uint256(320), nNow, &strError),
@@ -1094,7 +1117,7 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
 
     // A token minted for that key is taken, so the refusals were about the key and not
     // the slot.
-    const Token other = MintToken(ROUND_HASH, uint256(321));
+    const Token other = MintToken(uint256(321));
     BOOST_CHECK(round.RegisterOutput(other.vchCredential, other.vchSignature,
                                      uint256(321), nNow, &strError));
     BOOST_CHECK_EQUAL(round.Outputs(), 2u);
