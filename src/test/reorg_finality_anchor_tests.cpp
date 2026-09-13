@@ -750,7 +750,7 @@ BOOST_AUTO_TEST_CASE(guard_is_inert_below_the_mainnet_finality_gate)
 
     // The fixture must be non-trivial, or the assertion below proves nothing: on
     // regtest this same tip sits in epoch 0 and the lookup returns 0 regardless.
-    BOOST_REQUIRE_EQUAL(nGate, 8275000);
+    BOOST_REQUIRE_EQUAL(nGate, 8365000);   // 7,945,000 + MAINNET_V5_ACTIVATION_SHIFT
     BOOST_REQUIRE_GT(nAsOf, 0);
 
     CDAGManager dag;

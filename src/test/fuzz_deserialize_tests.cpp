@@ -2314,7 +2314,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8280300);
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8370300);   // DAG gate + 300
 
     // Boundary B is an alias of A, so the ladder carries both on one flag day.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());

@@ -8,6 +8,8 @@
 #include <boost/preprocessor/stringize.hpp>
 
 #include <fstream>
+#include <map>
+#include <cstdlib>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -235,6 +237,84 @@ BOOST_AUTO_TEST_CASE(every_mainnet_gate_derives_from_the_shift)
 
     fRegTest = fRegTestSaved;
     fTestNet = fTestNetSaved;
+}
+
+// Scan by value as well as by name: mainnet gates sit at base + SHIFT (SHIFT a
+// multiple of 30,000), so a literal equal to base + k*30,000 for a non-current k is
+// a gate pinned under a superseded ladder.
+BOOST_AUTO_TEST_CASE(no_test_pins_a_gate_from_a_superseded_ladder)
+{
+    const bool fRegTestSaved = fRegTest;
+    const bool fTestNetSaved = fTestNet;
+    fRegTest = false;
+    fTestNet = false;
+
+    const int nGates[] = {
+        GetForkHeightShielded(), GetForkHeightDSP(), GetForkHeightNullSend(),
+        GetForkHeightNullStake(), GetForkHeightNullStakeV2(),
+        GetForkHeightNullStakeV3(), GetForkHeightChaumianCJ(),
+        GetForkHeightMsTimestamp(),
+        GetForkHeightPoem(), GetForkHeightFinality(), GetForkHeightDAG(),
+        GetForkHeightDAGKnight(), GetForkHeightBoundaryA(), GetForkHeightBoundaryB(),
+    };
+    const size_t nGateCount = sizeof(nGates) / sizeof(nGates[0]);
+
+    // Stale values from every LEGAL shift (as v5activation.h derives it). A wider
+    // sweep collides with ordinary numbers such as the 8,000,000 emission rung end.
+    std::set<int64_t> setStale;
+    std::map<int64_t, int> mapGateOf;
+    for (size_t i = 0; i < nGateCount; i++)
+    {
+        const int64_t nBase = (int64_t)nGates[i] - MAINNET_V5_ACTIVATION_SHIFT;
+        for (int64_t nShift = 330000; nShift <= 540000; nShift += 30000)
+        {
+            if (nShift == MAINNET_V5_ACTIVATION_SHIFT)
+                continue;
+            const int64_t nStale = nBase + nShift;
+            setStale.insert(nStale);
+            if (!mapGateOf.count(nStale))
+                mapGateOf[nStale] = nGates[i];
+        }
+    }
+    // A live gate is never stale, whatever other base could also reach it.
+    for (size_t i = 0; i < nGateCount; i++)
+        setStale.erase((int64_t)nGates[i]);
+
+    fRegTest = fRegTestSaved;
+    fTestNet = fTestNetSaved;
+
+    BOOST_REQUIRE(!setStale.empty());
+
+    // Only literals in an equality comparison count as pins; table data does not.
+    const std::regex reLiteral(
+        "(?:BOOST_(?:CHECK|REQUIRE)_EQUAL\\s*\\([^;]*?|==\\s*)([0-9]{7,9})");
+    const std::vector<fs::path> vSources = TestSources();
+    BOOST_REQUIRE(!vSources.empty());
+
+    size_t nScanned = 0;
+    for (size_t i = 0; i < vSources.size(); i++)
+    {
+        // This file names superseded gates in its own prose.
+        if (vSources[i].filename() == "ladder_pin_tests.cpp")
+            continue;
+        const std::string strBody = ReadFile(vSources[i]);
+        nScanned++;
+        for (std::sregex_iterator it(strBody.begin(), strBody.end(), reLiteral), end;
+             it != end; ++it)
+        {
+            const int64_t nValue = (int64_t)strtoll((*it)[1].str().c_str(), NULL, 10);
+            if (!setStale.count(nValue))
+                continue;
+            BOOST_ERROR(vSources[i].filename().string()
+                        << " contains " << nValue
+                        << ", which is a gate from a superseded ladder: the live value"
+                           " for that gate is now " << mapGateOf[nValue]
+                        << ". Write it as ShiftMainnetV5Activation(base), or re-derive"
+                           " the literal for MAINNET_V5_ACTIVATION_SHIFT = "
+                        << MAINNET_V5_ACTIVATION_SHIFT << ".");
+        }
+    }
+    BOOST_CHECK(nScanned > 50);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
