@@ -3582,7 +3582,8 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     std::string& strError,
                                     int64_t* pnDeclaredFeeOut,
                                     int64_t* pnDeclaredBalanceOut,
-                                    int64_t* pnNoteVoteMintOut)
+                                    int64_t* pnNoteVoteMintOut,
+                                    bool fAssumeValid)
 {
     nAbsorbedOut = 0;
     nReleasedOut = 0;
@@ -3596,10 +3597,15 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         *pnNoteVoteMintOut = 0;
 
     PrivacyVNextStateEffects effects;
+    // fAssumeValid is a BLOCK-CONNECT-only concession and defaults off, so the mempool,
+    // the relay path and the wallet keep verifying. The effects are identical either
+    // way; what differs is whether the seven proof verdicts were computed.
     const PrivacyVNextPayloadValidation validation =
-        ExtractPrivacyVNextPayloadEffects(
-            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload,
-            effects);
+        fAssumeValid
+            ? ExtractPrivacyVNextPayloadEffectsAssumeValid(
+                  static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects)
+            : ExtractPrivacyVNextPayloadEffects(
+                  static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
     if (validation.fLocalFailure)
     {
         fLocalFailure = true;
@@ -9977,6 +9983,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     BLOCK_PHASE(BP_CONNECTBLOCK);
     if (!fJustCheck)
         BlockProfileNoteHeight(pindex->nHeight);
+
+    // Answered once, by ancestry and never by height: a fabricated low fork is not below
+    // the assume-valid block and must not skip its proofs.
+    const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
     int64_t nConnectBlockStart = GetTimeMillis();
     int64_t nConnectCheckStart = GetTimeMillis();
 
@@ -10207,7 +10217,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     BLOCK_PHASE(BP_CB_VNEXT_FLOW);
                     fFlowOk = GetPrivacyVNextTransparentFlow(tx, nCoinbaseAbsorbed,
                                                              nCoinbaseReleased,
-                                                             fFlowLocalFailure, strFlowError);
+                                                             fFlowLocalFailure, strFlowError,
+                                                             NULL, NULL, NULL,
+                                                             fAssumeValidBlock);
                 }
                 if (!fFlowOk)
                 {
@@ -10321,7 +10333,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     BLOCK_PHASE(BP_CB_VNEXT_FLOW);
                     fFlowOkInLoop = GetPrivacyVNextTransparentFlow(
                         tx, nAbsorbed, nReleased, fFlowLocalFailure, strFlowError,
-                        &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint);
+                        &nDeclaredPayloadFee, NULL, &nTxNoteVoteMint,
+                        fAssumeValidBlock);
                 }
                 if (!fFlowOkInLoop)
                 {
@@ -11396,13 +11409,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 printf("CheckBlock() : skipping collateralnode payment checks\n");
         }
     }
-
-    // Resolved before the warm pass, not beside the loop that consumes it: warming calls
-    // the VERIFYING extraction, so warming a block whose proofs are about to be skipped
-    // pays the whole cost assume-valid exists to avoid, and then pays an uncached parse
-    // on top. Nothing fails if this is wrong -- both paths produce identical effects --
-    // so the only symptom is that the feature does nothing.
-    const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
 
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {

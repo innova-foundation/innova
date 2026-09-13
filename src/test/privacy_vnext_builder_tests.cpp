@@ -669,6 +669,87 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     BOOST_CHECK(transferPayload.size() > shieldPayload.size());
 }
 
+// Assume-valid must return the same effects as full verification, and its results must
+// never enter the shared cache (keyed on the payload alone).
+BOOST_AUTO_TEST_CASE(an_assume_valid_extraction_agrees_and_stays_out_of_the_cache)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    const PrivacyVNextDigest seed = BuilderDigest(0x7a);
+    const PrivacyVNextDigest genesis = LocalGenesis();
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, LocalNetwork(), 0, keys, error), error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(TrimPrivacyVNextTreeStore(txdb, 0, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error), error);
+    PrivacyVNextDigest emptyRoot;
+    std::memcpy(emptyRoot.data(), &vchRoot[0], 32);
+
+    const uint64_t nValueIn = 10000;
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = keys.spendPublic;
+    outs[0].recipient.viewPublic = keys.viewPublic;
+    outs[0].nAmount = nValueIn - nFee;
+
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextShieldPayload(LocalNetwork(), 7, genesis, keys.outgoingViewSecret,
+                                       emptyRoot, nTreeSize, kNoTransparentSide,
+                                       nValueIn, nFee, outs, payload, error),
+        error);
+
+    ClearPrivacyVNextEffectsCache();
+    BOOST_REQUIRE_EQUAL(PrivacyVNextEffectsCacheSize(), 0U);
+
+    PrivacyVNextStateEffects skipped;
+    const PrivacyVNextPayloadValidation skippedResult =
+        ExtractPrivacyVNextPayloadEffectsAssumeValid(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, skipped);
+    BOOST_REQUIRE_MESSAGE(skippedResult.IsValid(), skippedResult.strError);
+    BOOST_CHECK_MESSAGE(PrivacyVNextEffectsCacheSize() == 0U,
+                        "an assume-valid extraction reached the shared effects cache, so a "
+                        "result with the proof verdicts skipped can be served to a caller "
+                        "that must verify");
+
+    PrivacyVNextStateEffects verified;
+    const PrivacyVNextPayloadValidation verifiedResult =
+        ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, verified);
+    BOOST_REQUIRE_MESSAGE(verifiedResult.IsValid(), verifiedResult.strError);
+    BOOST_CHECK_EQUAL(PrivacyVNextEffectsCacheSize(), 1U);
+
+    // Identical effects, field by field.
+    BOOST_CHECK_EQUAL(skipped.nFee, verified.nFee);
+    BOOST_CHECK_EQUAL(skipped.nTransparentValueBalance, verified.nTransparentValueBalance);
+    BOOST_REQUIRE_EQUAL(skipped.keyImages.size(), verified.keyImages.size());
+    BOOST_REQUIRE_EQUAL(skipped.outputLeaves.size(), verified.outputLeaves.size());
+    for (size_t i = 0; i < skipped.keyImages.size(); i++)
+        BOOST_CHECK(skipped.keyImages[i] == verified.keyImages[i]);
+    for (size_t i = 0; i < skipped.outputLeaves.size(); i++)
+    {
+        BOOST_CHECK(skipped.outputLeaves[i].owner == verified.outputLeaves[i].owner);
+        BOOST_CHECK(skipped.outputLeaves[i].nullifierBase ==
+                    verified.outputLeaves[i].nullifierBase);
+        BOOST_CHECK(skipped.outputLeaves[i].commitment ==
+                    verified.outputLeaves[i].commitment);
+    }
+
+    ClearPrivacyVNextEffectsCache();
+}
+
 // Concurrent cache warming must match the sequential validator exactly.
 BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
 {

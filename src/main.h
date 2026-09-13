@@ -1360,7 +1360,12 @@ bool CheckPrivacyVNextParameterDigest(
  *  pnNoteVoteMintOut is how much of the absorbed value is a note finality vote's mint,
  *  which no transparent input paid for. Every fee accumulator has to credit it or the
  *  block's producer is charged for the epoch's own reserve; the value is pinned to the
- *  epoch's entitlement here, so a caller that ignores it still cannot be over-claimed at. */
+ *  epoch's entitlement here, so a caller that ignores it still cannot be over-claimed at.
+ *
+ *  fAssumeValid skips the seven proof verdicts and is for ConnectBlock alone, which
+ *  answers it by ANCESTRY against the compiled-in hash. It defaults off, so the mempool,
+ *  the relay path and the wallet keep verifying -- a transaction that has not been in a
+ *  block has no ancestry to be below anything. The effects are identical either way. */
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nAbsorbedOut,
                                     int64_t& nReleasedOut,
@@ -1368,7 +1373,8 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     std::string& strError,
                                     int64_t* pnDeclaredFeeOut = NULL,
                                     int64_t* pnDeclaredBalanceOut = NULL,
-                                    int64_t* pnNoteVoteMintOut = NULL);
+                                    int64_t* pnNoteVoteMintOut = NULL,
+                                    bool fAssumeValid = false);
 
 /** What a payload may mint into the pool with no transparent side. Zero except for a
  *  note finality vote (op 10), where it is GetFinalityNoteVoteReward of the vote's epoch
