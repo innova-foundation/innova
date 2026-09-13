@@ -293,7 +293,8 @@ grep -q 'git rev-parse --verify HEAD' "$genbuild" || \
     fail "candidate build identifiers omit the complete source commit"
 grep -q 'git status --porcelain --untracked-files=normal' "$genbuild" || \
     fail "candidate build identifiers do not detect untracked dirty source"
-grep -q 'commit-${COMMIT}${DIRTY}' "$genbuild" || \
+# DIRTYSUFFIX, not DIRTY: the suffix reaches the identifier; DIRTY is only the flag.
+grep -q 'commit-${COMMIT}${DIRTYSUFFIX}' "$genbuild" || \
     fail "candidate build identifier does not bind commit and dirty state"
 grep -Eq 'PrepareReorg\((txdb, )?vDisconnect, vConnect,' "$main_cpp" || \
     fail "best-chain reorg effects are not prebuilt before commit"
