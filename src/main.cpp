@@ -11444,25 +11444,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {
         BLOCK_PHASE(BP_CB_POOL);
-        // Verify the block's payloads concurrently before validating them in order. Each
-        // costs tens of milliseconds cold, so a block of them cannot be connected serially
-        // inside a block interval during a sync, where nothing has been seen before. This
-        // only fills the effects cache; every consensus decision still happens below, in
-        // order, and an invalid payload is simply left uncached for that loop to reject.
-        if (!fAssumeValidBlock)
-        {
-            std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
-            vWarm.reserve(activeBlock.vtx.size());
-            for (const CTransaction& tx : activeBlock.vtx)
-            {
-                if (tx.IsPrivacyVNext() && tx.privacyVNext.IsPresent())
-                    vWarm.push_back(std::make_pair(
-                        static_cast<uint32_t>(tx.nVersion),
-                        &tx.privacyVNext.vchPayload));
-            }
-            WarmPrivacyVNextEffectsCache(
-                vWarm, (int)GetArg("-parverify", 0));
-        }
+        // Payloads are warmed concurrently in CheckBlock; no warm pass here.
 
         // Enforce the pool balance where released value is credited, so the offending block is
         // rejected rather than the later epoch build failing.
@@ -15000,6 +14982,25 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 		if (fCheckSig && !CheckBlockSignature())
             return DoS(100, error("CheckBlock() : bad proof-of-stake block signature"));
 	}
+
+    // Warm payload verdicts concurrently before the serial loop. This is the first cold
+    // verification of a block's proofs; later passes hit the cache. Only successes are
+    // cached, so verdicts are unchanged.
+    {
+        std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
+        vWarm.reserve(vtx.size());
+        for (const CTransaction& tx : vtx)
+        {
+            if (tx.IsPrivacyVNext() && tx.privacyVNext.IsPresent())
+                vWarm.push_back(std::make_pair(
+                    static_cast<uint32_t>(tx.nVersion), &tx.privacyVNext.vchPayload));
+        }
+        if (vWarm.size() > 1)
+        {
+            BLOCK_PHASE(BP_CHECKTX_VNEXT);
+            WarmPrivacyVNextEffectsCache(vWarm, (int)GetArg("-parverify", 0));
+        }
+    }
 
     // Check transactions
     {
