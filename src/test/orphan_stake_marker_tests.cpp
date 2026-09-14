@@ -181,11 +181,15 @@ BOOST_AUTO_TEST_CASE(shared_marker_retention_after_first_orphan_removal)
     RegisterPosOrphan(orphanB);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K), 1U);
 
-    RemoveOrphanAsParentConnect(orphanA->GetHash());
+    // The erase DELETES the block, so anything read from it afterwards is a
+    // use-after-free. Take the hashes first.
+    const uint256 hashA = orphanA->GetHash();
+    const uint256 hashB = orphanB->GetHash();
+    RemoveOrphanAsParentConnect(hashA);
 
     // K must survive while orphanB still references it.
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K), 1U);
-    BOOST_CHECK_EQUAL(mapOrphanBlocks.count(orphanB->GetHash()), 1U);
+    BOOST_CHECK_EQUAL(mapOrphanBlocks.count(hashB), 1U);
 }
 
 BOOST_AUTO_TEST_CASE(final_reference_marker_release)
@@ -197,10 +201,12 @@ BOOST_AUTO_TEST_CASE(final_reference_marker_release)
     RegisterPosOrphan(orphanA);
     RegisterPosOrphan(orphanB);
 
-    RemoveOrphanAsParentConnect(orphanA->GetHash());
+    const uint256 hashA = orphanA->GetHash();
+    const uint256 hashB = orphanB->GetHash();
+    RemoveOrphanAsParentConnect(hashA);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K), 1U);
 
-    RemoveOrphanAsParentConnect(orphanB->GetHash());
+    RemoveOrphanAsParentConnect(hashB);
     BOOST_CHECK(mapOrphanBlocks.empty());
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K), 0U);
 }
@@ -237,11 +243,12 @@ BOOST_AUTO_TEST_CASE(orphan_bookkeeping_consistent_after_marker_cleanup)
     RegisterPosOrphan(orphanB, 7);
     BOOST_CHECK_EQUAL(mapOrphanCountByNode[7], 2);
 
-    RemoveOrphanAsParentConnect(orphanA->GetHash());
+    const uint256 hashA = orphanA->GetHash();
+    RemoveOrphanAsParentConnect(hashA);
 
     BOOST_CHECK_EQUAL(mapOrphanCountByNode[7], 1);
     BOOST_CHECK_EQUAL(mapOrphanCountByNode.count(7), 1U);
-    BOOST_CHECK_EQUAL(mapOrphanBlocksByNode.count(orphanA->GetHash()), 0U);
+    BOOST_CHECK_EQUAL(mapOrphanBlocksByNode.count(hashA), 0U);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K1), 0U);
     BOOST_CHECK_EQUAL(setStakeSeenOrphan.count(K2), 1U);
 }
