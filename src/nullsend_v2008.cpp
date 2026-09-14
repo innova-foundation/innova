@@ -278,7 +278,7 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
 CMixRound::CMixRound()
     : nPhase(MIX_PHASE_ABORTED), hashRound(0), nTargetParticipants(0),
       fStreamIsolated(false), fNoncesFrozen(false), fHasSigned(false),
-      nOpened(0), nWindowCloses(0)
+      nOpened(0), nWindowCloses(0), nDenomination(0)
 {
     strAbortReason = "not opened";
 }
@@ -298,6 +298,7 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
                      const std::vector<unsigned char>& vchRSA_N_In,
                      const std::vector<unsigned char>& vchRSA_E_In,
                      bool fStreamIsolatedIn, bool fAllowUnisolatedIn,
+                     uint64_t nDenominationIn,
                      int64_t nNow, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
@@ -325,7 +326,11 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
     vParticipants.clear();
     vFinalKeyImages.clear();
     vOutputs.clear();
+    vOutputCommitments.clear();
+    vOutputMasks.clear();
+    vRoster.clear();
     vSpentCredentials.clear();
+    nDenomination = nDenominationIn;
     nPhase = MIX_PHASE_JOIN;
     return true;
     #undef FAIL
@@ -494,7 +499,10 @@ bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)
 
 bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
                                const std::vector<unsigned char>& vchBlindSignature,
-                               const uint256& outputKey, int64_t nNow,
+                               const uint256& outputKey,
+                               const PrivacyVNextDigest& commitment,
+                               const PrivacyVNextDigest& mask,
+                               int64_t nNow,
                                std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
@@ -516,6 +524,37 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
         FAIL("token does not authorise this output key in this round");
     if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
         FAIL("token does not verify under the round key");
+    // The opening, checked BEFORE the token is spent. The token authorises the KEY and
+    // not the bytes after it, so an unvalidated opening lets anyone holding a good token
+    // poison the combination -- and the combiner only ever sees the SUM, so it cannot say
+    // which registration was wrong. A round with no denomination cannot run this check
+    // and therefore registers nothing.
+    if (nDenomination == 0)
+        FAIL("the round carries no denomination, so an opening cannot be checked");
+    {
+        std::vector<PrivacyVNextCombineTerm> vTerms(2);
+        PrivacyVNextDigest amountScalar;
+        amountScalar.fill(0);
+        uint64_t nLeft = nDenomination;
+        for (size_t i = 0; i < 8; i++)
+        {
+            amountScalar[i] = (uint8_t)(nLeft & 0xff);
+            nLeft >>= 8;
+        }
+        vTerms[0].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
+        vTerms[0].scalar = amountScalar;
+        vTerms[1].nSource = PRIVACY_VNEXT_TERM_ED25519_G;
+        vTerms[1].scalar = mask;
+        PrivacyVNextDigest derived;
+        std::string strCombine;
+        if (!CombinePrivacyVNextPoints(vTerms, derived, strCombine))
+            FAIL("output opening is not a usable scalar");
+        if (!(derived == commitment))
+            FAIL("output opening does not open the commitment it is registered with");
+    }
+    for (size_t i = 0; i < vOutputCommitments.size(); i++)
+        if (vOutputCommitments[i] == commitment)
+            FAIL("that output commitment is already registered");
     // One token, once. Nothing else limits how many outputs an unlinkable caller may
     // present, and the token is deliberately not tied to a seat.
     CHashWriter ss(SER_GETHASH, 0);
@@ -531,6 +570,8 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
             FAIL("output key is already registered");
     vSpentCredentials.push_back(hashCredential);
     vOutputs.push_back(outputKey);
+    vOutputCommitments.push_back(commitment);
+    vOutputMasks.push_back(mask);
     return true;
     #undef FAIL
 }
@@ -997,6 +1038,8 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey,
+                        const PrivacyVNextDigest& commitment,
+                        const PrivacyVNextDigest& mask,
                         std::vector<unsigned char>& vchOut)
 {
     vchOut.clear();
@@ -1009,6 +1052,8 @@ bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
     PutU16(vchOut, vchBlindSignature.size());
     vchOut.insert(vchOut.end(), vchBlindSignature.begin(), vchBlindSignature.end());
     vchOut.insert(vchOut.end(), outputKey.begin(), outputKey.end());
+    vchOut.insert(vchOut.end(), commitment.begin(), commitment.end());
+    vchOut.insert(vchOut.end(), mask.begin(), mask.end());
     return true;
 }
 
@@ -1033,11 +1078,18 @@ MixDispatch DispatchMixFrame(CMixRound& round,
             REFUSE("output frame is malformed");
         if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchBlindSignature))
             REFUSE("output frame is malformed");
-        if (!TakeBytes(vchPayload, nAt, 32, vchKey) || nAt != vchPayload.size())
+        std::vector<unsigned char> vchCommitment, vchMask;
+        if (!TakeBytes(vchPayload, nAt, 32, vchKey) ||
+            !TakeBytes(vchPayload, nAt, 32, vchCommitment) ||
+            !TakeBytes(vchPayload, nAt, 32, vchMask) || nAt != vchPayload.size())
             REFUSE("output frame is malformed");
         uint256 outputKey;
         memcpy(outputKey.begin(), &vchKey[0], 32);
-        if (!round.RegisterOutput(vchCredential, vchBlindSignature, outputKey, nNow, &strError))
+        PrivacyVNextDigest commitment, mask;
+        memcpy(commitment.data(), &vchCommitment[0], 32);
+        memcpy(mask.data(), &vchMask[0], 32);
+        if (!round.RegisterOutput(vchCredential, vchBlindSignature, outputKey, commitment,
+                                  mask, nNow, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }

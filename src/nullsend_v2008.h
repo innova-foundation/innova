@@ -10,6 +10,7 @@
 #include "key.h"
 #include "netbase.h"
 #include "serialize.h"
+#include "privacy_vnext_ffi.h"
 #include "uint256.h"
 #include "util.h"
 
@@ -285,14 +286,14 @@ class CMixRound
 public:
     CMixRound();
 
-    /** fStreamIsolated is whether every phase will dial its own circuit. A round
-     *  without it shows the coordinator the participant's real address at every
-     *  phase, which links them trivially, so it does not open unless the operator
-     *  said so in as many words. */
+    /** fStreamIsolated: every phase dials its own circuit; required unless the operator
+     *  explicitly opts out. */
+    /** nDenominationIn is the amount every output carries; zero registers no outputs. */
     bool Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
               const std::vector<unsigned char>& vchRSA_N_In,
               const std::vector<unsigned char>& vchRSA_E_In,
               bool fStreamIsolatedIn, bool fAllowUnisolatedIn,
+              uint64_t nDenominationIn,
               int64_t nNow, std::string* pstrError = NULL);
 
     /** Register an input under a session key. The key is the participant's identity
@@ -338,8 +339,20 @@ public:
      *  round it belongs to is settled by which modulus verifies it, not by the message. */
     bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
-                        const uint256& outputKey, int64_t nNow,
+                        const uint256& outputKey,
+                        const PrivacyVNextDigest& commitment,
+                        const PrivacyVNextDigest& mask,
+                        int64_t nNow,
                         std::string* pstrError = NULL);
+
+    /** Every output's opening in registration (output) order, for PrivacyVNextMixBalanceCombine.
+     *  Only the sum enters the proof, so each opening is checked against its commitment before
+     *  the token is spent. */
+    const std::vector<PrivacyVNextDigest>& OutputMasks() const { return vOutputMasks; }
+    const std::vector<PrivacyVNextDigest>& OutputCommitments() const
+    {
+        return vOutputCommitments;
+    }
 
     /** Whether the assembled transaction may be handed out: only once the window has
      *  closed and every seat has an output. Publishing earlier orders the two lists
@@ -412,7 +425,10 @@ private:
     std::vector<CMixRosterEntry> vRoster;
     std::vector<uint256> vFinalKeyImages;
     std::vector<uint256> vOutputs;
+    std::vector<PrivacyVNextDigest> vOutputCommitments;
+    std::vector<PrivacyVNextDigest> vOutputMasks;
     std::vector<uint256> vSpentCredentials;
+    uint64_t nDenomination;
 };
 
 // ---------------------------------------------------------------------------
@@ -470,10 +486,15 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut);
 
-/** An output registration: a token and a one-time key, and no identity. */
+/** An output registration: a token, a one-time key, the output's commitment and its
+ *  opening -- and no identity. The opening is here because the joint balance proof is
+ *  combined from it and no authenticated frame can carry it without naming the seat's
+ *  output. It is checked against the commitment before the token is spent. */
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey,
+                        const PrivacyVNextDigest& commitment,
+                        const PrivacyVNextDigest& mask,
                         std::vector<unsigned char>& vchOut);
 
 enum MixDispatch
