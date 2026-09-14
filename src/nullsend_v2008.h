@@ -486,6 +486,17 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut);
 
+/** The frozen key-image set, coordinator to seat. Must be in 32-byte-array order (as
+ *  PrivacyVNextChangeIndexFor sorts), not uint256 order; the reader refuses unsorted sets. */
+bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,
+                        std::vector<unsigned char>& vchOut);
+
+/** Parses a key-set frame. Refuses a set that is not already sorted in byte order, or
+ *  that repeats an image: a seat must reject a set it would have to reorder, because
+ *  reordering is how the two derivations silently disagree. */
+bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
+                       std::vector<uint256>& vOut);
+
 /** An output registration: a token, a one-time key, the output's commitment and its
  *  opening -- and no identity. The opening is here because the joint balance proof is
  *  combined from it and no authenticated frame can carry it without naming the seat's

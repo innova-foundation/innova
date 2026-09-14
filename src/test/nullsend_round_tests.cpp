@@ -41,6 +41,13 @@ CNullSendSession& Coordinator()
 // opening against the commitment it is handed.
 const uint64_t MIX_DENOM = 1000;
 
+// The frame's own little-endian u16, so a hand-built body can be malformed on purpose.
+void PutU16Test(std::vector<unsigned char>& vch, unsigned int n)
+{
+    vch.push_back((unsigned char)(n & 0xff));
+    vch.push_back((unsigned char)((n >> 8) & 0xff));
+}
+
 // The round every OpenAndFill round opens under. The token binds it, so a token
 // minted for another round does not register here.
 const uint256 ROUND_HASH = uint256(0xBEEF);
@@ -721,6 +728,77 @@ BOOST_AUTO_TEST_CASE(a_token_does_not_name_the_round_it_is_spent_in)
 
     // Round separation therefore comes from the KEY, which a driver must draw fresh per
     // round. That obligation is stated in the header and cannot be enforced here.
+}
+
+// The key-set frame carries one order and refuses any other. A reordered set derives a
+// different self-pay input_context, and the seat silently never finds its own output.
+BOOST_AUTO_TEST_CASE(the_key_set_frame_carries_one_order_and_refuses_the_other)
+{
+    // The pair uint256 and byte order disagree on.
+    uint256 hi, lo;
+    hi = 0; lo = 0;
+    hi.begin()[0] = 0x01;    // 0x01 00 .. 00
+    lo.begin()[31] = 0x02;   // 0x00 .. 00 02
+    BOOST_REQUIRE_MESSAGE(hi < lo, "the fixture needs a pair the two orders disagree on");
+
+    std::vector<uint256> vByteOrder;
+    vByteOrder.push_back(lo);   // byte 0 is 0x00, so it sorts first as bytes
+    vByteOrder.push_back(hi);
+
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixKeySetBody(vByteOrder, vchBody));
+
+    std::vector<uint256> vRead;
+    BOOST_REQUIRE(ReadMixKeySetBody(vchBody, vRead));
+    BOOST_REQUIRE_EQUAL(vRead.size(), 2u);
+    BOOST_CHECK(vRead[0] == lo);
+    BOOST_CHECK(vRead[1] == hi);
+
+    // It is the order PrivacyVNextChangeIndexFor derives the index from: the same set as
+    // 32-byte arrays. This is the cross-derivation check, not a restatement of the sort.
+    std::vector<PrivacyVNextDigest> vAsDigests(2);
+    std::memcpy(vAsDigests[0].data(), hi.begin(), 32);
+    std::memcpy(vAsDigests[1].data(), lo.begin(), 32);
+    std::sort(vAsDigests.begin(), vAsDigests.end());
+    for (size_t i = 0; i < 2; i++)
+        BOOST_CHECK_MESSAGE(std::memcmp(vRead[i].begin(), vAsDigests[i].data(), 32) == 0,
+                            "the frame order and the index derivation disagree at " << i);
+
+    // The uint256 order is refused on the way out AND on the way in -- neither side
+    // silently sorts, because sorting is what hides the disagreement.
+    std::vector<uint256> vIntOrder;
+    vIntOrder.push_back(hi);
+    vIntOrder.push_back(lo);
+    std::vector<unsigned char> vchRefused;
+    BOOST_CHECK_MESSAGE(!BuildMixKeySetBody(vIntOrder, vchRefused),
+                        "the builder accepted a set in the integer order");
+
+    std::vector<unsigned char> vchHand;
+    PutU16Test(vchHand, 2);
+    vchHand.insert(vchHand.end(), hi.begin(), hi.end());
+    vchHand.insert(vchHand.end(), lo.begin(), lo.end());
+    std::vector<uint256> vOut;
+    BOOST_CHECK_MESSAGE(!ReadMixKeySetBody(vchHand, vOut),
+                        "the reader accepted a set it would have had to reorder");
+
+    // A repeat is not a set of n seats.
+    std::vector<uint256> vDup;
+    vDup.push_back(lo);
+    vDup.push_back(lo);
+    BOOST_CHECK(!BuildMixKeySetBody(vDup, vchRefused));
+
+    // And the frozen set a round produces goes through the frame unchanged.
+    const int64_t nNow = 3900000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    std::vector<unsigned char> vchFrozen;
+    BOOST_REQUIRE(BuildMixKeySetBody(round.FinalKeyImages(), vchFrozen));
+    std::vector<uint256> vRoundTrip;
+    BOOST_REQUIRE(ReadMixKeySetBody(vchFrozen, vRoundTrip));
+    BOOST_CHECK(vRoundTrip == round.FinalKeyImages());
 }
 
 // The frozen set is sorted as BYTES, as PrivacyVNextChangeIndexFor derives it (uint256

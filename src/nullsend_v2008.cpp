@@ -1035,6 +1035,59 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchBlinded, vchOut);
 }
 
+bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,
+                        std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vKeyImages.empty() || vKeyImages.size() > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    for (size_t i = 1; i < vKeyImages.size(); i++)
+        if (!std::lexicographical_compare(vKeyImages[i - 1].begin(), vKeyImages[i - 1].end(),
+                                          vKeyImages[i].begin(), vKeyImages[i].end()))
+            return false;   // unsorted, or a repeat
+    PutU16(vchOut, vKeyImages.size());
+    for (size_t i = 0; i < vKeyImages.size(); i++)
+        vchOut.insert(vchOut.end(), vKeyImages[i].begin(), vKeyImages[i].end());
+    return true;
+}
+
+bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
+                       std::vector<uint256>& vOut)
+{
+    vOut.clear();
+    size_t nAt = 0, nCount = 0;
+    if (!TakeU16(vchIn, nAt, nCount))
+        return false;
+    if (nCount == 0 || nCount > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    for (size_t i = 0; i < nCount; i++)
+    {
+        std::vector<unsigned char> vch;
+        if (!TakeBytes(vchIn, nAt, 32, vch))
+            return false;
+        uint256 image;
+        memcpy(image.begin(), &vch[0], 32);
+        vOut.push_back(image);
+    }
+    if (nAt != vchIn.size())
+    {
+        vOut.clear();
+        return false;
+    }
+    // Byte order, strictly increasing. Not sorted here: a misordered set is refused, since
+    // reordering would desync input_context from the scanner.
+    for (size_t i = 1; i < vOut.size(); i++)
+    {
+        if (!std::lexicographical_compare(vOut[i - 1].begin(), vOut[i - 1].end(),
+                                          vOut[i].begin(), vOut[i].end()))
+        {
+            vOut.clear();
+            return false;
+        }
+    }
+    return true;
+}
+
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey,
