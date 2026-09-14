@@ -659,17 +659,34 @@ static const char* const MAINNET_ASSUME_VALID_BLOCK =
 // Boundary B: mainnet 8,225,000, which is 4,700 blocks past it.
 extern int nRegtestIV5NoteVoteHeight;
 
+/** Where the note-vote lane WOULD activate: 4,700 blocks past Boundary B, so the pool and
+ *  the boundary have settled before any note votes. Shift-invariant, because Boundary B
+ *  moves with the ladder and this rides it.
+ *
+ *  This is a derivation and not a literal on purpose. The height used to live only in the
+ *  prose below, which is the shape that leaves a stale value behind the next time the
+ *  ladder is re-based -- the 2026-09-13 re-base left two of those in the test tree. The
+ *  gap is the invariant; the height is what the gap produces. */
+inline int DeriveIV5NoteVoteHeight(int nBoundaryBHeight)
+{
+    return nBoundaryBHeight + 4700;
+}
+
 inline int GetForkHeightIV5NoteVote()
 {
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest)
         return nRegtestIV5NoteVoteHeight;
-    // Unset on the networks that carry value until the unspent-note proof lands.
-    // A note vote does not prove its note is unspent, so one note self-transferred
-    // votes once per transfer and is paid for each; a configured height is a claim
-    // the lane is safe. Restore 1700 on testnet and ShiftMainnetV5Activation(7955000)
-    // on mainnet, 4,700 blocks past Boundary B, when the proof is in.
+    // UNSET ON EVERY NETWORK THAT CARRIES VALUE, and this is a decision rather than an
+    // omission. A note vote does not prove its note is unspent, so one note
+    // self-transferred votes once per transfer and is PAID each time: configuring a height
+    // is a claim the lane is safe, and until the unspent-note proof lands that claim is
+    // false and the failure is an unbounded payment.
+    //
+    // When the proof is in, this becomes DeriveIV5NoteVoteHeight(GetForkHeightBoundaryB())
+    // on mainnet and 1700 on testnet. The derivation above is already pinned against the
+    // ladder, so that change is a one-line flip and not a re-derivation.
     if (fTestNet)
         return PRIVACY_VNEXT_HEIGHT_UNSET;
     return PRIVACY_VNEXT_HEIGHT_UNSET;

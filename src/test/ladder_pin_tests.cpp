@@ -317,4 +317,31 @@ BOOST_AUTO_TEST_CASE(no_test_pins_a_gate_from_a_superseded_ladder)
     BOOST_CHECK(nScanned > 50);
 }
 
+// The note-vote lane is unset on every network that carries value, and the height it would
+// take is a derivation rather than a literal. Pin both: that it is still unset, and that
+// the derivation lands where the ladder puts it. A literal here would go stale on the next
+// re-base exactly as two test pins did on 2026-09-13.
+BOOST_AUTO_TEST_CASE(the_note_vote_height_is_unset_and_its_derivation_rides_the_ladder)
+{
+    const bool fRegTestSaved = fRegTest;
+    const bool fTestNetSaved = fTestNet;
+
+    fRegTest = false; fTestNet = false;
+    BOOST_CHECK_MESSAGE(!IsIV5NoteVoteConfigured(),
+                        "the note-vote lane is configured on mainnet, which claims the "
+                        "unspent-note proof has landed");
+    const int nBoundaryB = GetForkHeightBoundaryB();
+    const int nWouldBe = DeriveIV5NoteVoteHeight(nBoundaryB);
+    BOOST_CHECK_EQUAL(nWouldBe - nBoundaryB, 4700);
+    // The height the prose used to carry, now checked against the ladder rather than
+    // written down: base 7,955,000 shifted is the same block the gap produces.
+    BOOST_CHECK_EQUAL(nWouldBe, ShiftMainnetV5Activation(7955000));
+
+    fRegTest = false; fTestNet = true;
+    BOOST_CHECK(!IsIV5NoteVoteConfigured());
+
+    fRegTest = fRegTestSaved;
+    fTestNet = fTestNetSaved;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
