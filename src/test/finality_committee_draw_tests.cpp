@@ -641,8 +641,12 @@ BOOST_AUTO_TEST_CASE(one_member_key_gets_one_seat)
     const int nFirstTerm = 100000 * TermEpochs();
     CKey shared;
     shared.MakeNewKey(true);
-    const std::vector<unsigned char> vchShared(shared.GetPubKey().begin(),
-                                               shared.GetPubKey().end());
+    // Bind the key ONCE. GetPubKey() returns by value, so calling it twice gives two
+    // distinct temporaries and [a.begin(), b.end()) spans unrelated stack -- ASan reads
+    // 145 bytes for a 33-byte key. The suite never noticed because the bytes it copied
+    // happened not to change the draw.
+    const CPubKey pubkeyShared = shared.GetPubKey();
+    const std::vector<unsigned char> vchShared(pubkeyShared.begin(), pubkeyShared.end());
 
     for (int t = 0; t < nTerms; t++)
     {
