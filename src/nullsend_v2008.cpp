@@ -189,6 +189,55 @@ uint256 MixSessionSigHash(const uint256& hashRound, MixFrameType nType,
     return ss.GetHash();
 }
 
+bool BuildMixRoster(const std::vector<CMixRosterEntry>& vIn,
+                    std::vector<CMixRosterEntry>& vOut)
+{
+    vOut = vIn;
+    std::sort(vOut.begin(), vOut.end(),
+              [](const CMixRosterEntry& a, const CMixRosterEntry& b) {
+                  return std::lexicographical_compare(a.keyImage.begin(), a.keyImage.end(),
+                                                      b.keyImage.begin(), b.keyImage.end());
+              });
+    for (size_t i = 0; i < vOut.size(); i++)
+    {
+        if (!vOut[i].pubkeySession.IsValid() || vOut[i].keyImage == 0)
+        {
+            vOut.clear();
+            return false;
+        }
+        for (size_t j = i + 1; j < vOut.size(); j++)
+        {
+            // One seat holds one of each. A roster that repeats either is not a roster of
+            // n seats, and the count is what a seat checks against the announcement.
+            if (vOut[i].keyImage == vOut[j].keyImage ||
+                vOut[i].pubkeySession == vOut[j].pubkeySession)
+            {
+                vOut.clear();
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+uint256 MixViewDigest(const uint256& hashAnnouncement,
+                      const std::vector<CMixRosterEntry>& vRoster)
+{
+    std::vector<CMixRosterEntry> vSorted;
+    if (!BuildMixRoster(vRoster, vSorted))
+        return 0;
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/view/v1");
+    ss << hashAnnouncement;
+    ss << (unsigned int)vSorted.size();
+    for (size_t i = 0; i < vSorted.size(); i++)
+    {
+        ss << vSorted[i].keyImage;
+        ss << vSorted[i].pubkeySession;
+    }
+    return ss.GetHash();
+}
+
 uint256 MixOutputCredentialHash(const uint256& outputKey)
 {
     // The round is deliberately absent: see the header. Including it turned the credential
@@ -327,6 +376,21 @@ bool CMixRound::CloseJoin(int64_t nNow, std::string* pstrError)
                   return std::lexicographical_compare(a.begin(), a.end(),
                                                       b.begin(), b.end());
               });
+    // The roster is the same freeze seen as (key image, session key) pairs. It is built
+    // here so nothing can present a different set of signers for the same input set.
+    {
+        std::vector<CMixRosterEntry> vRaw;
+        for (size_t i = 0; i < vParticipants.size(); i++)
+        {
+            CMixRosterEntry e;
+            e.keyImage = vParticipants[i].keyImage;
+            e.pubkeySession = vParticipants[i].pubkeySession;
+            vRaw.push_back(e);
+        }
+        if (!BuildMixRoster(vRaw, vRoster))
+            FAIL("the seats do not form a roster of distinct key images and session keys");
+    }
+
     // Each seat learns its position in that set now, before any nonce exists. The
     // joint signature reads the nonce points in this order, so it cannot be settled
     // later by whoever happens to submit first.
@@ -359,6 +423,59 @@ bool CMixRound::IssueToken(const CPubKey& pubkeySession, std::string* pstrError)
     }
     FAIL("no seat under that session key");
     #undef FAIL
+}
+
+uint256 CMixRound::ViewDigest(const uint256& hashAnnouncement) const
+{
+    if (vRoster.empty() || vRoster.size() != vParticipants.size())
+        return 0;
+    return MixViewDigest(hashAnnouncement, vRoster);
+}
+
+bool CMixRound::SubmitViewSignature(const CPubKey& pubkeySession,
+                                    const uint256& hashAnnouncement,
+                                    const std::vector<unsigned char>& vchSig,
+                                    std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (nPhase == MIX_PHASE_JOIN)
+        FAIL("the roster is not frozen yet");
+    if (nPhase == MIX_PHASE_ABORTED || nPhase == MIX_PHASE_COMPLETE)
+        FAIL("the round is over");
+    const uint256 hashView = ViewDigest(hashAnnouncement);
+    if (hashView == 0)
+        FAIL("the round has no view to sign");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        // One view per seat per attempt. Accepting a second, over any view, would let a
+        // coordinator that showed two seats two views still collect a full certificate.
+        if (!vParticipants[i].vchViewSig.empty())
+            FAIL("that seat has already signed a view");
+        if (!pubkeySession.Verify(hashView, vchSig))
+            FAIL("the signature does not verify over this round's view");
+        vParticipants[i].vchViewSig = vchSig;
+        return true;
+    }
+    FAIL("that key holds no seat");
+    #undef FAIL
+}
+
+bool CMixRound::ViewAgreed(const uint256& hashAnnouncement) const
+{
+    const uint256 hashView = ViewDigest(hashAnnouncement);
+    if (hashView == 0)
+        return false;
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (vParticipants[i].vchViewSig.empty())
+            return false;
+        if (!vParticipants[i].pubkeySession.Verify(hashView,
+                                                   vParticipants[i].vchViewSig))
+            return false;
+    }
+    return !vParticipants.empty();
 }
 
 bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)

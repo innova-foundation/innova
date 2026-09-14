@@ -367,6 +367,151 @@ BOOST_AUTO_TEST_CASE(a_key_that_holds_no_seat_cannot_drop_a_round)
     BOOST_CHECK_EQUAL((int)round.Phase(), (int)MIX_PHASE_ABORTED);
 }
 
+// Every seat signs ONE view digest over the announcement and the whole roster, and refuses
+// to spend a token until it has seen all n signatures over its own digest.
+BOOST_AUTO_TEST_CASE(every_seat_signs_one_view_and_the_round_can_tell)
+{
+    const int64_t nNow = 3400000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+
+    const uint256 hashAnnounce = uint256(0xA22EE);
+
+    // Nothing to sign before the freeze: the roster is what is being agreed.
+    BOOST_CHECK(round.ViewDigest(hashAnnounce) == 0);
+    BOOST_CHECK(!round.SubmitViewSignature(vSeats[0].pubkey, hashAnnounce,
+                                           std::vector<unsigned char>(), &strError));
+
+    BOOST_REQUIRE_MESSAGE(round.CloseJoin(nNow, &strError), strError);
+    const uint256 hashView = round.ViewDigest(hashAnnounce);
+    BOOST_REQUIRE(hashView != 0);
+    BOOST_CHECK_EQUAL(round.Roster().size(), 3u);
+
+    // The roster is the frozen set seen as pairs, in the same byte order.
+    for (size_t i = 1; i < round.Roster().size(); i++)
+        BOOST_CHECK(std::lexicographical_compare(
+            round.Roster()[i - 1].keyImage.begin(), round.Roster()[i - 1].keyImage.end(),
+            round.Roster()[i].keyImage.begin(), round.Roster()[i].keyImage.end()));
+
+    BOOST_CHECK(!round.ViewAgreed(hashAnnounce));
+
+    // A key that holds no seat cannot sign into the certificate.
+    const Seat outsider = MakeSeat(0x5151);
+    std::vector<unsigned char> vchOutsider;
+    BOOST_REQUIRE(outsider.key.Sign(hashView, vchOutsider));
+    BOOST_CHECK(!round.SubmitViewSignature(outsider.pubkey, hashAnnounce, vchOutsider,
+                                           &strError));
+    BOOST_CHECK(strError.find("no seat") != std::string::npos);
+
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        std::vector<unsigned char> vchSig;
+        BOOST_REQUIRE(vSeats[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE_MESSAGE(
+            round.SubmitViewSignature(vSeats[i].pubkey, hashAnnounce, vchSig, &strError),
+            strError);
+        // Not agreed until the LAST one lands.
+        BOOST_CHECK_EQUAL(round.ViewAgreed(hashAnnounce), i + 1 == vSeats.size());
+    }
+
+    // One view per seat per attempt: a seat shown a second announcement cannot sign it
+    // too, which is what stops a coordinator collecting a full certificate from seats it
+    // showed different views to.
+    const uint256 hashOther = uint256(0xB33FF);
+    const uint256 hashOtherView = round.ViewDigest(hashOther);
+    BOOST_REQUIRE(hashOtherView != hashView);
+    std::vector<unsigned char> vchSecond;
+    BOOST_REQUIRE(vSeats[0].key.Sign(hashOtherView, vchSecond));
+    BOOST_CHECK_MESSAGE(!round.SubmitViewSignature(vSeats[0].pubkey, hashOther, vchSecond,
+                                                   &strError),
+                        "a seat signed a second view, so a coordinator showing two seats "
+                        "two announcements could still complete a certificate");
+    BOOST_CHECK(strError.find("already signed") != std::string::npos);
+
+    // And the certificate is over ONE announcement: the same signatures do not agree a
+    // different one.
+    BOOST_CHECK(!round.ViewAgreed(hashOther));
+}
+
+// The digest covers the SESSION KEYS, not the key images alone. A digest over the inputs
+// only would let a coordinator present one input set with a different set of signers --
+// the roster of alleged signers has to be inside the thing they sign.
+BOOST_AUTO_TEST_CASE(the_view_digest_covers_who_signs_it)
+{
+    std::vector<CMixRosterEntry> vA(2), vB(2);
+    const Seat a = MakeSeat(0x11), b = MakeSeat(0x12), c = MakeSeat(0x13);
+    vA[0].keyImage = uint256(10); vA[0].pubkeySession = a.pubkey;
+    vA[1].keyImage = uint256(20); vA[1].pubkeySession = b.pubkey;
+    vB[0].keyImage = uint256(10); vB[0].pubkeySession = a.pubkey;
+    vB[1].keyImage = uint256(20); vB[1].pubkeySession = c.pubkey;   // same inputs, other signer
+
+    const uint256 hashAnnounce = uint256(0x777);
+    BOOST_CHECK(MixViewDigest(hashAnnounce, vA) != 0);
+    BOOST_CHECK_MESSAGE(MixViewDigest(hashAnnounce, vA) != MixViewDigest(hashAnnounce, vB),
+                        "the digest ignored the session keys, so one input set can be "
+                        "presented with any set of signers");
+
+    // Order does not matter; the roster is sorted before it is hashed.
+    std::vector<CMixRosterEntry> vSwapped;
+    vSwapped.push_back(vA[1]);
+    vSwapped.push_back(vA[0]);
+    BOOST_CHECK(MixViewDigest(hashAnnounce, vSwapped) == MixViewDigest(hashAnnounce, vA));
+
+    // A repeated key image or a repeated session key is not a roster of n seats.
+    std::vector<CMixRosterEntry> vDupImage = vA; vDupImage[1].keyImage = vDupImage[0].keyImage;
+    std::vector<CMixRosterEntry> vDupKey = vA;   vDupKey[1].pubkeySession = vDupKey[0].pubkeySession;
+    BOOST_CHECK(MixViewDigest(hashAnnounce, vDupImage) == 0);
+    BOOST_CHECK(MixViewDigest(hashAnnounce, vDupKey) == 0);
+
+    // The announcement is in it too, which is the whole point.
+    BOOST_CHECK(MixViewDigest(uint256(0x778), vA) != MixViewDigest(hashAnnounce, vA));
+}
+
+// A coordinator that fabricates a roster around one honest seat still gets a complete,
+// valid certificate. The certificate does not prove the seats are independent.
+BOOST_AUTO_TEST_CASE(a_complete_certificate_does_not_prove_the_seats_are_independent)
+{
+    const int64_t nNow = 3500000;
+    std::string strError;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    BOOST_REQUIRE(round.Open(ROUND_HASH, 3, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+
+    // One honest seat, two the coordinator made up and holds the keys for.
+    const Seat honest = MakeSeat(0x600);
+    const Seat sybilA = MakeSeat(0x601), sybilB = MakeSeat(0x602);
+    BOOST_REQUIRE(round.Join(honest.pubkey, honest.keyImage, &strError));
+    BOOST_REQUIRE(round.Join(sybilA.pubkey, sybilA.keyImage, &strError));
+    BOOST_REQUIRE(round.Join(sybilB.pubkey, sybilB.keyImage, &strError));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+
+    const uint256 hashAnnounce = uint256(0xC0FFEE);
+    const uint256 hashView = round.ViewDigest(hashAnnounce);
+    const Seat vAll[3] = { honest, sybilA, sybilB };
+    for (int i = 0; i < 3; i++)
+    {
+        std::vector<unsigned char> vchSig;
+        BOOST_REQUIRE(vAll[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE(round.SubmitViewSignature(vAll[i].pubkey, hashAnnounce, vchSig,
+                                                &strError));
+    }
+
+    BOOST_CHECK_MESSAGE(round.ViewAgreed(hashAnnounce),
+                        "the fixture is wrong if a fabricated roster fails to certify -- "
+                        "the point is that it succeeds");
+    // Every local check an honest seat can run still passes.
+    BOOST_CHECK_EQUAL(round.Roster().size(), 3u);
+    bool fSelfPresent = false;
+    for (size_t i = 0; i < round.Roster().size(); i++)
+        if (round.Roster()[i].keyImage == honest.keyImage &&
+            round.Roster()[i].pubkeySession == honest.pubkey)
+            fSelfPresent = true;
+    BOOST_CHECK(fSelfPresent);
+}
+
 // The credential must name the OUTPUT KEY and nothing else. Naming the round as well was
 // committed once and was a privacy defect: a coordinator handing each seat its own round
 // identifier reads the seat straight off an unauthenticated OUTPUT by trying every

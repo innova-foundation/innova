@@ -123,7 +123,8 @@ enum MixFrameType
     MIX_FRAME_ABORT           = 7,
     MIX_FRAME_NONCE           = 8,   // round one of the joint balance signature
     MIX_FRAME_RESPONSE        = 9,   // round two
-    MIX_FRAME_TYPE_MAX        = 9,
+    MIX_FRAME_VIEW_SIG        = 10,  // a seat's signature over the view it accepted
+    MIX_FRAME_TYPE_MAX        = 10,
 };
 
 enum MixFrameDecode
@@ -219,6 +220,25 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
  *  reuse one. That is a driver obligation this function cannot enforce. */
 uint256 MixOutputCredentialHash(const uint256& outputKey);
 
+/** One roster entry: a key image and the session key that committed it. */
+struct CMixRosterEntry
+{
+    uint256 keyImage;
+    CPubKey pubkeySession;
+};
+
+/** The view a seat signs: the announcement and the frozen roster as (key image, session key)
+ *  pairs sorted by key image bytes. A complete certificate does not prove the keys belong to
+ *  independent participants. */
+uint256 MixViewDigest(const uint256& hashAnnouncement,
+                      const std::vector<CMixRosterEntry>& vRoster);
+
+/** Sorted by key image in byte order, the order CloseJoin freezes the set in. Returns
+ *  false on a duplicate key image or a duplicate session key: one seat, one of each, and
+ *  a roster that repeats either is not a roster of n seats. */
+bool BuildMixRoster(const std::vector<CMixRosterEntry>& vIn,
+                    std::vector<CMixRosterEntry>& vOut);
+
 /** Milliseconds a reader may still spend on the frame it is assembling; zero past the frame's
  *  deadline. The deadline is per frame, not per recv, so a trickling peer cannot extend it. */
 int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs);
@@ -253,6 +273,9 @@ public:
     int nInputIndex;
     std::vector<unsigned char> vchNonce;
     std::vector<unsigned char> vchResponse;
+    /** This seat's signature over the view it accepted. Empty until it signs, and it
+     *  signs at most once: a second signature, over any view, is refused. */
+    std::vector<unsigned char> vchViewSig;
 
     CMixParticipant() : fTokenIssued(false), nInputIndex(-1) {}
 };
@@ -286,6 +309,26 @@ public:
     /** Hand a participant the blind-signature key's token. One per participant:
      *  the token is what authorises an output, and two tokens is two outputs. */
     bool IssueToken(const CPubKey& pubkeySession, std::string* pstrError = NULL);
+
+    /** The frozen roster, sorted by key image in byte order. Empty until CloseJoin. */
+    const std::vector<CMixRosterEntry>& Roster() const { return vRoster; }
+
+    /** The digest every seat must sign before it will spend a token. Zero until the
+     *  roster is frozen, or if the roster does not hold n distinct seats. */
+    uint256 ViewDigest(const uint256& hashAnnouncement) const;
+
+    /** A seat's signature over ViewDigest(hashAnnouncement). Refused before the freeze,
+     *  from a key that holds no seat, and a SECOND time from a seat that already signed:
+     *  one view per seat per attempt is what stops a coordinator collecting an acceptable
+     *  certificate from seats it showed different views to. */
+    bool SubmitViewSignature(const CPubKey& pubkeySession,
+                             const uint256& hashAnnouncement,
+                             const std::vector<unsigned char>& vchSig,
+                             std::string* pstrError = NULL);
+
+    /** Whether every seat has signed the SAME view. This is the gate a token issuance
+     *  should sit behind. What it proves is narrow: see MixViewDigest. */
+    bool ViewAgreed(const uint256& hashAnnouncement) const;
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
@@ -367,6 +410,7 @@ private:
     int64_t nWindowCloses;
     std::string strAbortReason;
     std::vector<CMixParticipant> vParticipants;
+    std::vector<CMixRosterEntry> vRoster;
     std::vector<uint256> vFinalKeyImages;
     std::vector<uint256> vOutputs;
     std::vector<uint256> vSpentCredentials;
