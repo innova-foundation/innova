@@ -199,6 +199,10 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
                           const std::vector<unsigned char>& vchPayload,
                           const std::vector<unsigned char>& vchSig);
 
+/** A field added to the OUTPUT frame must not identify the seat, its session or any per-seat
+ *  coordinator-chosen value (assume per-seat views and aborted rounds), and must be integrity
+ *  bound, canonically encoded, and validated before the token is consumed. */
+
 /** What a token is signed over: the output key it authorises, and NOTHING ELSE.
  *
  *  An unbound token is a bearer token -- an on-path party rewrites the key in an OUTPUT

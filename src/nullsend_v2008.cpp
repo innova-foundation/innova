@@ -424,8 +424,8 @@ bool CMixRound::CanPublish(int64_t nNow) const
         return false;
     if (vOutputs.size() != vParticipants.size())
         return false;
-    // Not when the last output arrives: the window is what decorrelates arrival order
-    // from registration order, and publishing early throws that away.
+    // The window decorrelates arrival from publication order for outside observers only;
+    // the coordinator sees every arrival.
     return nNow > nWindowCloses;
 }
 

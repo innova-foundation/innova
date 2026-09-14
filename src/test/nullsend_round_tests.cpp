@@ -538,9 +538,9 @@ BOOST_AUTO_TEST_CASE(a_seat_is_one_session_key_and_one_note)
     BOOST_CHECK(round.OpenOutputWindow(nNow, &strError));
 }
 
-// The window is what decorrelates arrival order from registration order. Publishing
-// when the last output lands throws that away, so it waits even when the round is
-// otherwise finished.
+// The window decorrelates arrival from publication order for an outside observer only
+// (the coordinator sees every arrival). Publication waits for the window even when the
+// round is otherwise finished.
 BOOST_AUTO_TEST_CASE(nothing_publishes_before_the_window_closes)
 {
     const int64_t nNow = 7000000;
