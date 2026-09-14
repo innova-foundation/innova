@@ -512,6 +512,70 @@ BOOST_AUTO_TEST_CASE(a_complete_certificate_does_not_prove_the_seats_are_indepen
     BOOST_CHECK(fSelfPresent);
 }
 
+// Through the dispatcher: a token is not issued until every seat has signed the same view.
+BOOST_AUTO_TEST_CASE(a_token_is_not_issued_until_every_seat_signed_one_view)
+{
+    const int64_t nNow = 3600000;
+    std::string strError;
+    CNullSendSession& server = Coordinator();
+    const uint256 hashRound = uint256(0xD00D);
+    CMixRound round;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, nNow, &strError));
+    const Seat a = MakeSeat(0x700), b = MakeSeat(0x701);
+    BOOST_REQUIRE(round.Join(a.pubkey, a.keyImage, &strError));
+    BOOST_REQUIRE(round.Join(b.pubkey, b.keyImage, &strError));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+
+    const uint256 hashAnnounce = uint256(0xA55E);
+    const uint256 hashView = round.ViewDigest(hashAnnounce);
+    BOOST_REQUIRE(hashView != 0);
+
+    // A blinded request before the view is agreed is refused, and no token is spent.
+    std::vector<unsigned char> vchBlinded(64, 0x5a), vchBody, vchFrame;
+    BOOST_REQUIRE(BuildMixBlindRequestBody(a.pubkey, hashAnnounce, vchBlinded, vchBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(a.key, hashRound, MIX_FRAME_BLIND_REQUEST, vchBody,
+                                      vchFrame));
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchFrame, nNow,
+                                            strError), (int)MIX_DISPATCH_REFUSED);
+    BOOST_CHECK(strError.find("signed this view") != std::string::npos);
+
+    // Both seats sign, through the frame.
+    const Seat vSeats[2] = { a, b };
+    for (int i = 0; i < 2; i++)
+    {
+        std::vector<unsigned char> vchSig, vchVBody, vchVFrame;
+        BOOST_REQUIRE(vSeats[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE(BuildMixViewSigBody(vSeats[i].pubkey, hashAnnounce, vchSig, vchVBody));
+        BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[i].key, hashRound, MIX_FRAME_VIEW_SIG,
+                                          vchVBody, vchVFrame));
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_VIEW_SIG, vchVFrame, nNow,
+                                                  strError), (int)MIX_DISPATCH_OK);
+    }
+    BOOST_REQUIRE(round.ViewAgreed(hashAnnounce));
+
+    // Now the token issues, and only once per seat.
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchFrame, nNow,
+                                            strError), (int)MIX_DISPATCH_OK);
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchFrame, nNow,
+                                            strError), (int)MIX_DISPATCH_REFUSED);
+
+    // And a request naming a DIFFERENT announcement is refused even after agreement:
+    // the gate is the view these seats actually signed, not any view.
+    std::vector<unsigned char> vchOtherBody, vchOtherFrame;
+    BOOST_REQUIRE(BuildMixBlindRequestBody(b.pubkey, uint256(0xBEEF), vchBlinded,
+                                           vchOtherBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(b.key, hashRound, MIX_FRAME_BLIND_REQUEST,
+                                      vchOtherBody, vchOtherFrame));
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchOtherFrame,
+                                            nNow, strError), (int)MIX_DISPATCH_REFUSED);
+
+    // An unauthenticated blind request is not a frame the dispatcher acts on. If it ever
+    // became one, any connection takes tokens without holding a seat.
+    BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchBody, nNow,
+                                            strError), (int)MIX_DISPATCH_REFUSED);
+}
+
 // The credential must name the OUTPUT KEY and nothing else. Naming the round as well was
 // committed once and was a privacy defect: a coordinator handing each seat its own round
 // identifier reads the seat straight off an unauthenticated OUTPUT by trying every

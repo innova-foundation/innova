@@ -318,9 +318,8 @@ public:
     uint256 ViewDigest(const uint256& hashAnnouncement) const;
 
     /** A seat's signature over ViewDigest(hashAnnouncement). Refused before the freeze,
-     *  from a key that holds no seat, and a SECOND time from a seat that already signed:
-     *  one view per seat per attempt is what stops a coordinator collecting an acceptable
-     *  certificate from seats it showed different views to. */
+     *  from a key that holds no seat, and a second time from the same seat. This is
+     *  coordinator-side bookkeeping only; refusing to sign two views is the seat's job. */
     bool SubmitViewSignature(const CPubKey& pubkeySession,
                              const uint256& hashAnnouncement,
                              const std::vector<unsigned char>& vchSig,
@@ -455,6 +454,22 @@ bool BuildMixJoinBody(const CPubKey& pubkeySession, const uint256& keyImage,
 /** A 32-byte scalar or point under a session key: NONCE and RESPONSE share the shape. */
 bool BuildMixScalarBody(const CPubKey& pubkeySession, const std::vector<unsigned char>& vch32,
                         std::vector<unsigned char>& vchOut);
+/** A seat's view signature: its session key, the announcement it holds, and its
+ *  signature over the resulting view digest. Authenticated, because it acts on a
+ *  named seat -- the anonymity this protects is the OUTPUT side, not the input side. */
+bool BuildMixViewSigBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                         const std::vector<unsigned char>& vchViewSig,
+                         std::vector<unsigned char>& vchOut);
+
+/** A seat's request for its token: its session key, the announcement it holds, and the
+ *  blinded credential. Authenticated -- issuance is per-seat by design, so the
+ *  coordinator has to know whose one token it is spending. If this is ever made
+ *  unauthenticated, any connection can take tokens without holding a seat and each one
+ *  registers an output, which is a free round-kill. */
+bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                              const std::vector<unsigned char>& vchBlinded,
+                              std::vector<unsigned char>& vchOut);
+
 /** An output registration: a token and a one-time key, and no identity. */
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,

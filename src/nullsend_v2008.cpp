@@ -960,6 +960,40 @@ bool BuildMixScalarBody(const CPubKey& pubkeySession, const std::vector<unsigned
     return true;
 }
 
+static bool BuildMixAnnouncedBody(const CPubKey& pubkeySession,
+                                  const uint256& hashAnnouncement,
+                                  const std::vector<unsigned char>& vchTail,
+                                  std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (!pubkeySession.IsValid() || vchTail.empty() || vchTail.size() > 0xffff)
+        return false;
+    // Fixed-width key first, the shape TakeSessionKey reads; the tail is length-prefixed
+    // because a signature and a blinded message are both variable.
+    const std::vector<unsigned char> vchKey = pubkeySession.Raw();
+    if (vchKey.size() != MIX_SESSION_PUBKEY_BYTES)
+        return false;
+    vchOut.insert(vchOut.end(), vchKey.begin(), vchKey.end());
+    vchOut.insert(vchOut.end(), hashAnnouncement.begin(), hashAnnouncement.end());
+    PutU16(vchOut, vchTail.size());
+    vchOut.insert(vchOut.end(), vchTail.begin(), vchTail.end());
+    return true;
+}
+
+bool BuildMixViewSigBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                         const std::vector<unsigned char>& vchViewSig,
+                         std::vector<unsigned char>& vchOut)
+{
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchViewSig, vchOut);
+}
+
+bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                              const std::vector<unsigned char>& vchBlinded,
+                              std::vector<unsigned char>& vchOut)
+{
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchBlinded, vchOut);
+}
+
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
                         const uint256& outputKey,
@@ -1008,7 +1042,8 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         return MIX_DISPATCH_OK;
     }
 
-    if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE)
+    if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE &&
+        nType != MIX_FRAME_VIEW_SIG && nType != MIX_FRAME_BLIND_REQUEST)
         REFUSE("a participant does not send that frame");
 
     std::vector<unsigned char> vchBody, vchSig;
@@ -1020,6 +1055,47 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         REFUSE("frame carries no session key");
     if (!CheckMixSessionFrame(pubkeySession, hashRound, nType, vchBody, vchSig))
         REFUSE("session signature does not verify");
+
+    // Two frames carry a variable tail rather than one 32-byte field, so they are taken
+    // before the fixed-shape parse below.
+    if (nType == MIX_FRAME_VIEW_SIG)
+    {
+        std::vector<unsigned char> vchAnnounce, vchViewSig;
+        size_t nLen = 0;
+        if (!TakeBytes(vchBody, nAt, 32, vchAnnounce))
+            REFUSE("view frame is malformed");
+        if (!TakeU16(vchBody, nAt, nLen) || !TakeBytes(vchBody, nAt, nLen, vchViewSig) ||
+            nAt != vchBody.size())
+            REFUSE("view frame is malformed");
+        uint256 hashAnnouncement;
+        memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
+        if (!round.SubmitViewSignature(pubkeySession, hashAnnouncement, vchViewSig,
+                                       &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+    if (nType == MIX_FRAME_BLIND_REQUEST)
+    {
+        // A token is the authority to register an output, so issuance waits until every
+        // seat has signed the same view. Without that gate a coordinator can hand out
+        // tokens under per-seat announcements and the certificate buys nothing.
+        std::vector<unsigned char> vchAnnounce, vchBlinded;
+        size_t nLen = 0;
+        if (!TakeBytes(vchBody, nAt, 32, vchAnnounce))
+            REFUSE("blind request is malformed");
+        if (!TakeU16(vchBody, nAt, nLen) || !TakeBytes(vchBody, nAt, nLen, vchBlinded) ||
+            nAt != vchBody.size())
+            REFUSE("blind request is malformed");
+        if (vchBlinded.empty())
+            REFUSE("blind request carries no blinded message");
+        uint256 hashAnnouncement;
+        memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
+        if (!round.ViewAgreed(hashAnnouncement))
+            REFUSE("the seats have not all signed this view");
+        if (!round.IssueToken(pubkeySession, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
 
     std::vector<unsigned char> vchTail;
     if (!TakeBytes(vchBody, nAt, 32, vchTail) || nAt != vchBody.size())
