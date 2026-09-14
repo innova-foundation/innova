@@ -514,7 +514,7 @@ bool SecMsgBucket::expand(int64_t nBucketTime)
                 break;
             }
 
-            token.timestamp = smsg.timestamp;
+            token.timestamp = smsg.GetTimestamp();
 
             if (smsg.nPayload < 8)
             {
@@ -1328,7 +1328,7 @@ int SecureMsgBuildBucketSet()
                     };
                     break;
                 };
-                token.timestamp = smsg.timestamp;
+                token.timestamp = smsg.GetTimestamp();
 
                 if (smsg.nPayload < 8)
                 {
@@ -3437,18 +3437,19 @@ int SecureMsgStoreUnscanned(unsigned char *pHeader, unsigned char *pPayload, uin
     };
 
     int64_t now = GetTime();
-    if (psmsg->timestamp > now + SMSG_TIME_LEEWAY)
+    if (psmsg->GetTimestamp() > now + SMSG_TIME_LEEWAY)
     {
         printf("Message > now.\n");
         return 1;
     } else
-    if (psmsg->timestamp < now - SMSG_RETENTION)
+    if (psmsg->GetTimestamp() < now - SMSG_RETENTION)
     {
         printf("Message < SMSG_RETENTION.\n");
         return 1;
     };
 
-    int64_t bucket = psmsg->timestamp - (psmsg->timestamp % SMSG_BUCKET_LEN);
+    const int64_t nMsgTimeA = psmsg->GetTimestamp();
+    int64_t bucket = nMsgTimeA - (nMsgTimeA % SMSG_BUCKET_LEN);
 
     unsigned int fileId = 1;
     fs::path fullpath;
@@ -3513,18 +3514,19 @@ int SecureMsgStore(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPa
     };
 
     int64_t now = GetTime();
-    if (psmsg->timestamp > now + SMSG_TIME_LEEWAY)
+    if (psmsg->GetTimestamp() > now + SMSG_TIME_LEEWAY)
     {
         printf("Message > now.\n");
         return 1;
     } else
-    if (psmsg->timestamp < now - SMSG_RETENTION)
+    if (psmsg->GetTimestamp() < now - SMSG_RETENTION)
     {
         printf("Message < SMSG_RETENTION.\n");
         return 1;
     };
 
-    int64_t bucket = psmsg->timestamp - (psmsg->timestamp % SMSG_BUCKET_LEN);
+    const int64_t nMsgTimeB = psmsg->GetTimestamp();
+    int64_t bucket = nMsgTimeB - (nMsgTimeB % SMSG_BUCKET_LEN);
 
     {
         LOCK(cs_smsg);
@@ -3537,7 +3539,7 @@ int SecureMsgStore(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPa
             return 1;
         }
 
-        SecMsgToken token(psmsg->timestamp, pPayload, nPayload, 0, fileId);
+        SecMsgToken token(psmsg->GetTimestamp(), pPayload, nPayload, 0, fileId);
 
         // Expand compacted bucket if needed before accessing tokens
         smsgBuckets[bucket].expand(bucket);
@@ -3827,7 +3829,7 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
     smsg.version[0] = 1;
     smsg.version[1] = 1;
     smsg.flags      = 0;    // reserved; no reader assigns meaning to it yet
-    smsg.timestamp  = GetTime();
+    smsg.SetTimestamp(GetTime());
 
 
     bool fSendAnonymous;
@@ -4629,7 +4631,7 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
         return 1;
     };
 
-    msg.timestamp = psmsg->timestamp;
+    msg.timestamp = psmsg->GetTimestamp();
     uint32_t lenData;
     uint32_t lenPlain;
 

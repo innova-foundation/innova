@@ -132,7 +132,9 @@ BOOST_AUTO_TEST_CASE(header_is_fully_initialised)
     SecureMessage* psmsg = new (storage) SecureMessage();
 
     BOOST_CHECK_EQUAL((unsigned)psmsg->flags, 0U);
-    BOOST_CHECK_EQUAL(psmsg->timestamp, 0);
+    // Through the accessor: the field is bytes because a direct int64_t at offset 7 in a packed
+    // struct is a misaligned reference (UBSan finding, same access as smessage.cpp).
+    BOOST_CHECK_EQUAL(psmsg->GetTimestamp(), 0);
     BOOST_CHECK_EQUAL(psmsg->nPayload, 0U);
     BOOST_CHECK(psmsg->pPayload == NULL);
 

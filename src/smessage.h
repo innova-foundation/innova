@@ -86,7 +86,7 @@ public:
         memset(hash, 0, sizeof(hash));
         memset(version, 0, sizeof(version));
         flags     = 0;
-        timestamp = 0;
+        memset(timestamp, 0, sizeof(timestamp));
         memset(iv, 0, sizeof(iv));
         memset(cpkR, 0, sizeof(cpkR));
         memset(mac, 0, sizeof(mac));
@@ -94,6 +94,18 @@ public:
         nPayload = 0;
         pPayload = NULL;
     };
+
+    int64_t GetTimestamp() const
+    {
+        int64_t nValue;
+        memcpy(&nValue, timestamp, sizeof(nValue));
+        return nValue;
+    }
+
+    void SetTimestamp(int64_t nValue)
+    {
+        memcpy(timestamp, &nValue, sizeof(nValue));
+    }
 
     ~SecureMessage()
     {
@@ -105,7 +117,9 @@ public:
     unsigned char   hash[4];
     unsigned char   version[2];
     unsigned char   flags;
-    int64_t         timestamp;
+    // Bytes, not int64_t: the struct is packed and offset 7 is misaligned. Layout is
+    // unchanged (offset 7, 8 bytes, raw 104-byte header copy); use the accessors below.
+    unsigned char   timestamp[8];
     unsigned char   iv[16];
     unsigned char   cpkR[33];
     unsigned char   mac[32];
