@@ -2771,7 +2771,7 @@ bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
         return false;
     }
     // Gated on the decoded effects, not the declared operation byte: the header read is
-    // not a decoder. Unset on both value networks, so every vote is refused there.
+    // not a decoder.
     if (!IsIV5NoteVoteActiveAtHeight(nContextHeight))
     {
         strError = "IV5 note finality votes are not active at this height";

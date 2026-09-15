@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "../finality.h"
 #include "../main.h"
 #include "../v5activation.h"
 
@@ -317,28 +318,69 @@ BOOST_AUTO_TEST_CASE(no_test_pins_a_gate_from_a_superseded_ladder)
     BOOST_CHECK(nScanned > 50);
 }
 
-// The note-vote lane is unset on every network that carries value, and the height it would
-// take is a derivation rather than a literal. Pin both: that it is still unset, and that
-// the derivation lands where the ladder puts it. A literal here would go stale on the next
-// re-base exactly as two test pins did on 2026-09-13.
-BOOST_AUTO_TEST_CASE(the_note_vote_height_is_unset_and_its_derivation_rides_the_ladder)
+// The note-vote height is derived, not a literal, and its gap must land on an epoch
+// boundary.
+BOOST_AUTO_TEST_CASE(the_note_vote_height_rides_the_ladder_and_opens_an_epoch)
 {
     const bool fRegTestSaved = fRegTest;
     const bool fTestNetSaved = fTestNet;
 
     fRegTest = false; fTestNet = false;
-    BOOST_CHECK_MESSAGE(!IsIV5NoteVoteConfigured(),
-                        "the note-vote lane is configured on mainnet, which claims the "
-                        "unspent-note proof has landed");
+    BOOST_CHECK(IsIV5NoteVoteConfigured());
     const int nBoundaryB = GetForkHeightBoundaryB();
-    const int nWouldBe = DeriveIV5NoteVoteHeight(nBoundaryB);
-    BOOST_CHECK_EQUAL(nWouldBe - nBoundaryB, 4700);
-    // The height the prose used to carry, now checked against the ladder rather than
-    // written down: base 7,955,000 shifted is the same block the gap produces.
-    BOOST_CHECK_EQUAL(nWouldBe, ShiftMainnetV5Activation(7955000));
+    const int nHeight = GetForkHeightIV5NoteVote();
+    BOOST_CHECK_EQUAL(nHeight, DeriveIV5NoteVoteHeight(nBoundaryB));
+    BOOST_CHECK_EQUAL(nHeight - nBoundaryB, 4800);
+    BOOST_CHECK(nHeight > nBoundaryB);
+    // Checked against the ladder rather than written down: base 7,955,100 shifted is the
+    // same block the gap produces.
+    BOOST_CHECK_EQUAL(nHeight, ShiftMainnetV5Activation(7955100));
 
     fRegTest = false; fTestNet = true;
-    BOOST_CHECK(!IsIV5NoteVoteConfigured());
+    BOOST_CHECK(IsIV5NoteVoteConfigured());
+    BOOST_CHECK_EQUAL(GetForkHeightIV5NoteVote(),
+                      DeriveIV5NoteVoteHeight(GetForkHeightBoundaryB()));
+    BOOST_CHECK(GetForkHeightIV5NoteVote() > GetForkHeightBoundaryB());
+
+    fRegTest = fRegTestSaved;
+    fTestNet = fTestNetSaved;
+}
+
+// The per-block note-vote gate (connect height) and the per-epoch gate
+// (state.nHeightEnd) agree for every block only when the height opens an epoch.
+BOOST_AUTO_TEST_CASE(the_note_vote_gate_and_the_epoch_end_gate_cannot_disagree)
+{
+    const bool fRegTestSaved = fRegTest;
+    const bool fTestNetSaved = fTestNet;
+
+    for (int nPass = 0; nPass < 2; nPass++)
+    {
+        fRegTest = false;
+        fTestNet = (nPass == 1);
+
+        const int nGate = GetForkHeightIV5NoteVote();
+        const int nDAG = GetForkHeightDAG();
+        BOOST_REQUIRE(nGate > nDAG);
+        BOOST_CHECK_MESSAGE(
+            (nGate - nDAG) % FINALITY_EPOCH_INTERVAL_POST_DAG == 0,
+            "the note-vote gate " << nGate << " does not open a post-DAG epoch; the "
+            "epoch that straddles it would be built as a note-vote epoch over blocks "
+            "that can carry no note vote");
+        BOOST_CHECK(IsEpochBoundaryHeight(nGate));
+
+        // What the alignment buys, stated as the property rather than the arithmetic:
+        // for every epoch, "this epoch's last height is at or above the gate" and "this
+        // epoch's first height is at or above the gate" are the same answer.
+        for (int i = -3; i <= 3; i++)
+        {
+            const int nOpen = nGate + i * FINALITY_EPOCH_INTERVAL_POST_DAG;
+            if (nOpen < nDAG)
+                continue;
+            const int nEnd = nOpen + FINALITY_EPOCH_INTERVAL_POST_DAG - 1;
+            BOOST_CHECK_EQUAL(IsIV5NoteVoteActiveAtHeight(nEnd),
+                              IsIV5NoteVoteActiveAtHeight(nOpen));
+        }
+    }
 
     fRegTest = fRegTestSaved;
     fTestNet = fTestNetSaved;

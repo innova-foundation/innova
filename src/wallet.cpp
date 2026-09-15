@@ -12865,12 +12865,8 @@ static bool PrivacyVNextNoteVotePending(const CWallet& wallet, int nBoundaryHeig
     return false;
 }
 
-// The one entry the finality voter needs: resolve the anchor for the epoch `pEpochBlock`
-// opens, build this node's vote and hand it to the mempool.
-//
-// Inert until the lane's fork height is set. It is PRIVACY_VNEXT_HEIGHT_UNSET on mainnet
-// and testnet, so IsIV5NoteVoteActiveAtHeight is false at every height on both and this
-// returns before it reads a note.
+// Resolve the anchor for the epoch `pEpochBlock` opens, build this node's vote and
+// submit it to the mempool. Returns before touching wallet state below the fork height.
 bool ProducePrivacyVNextNoteVote(CTxDB& txdb,
                                  const CBlockIndex* pEpochBlock,
                                  int nIncludingHeight,

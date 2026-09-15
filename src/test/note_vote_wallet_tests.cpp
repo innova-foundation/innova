@@ -977,9 +977,8 @@ BOOST_AUTO_TEST_CASE(a_note_vote_is_ordered_ahead_of_fee_paying_traffic)
     BOOST_CHECK(dVotePriority > dRichPriority);
 }
 
-// Inertness. The lane's fork height is unset on both networks that carry value, so
-// IsIV5NoteVoteActiveAtHeight is false at every height on both and the producer returns
-// on its outermost check, before it reads a wallet, a note or a chain record.
+// Inertness. Under the lane's fork height the producer returns on its outermost check,
+// before it reads a wallet, a note or a chain record.
 BOOST_AUTO_TEST_CASE(the_lane_is_inert_while_its_fork_height_is_unset)
 {
     const bool fRegTestSaved = fRegTest;
@@ -987,15 +986,15 @@ BOOST_AUTO_TEST_CASE(the_lane_is_inert_while_its_fork_height_is_unset)
 
     fRegTest = false;
     fTestNet = false;
-    BOOST_CHECK_EQUAL(GetForkHeightIV5NoteVote(), PRIVACY_VNEXT_HEIGHT_UNSET);
-    BOOST_CHECK(!IsIV5NoteVoteConfigured());
+    BOOST_CHECK(IsIV5NoteVoteConfigured());
     BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(0));
-    BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
+    BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote() - 1));
+    BOOST_CHECK(IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
 
     fTestNet = true;
-    BOOST_CHECK_EQUAL(GetForkHeightIV5NoteVote(), PRIVACY_VNEXT_HEIGHT_UNSET);
-    BOOST_CHECK(!IsIV5NoteVoteConfigured());
-    BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
+    BOOST_CHECK(IsIV5NoteVoteConfigured());
+    BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote() - 1));
+    BOOST_CHECK(IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
 
     fRegTest = fRegTestSaved;
     fTestNet = fTestNetSaved;

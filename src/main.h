@@ -656,40 +656,46 @@ inline int GetForkHeightIV5FeeNote()
 static const char* const MAINNET_ASSUME_VALID_BLOCK =
     "0x00000000523d02837bf00acee580aa7e4443b6da34929b8b2caa7116e10c353a";  // 7,750,000
 
-// Boundary B: mainnet 8,225,000, which is 4,700 blocks past it.
+// Regtest-only rehearsal height for the note-vote lane (-regtestiv5notevote).
+// init.cpp refuses a value below Boundary B.
 extern int nRegtestIV5NoteVoteHeight;
 
-/** Where the note-vote lane WOULD activate: 4,700 blocks past Boundary B, so the pool and
- *  the boundary have settled before any note votes. Shift-invariant, because Boundary B
- *  moves with the ladder and this rides it.
+/** Where the note-vote lane activates: 4,800 blocks past Boundary B, so the pool and the
+ *  boundary have settled before any note votes. Shift-invariant, because Boundary B moves
+ *  with the ladder and this rides it.
  *
- *  This is a derivation and not a literal on purpose. The height used to live only in the
- *  prose below, which is the shape that leaves a stale value behind the next time the
- *  ladder is re-based -- the 2026-09-13 re-base left two of those in the test tree. The
- *  gap is the invariant; the height is what the gap produces. */
+ *  The gap is a whole number of post-DAG epochs (16 x FINALITY_EPOCH_INTERVAL_POST_DAG)
+ *  and Boundary B is itself one epoch above the DAG gate, so the result opens an epoch on
+ *  every network. That is load-bearing rather than tidy. Two gates read this height: the
+ *  per-block one, on a connect height, and the per-epoch one, on state.nHeightEnd, which
+ *  decides whether an epoch state commits note-vote leaves and which serialization
+ *  version it is written at. They agree for every block of an epoch only when the height
+ *  opens one; off a boundary they disagree over the single straddling epoch, and what
+ *  holds that shut is a third rule rather than construction.
+ *
+ *  This is a derivation and not a literal on purpose. The height used to live only in
+ *  prose, which is the shape that leaves a stale value behind the next time the ladder is
+ *  re-based -- the 2026-09-13 re-base left three of those. The gap is the invariant; the
+ *  height is what the gap produces. */
 inline int DeriveIV5NoteVoteHeight(int nBoundaryBHeight)
 {
-    return nBoundaryBHeight + 4700;
+    return nBoundaryBHeight + 4800;
 }
 
 inline int GetForkHeightIV5NoteVote()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
     if (fRegTest)
         return nRegtestIV5NoteVoteHeight;
-    // UNSET ON EVERY NETWORK THAT CARRIES VALUE, and this is a decision rather than an
-    // omission. A note vote does not prove its note is unspent, so one note
-    // self-transferred votes once per transfer and is PAID each time: configuring a height
-    // is a claim the lane is safe, and until the unspent-note proof lands that claim is
-    // false and the failure is an unbounded payment.
+    // Scheduled on both value networks. What kept this at the sentinel was that a vote did
+    // not prove its note unspent, so one note self-transferred voted once per transfer and
+    // was paid each time. The vote now spends its note as an operation-10 payload, so a
+    // second vote of the same note is a double spend the one spent-key path refuses.
     //
-    // When the proof is in, this becomes DeriveIV5NoteVoteHeight(GetForkHeightBoundaryB())
-    // on mainnet and 1700 on testnet. The derivation above is already pinned against the
-    // ladder, so that change is a one-line flip and not a re-derivation.
-    if (fTestNet)
-        return PRIVACY_VNEXT_HEIGHT_UNSET;
-    return PRIVACY_VNEXT_HEIGHT_UNSET;
+    // The same height turns on the drawn committee an epoch state carries, member-key
+    // registration, and the minimum-weight floor on transparent votes: they are one flag
+    // day because each is consensus-visible and none can be retrofitted separately.
+    return DeriveIV5NoteVoteHeight(GetForkHeightBoundaryB());
 }
 #define FORK_HEIGHT_IV5_NOTE_VOTE (GetForkHeightIV5NoteVote())
 

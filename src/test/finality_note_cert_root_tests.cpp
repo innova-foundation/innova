@@ -1,13 +1,6 @@
-// The certificate's note leg as a commitment rather than an enumeration.
-//
-// A v4 certificate names the epoch's counted note votes by Merkle root and count instead
-// of listing every tag at 32 bytes. That is what lets the per-epoch note-vote cap move to
-// FINALITY_MAX_EPOCH_NOTE_VOTES without the canonical carrier growing, and it leaves the
-// transparent nullifier enumeration -- which is hashed into every certificate identity
-// ever produced and is live under Boundary A -- exactly as it was.
-//
-// Everything here is behind FORK_HEIGHT_IV5_NOTE_VOTE, which is unset on mainnet and
-// testnet, so the cases drive it through the regtest knob and restore it at teardown.
+// v4 certificate note leg: Merkle root and count instead of a tag list, leaving the
+// transparent nullifier enumeration unchanged. Behind FORK_HEIGHT_IV5_NOTE_VOTE, driven
+// via the regtest knob and restored at teardown.
 
 #include <boost/test/unit_test.hpp>
 

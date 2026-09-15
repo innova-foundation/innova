@@ -707,20 +707,21 @@ BOOST_AUTO_TEST_CASE(total_epoch_issuance_is_unchanged_by_the_note_lane)
 // Inertness
 // ---------------------------------------------------------------------------
 
-// Nothing in this increment reaches a live network. The lane's fork height is unset on
-// both value networks, so no operation-10 payload connects there and no settlement block
-// reads a window block looking for one.
+// Below the lane's fork height no op-10 payload connects and no settlement reads a window
+// block for one.
 BOOST_AUTO_TEST_CASE(the_reward_path_is_inert_while_the_lane_is_unconfigured)
 {
     {
         ScopedNetwork mainnet(false, false);
-        BOOST_CHECK(!IsIV5NoteVoteConfigured());
-        BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
+        BOOST_CHECK(IsIV5NoteVoteConfigured());
+        BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote() - 1));
+        BOOST_CHECK(IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote()));
     }
     {
         ScopedNetwork testnet(false, true);
-        BOOST_CHECK(!IsIV5NoteVoteConfigured());
-        BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(std::numeric_limits<int>::max()));
+        BOOST_CHECK(IsIV5NoteVoteConfigured());
+        BOOST_CHECK(!IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote() - 1));
+        BOOST_CHECK(IsIV5NoteVoteActiveAtHeight(GetForkHeightIV5NoteVote()));
     }
 
     // With the lane off, the settlement's deduction is zero and no window block is read

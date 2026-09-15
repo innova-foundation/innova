@@ -1361,8 +1361,8 @@ BOOST_AUTO_TEST_CASE(a_member_registration_is_unreachable_below_its_fork)
     const CTransaction tx = CarryingTx(payload, 1500000050);
     bool fLocalFailure = false;
 
-    // The unset case, which regtest still reaches and which the public
-    // networks saw before the note fork was scheduled.
+    // The unset case, which regtest still reaches and which every public-network block
+    // below the note-vote height is judged under.
     {
         ScopedNoteVoteHeight fork(PRIVACY_VNEXT_HEIGHT_UNSET);
         BOOST_REQUIRE(!IsIV5NoteVoteConfigured());
