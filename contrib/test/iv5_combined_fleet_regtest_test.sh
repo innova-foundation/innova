@@ -97,8 +97,9 @@ SHIELD_HEIGHT=330
 SHIELD_CONFIRM_HEIGHT=345
 SHIELD_SWEEPS=4
 
-# Epochs 2, 3 and 4 are the HARD run; epoch 4 ends at 1210.
-FINALIZED_HEIGHT=1210
+# Epochs 2-4 are the HARD run; an epoch-E vote names E's boundary, so epoch 4's
+# record carries finalized height 911.
+FINALIZED_HEIGHT=911
 FINALIZED_EPOCH=4
 
 # Negative phase: one node, same switches plus the leaf-index hold. Shield in
@@ -1052,14 +1053,12 @@ pool_is_spendable() {
 }
 
 # ------------------------------------------------------------------
-# Note-vote observation. All of these lines are printf'd by
-# ProduceNoteFinalityVote; the gate lines are behind fDebug.
+# Note-vote observation from ProducePrivacyVNextNoteVote log lines (gate lines need fDebug).
 # ------------------------------------------------------------------
-producer_success()  { grep -F "ProduceNoteFinalityVote: epoch=$1 " "$(node_log 0)" 2>/dev/null; }
-producer_refused()  { grep -F "ProduceNoteFinalityVote: epoch $1 vote was refused locally:" "$(node_log 0)" 2>/dev/null; }
-producer_dup_tag()  { grep -F "ProduceNoteFinalityVote: epoch $1 already carries this note's tag" "$(node_log 0)" 2>/dev/null; }
-producer_all()      { grep -F "ProduceNoteFinalityVote:" "$(node_log 0)" 2>/dev/null; }
-producer_tag()      { producer_success "$1" | head -1 | sed -n 's/.*tag=\([0-9a-f]*\).*/\1/p'; }
+producer_success()  { grep -F "ProducePrivacyVNextNoteVote: epoch=$1 " "$(node_log 0)" 2>/dev/null; }
+producer_refused()  { grep -F "no IV5 note vote for epoch $1: the note finality vote was built but could not be committed" "$(node_log 0)" 2>/dev/null; }
+producer_dup_tag()  { grep -F "no IV5 note vote for epoch $1: this wallet already has a note finality vote pending" "$(node_log 0)" 2>/dev/null; }
+producer_all()      { grep -E "ProducePrivacyVNextNoteVote:|no IV5 note vote for epoch" "$(node_log 0)" 2>/dev/null; }
 
 collateral_note_ids() {
     rpc "$1" collateralnode collateral-notes 2>/dev/null | python3 -c '
@@ -2582,7 +2581,7 @@ else
     producer_all | tail -12
 fi
 if [ -n "$ACCEPTED_EPOCHS" ] && [ -z "$REFUSED_EPOCHS" ]; then
-    success "every built note vote passed node0's own relay check (epoch(s)$ACCEPTED_EPOCHS)"
+    success "every built note vote entered node0's own mempool (epoch(s)$ACCEPTED_EPOCHS)"
 elif [ -n "$REFUSED_EPOCHS" ]; then
     fail "node0 REFUSED ITS OWN note vote in epoch(s)$REFUSED_EPOCHS: $F2_LINE"
 else
@@ -2610,24 +2609,15 @@ fi
 
 
 # ------------------------------------------------------------
-# C6: no node originates both a named and an anonymous vote.
-#
-# A CFinalityVote names its voter -- pubkey, real staked outpoints, cleartext
-# weight and time -- and a CNoteFinalityVote carries only a per-epoch tag. The
-# two originated by one node put the name and the tag on the same connection,
-# and no tag construction undoes that. Origination is what this reads: relay
-# carries every object to every node, so the producer lines are the only place
-# the origin is visible.
-#   ProduceFinalityVote: epoch=      identity lane, one per epoch cast
-#   ProduceNoteFinalityVote: epoch=  anonymous lane, one per epoch cast
-# ------------------------------------------------------------
+# C6: no node originates both a named and an anonymous vote, read from the producer
+# log lines ProduceFinalityVote and ProducePrivacyVNextNoteVote.
 LANE_OK=1
 LANE_TOTAL_ANON=0
 LANE_TOTAL_IDENT=0
 for ((n=0; n<NUM_NODES; n++)); do
     L="$(node_log "$n")"
     N_IDENT="$(grep -cF "ProduceFinalityVote: epoch=" "$L" 2>/dev/null)"
-    N_ANON="$(grep -cF "ProduceNoteFinalityVote: epoch=" "$L" 2>/dev/null)"
+    N_ANON="$(grep -cF "ProducePrivacyVNextNoteVote: epoch=" "$L" 2>/dev/null)"
     is_int "${N_IDENT:-x}" || N_IDENT=0
     is_int "${N_ANON:-x}" || N_ANON=0
     N_LANE="$(grep -oE "FINALITY vote lane latched: lane=[a-z]+" "$L" 2>/dev/null | \
