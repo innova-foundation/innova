@@ -6935,23 +6935,34 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
             return reject("note vote epoch block is not an ancestor of the including block");
     }
 
-    // Anchor deterministically from the including block's context. Reading the node-local
-    // finalized tip in a connect path is the ConnectBlock-split class.
+    // The payload rule (run by ConnectInputs) binds an operation-10 vote to epoch state
+    // E-1; the record only has to find that same state. No finalized epoch is required,
+    // matching the payload rule.
     CEpochState finalizedEpochState;
-    // A note vote anchors to the IV5 root, so an empty legacy curve root is not a
-    // reason to skip an epoch. Requiring one refused every vote on a chain with no
-    // legacy shielded history -- which is every IV5 chain.
-    const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
-        txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState,
-        false /* fRequireCurveRoot */,
-        true /* fAllowDeepUnfinalizedAnchor */);
-    if (anchorResult == FINALITY_RESULT_INVALID)
-        return reject("note vote requires an already-finalized epoch");
-    if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
-        return localState("note vote requires unavailable finalized epoch state");
-    // The record declares no anchor to compare: the payload's own epoch-anchor rule is
-    // what binds an operation-10 vote to the finalized root, and it ran at connect time.
-    // The epoch must still exist locally, which is what the resolution above establishes.
+    if (nContextHeight >= 0)
+    {
+        if (vote.nEpoch < 1 || pEpochBlock->pprev == NULL)
+            return reject("note vote names an epoch with no predecessor to anchor to");
+        if (!txdb.ReadEpochState(vote.nEpoch - 1, finalizedEpochState) ||
+            finalizedEpochState.nEpoch != vote.nEpoch - 1 ||
+            finalizedEpochState.nHeightEnd != vote.nHeight - 1 ||
+            finalizedEpochState.hashBoundaryBlock != pEpochBlock->pprev->GetBlockHash())
+            return localState("note vote anchor epoch state is not available on this chain");
+    }
+    else
+    {
+        // A note vote anchors to the IV5 root, so an empty legacy curve root is not a
+        // reason to skip an epoch. Requiring one refused every vote on a chain with no
+        // legacy shielded history -- which is every IV5 chain.
+        const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
+            txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState,
+            false /* fRequireCurveRoot */,
+            true /* fAllowDeepUnfinalizedAnchor */);
+        if (anchorResult == FINALITY_RESULT_INVALID)
+            return reject("note vote requires an already-finalized epoch");
+        if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
+            return localState("note vote requires unavailable finalized epoch state");
+    }
     if (finalizedEpochState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
         return localState("note vote anchor epoch carries no IV5 tree root");
 
