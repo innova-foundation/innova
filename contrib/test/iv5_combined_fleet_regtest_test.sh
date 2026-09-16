@@ -90,9 +90,9 @@ SHIELD_FEE="0.00100000"
 # ---------------------------------------------------------------------------
 # Fixed heights. Each peer's stake must clear the 500 INN vote floor from NOTE_VOTE_HEIGHT.
 # ---------------------------------------------------------------------------
-FUND_AMOUNT=100
-FUND_HEIGHT=20
-FUND_CONFIRM_HEIGHT=25
+FUND_AMOUNT=600
+FUND_HEIGHT=40
+FUND_CONFIRM_HEIGHT=45
 SHIELD_HEIGHT=330
 SHIELD_CONFIRM_HEIGHT=345
 SHIELD_SWEEPS=4
@@ -123,14 +123,18 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 #
 # Regtest draws 3 seats at M=2 over a 2-epoch term, refuses a registry smaller
 # than 2N, and anchors the draw 2 epochs back. Transparent value is shielded in
-# the funding epoch, the collateral notes are carved out of it one epoch later,
-# and they are registered the epoch after that; every registration must confirm at
-# or below the term's anchor height, and the term itself has to sit on the chain's
-# own term grid.
+# the funding epoch, the collateral notes are carved out of it, and they are
+# registered; every registration must confirm at or below the term's anchor height,
+# and the term itself has to sit on the chain's own term grid.
+#
+# A note made in epoch E is first spendable in E+2. At a height in E+1 the spend
+# anchor is the newest epoch the E record calls finalized, which is at most E-1, and
+# E itself is under EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH deep. Only the E+1
+# record, written as E+2 opens, carries a finalized height that covers E.
 # ---------------------------------------------------------------------------
 POOL_FUND_EPOCH=9
-CARVE_EPOCH=$(( POOL_FUND_EPOCH + 1 ))
-REGISTER_EPOCH=$(( CARVE_EPOCH + 1 ))
+CARVE_EPOCH=$(( POOL_FUND_EPOCH + 2 ))
+REGISTER_EPOCH=$(( CARVE_EPOCH + 2 ))
 # Above the anchor, so nothing here moves the registry the draw reads.
 MASK_EPOCH=$(( REGISTER_EPOCH + 1 ))
 
@@ -158,16 +162,22 @@ COMMITTEE_THRESHOLD_M=2
 # verb over the same kind of note.
 COLLATERAL_ROWS=$(( COMMITTEE_SEAT_COUNT * 2 ))
 PRIVATE_CN_ROWS=1
-CARVE_ROWS=$(( COLLATERAL_ROWS + PRIVATE_CN_ROWS ))
+REGISTER_ROWS=$(( COLLATERAL_ROWS + PRIVATE_CN_ROWS ))
+# node0 note-votes, and its voter takes the wallet's largest eligible note and skips only
+# collateral that is already registered. The epoch the carved notes become spendable is
+# the epoch their registrations run in, so the voter takes one of them at that boundary,
+# before the harness can register it. One spare keeps every registration row funded.
+VOTE_SPARE_ROWS=1
+CARVE_ROWS=$(( REGISTER_ROWS + VOTE_SPARE_ROWS ))
 COLLATERAL_VALUE=25000
 
 # Funding the pool. A shield splits its value across two notes at a uniformly
 # random point, so no amount shielded in one step can be made to land as a single
 # 25000 INN note: the collateral notes are carved by in-pool transfer. Selection is
 # largest-first and every carve strands whatever it over-selected, so many smaller
-# shields keep the strand small. Seven carves need 175000; the rest is strand
+# shields keep the strand small. Eight carves need 200000; the rest is strand
 # headroom and the notes the mask section spends.
-POOL_SHIELD_ROWS=22
+POOL_SHIELD_ROWS=24
 POOL_SHIELD_VALUE=11500
 POOL_SHIELD_TOTAL=$(( POOL_SHIELD_ROWS * POOL_SHIELD_VALUE ))
 
@@ -1550,6 +1560,10 @@ if is_int "$E2_VOTES" && [ "$E2_VOTES" -ge 2 ]; then
     success "epoch 2 carried $E2_VOTES relayed finality votes"
 else
     fail "epoch 2 carried $E2_VOTES finality votes, need >= 2"
+    for ((n=1; n<NUM_NODES; n++)); do
+        grep -h "AddVote: rejected finality vote" "$(node_dir "$n")/regtest/debug.log" 2>/dev/null |
+            sort | uniq -c | sed "s/^/    node$n: /"
+    done
 fi
 
 DAG_OK=1
@@ -1950,7 +1964,7 @@ done
 success "node0 imported the private half of all $NUM_NODES member keys"
 
 # ============================================================
-header "11. The pool is funded for seven collateral notes"
+header "11. The pool is funded for eight collateral notes"
 # ============================================================
 
 advance_through_epochs 5 "$POOL_FUND_EPOCH" || { fail "the epoch 5-$POOL_FUND_EPOCH vote rounds failed"; exit 1; }
@@ -2010,7 +2024,7 @@ else
 fi
 
 # ============================================================
-header "12. Seven 25000 INN collateral notes are carved in the pool"
+header "12. Eight 25000 INN collateral notes are carved in the pool"
 # ============================================================
 
 advance_through_epochs "$CARVE_EPOCH" "$CARVE_EPOCH" || { fail "the epoch $CARVE_EPOCH vote round failed"; exit 1; }
@@ -2025,9 +2039,8 @@ else
     exit 1
 fi
 
-# All carves stay inside this one epoch on purpose. Selection is largest-first, and
-# once the carve epoch is built a 25000 INN collateral note is the largest note the
-# wallet holds: a later carve would spend one of the ones it just made.
+# All carves in one epoch: selection is largest-first, so a later carve would
+# spend a 25000 INN note just made.
 CARVED=0
 for ((r=0; r<CARVE_ROWS; r++)); do
     TR="$(rpc 0 z_iv5transfer "$IV5ADDR" "$COLLATERAL_VALUE" 2>&1)"
@@ -2064,7 +2077,7 @@ wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch $RE
 
 NOTE_IDS=()
 while read -r nid; do [ -n "$nid" ] && NOTE_IDS+=("$nid"); done < <(collateral_note_ids 0)
-if [ "${#NOTE_IDS[@]}" -ge "$CARVE_ROWS" ]; then
+if [ "${#NOTE_IDS[@]}" -ge "$REGISTER_ROWS" ]; then
     success "${#NOTE_IDS[@]} attestable $COLLATERAL_VALUE INN note(s) are visible to the wallet"
 else
     fail "only ${#NOTE_IDS[@]} attestable note(s); the carve did not finalize into the anchor"
