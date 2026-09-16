@@ -1402,6 +1402,24 @@ bool GetPrivacyVNextNoteVoteMint(const PrivacyVNextStateEffects& effects,
                                  int64_t& nMintOut,
                                  std::string& strError);
 
+/** The most a post-DAG block's transactions may pay out: value in, coinbase allowance,
+ *  and the block's note-vote entitlements (reserve netted off the settlement, not new
+ *  issuance). False on a negative operand or overflow. */
+inline bool GetBlockValueOutCeiling(int64_t nValueIn, int64_t nAllowedCoinbase,
+                                    int64_t nNoteVoteMint, int64_t& nCeilingOut)
+{
+    nCeilingOut = 0;
+    if (nValueIn < 0 || nAllowedCoinbase < 0 || nNoteVoteMint < 0)
+        return false;
+    if (nValueIn > std::numeric_limits<int64_t>::max() - nAllowedCoinbase)
+        return false;
+    const int64_t nBase = nValueIn + nAllowedCoinbase;
+    if (nNoteVoteMint > std::numeric_limits<int64_t>::max() - nBase)
+        return false;
+    nCeilingOut = nBase + nNoteVoteMint;
+    return true;
+}
+
 /** Note votes connected in the inclusion window times the epoch entitlement, withheld from
  *  the transparent budget. pindexWindowTop is the settlement block's parent.
  *  fLocalFailure: a window block this node cannot read. */

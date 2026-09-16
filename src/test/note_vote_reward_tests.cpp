@@ -960,4 +960,37 @@ BOOST_AUTO_TEST_CASE(the_epoch_build_bounds_the_mint_it_applies)
     }
 }
 
+// A block's value-out ceiling includes the note-vote entitlements it carries
+// (e.g. 4.5 INN coinbase + 5.87890625 INN entitlement).
+BOOST_AUTO_TEST_CASE(a_block_may_pay_out_the_note_vote_entitlements_it_carries)
+{
+    const int64_t nCoinbase = 450000000LL;
+    const int64_t nEntitlement = 587890625LL;
+    const int64_t nOut = nCoinbase + nEntitlement;
+
+    int64_t nCeiling = -1;
+    BOOST_REQUIRE(GetBlockValueOutCeiling(0, nCoinbase, nEntitlement, nCeiling));
+    BOOST_CHECK_EQUAL(nCeiling, nOut);
+    BOOST_CHECK(!(nOut > nCeiling));
+    BOOST_CHECK(nOut + 1 > nCeiling);
+
+    // Without a vote the ceiling is exactly what it always was.
+    BOOST_REQUIRE(GetBlockValueOutCeiling(0, nCoinbase, 0, nCeiling));
+    BOOST_CHECK_EQUAL(nCeiling, nCoinbase);
+    BOOST_CHECK(nOut > nCeiling);
+
+    // Spent inputs still count, and every leg is additive.
+    BOOST_REQUIRE(GetBlockValueOutCeiling(7 * COIN, nCoinbase, 2 * nEntitlement, nCeiling));
+    BOOST_CHECK_EQUAL(nCeiling, 7 * COIN + nCoinbase + 2 * nEntitlement);
+
+    // A ceiling that cannot be represented, or a negative leg, is refused, not wrapped.
+    const int64_t nMax = std::numeric_limits<int64_t>::max();
+    BOOST_CHECK(!GetBlockValueOutCeiling(nMax, 1, 0, nCeiling));
+    BOOST_CHECK(!GetBlockValueOutCeiling(nMax - 1, 1, 1, nCeiling));
+    BOOST_CHECK(!GetBlockValueOutCeiling(0, nCoinbase, -1, nCeiling));
+    BOOST_CHECK(!GetBlockValueOutCeiling(-1, nCoinbase, 0, nCeiling));
+    BOOST_CHECK(GetBlockValueOutCeiling(nMax - 2, 1, 1, nCeiling));
+    BOOST_CHECK_EQUAL(nCeiling, nMax);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

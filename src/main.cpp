@@ -10061,6 +10061,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     int64_t nFees = 0;
     int64_t nValueIn = 0;
     int64_t nValueOut = 0;
+    // Note-vote entitlements this block pays into the pool, counted inside nValueOut.
+    int64_t nNoteVoteMintBlock = 0;
     int64_t nAmountBurned = 0;
     int64_t nStakeReward = 0;
     // Declared IV5 fees of this block's active transactions. From the fee-note fork
@@ -10398,6 +10400,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : block value-out overflow"));
             nValueIn += nTxValueIn;
             nValueOut += nTxValueOut;
+            if (nTxNoteVoteMint > std::numeric_limits<int64_t>::max() - nNoteVoteMintBlock)
+                return DoS(100, error("ConnectBlock() : note-vote mint overflow"));
+            nNoteVoteMintBlock += nTxNoteVoteMint;
             for (const CTxOut& out : tx.vout) {
               if(out.scriptPubKey.IsUnspendable())
                 nAmountBurned += out.nValue;
@@ -10702,11 +10707,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         // already include the shielded value-balance flows of every active tx.
         if (pindex->nHeight >= FORK_HEIGHT_DAG)
         {
-            if (nValueIn > std::numeric_limits<int64_t>::max() - nAllowedCoinbase)
+            int64_t nValueOutCeiling = 0;
+            if (!GetBlockValueOutCeiling(nValueIn, nAllowedCoinbase, nNoteVoteMintBlock,
+                                         nValueOutCeiling))
                 return DoS(100, error("ConnectBlock() : block value conservation overflow"));
-            if (nValueOut > nValueIn + nAllowedCoinbase)
-                return DoS(100, error("ConnectBlock() : block mints value (out=%" PRId64 " in=%" PRId64 " allowed_coinbase=%" PRId64 ")",
-                                      nValueOut, nValueIn, nAllowedCoinbase));
+            if (nValueOut > nValueOutCeiling)
+                return DoS(100, error("ConnectBlock() : block mints value (out=%" PRId64 " in=%" PRId64 " allowed_coinbase=%" PRId64 " note_vote_mint=%" PRId64 ")",
+                                      nValueOut, nValueIn, nAllowedCoinbase, nNoteVoteMintBlock));
         }
     }
     if (IsProofOfStake())
