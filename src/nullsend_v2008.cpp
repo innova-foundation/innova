@@ -39,7 +39,7 @@ bool IsMixOnionEndpoint(const std::string& strEndpoint)
 uint256 CMixRoundAnnouncement::GetSignatureHash() const
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/announce/v1");
+    ss << std::string("innova/iv5/mix/announce/v2");
     ss << nVersion;
     ss << hashRound;
     ss << hashRoundKey;
@@ -48,6 +48,21 @@ uint256 CMixRoundAnnouncement::GetSignatureHash() const
     ss << nParticipants;
     ss << nTime;
     ss << pubkeyCoordinator;
+    ss.write((const char*)&nNetwork, 1);
+    ss.write((const char*)genesis.data(), genesis.size());
+    ss.write((const char*)parameterDigest.data(), parameterDigest.size());
+    ss.write((const char*)finalizedRoot.data(), finalizedRoot.size());
+    ss << nFinalizedTreeSize;
+    ss << nDenomination;
+    ss << nFee;
+    ss << nJoinSecs;
+    ss << nViewSecs;
+    ss << nTokenSecs;
+    ss << nOutputSecs;
+    ss << nApproveSecs;
+    ss << nNonceSecs;
+    ss << nResponseSecs;
+    ss << nTerminalSecs;
     return ss.GetHash();
 }
 
@@ -56,7 +71,7 @@ uint256 CMixRoundAnnouncement::DerivedRoundId() const
     // Every field but hashRound and the signature. Including hashRound would be
     // circular; including the signature would make the identifier depend on the nonce.
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/round-id/v1");
+    ss << std::string("innova/iv5/mix/round-id/v2");
     ss << nVersion;
     ss << hashRoundKey;
     ss << strEndpoint;
@@ -64,6 +79,21 @@ uint256 CMixRoundAnnouncement::DerivedRoundId() const
     ss << nParticipants;
     ss << nTime;
     ss << pubkeyCoordinator;
+    ss.write((const char*)&nNetwork, 1);
+    ss.write((const char*)genesis.data(), genesis.size());
+    ss.write((const char*)parameterDigest.data(), parameterDigest.size());
+    ss.write((const char*)finalizedRoot.data(), finalizedRoot.size());
+    ss << nFinalizedTreeSize;
+    ss << nDenomination;
+    ss << nFee;
+    ss << nJoinSecs;
+    ss << nViewSecs;
+    ss << nTokenSecs;
+    ss << nOutputSecs;
+    ss << nApproveSecs;
+    ss << nNonceSecs;
+    ss << nResponseSecs;
+    ss << nTerminalSecs;
     return ss.GetHash();
 }
 
@@ -109,6 +139,31 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
         FAIL("port is out of range");
     if (nParticipants < NULLSEND_MIN_PARTICIPANTS || nParticipants > (int)iv5::MAX_NULLSEND_INPUTS)
         FAIL("participant count is outside the range a v2008 mix can carry");
+    if (nDenomination == 0)
+        FAIL("the round announces no denomination");
+    // Equal shares, exactly: a seat paying a remainder pays a different amount from every
+    // other seat, and an amount is a tag.
+    if (nFee % (uint64_t)nParticipants != 0)
+        FAIL("the fee does not divide evenly into one share per seat");
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    if (genesis == zero || parameterDigest == zero || finalizedRoot == zero)
+        FAIL("the round announces no chain to anchor to");
+    if (nFinalizedTreeSize == 0)
+        FAIL("the round announces an empty anchor tree");
+    const uint16_t vWindows[8] = { nJoinSecs, nViewSecs, nTokenSecs, nOutputSecs,
+                                   nApproveSecs, nNonceSecs, nResponseSecs, nTerminalSecs };
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < 8; i++)
+    {
+        if (vWindows[i] < MIX_WINDOW_MIN_SECS || vWindows[i] > MIX_WINDOW_MAX_SECS)
+            FAIL("a scheduled window is outside the range a round may use");
+        nTotal += (int64_t)vWindows[i];
+    }
+    if (nApproveSecs < MIX_PROOF_WINDOW_MIN_SECS)
+        FAIL("the approval window is shorter than a membership proof takes");
+    if (nTotal > MIX_SCHEDULE_MAX_TOTAL_SECS)
+        FAIL("the schedule holds the round's anchor open for too long");
     if (nTime <= 0)
         FAIL("announcement carries no time");
     if (!pubkeyCoordinator.IsValid())

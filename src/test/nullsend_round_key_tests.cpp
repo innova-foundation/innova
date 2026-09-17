@@ -35,6 +35,27 @@ const std::vector<unsigned char>& Exponent()
     return vch;
 }
 
+// The transcript every seat has to agree on, and the schedule it derives its deadlines
+// from. A round announcing neither is refused, so every fixture carries one.
+void FillTranscript(CMixRoundAnnouncement& announce)
+{
+    announce.nNetwork = 1;
+    announce.genesis.fill(0x11);
+    announce.parameterDigest.fill(0x22);
+    announce.finalizedRoot.fill(0x33);
+    announce.nFinalizedTreeSize = 4096;
+    announce.nDenomination = 1000;
+    announce.nFee = 4 * 25;
+    announce.nJoinSecs = 120;
+    announce.nViewSecs = 60;
+    announce.nTokenSecs = 60;
+    announce.nOutputSecs = 120;
+    announce.nApproveSecs = 120;
+    announce.nNonceSecs = 60;
+    announce.nResponseSecs = 60;
+    announce.nTerminalSecs = 300;
+}
+
 CMixRoundAnnouncement Announce(CKey& keyOut, const std::vector<unsigned char>& vchN)
 {
     keyOut.MakeNewKey(true);
@@ -45,6 +66,7 @@ CMixRoundAnnouncement Announce(CKey& keyOut, const std::vector<unsigned char>& v
     announce.nPort = 8443;
     announce.nParticipants = 4;
     announce.nTime = GetTime();
+    FillTranscript(announce);
     BOOST_REQUIRE(announce.Sign(keyOut));
     return announce;
 }
@@ -120,6 +142,49 @@ BOOST_AUTO_TEST_CASE(the_signature_covers_the_commitment)
     CMixRoundAnnouncement resized = announce;
     resized.nParticipants = 3;
     BOOST_CHECK(!resized.CheckSignature());
+
+    // The transcript fields too: an edited copy would build a prefix the co-seats refuse.
+    CMixRoundAnnouncement reanchored = announce;
+    reanchored.finalizedRoot.fill(0x44);
+    BOOST_CHECK_MESSAGE(!reanchored.CheckSignature(),
+                        "the anchor moved and the signature still verified");
+    BOOST_CHECK(reanchored.DerivedRoundId() != announce.hashRound);
+    CMixRoundAnnouncement redenominated = announce;
+    redenominated.nDenomination = announce.nDenomination + 1;
+    BOOST_CHECK(!redenominated.CheckSignature());
+    BOOST_CHECK(redenominated.DerivedRoundId() != announce.hashRound);
+    CMixRoundAnnouncement refeed = announce;
+    refeed.nFee = announce.nFee + announce.nParticipants;
+    BOOST_CHECK(!refeed.CheckSignature());
+    CMixRoundAnnouncement rescheduled = announce;
+    rescheduled.nApproveSecs = announce.nApproveSecs + 1;
+    BOOST_CHECK_MESSAGE(!rescheduled.CheckSignature(),
+                        "a window moved and the signature still verified");
+    BOOST_CHECK(rescheduled.DerivedRoundId() != announce.hashRound);
+
+    // What a round may not announce.
+    CMixRoundAnnouncement uneven = announce;
+    uneven.nFee = announce.nFee + 1;
+    BOOST_REQUIRE(uneven.Sign(key));
+    BOOST_CHECK_MESSAGE(!uneven.IsValidBasic(&strError),
+                        "a fee that does not divide into equal shares was accepted");
+    CMixRoundAnnouncement hurried = announce;
+    hurried.nApproveSecs = MIX_PROOF_WINDOW_MIN_SECS - 1;
+    BOOST_REQUIRE(hurried.Sign(key));
+    BOOST_CHECK_MESSAGE(!hurried.IsValidBasic(&strError),
+                        "an approval window shorter than a proof takes was accepted");
+    CMixRoundAnnouncement endless = announce;
+    endless.nJoinSecs = MIX_WINDOW_MAX_SECS + 1;
+    BOOST_REQUIRE(endless.Sign(key));
+    BOOST_CHECK(!endless.IsValidBasic(&strError));
+    CMixRoundAnnouncement unanchored = announce;
+    unanchored.finalizedRoot.fill(0);
+    BOOST_REQUIRE(unanchored.Sign(key));
+    BOOST_CHECK(!unanchored.IsValidBasic(&strError));
+    CMixRoundAnnouncement free = announce;
+    free.nDenomination = 0;
+    BOOST_REQUIRE(free.Sign(key));
+    BOOST_CHECK(!free.IsValidBasic(&strError));
 }
 
 // A round the participant cannot judge is not one it joins.
@@ -134,6 +199,7 @@ BOOST_AUTO_TEST_CASE(an_announcement_without_a_commitment_is_refused)
     announce.nPort = 8443;
     announce.nParticipants = 4;
     announce.nTime = GetTime();
+    FillTranscript(announce);
     BOOST_REQUIRE(announce.Sign(key));
 
     std::string strError;
@@ -163,6 +229,9 @@ BOOST_AUTO_TEST_CASE(the_announcement_shape_is_bounded)
     {
         CMixRoundAnnouncement a = good;
         a.nParticipants = vCases[i].nParticipants;
+        // One share per seat, exactly: the fee follows the seat count or the announcement
+        // is refused for a reason this case is not about.
+        a.nFee = (uint64_t)(a.nParticipants > 0 ? a.nParticipants : 1) * 25;
         BOOST_REQUIRE(a.Sign(key));
         BOOST_CHECK_MESSAGE(a.IsValidBasic(&strError) == vCases[i].fValid,
                             vCases[i].pszName << ": " << a.nParticipants
@@ -185,8 +254,12 @@ BOOST_AUTO_TEST_CASE(the_announcement_shape_is_bounded)
     BOOST_CHECK(!badPort.IsValidBasic(&strError));
 
     // An announcement stops being joinable rather than staying open forever.
-    BOOST_CHECK(!good.IsExpired(good.nTime + MIX_ROUND_ANNOUNCE_TIMEOUT));
-    BOOST_CHECK(good.IsExpired(good.nTime + MIX_ROUND_ANNOUNCE_TIMEOUT + 1));
+    BOOST_CHECK(!good.IsExpired(good.Ends()));
+    BOOST_CHECK(good.IsExpired(good.Ends() + 1));
+    // Joinable only inside its own join window, which every seat computes for itself.
+    BOOST_CHECK(good.IsJoinable(good.nTime));
+    BOOST_CHECK(!good.IsJoinable(good.nTime - 1));
+    BOOST_CHECK(!good.IsJoinable(good.JoinCloses()));
 }
 
 // Round trip, so a participant judges the bytes it received rather than a local

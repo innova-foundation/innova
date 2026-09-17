@@ -34,10 +34,21 @@ uint256 MixRoundKeyCommitment(const std::vector<unsigned char>& vchRSA_N,
  *  no MAC of its own, so a clearnet endpoint over Tor would put the exit on its path. */
 bool IsMixOnionEndpoint(const std::string& strEndpoint);
 
+/** Bounds on one window of a round's schedule. A window shorter than the work it covers
+ *  kills every round on a slow seat, which selects for fast seats and is a deanonymising
+ *  filter, not a usability problem; one longer than it needs holds the anchor open. */
+static const int MIX_WINDOW_MIN_SECS = 15;
+static const int MIX_WINDOW_MAX_SECS = 900;
+/** The proving window covers one input's membership proof. A one-input prove measures
+ *  ~2.5 s on a 48-core host and proving is single-threaded, so a slow wallet is minutes:
+ *  this floor is a floor, not a target. */
+static const int MIX_PROOF_WINDOW_MIN_SECS = 60;
+static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
+
 class CMixRoundAnnouncement
 {
 public:
-    static const int CURRENT_VERSION = 1;
+    static const int CURRENT_VERSION = 2;
 
     int nVersion;
     uint256 hashRound;
@@ -47,6 +58,28 @@ public:
     int nParticipants;
     int64_t nTime;
     CPubKey pubkeyCoordinator;
+
+    // The transcript. Every seat must hold the same anchor, denomination and fee; signed and
+    // covered by the derived identifier, so an edited copy is a different round.
+    uint8_t nNetwork;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDigest parameterDigest;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    uint64_t nDenomination;
+    uint64_t nFee;
+
+    // The schedule, in seconds after nTime. Deadlines live in the announcement, not in coordinator
+    // replies, so every seat derives the same instants and the coordinator cannot time seats apart.
+    uint16_t nJoinSecs;
+    uint16_t nViewSecs;
+    uint16_t nTokenSecs;
+    uint16_t nOutputSecs;
+    uint16_t nApproveSecs;
+    uint16_t nNonceSecs;
+    uint16_t nResponseSecs;
+    uint16_t nTerminalSecs;
+
     std::vector<unsigned char> vchSig;
 
     CMixRoundAnnouncement()
@@ -64,8 +97,34 @@ public:
         nParticipants = 0;
         nTime = 0;
         pubkeyCoordinator = CPubKey();
+        nNetwork = 0;
+        genesis.fill(0);
+        parameterDigest.fill(0);
+        finalizedRoot.fill(0);
+        nFinalizedTreeSize = 0;
+        nDenomination = 0;
+        nFee = 0;
+        nJoinSecs = 0;
+        nViewSecs = 0;
+        nTokenSecs = 0;
+        nOutputSecs = 0;
+        nApproveSecs = 0;
+        nNonceSecs = 0;
+        nResponseSecs = 0;
+        nTerminalSecs = 0;
         vchSig.clear();
     }
+
+    // The instants every seat derives, rather than is told.
+    int64_t JoinCloses() const { return nTime + (int64_t)nJoinSecs; }
+    int64_t ViewCloses() const { return JoinCloses() + (int64_t)nViewSecs; }
+    int64_t TokenCloses() const { return ViewCloses() + (int64_t)nTokenSecs; }
+    int64_t OutputCloses() const { return TokenCloses() + (int64_t)nOutputSecs; }
+    int64_t ApproveCloses() const { return OutputCloses() + (int64_t)nApproveSecs; }
+    int64_t NonceCloses() const { return ApproveCloses() + (int64_t)nNonceSecs; }
+    int64_t ResponseCloses() const { return NonceCloses() + (int64_t)nResponseSecs; }
+    /** When the round stops answering at all. */
+    int64_t Ends() const { return ResponseCloses() + (int64_t)nTerminalSecs; }
 
     IMPLEMENT_SERIALIZE
     (
@@ -77,6 +136,21 @@ public:
         READWRITE(nParticipants);
         READWRITE(nTime);
         READWRITE(pubkeyCoordinator);
+        READWRITE(FLATDATA(nNetwork));
+        READWRITE(FLATDATA(genesis));
+        READWRITE(FLATDATA(parameterDigest));
+        READWRITE(FLATDATA(finalizedRoot));
+        READWRITE(nFinalizedTreeSize);
+        READWRITE(nDenomination);
+        READWRITE(nFee);
+        READWRITE(nJoinSecs);
+        READWRITE(nViewSecs);
+        READWRITE(nTokenSecs);
+        READWRITE(nOutputSecs);
+        READWRITE(nApproveSecs);
+        READWRITE(nNonceSecs);
+        READWRITE(nResponseSecs);
+        READWRITE(nTerminalSecs);
         READWRITE(vchSig);
     )
 
@@ -95,7 +169,9 @@ public:
     bool Sign(const CKey& key);
     bool CheckSignature() const;
 
-    bool IsExpired(int64_t nNow) const { return (nNow - nTime) > MIX_ROUND_ANNOUNCE_TIMEOUT; }
+    /** Joinable only inside its own join window, and dead once the schedule ends. */
+    bool IsJoinable(int64_t nNow) const { return nNow >= nTime && nNow < JoinCloses(); }
+    bool IsExpired(int64_t nNow) const { return nNow > Ends(); }
 
     /** Shape only: nothing here reads the chain. */
     bool IsValidBasic(std::string* pstrError = NULL) const;
