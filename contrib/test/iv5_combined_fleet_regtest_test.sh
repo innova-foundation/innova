@@ -2755,13 +2755,15 @@ else
     fail "no node ran the note tally committee pass for epoch $TALLY_EPOCH"
 fi
 
-NOTE_ACTIVE="$(echo "$TALLY_LINE" | sed -n 's/.*note_active=\([0-9.]*\).*/\1/p')"
-NOTE_COVERED="$(echo "$TALLY_LINE" | sed -n 's/.*covered=\([0-9]*\).*/\1/p')"
-if [ -n "$NOTE_ACTIVE" ] && ! feq "${NOTE_ACTIVE:-0}" 0 && \
-   is_int "${NOTE_COVERED:-x}" && [ "${NOTE_COVERED:-0}" -gt 0 ]; then
-    success "the committee opened $NOTE_COVERED covered note vote(s) to $NOTE_ACTIVE of note weight"
+# The tally counts votes; it opens no weight. note_votes is what the epoch connected and
+# note_winners how many of those back the winning boundary.
+NOTE_VOTES="$(echo "$TALLY_LINE" | sed -n 's/.* note_votes=\([0-9]*\).*/\1/p')"
+NOTE_WINNERS="$(echo "$TALLY_LINE" | sed -n 's/.* note_winners=\([0-9]*\).*/\1/p')"
+if is_int "${NOTE_VOTES:-x}" && is_int "${NOTE_WINNERS:-x}" && \
+   [ "${NOTE_WINNERS:-0}" -gt 0 ] && [ "${NOTE_WINNERS:-0}" -le "${NOTE_VOTES:-0}" ]; then
+    success "the note tally counted $NOTE_WINNERS of $NOTE_VOTES note vote(s) for the winning boundary"
 else
-    fail "the note tally opened no weight (covered='$NOTE_COVERED' note_active='$NOTE_ACTIVE')"
+    fail "the note tally counted no note vote for the winner (note_votes='$NOTE_VOTES' note_winners='$NOTE_WINNERS')"
 fi
 
 NOTE_CERT_HASHES=""

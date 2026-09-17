@@ -666,12 +666,12 @@ extern int nRegtestIV5NoteVoteHeight;
  *
  *  The gap is a whole number of post-DAG epochs (16 x FINALITY_EPOCH_INTERVAL_POST_DAG)
  *  and Boundary B is itself one epoch above the DAG gate, so the result opens an epoch on
- *  every network. That is load-bearing rather than tidy. Two gates read this height: the
- *  per-block one, on a connect height, and the per-epoch one, on state.nHeightEnd, which
- *  decides whether an epoch state commits note-vote leaves and which serialization
+ *  every network, so activation is uniform within every epoch. Two gates read this height:
+ *  the per-block one, on a connect height, and the per-epoch one, on state.nHeightEnd,
+ *  which decides whether an epoch state commits note-vote leaves and which serialization
  *  version it is written at. They agree for every block of an epoch only when the height
- *  opens one; off a boundary they disagree over the single straddling epoch, and what
- *  holds that shut is a third rule rather than construction.
+ *  opens one. Off a boundary the straddling epoch is written V6 while its whole 24-block
+ *  vote window precedes activation, so it commits a note-vote epoch no vote could enter.
  *
  *  This is a derivation and not a literal on purpose. The height used to live only in
  *  prose, which is the shape that leaves a stale value behind the next time the ladder is
