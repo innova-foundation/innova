@@ -774,6 +774,13 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut);
 
+/** The frozen roster, coordinator to seat: (key image, session key) pairs in freeze order,
+ *  which MixViewDigest covers. Neither side sorts; both refuse any other order. */
+bool BuildMixRosterBody(const std::vector<CMixRosterEntry>& vRoster,
+                        std::vector<unsigned char>& vchOut);
+bool ReadMixRosterBody(const std::vector<unsigned char>& vchIn,
+                       std::vector<CMixRosterEntry>& vOut);
+
 /** The frozen key-image set, coordinator to seat. Must be in 32-byte-array order (as
  *  PrivacyVNextChangeIndexFor sorts), not uint256 order; the reader refuses unsorted sets. */
 bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,

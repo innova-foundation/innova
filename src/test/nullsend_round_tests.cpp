@@ -3153,4 +3153,56 @@ BOOST_AUTO_TEST_CASE(the_coordinator_listens_and_answers_one_connection_at_a_tim
     BOOST_CHECK(!listener.IsOpen());
 }
 
+// The roster frame carries the session-key pairs in the round's frozen order and refuses
+// any other; a seat needs them to compute the view it signs.
+BOOST_AUTO_TEST_CASE(the_roster_frame_carries_the_pairs_in_the_order_the_round_froze)
+{
+    const int64_t nNow = 3970000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    const std::vector<CMixRosterEntry>& vRoster = round.Roster();
+    BOOST_REQUIRE_EQUAL(vRoster.size(), 3u);
+
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixRosterBody(vRoster, vchBody));
+    std::vector<CMixRosterEntry> vRead;
+    BOOST_REQUIRE(ReadMixRosterBody(vchBody, vRead));
+    BOOST_REQUIRE_EQUAL(vRead.size(), vRoster.size());
+    for (size_t i = 0; i < vRead.size(); i++)
+    {
+        BOOST_CHECK(vRead[i].keyImage == vRoster[i].keyImage);
+        BOOST_CHECK(vRead[i].pubkeySession == vRoster[i].pubkeySession);
+    }
+    // What the seat does with it: the same view digest the round computes.
+    BOOST_CHECK(MixViewDigest(uint256(0xFACE), vRead) == round.ViewDigest(uint256(0xFACE)));
+
+    // Neither side sorts.
+    std::vector<CMixRosterEntry> vSwapped = vRoster;
+    std::swap(vSwapped[0], vSwapped[1]);
+    BOOST_CHECK_MESSAGE(!BuildMixRosterBody(vSwapped, vchBody),
+                        "the writer accepted an order it would have had to fix");
+    BOOST_REQUIRE(BuildMixRosterBody(vRoster, vchBody));
+    std::vector<unsigned char> vchReordered = vchBody;
+    std::swap_ranges(vchReordered.begin() + 2, vchReordered.begin() + 2 + 32,
+                     vchReordered.begin() + 2 + 65);
+    BOOST_CHECK_MESSAGE(!ReadMixRosterBody(vchReordered, vRead),
+                        "the reader accepted an order it would have had to fix");
+
+    // Shape: nothing truncated, nothing trailing, no invalid key.
+    for (size_t n = 0; n + 1 < vchBody.size(); n++)
+    {
+        const std::vector<unsigned char> vchShort(vchBody.begin(), vchBody.begin() + n);
+        BOOST_CHECK(!ReadMixRosterBody(vchShort, vRead));
+    }
+    std::vector<unsigned char> vchLong = vchBody;
+    vchLong.push_back(0);
+    BOOST_CHECK(!ReadMixRosterBody(vchLong, vRead));
+    std::vector<unsigned char> vchBadKey = vchBody;
+    vchBadKey[2 + 32] = 0x09;   // not a valid compressed point prefix
+    BOOST_CHECK(!ReadMixRosterBody(vchBadKey, vRead));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

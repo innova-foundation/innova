@@ -2037,6 +2037,79 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchBlinded, vchOut);
 }
 
+bool BuildMixRosterBody(const std::vector<CMixRosterEntry>& vRoster,
+                        std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vRoster.empty() || vRoster.size() > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    for (size_t i = 0; i < vRoster.size(); i++)
+    {
+        if (!vRoster[i].pubkeySession.IsValid() ||
+            vRoster[i].pubkeySession.Raw().size() != MIX_SESSION_PUBKEY_BYTES)
+            return false;
+        if (i > 0 && !std::lexicographical_compare(vRoster[i - 1].keyImage.begin(),
+                                                   vRoster[i - 1].keyImage.end(),
+                                                   vRoster[i].keyImage.begin(),
+                                                   vRoster[i].keyImage.end()))
+            return false;   // unsorted, or a repeat
+    }
+    PutU16(vchOut, vRoster.size());
+    for (size_t i = 0; i < vRoster.size(); i++)
+    {
+        vchOut.insert(vchOut.end(), vRoster[i].keyImage.begin(), vRoster[i].keyImage.end());
+        const std::vector<unsigned char> vchKey = vRoster[i].pubkeySession.Raw();
+        vchOut.insert(vchOut.end(), vchKey.begin(), vchKey.end());
+    }
+    return true;
+}
+
+bool ReadMixRosterBody(const std::vector<unsigned char>& vchIn,
+                       std::vector<CMixRosterEntry>& vOut)
+{
+    vOut.clear();
+    size_t nAt = 0, nCount = 0;
+    if (!TakeU16(vchIn, nAt, nCount))
+        return false;
+    if (nCount == 0 || nCount > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    for (size_t i = 0; i < nCount; i++)
+    {
+        std::vector<unsigned char> vchImage, vchKey;
+        if (!TakeBytes(vchIn, nAt, 32, vchImage) ||
+            !TakeBytes(vchIn, nAt, MIX_SESSION_PUBKEY_BYTES, vchKey))
+        {
+            vOut.clear();
+            return false;
+        }
+        CMixRosterEntry entry;
+        memcpy(entry.keyImage.begin(), &vchImage[0], 32);
+        entry.pubkeySession = CPubKey(vchKey);
+        if (!entry.pubkeySession.IsValid())
+        {
+            vOut.clear();
+            return false;
+        }
+        // The reader refuses an order it would have to fix: a seat that reconstructed the
+        // roster in another order derives another input_context and never sees its output.
+        if (i > 0 && !std::lexicographical_compare(vOut[i - 1].keyImage.begin(),
+                                                   vOut[i - 1].keyImage.end(),
+                                                   entry.keyImage.begin(),
+                                                   entry.keyImage.end()))
+        {
+            vOut.clear();
+            return false;
+        }
+        vOut.push_back(entry);
+    }
+    if (nAt != vchIn.size())
+    {
+        vOut.clear();
+        return false;
+    }
+    return true;
+}
+
 bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,
                         std::vector<unsigned char>& vchOut)
 {
