@@ -3028,6 +3028,12 @@ BOOST_AUTO_TEST_CASE(a_mix_round_assembles_a_payload_that_validates)
         BOOST_CHECK_EQUAL(vMatches[0].nAmount, MIX_DENOM);
     }
 
+    // A round that has published is finished, and a finished round is the only kind a
+    // driver may reuse the object for.
+    BOOST_REQUIRE_MESSAGE(round.MarkComplete(&strError), strError);
+    BOOST_CHECK_EQUAL((int)round.Phase(), (int)MIX_PHASE_COMPLETE);
+    BOOST_CHECK(round.MarkComplete(&strError));
+
     CTransaction tx;
     BOOST_REQUIRE_MESSAGE(BuildMixTransaction(vchPayload, 1500000000U, tx, strError), strError);
     BOOST_CHECK(tx.vin.empty());
@@ -3056,9 +3062,11 @@ BOOST_AUTO_TEST_CASE(a_round_with_a_copied_response_assembles_nothing)
     CMixRound round;
     std::vector<Seat> vSeats;
     ProvenRoundThroughProofs(round, vSeats, hashRound, nNow);
+    std::string strError;
+    BOOST_CHECK_MESSAGE(!round.MarkComplete(&strError),
+                        "a round with no finished signature was marked complete");
     SignOverWire(round, vSeats, hashRound, nNow + MIX_OUTPUT_WINDOW + 1, true);
     std::vector<unsigned char> vchPayload;
-    std::string strError;
     BOOST_CHECK_MESSAGE(!round.AssemblePayload(vchPayload, &strError),
                         "a payload was assembled over a copied response");
     BOOST_CHECK(vchPayload.empty());

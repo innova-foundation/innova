@@ -609,6 +609,9 @@ public:
     bool AssemblePayload(std::vector<unsigned char>& vchPayloadOut,
                          std::string* pstrError = NULL) const;
 
+    /** The round is over and its transaction is out. Refused before the signature is complete. */
+    bool MarkComplete(std::string* pstrError = NULL);
+
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
     /** Register an output against a token, never a session key (that would reveal the

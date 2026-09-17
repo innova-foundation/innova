@@ -1305,6 +1305,20 @@ bool CMixRound::AssemblePayload(std::vector<unsigned char>& vchPayloadOut,
     #undef FAIL
 }
 
+bool CMixRound::MarkComplete(std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (nPhase == MIX_PHASE_COMPLETE)
+        return true;
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    if (vchFrozenPrefix.empty() || !SigningComplete())
+        FAIL("the round has no finished signature to complete over");
+    nPhase = MIX_PHASE_COMPLETE;
+    return true;
+    #undef FAIL
+}
+
 bool CMixRound::InputConstructionsComplete() const
 {
     if (vParticipants.empty())
