@@ -194,6 +194,8 @@ MASK_HEIGHT="$(epoch_start "$MASK_EPOCH")"
 # Boundaries observed for note votes: both epochs of the term the draw seats.
 NOTE_VOTE_EPOCHS="$COMMITTEE_TERM_EPOCH $(( COMMITTEE_TERM_EPOCH + 1 ))"
 NOTE_VOTE_WINDOW=10
+# FINALITY_VOTE_INCLUSION_WINDOW: an epoch-E vote connects only in [H_E, H_E + 24).
+FINALITY_VOTE_WINDOW_BLOCKS=24
 NOTE_VOTE_SETTLE=30
 
 # One member secret per node. These are NOT a committee: nothing is pinned. A node
@@ -2824,6 +2826,90 @@ if [ "$EPOCH_AGREE" -eq 1 ]; then
     success "every node agrees on epoch $TALLY_EPOCH's certificate, vote-set root (${TALLY_ROOT:0:16}) and state digest (${TALLY_DIGEST:0:16})"
 else
     fail "epoch $TALLY_EPOCH's state is missing or divergent: $EPOCH_WHY"
+fi
+
+# ============================================================
+# Soak with every lane live, off unless IV5_COMBINED_SOAK_MINUTES is set. Runs before the
+# supply-cap section so emission is still the ordinary schedule.
+SOAK_MINUTES="${IV5_COMBINED_SOAK_MINUTES:-0}"
+if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
+    header "19b. Soak: $SOAK_MINUTES minutes of consecutive epochs"
+
+    # Anything a healthy fleet never logs. Counted fleet-wide and compared per epoch, so one
+    # occurrence anywhere fails the epoch it appeared in.
+    SOAK_BAD='block mints value|ConnectBlockNoteVotes: rejected|InvalidChainFound: invalid block|IV5 pool balance|negative money supply|coinbase reward exceeded'
+    soak_bad_count() {
+        local total=0 n c
+        for ((n=0; n<NUM_NODES; n++)); do
+            c="$(grep -acE "$SOAK_BAD" "$(node_log "$n")" 2>/dev/null)"
+            is_int "${c:-x}" || c=0
+            total=$((total + c))
+        done
+        echo "$total"
+    }
+
+    SOAK_END=$(( $(date +%s) + SOAK_MINUTES * 60 ))
+    SOAK_EPOCHS=0
+    SOAK_BAD_EPOCHS=0
+    SOAK_E=$(( ( $(height 0) - 11 ) / 300 + 2 ))
+    while [ "$(date +%s)" -lt "$SOAK_END" ]; do
+        E="$SOAK_E"
+        B="$(epoch_start "$E")"
+        BAD_BEFORE="$(soak_bad_count)"
+        vote_round "$B" || { fail "soak: the epoch $E vote round failed"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        TOP=$(( B + FINALITY_VOTE_WINDOW_BLOCKS + 6 ))
+        mine_to 0 "$TOP" || { fail "soak: could not mine past epoch $E's window"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        wait_sync "$TOP" || { fail "soak: the fleet did not sync past epoch $E's window"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+
+        WHY=""
+        TV="$(votes_in_range 0 "$B" $(( B + FINALITY_VOTE_WINDOW_BLOCKS - 1 )))"
+        { is_int "${TV:-x}" && [ "$TV" -ge 2 ]; } || WHY="$WHY transparent_votes=${TV:-?}"
+
+        NV_TXID="$(grep -aF "ProducePrivacyVNextNoteVote: epoch=$E " "$(node_log 0)" | tail -1 | sed -n 's/.*txid=\([0-9a-f]*\).*/\1/p')"
+        NV_H=""
+        if [ -n "$NV_TXID" ]; then
+            NV_FULL="$(rpc 0 listtransactions "*" 50 2>/dev/null | grep -o "\"txid\" : \"$NV_TXID[0-9a-f]*\"" | head -1 | cut -d'"' -f4)"
+            [ ${#NV_FULL} -eq 64 ] && NV_H="$(tx_height 0 "$NV_FULL")"
+            if ! is_int "${NV_H:-x}" || [ "$NV_H" -lt "$B" ] || [ "$NV_H" -ge $(( B + FINALITY_VOTE_WINDOW_BLOCKS )) ]; then
+                # The wallet listing does not always carry a vote; scan the window instead.
+                NV_H=""
+                for ((h=B; h<B+FINALITY_VOTE_WINDOW_BLOCKS; h++)); do
+                    if block_json 0 "$h" | grep -q "\"$NV_TXID"; then NV_H="$h"; break; fi
+                done
+            fi
+            is_int "${NV_H:-x}" || WHY="$WHY note_vote_unmined=$NV_TXID"
+        else
+            WHY="$WHY note_vote_not_built"
+        fi
+
+        FIN_AS_OF="$(jget "$(rpc 0 getepochinfo $((E - 1)) 2>/dev/null)" finalized_height_as_of)"
+        [ "$FIN_AS_OF" = "$(epoch_start $((E - 1)))" ] || WHY="$WHY finalized_as_of=${FIN_AS_OF:-?}"
+
+        BH0="$(block_hash 0 "$TOP")"
+        for ((n=1; n<NUM_NODES; n++)); do
+            [ ${#BH0} -eq 64 ] && [ "$(block_hash "$n" "$TOP")" = "$BH0" ] || WHY="$WHY node${n}_diverged"
+        done
+
+        MP="$(rpc 0 getrawmempool 2>/dev/null | grep -c '"')"
+        { is_int "${MP:-x}" && [ "$MP" -le 20 ]; } || WHY="$WHY mempool=${MP:-?}"
+
+        BAD_AFTER="$(soak_bad_count)"
+        [ "$BAD_AFTER" = "$BAD_BEFORE" ] || WHY="$WHY bad_log_lines=$((BAD_AFTER - BAD_BEFORE))"
+
+        SOAK_EPOCHS=$((SOAK_EPOCHS + 1))
+        if [ -z "$WHY" ]; then
+            log "  soak epoch $E: transparent_votes=$TV note_vote_at=$NV_H finalized_as_of=$FIN_AS_OF converged"
+        else
+            fail "soak epoch $E:$WHY"
+            SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1))
+        fi
+        SOAK_E=$((SOAK_E + 1))
+    done
+    if [ "$SOAK_EPOCHS" -gt 0 ] && [ "$SOAK_BAD_EPOCHS" -eq 0 ]; then
+        success "soak: $SOAK_EPOCHS consecutive epochs over $SOAK_MINUTES minutes, each with two transparent votes, a mined note vote, finality keeping pace, one chain and no conservation or record error"
+    else
+        fail "soak: $SOAK_BAD_EPOCHS of $SOAK_EPOCHS epochs failed"
+    fi
 fi
 
 # ============================================================
