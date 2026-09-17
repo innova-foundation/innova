@@ -83,12 +83,20 @@ CMixOutputRecord Rec(const uint256& outputKey, const PrivacyVNextDigest& commitm
     return record;
 }
 
-Token MintToken(const CMixOutputRecord& record)
+// A seat registers one variant per position. Where a test does not care which position
+// its output lands at, the same record stands at every one, so what the round keeps is
+// the record the test named.
+std::vector<CMixOutputRecord> Bundle(const CMixOutputRecord& record, const CMixRound& round)
+{
+    return std::vector<CMixOutputRecord>(round.Seats(), record);
+}
+
+Token MintToken(const std::vector<CMixOutputRecord>& vBundle)
 {
     CNullSendSession& server = Coordinator();
     CNullSendClient client;
     BOOST_REQUIRE(client.BlindCredentialMessage(server.vchRSA_N, server.vchRSA_E,
-                                                MixOutputRecordCredentialHash(record)));
+                                                MixOutputBundleCredentialHash(vBundle)));
     std::vector<unsigned char> vchBlindSig;
     BOOST_REQUIRE(server.BlindSign(client.vchBlindedCredential, vchBlindSig));
     BOOST_REQUIRE(client.UnblindSignature(vchBlindSig));
@@ -264,9 +272,8 @@ BOOST_AUTO_TEST_CASE(a_round_runs_from_join_to_publish)
 
     for (int i = 0; i < 3; i++)
     {
-        const Token token = MintToken(Rec(uint256(500 + i), (unsigned char)(0x94 + i)));
-        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
-                                                   Rec(uint256(500 + i), (unsigned char)(0x94 + i)), nNow + 1, &strError),
+        const Token token = MintToken(Bundle(Rec(uint256(500 + i), (unsigned char)(0x94 + i)), round));
+        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature, Bundle(Rec(uint256(500 + i), (unsigned char)(0x94 + i)), round), nNow + 1, &strError),
                               strError);
     }
     BOOST_CHECK_EQUAL(round.Outputs(), 3u);
@@ -291,20 +298,17 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
     // Any valid token registers any output. That is the property, not a gap: if the
     // round could tell which seat a token came from, the blind signature would be
     // doing nothing.
-    const Token first = MintToken(Rec(uint256(900), 0x39));
-    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                       Rec(uint256(900), 0x39), nNow, &strError));
+    const Token first = MintToken(Bundle(Rec(uint256(900), 0x39), round));
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(900), 0x39), round), nNow, &strError));
 
     // One token, once. Nothing else limits an unlinkable caller.
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                              Rec(uint256(900), 0x39), nNow, &strError),
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(900), 0x39), round), nNow, &strError),
                         "a token registered a second output");
     BOOST_CHECK(strError.find("already registered") != std::string::npos);
 
     // And it registers that key and no other: rewriting the key in flight, which the
     // OUTPUT frame is unauthenticated enough to allow, makes the token stop opening.
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                              Rec(uint256(901), 0x37), nNow, &strError),
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(901), 0x37), round), nNow, &strError),
                         "a token authorised an output key it was not minted for");
     BOOST_CHECK(strError.find("does not authorise") != std::string::npos);
 
@@ -316,20 +320,19 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
     BOOST_REQUIRE(other.GenerateSessionRSAKey());
     CNullSendClient elsewhere;
     BOOST_REQUIRE(elsewhere.BlindCredentialMessage(other.vchRSA_N, other.vchRSA_E,
-                                                   MixOutputRecordCredentialHash(Rec(uint256(905), 0xb6))));
+                                                   MixOutputBundleCredentialHash(Bundle(Rec(uint256(905), 0xb6), round))));
     std::vector<unsigned char> vchOtherBlindSig;
     BOOST_REQUIRE(other.BlindSign(elsewhere.vchBlindedCredential, vchOtherBlindSig));
     BOOST_REQUIRE(elsewhere.UnblindSignature(vchOtherBlindSig));
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(elsewhere.vchCredentialHash,
-                                              elsewhere.vchUnblindedSig,
-                                              Rec(uint256(905), 0xb6), nNow, &strError),
+                                              elsewhere.vchUnblindedSig, Bundle(Rec(uint256(905), 0xb6), round), nNow, &strError),
                         "a token from another round's key registered an output");
 
     // And the credential must carry NO round id: if it did, a coordinator handing each
     // seat its own round id would read the seat straight off an unauthenticated OUTPUT by
     // trying every id it minted against the key it was handed.
-    BOOST_CHECK(MixOutputRecordCredentialHash(Rec(uint256(900), 0x39)) !=
-                MixOutputRecordCredentialHash(Rec(uint256(901), 0x39)));
+    BOOST_CHECK(MixOutputBundleCredentialHash(Bundle(Rec(uint256(900), 0x39), round)) !=
+                MixOutputBundleCredentialHash(Bundle(Rec(uint256(901), 0x39), round)));
     {
         CMixRound otherRound;
         std::vector<Seat> vOtherSeats;
@@ -345,22 +348,19 @@ BOOST_AUTO_TEST_CASE(an_output_is_registered_against_a_token_not_a_seat)
     BOOST_REQUIRE(stranger.GenerateSessionRSAKey());
     CNullSendClient outsider;
     BOOST_REQUIRE(outsider.BlindCredentialMessage(stranger.vchRSA_N, stranger.vchRSA_E,
-                                                  MixOutputRecordCredentialHash(Rec(uint256(902), 0xab))));
+                                                  MixOutputBundleCredentialHash(Bundle(Rec(uint256(902), 0xab), round))));
     std::vector<unsigned char> vchForeignBlindSig;
     BOOST_REQUIRE(stranger.BlindSign(outsider.vchBlindedCredential, vchForeignBlindSig));
     BOOST_REQUIRE(outsider.UnblindSignature(vchForeignBlindSig));
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(outsider.vchCredentialHash,
-                                              outsider.vchUnblindedSig,
-                                              Rec(uint256(902), 0xab), nNow, &strError),
+                                              outsider.vchUnblindedSig, Bundle(Rec(uint256(902), 0xab), round), nNow, &strError),
                         "a token from another round's key was accepted");
 
     // And no more outputs than seats, whatever the tokens say.
-    const Token second = MintToken(Rec(uint256(903), 0xd2));
-    BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature,
-                                       Rec(uint256(903), 0xd2), nNow, &strError));
-    const Token third = MintToken(Rec(uint256(904), 0xdb));
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(third.vchCredential, third.vchSignature,
-                                              Rec(uint256(904), 0xdb), nNow, &strError),
+    const Token second = MintToken(Bundle(Rec(uint256(903), 0xd2), round));
+    BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature, Bundle(Rec(uint256(903), 0xd2), round), nNow, &strError));
+    const Token third = MintToken(Bundle(Rec(uint256(904), 0xdb), round));
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(third.vchCredential, third.vchSignature, Bundle(Rec(uint256(904), 0xdb), round), nNow, &strError),
                         "a third output landed in a two-seat round");
 }
 
@@ -758,14 +758,13 @@ BOOST_AUTO_TEST_CASE(a_mix_prefix_is_the_builder_layout_over_the_round_state)
 
     // Not until every output is in.
     const CMixOutputRecord first = Rec(uint256(0x7A0), 0x91);
-    const Token firstToken = MintToken(first);
-    BOOST_REQUIRE(round.RegisterOutput(firstToken.vchCredential, firstToken.vchSignature, first,
+    const Token firstToken = MintToken(Bundle(first, round));
+    BOOST_REQUIRE(round.RegisterOutput(firstToken.vchCredential, firstToken.vchSignature, Bundle(first, round),
                                        nNow, &strError));
     BOOST_CHECK(!round.AssemblePrefix(header, vchPrefix, &strError));
     const CMixOutputRecord second = Rec(uint256(0x7A1), 0x92);
-    const Token secondToken = MintToken(second);
-    BOOST_REQUIRE(round.RegisterOutput(secondToken.vchCredential, secondToken.vchSignature,
-                                       second, nNow, &strError));
+    const Token secondToken = MintToken(Bundle(second, round));
+    BOOST_REQUIRE(round.RegisterOutput(secondToken.vchCredential, secondToken.vchSignature, Bundle(second, round), nNow, &strError));
 
     // Only the mix shape.
     PrivacyVNextPrefixHeader wrong = header;
@@ -875,9 +874,8 @@ void RoundWithOutputs(CMixRound& round, std::vector<Seat>& vSeats, int64_t nNow)
     for (int i = 0; i < 2; i++)
     {
         const CMixOutputRecord record = Rec(uint256(0x7B0 + i), (unsigned char)(0x95 + i));
-        const Token token = MintToken(record);
-        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
-                                                   record, nNow, &strError), strError);
+        const Token token = MintToken(Bundle(record, round));
+        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature, Bundle(record, round), nNow, &strError), strError);
     }
 }
 
@@ -1204,9 +1202,9 @@ BOOST_AUTO_TEST_CASE(an_output_opening_is_checked_before_its_token_is_spent)
     // record whose mask does not open its commitment: the coordinator blind-signs without
     // seeing it. That registration is refused, and the token for the GOOD record survives.
     const CMixOutputRecord badMask = Rec(outputKey, good.commitment, other.mask);
-    const Token badMaskToken = MintToken(badMask);
+    const Token badMaskToken = MintToken(Bundle(badMask, round));
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(badMaskToken.vchCredential,
-                                              badMaskToken.vchSignature, badMask,
+                                              badMaskToken.vchSignature, Bundle(badMask, round),
                                               nNow, &strError),
                         "an opening that does not open its commitment was accepted");
     BOOST_CHECK(strError.find("does not open") != std::string::npos);
@@ -1216,22 +1214,21 @@ BOOST_AUTO_TEST_CASE(an_output_opening_is_checked_before_its_token_is_spent)
     // disclosed amounts stop discriminating between outputs.
     const CMixOutputRecord wrongAmount =
         Rec(outputKey, Commit(MIX_DENOM + 1, good.mask), good.mask);
-    const Token wrongAmountToken = MintToken(wrongAmount);
+    const Token wrongAmountToken = MintToken(Bundle(wrongAmount, round));
     BOOST_CHECK(!round.RegisterOutput(wrongAmountToken.vchCredential,
-                                      wrongAmountToken.vchSignature, wrongAmount,
+                                      wrongAmountToken.vchSignature, Bundle(wrongAmount, round),
                                       nNow, &strError));
 
     // A token over the good record does not authorise it with the mask swapped in flight.
     const CMixOutputRecord goodRecord = Rec(outputKey, good.commitment, good.mask);
-    const Token token = MintToken(goodRecord);
-    BOOST_CHECK(!round.RegisterOutput(token.vchCredential, token.vchSignature, badMask,
+    const Token token = MintToken(Bundle(goodRecord, round));
+    BOOST_CHECK(!round.RegisterOutput(token.vchCredential, token.vchSignature, Bundle(badMask, round),
                                       nNow, &strError));
     BOOST_CHECK(strError.find("does not authorise") != std::string::npos);
 
     // The matching record is taken, and the opening is kept for the combiner in
     // registration order.
-    BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
-                                               goodRecord, nNow, &strError), strError);
+    BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature, Bundle(goodRecord, round), nNow, &strError), strError);
     BOOST_REQUIRE_EQUAL(round.OutputMasks().size(), 1u);
     BOOST_CHECK(round.OutputMasks()[0] == good.mask);
     BOOST_CHECK(round.OutputCommitments()[0] == good.commitment);
@@ -1240,46 +1237,116 @@ BOOST_AUTO_TEST_CASE(an_output_opening_is_checked_before_its_token_is_spent)
 
     // One commitment, once -- two outputs at one commitment is one output paid twice.
     const CMixOutputRecord sameCommitment = Rec(uint256(0x4A1), good.commitment, good.mask);
-    const Token second = MintToken(sameCommitment);
-    BOOST_CHECK(!round.RegisterOutput(second.vchCredential, second.vchSignature,
-                                      sameCommitment, nNow, &strError));
+    const Token second = MintToken(Bundle(sameCommitment, round));
+    BOOST_CHECK(!round.RegisterOutput(second.vchCredential, second.vchSignature, Bundle(sameCommitment, round), nNow, &strError));
     BOOST_CHECK(strError.find("already registered") != std::string::npos);
 }
 
-// A token over the owner key alone let a registration pair an authorised key with any
-// commitment, ephemerals or ciphertexts. Over the canonical record, every field an output
-// carries onto the chain changes the credential, and a record of the wrong shape has none.
-BOOST_AUTO_TEST_CASE(a_token_authorises_every_field_of_its_output_record)
+// A token covers the canonical bundle: every field of every variant, the variant count and
+// order all change the credential, and a wrongly shaped bundle has no credential.
+BOOST_AUTO_TEST_CASE(a_token_authorises_every_field_of_every_variant_in_its_bundle)
 {
-    const CMixOutputRecord base = Rec(uint256(0x6A0), 0xE1);
-    const uint256 hashBase = MixOutputRecordCredentialHash(base);
+    std::vector<CMixOutputRecord> vBase;
+    vBase.push_back(Rec(uint256(0x6A0), 0xE1));
+    vBase.push_back(Rec(uint256(0x6A1), 0xE2));
+    const uint256 hashBase = MixOutputBundleCredentialHash(vBase);
     BOOST_REQUIRE(hashBase != 0);
 
     std::vector<unsigned char> vchEncoded;
-    BOOST_REQUIRE(EncodeMixOutputRecord(base, vchEncoded));
-    BOOST_CHECK_EQUAL(vchEncoded.size(), MIX_OUTPUT_RECORD_BYTES);
-    CMixOutputRecord decoded;
-    BOOST_REQUIRE(DecodeMixOutputRecord(vchEncoded, decoded));
-    BOOST_CHECK(MixOutputRecordCredentialHash(decoded) == hashBase);
+    BOOST_REQUIRE(EncodeMixOutputBundle(vBase, vchEncoded));
+    BOOST_CHECK_EQUAL(vchEncoded.size(), 1 + 2 * MIX_OUTPUT_RECORD_BYTES);
+    std::vector<CMixOutputRecord> vDecoded;
+    BOOST_REQUIRE(DecodeMixOutputBundle(vchEncoded, vDecoded));
+    BOOST_CHECK(MixOutputBundleCredentialHash(vDecoded) == hashBase);
 
-    std::vector<CMixOutputRecord> vChanged(7, base);
-    vChanged[0].owner[5] ^= 1;
-    vChanged[1].commitment[5] ^= 1;
-    vChanged[2].noteEphemeral[5] ^= 1;
-    vChanged[3].tweakEphemeral[5] ^= 1;
-    vChanged[4].vchRecipientCiphertext[100] ^= 1;
-    vChanged[5].vchOutgoingCiphertext[200] ^= 1;
-    vChanged[6].mask[5] ^= 1;
-    for (size_t i = 0; i < vChanged.size(); i++)
-        BOOST_CHECK_MESSAGE(MixOutputRecordCredentialHash(vChanged[i]) != hashBase,
-                            "field " << i << " of the record is not bound by its token");
+    // Every field of the variant a round would keep, and of the one it would not.
+    for (size_t nVariant = 0; nVariant < 2; nVariant++)
+    {
+        std::vector<std::vector<CMixOutputRecord> > vChanged(7, vBase);
+        vChanged[0][nVariant].owner[5] ^= 1;
+        vChanged[1][nVariant].commitment[5] ^= 1;
+        vChanged[2][nVariant].noteEphemeral[5] ^= 1;
+        vChanged[3][nVariant].tweakEphemeral[5] ^= 1;
+        vChanged[4][nVariant].vchRecipientCiphertext[100] ^= 1;
+        vChanged[5][nVariant].vchOutgoingCiphertext[200] ^= 1;
+        vChanged[6][nVariant].mask[5] ^= 1;
+        for (size_t i = 0; i < vChanged.size(); i++)
+            BOOST_CHECK_MESSAGE(MixOutputBundleCredentialHash(vChanged[i]) != hashBase,
+                                "field " << i << " of variant " << nVariant
+                                         << " is not bound by its token");
+    }
 
-    CMixOutputRecord shortCiphertext = base;
-    shortCiphertext.vchRecipientCiphertext.pop_back();
-    BOOST_CHECK(MixOutputRecordCredentialHash(shortCiphertext) == 0);
-    BOOST_CHECK(!EncodeMixOutputRecord(shortCiphertext, vchEncoded));
-    std::vector<unsigned char> vchShort(MIX_OUTPUT_RECORD_BYTES - 1, 0);
-    BOOST_CHECK(!DecodeMixOutputRecord(vchShort, decoded));
+    // The bundle's length and the order of its variants are bound too.
+    std::vector<CMixOutputRecord> vSwapped;
+    vSwapped.push_back(vBase[1]);
+    vSwapped.push_back(vBase[0]);
+    BOOST_CHECK_MESSAGE(MixOutputBundleCredentialHash(vSwapped) != hashBase,
+                        "a bundle reordered under one token authorises another position");
+    std::vector<CMixOutputRecord> vShorter(1, vBase[0]);
+    BOOST_CHECK(MixOutputBundleCredentialHash(vShorter) != hashBase);
+    std::vector<CMixOutputRecord> vLonger = vBase;
+    vLonger.push_back(vBase[0]);
+    BOOST_CHECK(MixOutputBundleCredentialHash(vLonger) != hashBase);
+
+    std::vector<CMixOutputRecord> vShortCiphertext = vBase;
+    vShortCiphertext[1].vchRecipientCiphertext.pop_back();
+    BOOST_CHECK(MixOutputBundleCredentialHash(vShortCiphertext) == 0);
+    BOOST_CHECK(!EncodeMixOutputBundle(vShortCiphertext, vchEncoded));
+    BOOST_CHECK(MixOutputBundleCredentialHash(std::vector<CMixOutputRecord>()) == 0);
+    std::vector<unsigned char> vchTruncated(1 + 2 * MIX_OUTPUT_RECORD_BYTES - 1, 0);
+    vchTruncated[0] = 2;
+    BOOST_CHECK(!DecodeMixOutputBundle(vchTruncated, vDecoded));
+    std::vector<unsigned char> vchZeroCount(1, 0);
+    BOOST_CHECK(!DecodeMixOutputBundle(vchZeroCount, vDecoded));
+}
+
+// The round hands out positions; a registrant cannot choose one. What it keeps is the
+// variant for the position it assigns next, and a bundle is one variant per seat.
+BOOST_AUTO_TEST_CASE(a_bundle_gives_the_round_the_variant_for_the_position_it_assigns)
+{
+    const int64_t nNow = 3900000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    std::vector<CMixOutputRecord> vFirst, vSecond;
+    vFirst.push_back(Rec(uint256(0x8A0), 0xC1));
+    vFirst.push_back(Rec(uint256(0x8A1), 0xC2));
+    vSecond.push_back(Rec(uint256(0x8B0), 0xC3));
+    vSecond.push_back(Rec(uint256(0x8B1), 0xC4));
+
+    const std::vector<CMixOutputRecord> vShort(1, vFirst[0]);
+    const Token shortToken = MintToken(vShort);
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(shortToken.vchCredential, shortToken.vchSignature,
+                                              vShort, nNow, &strError),
+                        "a bundle short of a variant per seat registered an output");
+    std::vector<CMixOutputRecord> vLong = vFirst;
+    vLong.push_back(vFirst[0]);
+    const Token longToken = MintToken(vLong);
+    BOOST_CHECK(!round.RegisterOutput(longToken.vchCredential, longToken.vchSignature, vLong,
+                                      nNow, &strError));
+
+    const Token first = MintToken(vFirst);
+    BOOST_REQUIRE_MESSAGE(round.RegisterOutput(first.vchCredential, first.vchSignature, vFirst,
+                                               nNow, &strError), strError);
+    const Token second = MintToken(vSecond);
+    BOOST_REQUIRE_MESSAGE(round.RegisterOutput(second.vchCredential, second.vchSignature, vSecond,
+                                               nNow, &strError), strError);
+    BOOST_REQUIRE_EQUAL(round.OutputRecords().size(), 2u);
+    std::vector<unsigned char> vchKept, vchWanted;
+    BOOST_REQUIRE(EncodeMixOutputRecord(round.OutputRecords()[0], vchKept));
+    BOOST_REQUIRE(EncodeMixOutputRecord(vFirst[0], vchWanted));
+    BOOST_CHECK_MESSAGE(vchKept == vchWanted,
+                        "the first registration did not keep its variant for position 0");
+    BOOST_REQUIRE(EncodeMixOutputRecord(round.OutputRecords()[1], vchKept));
+    BOOST_REQUIRE(EncodeMixOutputRecord(vSecond[1], vchWanted));
+    BOOST_CHECK_MESSAGE(vchKept == vchWanted,
+                        "the second registration did not keep its variant for position 1");
 }
 
 // A round opened without a denomination cannot check an opening, so it registers nothing
@@ -1301,8 +1368,8 @@ BOOST_AUTO_TEST_CASE(a_round_with_no_denomination_registers_no_output)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
     const CMixOutputRecord record = Rec(uint256(0x4B0), 0xD1);
-    const Token token = MintToken(record);
-    BOOST_CHECK(!round.RegisterOutput(token.vchCredential, token.vchSignature, record,
+    const Token token = MintToken(Bundle(record, round));
+    BOOST_CHECK(!round.RegisterOutput(token.vchCredential, token.vchSignature, Bundle(record, round),
                                       nNow, &strError));
     BOOST_CHECK(strError.find("denomination") != std::string::npos);
     BOOST_CHECK_EQUAL(round.Outputs(), 0u);
@@ -1319,17 +1386,18 @@ BOOST_AUTO_TEST_CASE(a_token_does_not_name_the_round_it_is_spent_in)
 
     const uint256 outputKey = uint256(0x515);
     const CMixOutputRecord record = Rec(outputKey, 0x66);
-    const Token token = MintToken(record);
+    const std::vector<CMixOutputRecord> vBundle(2, record);
+    const Token token = MintToken(vBundle);
     BOOST_REQUIRE_EQUAL(token.vchCredential.size(), 32u);
 
-    // The credential is exactly H(tag || record): no round, no seat, nothing else.
-    std::vector<unsigned char> vchRecord;
-    BOOST_REQUIRE(EncodeMixOutputRecord(record, vchRecord));
+    // The credential is exactly H(tag || bundle): no round, no seat, nothing else.
+    std::vector<unsigned char> vchBundle;
+    BOOST_REQUIRE(EncodeMixOutputBundle(vBundle, vchBundle));
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/token/v3");
-    ss << vchRecord;
+    ss << std::string("innova/iv5/mix/token/v4");
+    ss << vchBundle;
     const uint256 hashExpected = ss.GetHash();
-    BOOST_CHECK(hashExpected == MixOutputRecordCredentialHash(record));
+    BOOST_CHECK(hashExpected == MixOutputBundleCredentialHash(vBundle));
     BOOST_CHECK(std::equal(hashExpected.begin(), hashExpected.end(),
                            token.vchCredential.begin()));
 
@@ -1352,8 +1420,8 @@ BOOST_AUTO_TEST_CASE(a_token_does_not_name_the_round_it_is_spent_in)
         BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
         BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
         BOOST_CHECK_MESSAGE(
-            round.RegisterOutput(token.vchCredential, token.vchSignature, Rec(outputKey, 0x66),
-                                 nNow, &strError),
+            round.RegisterOutput(token.vchCredential, token.vchSignature, vBundle, nNow,
+                                 &strError),
             "round " << i << " refused a token minted without naming it: " << strError);
     }
 
@@ -1570,13 +1638,11 @@ BOOST_AUTO_TEST_CASE(nothing_publishes_before_the_window_closes)
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token first = MintToken(Rec(uint256(800), 0x93));
-    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                       Rec(uint256(800), 0x93), nNow, &strError));
+    const Token first = MintToken(Bundle(Rec(uint256(800), 0x93), round));
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(800), 0x93), round), nNow, &strError));
     BOOST_CHECK(!round.CanPublish(nNow + 1));
-    const Token second = MintToken(Rec(uint256(801), 0x3b));
-    BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature,
-                                       Rec(uint256(801), 0x3b), nNow + 1, &strError));
+    const Token second = MintToken(Bundle(Rec(uint256(801), 0x3b), round));
+    BOOST_REQUIRE(round.RegisterOutput(second.vchCredential, second.vchSignature, Bundle(Rec(uint256(801), 0x3b), round), nNow + 1, &strError));
 
     BOOST_CHECK_MESSAGE(!round.CanPublish(nNow + 2),
                         "the round published as soon as the last output arrived, so the "
@@ -1585,9 +1651,8 @@ BOOST_AUTO_TEST_CASE(nothing_publishes_before_the_window_closes)
     BOOST_CHECK(round.CanPublish(nNow + MIX_OUTPUT_WINDOW + 1));
 
     // A late output is refused rather than reopening the window.
-    const Token late = MintToken(Rec(uint256(802), 0xb5));
-    BOOST_CHECK(!round.RegisterOutput(late.vchCredential, late.vchSignature,
-                                      Rec(uint256(802), 0xb5), nNow + MIX_OUTPUT_WINDOW + 1, &strError));
+    const Token late = MintToken(Bundle(Rec(uint256(802), 0xb5), round));
+    BOOST_CHECK(!round.RegisterOutput(late.vchCredential, late.vchSignature, Bundle(Rec(uint256(802), 0xb5), round), nNow + MIX_OUTPUT_WINDOW + 1, &strError));
 }
 
 // A phase is reached by passing through the one before it.
@@ -1599,16 +1664,14 @@ BOOST_AUTO_TEST_CASE(the_phases_run_in_order)
     BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
     std::string strError;
 
-    const Token early = MintToken(Rec(uint256(1), 0xd0));
-    BOOST_CHECK(!round.RegisterOutput(early.vchCredential, early.vchSignature,
-                                      Rec(uint256(1), 0xd0), nNow, &strError));
+    const Token early = MintToken(Bundle(Rec(uint256(1), 0xd0), round));
+    BOOST_CHECK(!round.RegisterOutput(early.vchCredential, early.vchSignature, Bundle(Rec(uint256(1), 0xd0), round), nNow, &strError));
     BOOST_CHECK(!round.OpenOutputWindow(nNow, &strError));
     BOOST_CHECK(!round.IssueToken(vSeats[0].pubkey, &strError));
 
     BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
     BOOST_CHECK(!round.CloseJoin(nNow, &strError));
-    BOOST_CHECK(!round.RegisterOutput(early.vchCredential, early.vchSignature,
-                                      Rec(uint256(1), 0xd0), nNow, &strError));
+    BOOST_CHECK(!round.RegisterOutput(early.vchCredential, early.vchSignature, Bundle(Rec(uint256(1), 0xd0), round), nNow, &strError));
 
     // An aborted round accepts nothing further.
     round.Abort("operator stopped it");
@@ -1632,10 +1695,10 @@ BOOST_AUTO_TEST_CASE(a_round_signs_once)
     BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
-    const Token a = MintToken(Rec(uint256(1), 0xd0));
-    BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, Rec(uint256(1), 0xd0), nNow, &strError));
-    const Token b = MintToken(Rec(uint256(2), 0x26));
-    BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, Rec(uint256(2), 0x26), nNow, &strError));
+    const Token a = MintToken(Bundle(Rec(uint256(1), 0xd0), round));
+    BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, Bundle(Rec(uint256(1), 0xd0), round), nNow, &strError));
+    const Token b = MintToken(Bundle(Rec(uint256(2), 0x26), round));
+    BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, Bundle(Rec(uint256(2), 0x26), round), nNow, &strError));
 
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
     BOOST_REQUIRE_MESSAGE(round.OpenSigning(nClosed, &strError), strError);
@@ -1666,10 +1729,10 @@ BOOST_AUTO_TEST_CASE(the_aggregate_is_fixed_before_any_response)
     BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
-    const Token a = MintToken(Rec(uint256(3), 0xe3));
-    BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, Rec(uint256(3), 0xe3), nNow, &strError));
-    const Token b = MintToken(Rec(uint256(4), 0x7f));
-    BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, Rec(uint256(4), 0x7f), nNow, &strError));
+    const Token a = MintToken(Bundle(Rec(uint256(3), 0xe3), round));
+    BOOST_REQUIRE(round.RegisterOutput(a.vchCredential, a.vchSignature, Bundle(Rec(uint256(3), 0xe3), round), nNow, &strError));
+    const Token b = MintToken(Bundle(Rec(uint256(4), 0x7f), round));
+    BOOST_REQUIRE(round.RegisterOutput(b.vchCredential, b.vchSignature, Bundle(Rec(uint256(4), 0x7f), round), nNow, &strError));
 
     // Not before the output set is final: the signable hash covers the outputs.
     BOOST_CHECK(!round.OpenSigning(nNow + 1, &strError));
@@ -1716,9 +1779,8 @@ BOOST_AUTO_TEST_CASE(the_nonce_order_is_the_frozen_input_order)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (int i = 0; i < 3; i++)
     {
-        const Token t = MintToken(Rec(uint256(20 + i), (unsigned char)(0x6f + i)));
-        BOOST_REQUIRE(round.RegisterOutput(t.vchCredential, t.vchSignature,
-                                           Rec(uint256(20 + i), (unsigned char)(0x6f + i)), nNow, &strError));
+        const Token t = MintToken(Bundle(Rec(uint256(20 + i), (unsigned char)(0x6f + i)), round));
+        BOOST_REQUIRE(round.RegisterOutput(t.vchCredential, t.vchSignature, Bundle(Rec(uint256(20 + i), (unsigned char)(0x6f + i)), round), nNow, &strError));
     }
     BOOST_REQUIRE(round.OpenSigning(nNow + MIX_OUTPUT_WINDOW + 1, &strError));
 
@@ -1869,10 +1931,12 @@ std::vector<unsigned char> ScalarFrame(const Seat& seat, const uint256& hashRoun
     return AuthedFrame(seat, hashRound, nType, vchBody);
 }
 
-std::vector<unsigned char> OutputFrame(const Token& token, const CMixOutputRecord& record)
+std::vector<unsigned char> OutputFrame(const Token& token,
+                                       const std::vector<CMixOutputRecord>& vBundle)
 {
     std::vector<unsigned char> vchBody;
-    BOOST_REQUIRE(BuildMixOutputBody(token.vchCredential, token.vchSignature, record, vchBody));
+    BOOST_REQUIRE(BuildMixOutputBundleBody(token.vchCredential, token.vchSignature, vBundle,
+                                           vchBody));
     return vchBody;
 }
 
@@ -1886,7 +1950,8 @@ struct MixProofSet
     PrivacyVNextPrefixHeader header;
     std::vector<uint256> vKeyImages;                     // funding order
     std::vector<PrivacyVNextDigest> vPseudoOuts;
-    std::vector<CMixOutputRecord> vRecords;              // registration order; seat i owns i
+    std::vector<std::vector<CMixOutputRecord> > vBundles; // seat i's variants, position order
+    std::vector<CMixOutputRecord> vRecords;              // the variant kept at position i
     std::vector<std::vector<unsigned char> > vProofs;    // funding order, under the prefix
     std::vector<unsigned char> vchOtherHashProof;        // input 0 under another signing hash
     std::vector<PrivacyVNextDigest> vSeatMasks;          // note mask plus the proving delta
@@ -2038,6 +2103,8 @@ const MixProofSet& MixProofs()
     PrivacyVNextDigest mixContext;
     BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextInputContext(iv5::NOTE_NULLSEND, MixTransparentBinding(),
                                                          vInputImages, mixContext, error), error);
+    // One bundle per seat: a variant for every position it might be given, with the same
+    // amount, opening and commitment and its own ephemerals per position.
     for (size_t i = 0; i < nInputs; i++)
     {
         PrivacyVNextDigest seed;
@@ -2045,24 +2112,21 @@ const MixProofSet& MixProofs()
         PrivacyVNextDerivedKeys recipient;
         BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(seed, genesis, 0, nNetwork, 0, recipient, error),
                               error);
-        const unsigned char chBase = (unsigned char)(0x41 + 4 * i);
-        const PrivacyVNextDigest outputMask = LowScalar(chBase + 3);
-        PrivacyVNextEncryptedOutput out;
+        const unsigned char chBase = (unsigned char)(0x41 + 8 * i);
+        const PrivacyVNextDigest outputMask = LowScalar(chBase + 7);
+        std::vector<std::pair<PrivacyVNextDigest, PrivacyVNextDigest> > vEphemerals;
+        for (size_t j = 0; j < nInputs; j++)
+            vEphemerals.push_back(std::make_pair(LowScalar((unsigned char)(chBase + 2 * j)),
+                                                 LowScalar((unsigned char)(chBase + 2 * j + 1))));
+        std::vector<CMixOutputRecord> vBundle;
         BOOST_REQUIRE_MESSAGE(
-            EncryptPrivacyVNextNote(nNetwork, 0, (uint32_t)i, genesis, recipient.spendPublic,
-                                    recipient.viewPublic, vKeys[i].outgoingViewSecret,
-                                    LowScalar(chBase), LowScalar(chBase + 1), MIX_DENOM,
-                                    LowScalar(chBase + 2), outputMask, mixContext, out, error),
+            BuildMixOutputBundle(nNetwork, genesis, recipient.spendPublic, recipient.viewPublic,
+                                 vKeys[i].outgoingViewSecret, mixContext, MIX_DENOM,
+                                 LowScalar(chBase + 6), outputMask, vEphemerals, vBundle, error),
             error);
-        CMixOutputRecord record;
-        record.owner = out.leaf.owner;
-        record.commitment = out.leaf.commitment;
-        record.noteEphemeral = out.noteEphemeral;
-        record.tweakEphemeral = out.tweakEphemeral;
-        record.vchRecipientCiphertext = out.vchRecipientCiphertext;
-        record.vchOutgoingCiphertext = out.vchOutgoingCiphertext;
-        record.mask = outputMask;
-        set.vRecords.push_back(record);
+        BOOST_REQUIRE_EQUAL(vBundle.size(), nInputs);
+        set.vBundles.push_back(vBundle);
+        set.vRecords.push_back(vBundle[i]);
         PrivacyVNextScanKey scanKey;
         scanKey.scanSecret = recipient.viewSecret;
         scanKey.spendMaterial = recipient.spendSecret;
@@ -2253,14 +2317,14 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
 
     for (int i = 0; i < 2; i++)
     {
-        const CMixOutputRecord& record = MixProofs().vRecords[i];
-        const Token token = MintToken(record);
+        const std::vector<CMixOutputRecord>& vBundle = MixProofs().vBundles[i];
+        const Token token = MintToken(vBundle);
         int hPair[2];
         BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hPair), 0);
         CMixStream participant, coordinator;
         participant.Adopt(hPair[0]);
         coordinator.Adopt(hPair[1]);
-        BOOST_REQUIRE(participant.Send(MIX_FRAME_OUTPUT, OutputFrame(token, record), &strError));
+        BOOST_REQUIRE(participant.Send(MIX_FRAME_OUTPUT, OutputFrame(token, vBundle), &strError));
         MixFrameType nType;
         std::vector<unsigned char> vchPayload;
         BOOST_REQUIRE(coordinator.Receive(nType, vchPayload, 2000, &strError));
@@ -2320,8 +2384,9 @@ BOOST_AUTO_TEST_CASE(an_output_frame_cannot_name_a_seat)
     BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token token = MintToken(Rec(uint256(60), 0x60));
-    const std::vector<unsigned char> vchBody = OutputFrame(token, Rec(uint256(60), 0x60));
+    const Token token = MintToken(Bundle(Rec(uint256(60), 0x60), round));
+    const std::vector<unsigned char> vchBody =
+        OutputFrame(token, Bundle(Rec(uint256(60), 0x60), round));
 
     // An output with a session signature appended is not a longer output frame; it is
     // a malformed one, because the body ends where the key would have to start.
@@ -2381,9 +2446,9 @@ BOOST_AUTO_TEST_CASE(the_dispatcher_refuses_what_it_should)
             "a join truncated to " << n << " bytes was acted on");
     }
     std::vector<unsigned char> vchOutput;
-    BOOST_REQUIRE(BuildMixOutputBody(std::vector<unsigned char>(8, 1),
-                                     std::vector<unsigned char>(8, 2), Rec(uint256(9), 0x09),
-                                     vchOutput));
+    BOOST_REQUIRE(BuildMixOutputBundleBody(
+        std::vector<unsigned char>(8, 1), std::vector<unsigned char>(8, 2),
+        std::vector<CMixOutputRecord>(2, Rec(uint256(9), 0x09)), vchOutput));
     for (size_t n = 0; n < vchOutput.size(); n++)
     {
         const std::vector<unsigned char> vchShort(vchOutput.begin(), vchOutput.begin() + n);
@@ -2431,10 +2496,10 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (int i = 0; i < 2; i++)
     {
-        const CMixOutputRecord& record = MixProofs().vRecords[i];
-        const Token t = MintToken(record);
+        const std::vector<CMixOutputRecord>& vBundle = MixProofs().vBundles[i];
+        const Token t = MintToken(vBundle);
         BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT,
-                                                  OutputFrame(t, record), nNow, strError),
+                                                  OutputFrame(t, vBundle), nNow, strError),
                             (int)MIX_DISPATCH_OK);
     }
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
@@ -2516,14 +2581,12 @@ BOOST_AUTO_TEST_CASE(a_late_output_is_refused_while_a_slot_is_still_free)
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
     // One of three slots used, so the seat count cannot be what refuses anything below.
-    const Token first = MintToken(Rec(uint256(310), 0xdd));
-    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                       Rec(uint256(310), 0xdd), nNow, &strError));
+    const Token first = MintToken(Bundle(Rec(uint256(310), 0xdd), round));
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(310), 0xdd), round), nNow, &strError));
     BOOST_REQUIRE_EQUAL(round.Outputs(), 1u);
 
-    const Token late = MintToken(Rec(uint256(311), 0x2e));
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(late.vchCredential, late.vchSignature,
-                                              Rec(uint256(311), 0x2e),
+    const Token late = MintToken(Bundle(Rec(uint256(311), 0x2e), round));
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(late.vchCredential, late.vchSignature, Bundle(Rec(uint256(311), 0x2e), round),
                                               nNow + MIX_OUTPUT_WINDOW + 1, &strError),
                         "an output arriving after the window closed was accepted into a "
                         "round with slots to spare, so the window decorrelates nothing");
@@ -2531,8 +2594,7 @@ BOOST_AUTO_TEST_CASE(a_late_output_is_refused_while_a_slot_is_still_free)
     BOOST_CHECK_EQUAL(round.Outputs(), 1u);
 
     // The same token inside the window is taken, so the refusal was about the deadline.
-    BOOST_CHECK(round.RegisterOutput(late.vchCredential, late.vchSignature,
-                                     Rec(uint256(311), 0x2e), nNow + MIX_OUTPUT_WINDOW, &strError));
+    BOOST_CHECK(round.RegisterOutput(late.vchCredential, late.vchSignature, Bundle(Rec(uint256(311), 0x2e), round), nNow + MIX_OUTPUT_WINDOW, &strError));
 }
 
 // Two seats naming one output key would make one seat's value payable to another's key.
@@ -2548,18 +2610,16 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
         BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
 
-    const Token first = MintToken(Rec(uint256(320), 0xb8));
-    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature,
-                                       Rec(uint256(320), 0xb8), nNow, &strError));
+    const Token first = MintToken(Bundle(Rec(uint256(320), 0xb8), round));
+    BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature, Bundle(Rec(uint256(320), 0xb8), round), nNow, &strError));
 
     // Naming the same key again, with a slot still free so the seat count is not what
     // refuses it. Since the token binds the key, a second token for one key IS the first
     // token, so the one-token-once rule is what fires; the duplicate-key check behind it
     // is defence in depth against a token issued some other way.
-    const Token second = MintToken(Rec(uint256(320), 0xb8));
+    const Token second = MintToken(Bundle(Rec(uint256(320), 0xb8), round));
     BOOST_CHECK(second.vchCredential == first.vchCredential);
-    BOOST_CHECK_MESSAGE(!round.RegisterOutput(second.vchCredential, second.vchSignature,
-                                              Rec(uint256(320), 0xb8), nNow, &strError),
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(second.vchCredential, second.vchSignature, Bundle(Rec(uint256(320), 0xb8), round), nNow, &strError),
                         "two outputs named one key, so one seat's value is payable to "
                         "another seat's key");
     BOOST_CHECK(strError.find("already registered") != std::string::npos);
@@ -2567,15 +2627,13 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
 
     // The same token under another key is refused too, now for the binding rather than
     // the spend: one token names one key.
-    BOOST_CHECK(!round.RegisterOutput(second.vchCredential, second.vchSignature,
-                                      Rec(uint256(321), 0xaf), nNow, &strError));
+    BOOST_CHECK(!round.RegisterOutput(second.vchCredential, second.vchSignature, Bundle(Rec(uint256(321), 0xaf), round), nNow, &strError));
     BOOST_CHECK(strError.find("does not authorise") != std::string::npos);
 
     // A token minted for that key is taken, so the refusals were about the key and not
     // the slot.
-    const Token other = MintToken(Rec(uint256(321), 0xaf));
-    BOOST_CHECK(round.RegisterOutput(other.vchCredential, other.vchSignature,
-                                     Rec(uint256(321), 0xaf), nNow, &strError));
+    const Token other = MintToken(Bundle(Rec(uint256(321), 0xaf), round));
+    BOOST_CHECK(round.RegisterOutput(other.vchCredential, other.vchSignature, Bundle(Rec(uint256(321), 0xaf), round), nNow, &strError));
     BOOST_CHECK_EQUAL(round.Outputs(), 2u);
 }
 
@@ -2658,9 +2716,9 @@ BOOST_AUTO_TEST_CASE(a_membership_proof_is_checked_against_its_seat_and_the_appr
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (size_t i = 0; i < 2; i++)
     {
-        const Token token = MintToken(proofs.vRecords[i]);
+        const Token token = MintToken(proofs.vBundles[i]);
         BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT,
-                                                  OutputFrame(token, proofs.vRecords[i]), nNow,
+                                                  OutputFrame(token, proofs.vBundles[i]), nNow,
                                                   strError),
                             (int)MIX_DISPATCH_OK);
     }
@@ -2769,9 +2827,9 @@ void ProvenRoundThroughProofs(CMixRound& round, std::vector<Seat>& vSeats,
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
     for (size_t i = 0; i < 2; i++)
     {
-        const Token token = MintToken(proofs.vRecords[i]);
+        const Token token = MintToken(proofs.vBundles[i]);
         BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT,
-                                                  OutputFrame(token, proofs.vRecords[i]), nNow,
+                                                  OutputFrame(token, proofs.vBundles[i]), nNow,
                                                   strError),
                             (int)MIX_DISPATCH_OK);
     }
@@ -2959,6 +3017,29 @@ BOOST_AUTO_TEST_CASE(a_round_with_a_copied_response_assembles_nothing)
     BOOST_CHECK_MESSAGE(!round.AssemblePayload(vchPayload, &strError),
                         "a payload was assembled over a copied response");
     BOOST_CHECK(vchPayload.empty());
+}
+
+// Why a bundle is needed at all: the parts a position enters differ variant by variant,
+// while the value the round has to agree on does not.
+BOOST_AUTO_TEST_CASE(a_bundles_variants_differ_only_where_the_position_enters)
+{
+    const MixProofSet& proofs = MixProofs();
+    BOOST_REQUIRE_EQUAL(proofs.vBundles.size(), 2u);
+    for (size_t i = 0; i < proofs.vBundles.size(); i++)
+    {
+        const std::vector<CMixOutputRecord>& vBundle = proofs.vBundles[i];
+        BOOST_REQUIRE_EQUAL(vBundle.size(), 2u);
+        // One amount, one opening, one commitment across the bundle, so the joint balance
+        // closes whichever variant the round keeps.
+        BOOST_CHECK(vBundle[0].commitment == vBundle[1].commitment);
+        BOOST_CHECK(vBundle[0].mask == vBundle[1].mask);
+        // The owner key and the ciphertexts are position-bound, which is the whole reason a
+        // seat cannot generate one record before it knows its slot.
+        BOOST_CHECK_MESSAGE(!(vBundle[0].owner == vBundle[1].owner),
+                            "the owner key does not depend on the output position");
+        BOOST_CHECK(vBundle[0].vchRecipientCiphertext != vBundle[1].vchRecipientCiphertext);
+        BOOST_CHECK(!(vBundle[0].noteEphemeral == vBundle[1].noteEphemeral));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

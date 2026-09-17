@@ -245,21 +245,30 @@ static const size_t MIX_OUTPUT_RECORD_BYTES =
 bool EncodeMixOutputRecord(const CMixOutputRecord& record, std::vector<unsigned char>& vchOut);
 bool DecodeMixOutputRecord(const std::vector<unsigned char>& vchIn, CMixOutputRecord& recordOut);
 
-/** What a token is signed over: the canonical encoding of one complete output record, and
- *  NOTHING ELSE. Zero for a record of the wrong shape.
- *
- *  An unbound token is a bearer token -- an on-path party rewrites the output and keeps
- *  the value. A token over the owner key alone still let a registration pair an authorised
- *  key with any commitment, ephemerals or ciphertexts; over the whole record, one
- *  credential authorises exactly one output as its participant generated it.
- *
- *  The round MUST NOT be in here, nor a session key or any seat index. A version that
- *  hashed the round id made the credential a seat tag: a coordinator that hands each seat
- *  an announcement differing only in nTime gives each a different round id, then recovers
- *  the seat from an unauthenticated OUTPUT by trying every id it minted -- one hash per
- *  seat. Rounds are separated by the KEY instead: a token verifies only under the round's
- *  own modulus, so a driver must generate a fresh key per round and never reuse one. */
-uint256 MixOutputRecordCredentialHash(const CMixOutputRecord& record);
+/** A seat's bundle: one complete record per transaction position, in position order.
+ *  Output encryption binds the position and an anonymous seat cannot know its position in
+ *  advance, so it registers every position; the round keeps the assigned one. */
+bool EncodeMixOutputBundle(const std::vector<CMixOutputRecord>& vBundle,
+                           std::vector<unsigned char>& vchOut);
+bool DecodeMixOutputBundle(const std::vector<unsigned char>& vchIn,
+                           std::vector<CMixOutputRecord>& vBundleOut);
+
+/** One bundle of variants for one recipient: the same amount, opening and commitment at
+ *  every position, with the position-dependent parts generated for that position and fresh
+ *  ephemeral secrets per variant. The caller supplies the secrets, one pair per position. */
+bool BuildMixOutputBundle(uint8_t nNetwork, const PrivacyVNextDigest& genesis,
+                          const PrivacyVNextDigest& recipientSpend,
+                          const PrivacyVNextDigest& recipientView,
+                          const PrivacyVNextDigest& outgoingSecret,
+                          const PrivacyVNextDigest& inputContext, uint64_t nAmount,
+                          const PrivacyVNextDigest& y, const PrivacyVNextDigest& mask,
+                          const std::vector<std::pair<PrivacyVNextDigest, PrivacyVNextDigest> >& vEphemerals,
+                          std::vector<CMixOutputRecord>& vBundleOut, std::string& strError);
+
+/** Token message: the canonical encoding of the whole bundle, length included; zero for a
+ *  malformed bundle. Must not include the round, session key or seat index (per-seat tags);
+ *  rounds are separated by the key, so a driver uses a fresh key per round. */
+uint256 MixOutputBundleCredentialHash(const std::vector<CMixOutputRecord>& vBundle);
 
 /** A mix prefix, parsed. Strict: only the NullSend layout at the NullSend disclosure mask,
  *  with nothing after the empty finality body. */
@@ -498,14 +507,12 @@ public:
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
-    /** Register an output against a token, NOT against a session key. Naming the
-     *  session here would hand the coordinator the input-to-output mapping the blind
-     *  signature exists to withhold, so this call cannot see one. The token must open as
-     *  MixOutputRecordCredentialHash(record), so it authorises this output as generated and
-     *  no other; the round it belongs to is settled by which modulus verifies it. */
+    /** Register an output against a token, never a session key (that would reveal the
+     *  input-to-output mapping). The token must open as MixOutputBundleCredentialHash(vBundle);
+     *  the modulus that verifies it settles the round. */
     bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
-                        const CMixOutputRecord& record,
+                        const std::vector<CMixOutputRecord>& vBundle,
                         int64_t nNow,
                         std::string* pstrError = NULL);
 
@@ -660,14 +667,12 @@ bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,
 bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
                        std::vector<uint256>& vOut);
 
-/** An output registration: a token and the complete output record -- and no identity.
- *  The opening is in the record because the joint balance proof is combined from it and
- *  no authenticated frame can carry it without naming the seat's output. It is checked
- *  against the commitment before the token is spent. */
-bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
-                        const std::vector<unsigned char>& vchBlindSignature,
-                        const CMixOutputRecord& record,
-                        std::vector<unsigned char>& vchOut);
+/** The anonymous output frame: a token and the bundle it authorises, with no identity. Each
+ *  opening is checked against its commitment before the token is spent. */
+bool BuildMixOutputBundleBody(const std::vector<unsigned char>& vchCredential,
+                              const std::vector<unsigned char>& vchBlindSignature,
+                              const std::vector<CMixOutputRecord>& vBundle,
+                              std::vector<unsigned char>& vchOut);
 
 enum MixDispatch
 {

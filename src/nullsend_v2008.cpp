@@ -617,15 +617,103 @@ bool DecodeMixOutputRecord(const std::vector<unsigned char>& vchIn, CMixOutputRe
     return nAt == vchIn.size();
 }
 
-uint256 MixOutputRecordCredentialHash(const CMixOutputRecord& record)
+bool EncodeMixOutputBundle(const std::vector<CMixOutputRecord>& vBundle,
+                           std::vector<unsigned char>& vchOut)
 {
-    std::vector<unsigned char> vchRecord;
-    if (!EncodeMixOutputRecord(record, vchRecord))
+    vchOut.clear();
+    if (vBundle.empty() || vBundle.size() > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    vchOut.push_back((unsigned char)vBundle.size());
+    for (size_t i = 0; i < vBundle.size(); i++)
+    {
+        std::vector<unsigned char> vchRecord;
+        if (!EncodeMixOutputRecord(vBundle[i], vchRecord))
+        {
+            vchOut.clear();
+            return false;
+        }
+        vchOut.insert(vchOut.end(), vchRecord.begin(), vchRecord.end());
+    }
+    return true;
+}
+
+bool DecodeMixOutputBundle(const std::vector<unsigned char>& vchIn,
+                           std::vector<CMixOutputRecord>& vBundleOut)
+{
+    vBundleOut.clear();
+    if (vchIn.empty())
+        return false;
+    const size_t nCount = vchIn[0];
+    if (nCount == 0 || nCount > iv5::MAX_NULLSEND_INPUTS ||
+        vchIn.size() != 1 + nCount * MIX_OUTPUT_RECORD_BYTES)
+        return false;
+    for (size_t i = 0; i < nCount; i++)
+    {
+        const std::vector<unsigned char> vchRecord(
+            vchIn.begin() + 1 + i * MIX_OUTPUT_RECORD_BYTES,
+            vchIn.begin() + 1 + (i + 1) * MIX_OUTPUT_RECORD_BYTES);
+        CMixOutputRecord record;
+        if (!DecodeMixOutputRecord(vchRecord, record))
+        {
+            vBundleOut.clear();
+            return false;
+        }
+        vBundleOut.push_back(record);
+    }
+    return true;
+}
+
+uint256 MixOutputBundleCredentialHash(const std::vector<CMixOutputRecord>& vBundle)
+{
+    std::vector<unsigned char> vchBundle;
+    if (!EncodeMixOutputBundle(vBundle, vchBundle))
         return 0;
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/token/v3");
-    ss << vchRecord;
+    ss << std::string("innova/iv5/mix/token/v4");
+    ss << vchBundle;
     return ss.GetHash();
+}
+
+bool BuildMixOutputBundle(uint8_t nNetwork, const PrivacyVNextDigest& genesis,
+                          const PrivacyVNextDigest& recipientSpend,
+                          const PrivacyVNextDigest& recipientView,
+                          const PrivacyVNextDigest& outgoingSecret,
+                          const PrivacyVNextDigest& inputContext, uint64_t nAmount,
+                          const PrivacyVNextDigest& y, const PrivacyVNextDigest& mask,
+                          const std::vector<std::pair<PrivacyVNextDigest, PrivacyVNextDigest> >& vEphemerals,
+                          std::vector<CMixOutputRecord>& vBundleOut, std::string& strError)
+{
+    vBundleOut.clear();
+    strError.clear();
+    if (vEphemerals.empty() || vEphemerals.size() > iv5::MAX_NULLSEND_INPUTS)
+    {
+        strError = "a bundle carries one variant per seat";
+        return false;
+    }
+    for (size_t i = 0; i < vEphemerals.size(); i++)
+    {
+        // Same amount, opening and commitment at every position; everything the position
+        // enters is generated for that position, with its own ephemeral secrets.
+        PrivacyVNextEncryptedOutput out;
+        if (!EncryptPrivacyVNextNote(nNetwork, 0, (uint32_t)i, genesis, recipientSpend,
+                                     recipientView, outgoingSecret, vEphemerals[i].first,
+                                     vEphemerals[i].second, nAmount, y, mask, inputContext,
+                                     out, strError))
+        {
+            vBundleOut.clear();
+            return false;
+        }
+        CMixOutputRecord record;
+        record.owner = out.leaf.owner;
+        record.commitment = out.leaf.commitment;
+        record.noteEphemeral = out.noteEphemeral;
+        record.tweakEphemeral = out.tweakEphemeral;
+        record.vchRecipientCiphertext = out.vchRecipientCiphertext;
+        record.vchOutgoingCiphertext = out.vchOutgoingCiphertext;
+        record.mask = mask;
+        vBundleOut.push_back(record);
+    }
+    return true;
 }
 
 bool SignMixSessionFrame(const CKey& key, const uint256& hashRound, MixFrameType nType,
@@ -1208,7 +1296,7 @@ bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)
 
 bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
                                const std::vector<unsigned char>& vchBlindSignature,
-                               const CMixOutputRecord& record,
+                               const std::vector<CMixOutputRecord>& vBundle,
                                int64_t nNow,
                                std::string* pstrError)
 {
@@ -1217,6 +1305,15 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
         return false;
     if (nNow > nWindowCloses)
         FAIL("the output window has closed");
+    // One variant per position, and the position is the one this round assigns next. The
+    // registrant cannot choose it: a caller that could would be choosing which seat's slot
+    // it takes, and the encryption of every other variant is useless to it anyway.
+    if (vBundle.size() != vParticipants.size())
+        FAIL("a bundle carries one variant per seat");
+    if (vOutputs.size() >= vParticipants.size())
+        FAIL("every seat already has an output");
+    const size_t nPosition = vOutputRecords.size();
+    const CMixOutputRecord& record = vBundle[nPosition];
     const uint256 outputKey = record.OwnerKey();
     const PrivacyVNextDigest& commitment = record.commitment;
     const PrivacyVNextDigest& mask = record.mask;
@@ -1224,22 +1321,22 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
         FAIL("output has no key");
     if (vchCredential.empty() || vchBlindSignature.empty())
         FAIL("output carries no token");
-    // The token names the whole record it authorises, so rewriting any field in flight
+    // The token names the whole bundle it authorises, so rewriting any field in flight
     // makes the token stop opening. A token from another round is refused by the
     // signature check below instead, because it was signed under that round's modulus --
     // which is why the round must not appear in the message. Checked first: this is
     // arithmetic-free, and a record of the wrong shape has no credential hash at all.
-    const uint256 hashExpected = MixOutputRecordCredentialHash(record);
+    const uint256 hashExpected = MixOutputBundleCredentialHash(vBundle);
     if (hashExpected == 0)
-        FAIL("output record is not the shape a payload carries");
+        FAIL("output bundle is not the shape a payload carries");
     if (vchCredential.size() != 32 ||
         !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
-        FAIL("token does not authorise this output record in this round");
+        FAIL("token does not authorise this output bundle in this round");
     if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
         FAIL("token does not verify under the round key");
-    // The opening, checked BEFORE the token is spent. The token authorises the KEY and
-    // not the bytes after it, so an unvalidated opening lets anyone holding a good token
-    // poison the combination -- and the combiner only ever sees the SUM, so it cannot say
+    // The opening of the variant being kept, checked BEFORE the token is spent. The
+    // coordinator blind-signs without seeing the bundle, so a token can hold a variant
+    // whose mask does not open its commitment, and that poisons the combination -- and the combiner only ever sees the SUM, so it cannot say
     // which registration was wrong. A round with no denomination cannot run this check
     // and therefore registers nothing.
     if (nDenomination == 0)
@@ -1257,8 +1354,6 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     for (size_t i = 0; i < vSpentCredentials.size(); i++)
         if (vSpentCredentials[i] == hashCredential)
             FAIL("token has already registered an output");
-    if (vOutputs.size() >= vParticipants.size())
-        FAIL("every seat already has an output");
     for (size_t i = 0; i < vOutputs.size(); i++)
         if (vOutputs[i] == outputKey)
             FAIL("output key is already registered");
@@ -1828,24 +1923,24 @@ bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
     return true;
 }
 
-bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
-                        const std::vector<unsigned char>& vchBlindSignature,
-                        const CMixOutputRecord& record,
-                        std::vector<unsigned char>& vchOut)
+bool BuildMixOutputBundleBody(const std::vector<unsigned char>& vchCredential,
+                              const std::vector<unsigned char>& vchBlindSignature,
+                              const std::vector<CMixOutputRecord>& vBundle,
+                              std::vector<unsigned char>& vchOut)
 {
     vchOut.clear();
     if (vchCredential.empty() || vchCredential.size() > 0xFFFF)
         return false;
     if (vchBlindSignature.empty() || vchBlindSignature.size() > 0xFFFF)
         return false;
-    std::vector<unsigned char> vchRecord;
-    if (!EncodeMixOutputRecord(record, vchRecord))
+    std::vector<unsigned char> vchBundle;
+    if (!EncodeMixOutputBundle(vBundle, vchBundle))
         return false;
     PutU16(vchOut, vchCredential.size());
     vchOut.insert(vchOut.end(), vchCredential.begin(), vchCredential.end());
     PutU16(vchOut, vchBlindSignature.size());
     vchOut.insert(vchOut.end(), vchBlindSignature.begin(), vchBlindSignature.end());
-    vchOut.insert(vchOut.end(), vchRecord.begin(), vchRecord.end());
+    vchOut.insert(vchOut.end(), vchBundle.begin(), vchBundle.end());
     return true;
 }
 
@@ -1870,12 +1965,11 @@ MixDispatch DispatchMixFrame(CMixRound& round,
             REFUSE("output frame is malformed");
         if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchBlindSignature))
             REFUSE("output frame is malformed");
-        std::vector<unsigned char> vchRecord;
-        CMixOutputRecord record;
-        if (!TakeBytes(vchPayload, nAt, MIX_OUTPUT_RECORD_BYTES, vchRecord) ||
-            nAt != vchPayload.size() || !DecodeMixOutputRecord(vchRecord, record))
+        std::vector<unsigned char> vchBundle(vchPayload.begin() + nAt, vchPayload.end());
+        std::vector<CMixOutputRecord> vRecords;
+        if (vchBundle.empty() || !DecodeMixOutputBundle(vchBundle, vRecords))
             REFUSE("output frame is malformed");
-        if (!round.RegisterOutput(vchCredential, vchBlindSignature, record, nNow, &strError))
+        if (!round.RegisterOutput(vchCredential, vchBlindSignature, vRecords, nNow, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }
