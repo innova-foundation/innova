@@ -1356,6 +1356,21 @@ void SetSocketReceiveTimeout(SOCKET hSocket, int64_t nMilliseconds)
 #endif
 }
 
+void SetSocketSendTimeout(SOCKET hSocket, int64_t nMilliseconds)
+{
+    if (nMilliseconds < 0)
+        nMilliseconds = 0;
+#ifdef WIN32
+    DWORD nTimeout = (DWORD)(nMilliseconds > 0xfffffffeLL ? 0xfffffffeLL : nMilliseconds);
+    setsockopt(hSocket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&nTimeout, sizeof(nTimeout));
+#else
+    struct timeval tv;
+    tv.tv_sec = (long)(nMilliseconds / 1000);
+    tv.tv_usec = (long)((nMilliseconds % 1000) * 1000);
+    setsockopt(hSocket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#endif
+}
+
 bool SetSocketNonBlocking(SOCKET& hSocket, bool fNonBlocking)
 {
     if (fNonBlocking) {

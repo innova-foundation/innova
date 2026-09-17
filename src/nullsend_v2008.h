@@ -18,6 +18,9 @@
 
 class CTransaction;
 
+/** How long a peer may take to accept one frame before the sender gives up on it. */
+static const int MIX_SEND_TIMEOUT_MS = 30000;
+
 /** How long an announcement stays joinable. */
 static const int64_t MIX_ROUND_ANNOUNCE_TIMEOUT = 300;
 /** Bound on the endpoint string, so a decoder cannot be made to hold an
@@ -244,8 +247,11 @@ public:
     void Close();
     bool IsOpen() const { return hSocket != INVALID_SOCKET; }
 
+    /** nTimeoutMs bounds the whole frame, as Receive's does. Without one a peer that
+     *  stops reading holds the sender in send() forever, and a service loop with one
+     *  thread per connection is then stalled by any seat that wants it to be. */
     bool Send(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
-              std::string* pstrError = NULL);
+              std::string* pstrError = NULL, int nTimeoutMs = MIX_SEND_TIMEOUT_MS);
 
     /** Reads until one whole frame is available or nTimeoutMs passes. The timeout bounds the
      *  whole frame, not each recv, and the buffer is bounded by one maximum frame. */
@@ -612,7 +618,9 @@ public:
     /** The round is over and its transaction is out. Refused before the signature is complete. */
     bool MarkComplete(std::string* pstrError = NULL);
 
-    bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
+    /** Opens the anonymous window. The close instant is passed in from the announcement's
+     *  schedule so it matches the one the seats derived. */
+    bool OpenOutputWindow(int64_t nNow, int64_t nClosesAt, std::string* pstrError = NULL);
 
     /** Register an output against a token, never a session key (that would reveal the
      *  input-to-output mapping). The token must open as MixOutputBundleCredentialHash(vBundle);
@@ -697,7 +705,9 @@ public:
     /** The frozen input set, sorted, which the self-pay index binds. Empty until
      *  CloseJoin. */
     const std::vector<uint256>& FinalKeyImages() const { return vFinalKeyImages; }
-    bool IsExpired(int64_t nNow) const;
+    /** Past the end of the schedule it was opened under. The round holds no announcement,
+     *  so the caller supplies the instant its schedule ends. */
+    bool IsExpired(int64_t nNow, int64_t nEnds) const;
 
 private:
     bool Require(MixRoundPhase nExpected, std::string* pstrError);

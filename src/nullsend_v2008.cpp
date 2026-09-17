@@ -160,8 +160,14 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
             FAIL("a scheduled window is outside the range a round may use");
         nTotal += (int64_t)vWindows[i];
     }
-    if (nApproveSecs < MIX_PROOF_WINDOW_MIN_SECS)
-        FAIL("the approval window is shorter than a membership proof takes");
+    // Two windows carry a one-input prove, not one: the pseudo-output a seat submits in
+    // the view window comes out of the same proving pass its membership proof does.
+    if (nApproveSecs < MIX_PROOF_WINDOW_MIN_SECS || nViewSecs < MIX_PROOF_WINDOW_MIN_SECS)
+        FAIL("a window that carries a membership proof is shorter than the proof takes");
+    // The anonymous window is the one a seat cannot be asked to hurry: it has to build a
+    // bundle, then pick an instant inside the window to submit at.
+    if (nOutputSecs < MIX_OUTPUT_WINDOW)
+        FAIL("the output window is shorter than a registration is given");
     if (nTotal > MIX_SCHEDULE_MAX_TOTAL_SECS)
         FAIL("the schedule holds the round's anchor open for too long");
     if (nTime <= 0)
@@ -1361,7 +1367,7 @@ bool CMixRound::ViewAgreed(const uint256& hashAnnouncement) const
     return !vParticipants.empty();
 }
 
-bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)
+bool CMixRound::OpenOutputWindow(int64_t nNow, int64_t nClosesAt, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (!Require(MIX_PHASE_KEYED, pstrError))
@@ -1369,7 +1375,9 @@ bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)
     for (size_t i = 0; i < vParticipants.size(); i++)
         if (!vParticipants[i].fTokenIssued)
             FAIL("a seat holds no token; it could not register an output");
-    nWindowCloses = nNow + MIX_OUTPUT_WINDOW;
+    if (nClosesAt < nNow + MIX_OUTPUT_WINDOW)
+        FAIL("the output window is shorter than a registration is given");
+    nWindowCloses = nClosesAt;
     nPhase = MIX_PHASE_OUTPUT;
     return true;
     #undef FAIL
@@ -1384,13 +1392,37 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (!Require(MIX_PHASE_OUTPUT, pstrError))
         return false;
-    if (nNow > nWindowCloses)
-        FAIL("the output window has closed");
-    // One variant per position, and the position is the one this round assigns next. The
-    // registrant cannot choose it: a caller that could would be choosing which seat's slot
-    // it takes, and the encryption of every other variant is useless to it anyway.
+    // One variant per position. The registrant cannot choose which one is kept: a caller
+    // that could would be choosing which seat's slot it takes, and every other variant is
+    // useless to it anyway, because the encryption binds the position.
     if (vBundle.size() != vParticipants.size())
         FAIL("a bundle carries one variant per seat");
+    if (vchCredential.empty() || vchBlindSignature.empty())
+        FAIL("output carries no token");
+    // The token names the whole bundle, so any in-flight rewrite fails to open. Tokens from
+    // another round fail the signature check (per-round modulus), so the round is not in
+    // the message. Checked first: arithmetic-free.
+    const uint256 hashExpected = MixOutputBundleCredentialHash(vBundle);
+    if (hashExpected == 0)
+        FAIL("output bundle is not the shape a payload carries");
+    if (vchCredential.size() != 32 ||
+        !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
+        FAIL("token does not authorise this output bundle in this round");
+    if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
+        FAIL("token does not verify under the round key");
+
+    // A repeat of the SAME token is a retransmission, answered as such (the credential is
+    // the bundle hash). Checked after the signature and before round progress, since the
+    // next position may be taken by the time a retry lands.
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << vchCredential;
+    const uint256 hashCredential = ss.GetHash();
+    for (size_t i = 0; i < vSpentCredentials.size(); i++)
+        if (vSpentCredentials[i] == hashCredential)
+            return true;
+
+    if (nNow > nWindowCloses)
+        FAIL("the output window has closed");
     if (vOutputs.size() >= vParticipants.size())
         FAIL("every seat already has an output");
     const size_t nPosition = vOutputRecords.size();
@@ -1400,26 +1432,8 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     const PrivacyVNextDigest& mask = record.mask;
     if (outputKey == 0)
         FAIL("output has no key");
-    if (vchCredential.empty() || vchBlindSignature.empty())
-        FAIL("output carries no token");
-    // The token names the whole bundle it authorises, so rewriting any field in flight
-    // makes the token stop opening. A token from another round is refused by the
-    // signature check below instead, because it was signed under that round's modulus --
-    // which is why the round must not appear in the message. Checked first: this is
-    // arithmetic-free, and a record of the wrong shape has no credential hash at all.
-    const uint256 hashExpected = MixOutputBundleCredentialHash(vBundle);
-    if (hashExpected == 0)
-        FAIL("output bundle is not the shape a payload carries");
-    if (vchCredential.size() != 32 ||
-        !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
-        FAIL("token does not authorise this output bundle in this round");
-    if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
-        FAIL("token does not verify under the round key");
-    // The opening of the variant being kept, checked BEFORE the token is spent. The
-    // coordinator blind-signs without seeing the bundle, so a token can hold a variant
-    // whose mask does not open its commitment, and that poisons the combination -- and the combiner only ever sees the SUM, so it cannot say
-    // which registration was wrong. A round with no denomination cannot run this check
-    // and therefore registers nothing.
+    // Check the kept variant's opening BEFORE spending the token: blind signing cannot see
+    // it, and the combiner sees only the sum. A round with no denomination registers nothing.
     if (nDenomination == 0)
         FAIL("the round carries no denomination, so an opening cannot be checked");
     if (!MixOpeningOpens(nDenomination, mask, commitment))
@@ -1427,14 +1441,6 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     for (size_t i = 0; i < vOutputCommitments.size(); i++)
         if (vOutputCommitments[i] == commitment)
             FAIL("that output commitment is already registered");
-    // One token, once. Nothing else limits how many outputs an unlinkable caller may
-    // present, and the token is deliberately not tied to a seat.
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << vchCredential;
-    const uint256 hashCredential = ss.GetHash();
-    for (size_t i = 0; i < vSpentCredentials.size(); i++)
-        if (vSpentCredentials[i] == hashCredential)
-            FAIL("token has already registered an output");
     for (size_t i = 0; i < vOutputs.size(); i++)
         if (vOutputs[i] == outputKey)
             FAIL("output key is already registered");
@@ -1443,6 +1449,7 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     vOutputCommitments.push_back(commitment);
     vOutputMasks.push_back(mask);
     vOutputRecords.push_back(record);
+
     return true;
     #undef FAIL
 }
@@ -1613,11 +1620,11 @@ std::vector<std::vector<unsigned char> > CMixRound::ResponsesInInputOrder() cons
     return vOut;
 }
 
-bool CMixRound::IsExpired(int64_t nNow) const
+bool CMixRound::IsExpired(int64_t nNow, int64_t nEnds) const
 {
     if (nPhase == MIX_PHASE_COMPLETE || nPhase == MIX_PHASE_ABORTED)
         return false;
-    return (nNow - nOpened) > NULLSEND_QUEUE_TIMEOUT;
+    return nNow > nEnds;
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,7 +1654,7 @@ void CMixStream::Close()
 }
 
 bool CMixStream::Send(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
-                      std::string* pstrError)
+                      std::string* pstrError, int nTimeoutMs)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (hSocket == INVALID_SOCKET)
@@ -1655,18 +1662,43 @@ bool CMixStream::Send(MixFrameType nType, const std::vector<unsigned char>& vchP
     std::vector<unsigned char> vchFrame;
     if (!BuildMixFrame(nType, vchPayload, vchFrame))
         FAIL("frame has no encoding");
+    // The deadline bounds the FRAME, as the reader's does. A peer that stops reading
+    // otherwise holds this thread in send() for as long as it likes.
+    const int64_t nNow = GetTimeMillis();
+    const int64_t nBudget = nTimeoutMs > 0 ? (int64_t)nTimeoutMs : 0;
+    const int64_t nDeadline =
+        (nNow > std::numeric_limits<int64_t>::max() - nBudget)
+            ? std::numeric_limits<int64_t>::max()
+            : nNow + nBudget;
     size_t nSent = 0;
     while (nSent < vchFrame.size())
     {
+        const int nSlice = MixReceiveSliceMs(nDeadline, GetTimeMillis());
+        if (nSlice <= 0)
+            FAIL("the peer did not take the frame before the deadline");
+        SetSocketSendTimeout(hSocket, nSlice);
         const ssize_t nWrote = send(hSocket, (const char*)&vchFrame[nSent],
                                     vchFrame.size() - nSent, MSG_NOSIGNAL);
-        if (nWrote <= 0)
+        if (nWrote > 0)
+        {
+            nSent += (size_t)nWrote;
+            continue;
+        }
+        if (nWrote == 0)
             FAIL("the peer went away mid-frame");
-        nSent += (size_t)nWrote;
+#ifndef WIN32
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            FAIL("the peer did not take the frame before the deadline");
+#endif
+        FAIL("the peer went away mid-frame");
     }
     return true;
     #undef FAIL
 }
+
+int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs);
 
 int MixReceiveSliceMs(int64_t nDeadlineMs, int64_t nNowMs)
 {

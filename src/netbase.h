@@ -212,6 +212,7 @@ bool SetSocketNonBlocking(SOCKET& hSocket, bool fNonBlocking);
 /** Arm a socket's receive timeout, portably (Winsock takes DWORD ms, POSIX a timeval;
  *  a timeval passed to Winsock would truncate to tv_sec). Milliseconds <= 0 = do not block. */
 void SetSocketReceiveTimeout(SOCKET hSocket, int64_t nMilliseconds);
+void SetSocketSendTimeout(SOCKET hSocket, int64_t nMilliseconds);
 
 /**
  * Convert milliseconds to a struct timeval for e.g. select.
