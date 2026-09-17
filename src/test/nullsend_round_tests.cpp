@@ -1349,6 +1349,37 @@ BOOST_AUTO_TEST_CASE(a_bundle_gives_the_round_the_variant_for_the_position_it_as
                         "the second registration did not keep its variant for position 1");
 }
 
+// A bundle of the wrong shape has no credential at all. The coordinator blind-signs
+// whatever message it is handed, so a caller can hold a valid signature over the empty
+// hash -- and without the shape check that token would open a malformed bundle.
+BOOST_AUTO_TEST_CASE(a_malformed_bundle_has_no_credential_for_a_token_to_open)
+{
+    const int64_t nNow = 3950000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    CNullSendSession& server = Coordinator();
+    CNullSendClient client;
+    BOOST_REQUIRE(client.BlindCredentialMessage(server.vchRSA_N, server.vchRSA_E, uint256(0)));
+    std::vector<unsigned char> vchBlindSig;
+    BOOST_REQUIRE(server.BlindSign(client.vchBlindedCredential, vchBlindSig));
+    BOOST_REQUIRE(client.UnblindSignature(vchBlindSig));
+
+    std::vector<CMixOutputRecord> vMalformed(2, Rec(uint256(0x8C0), 0xD1));
+    vMalformed[0].vchRecipientCiphertext.pop_back();
+    BOOST_REQUIRE(MixOutputBundleCredentialHash(vMalformed) == 0);
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(client.vchCredentialHash, client.vchUnblindedSig,
+                                              vMalformed, nNow, &strError),
+                        "a bundle with no credential registered under a token over the empty hash");
+    BOOST_CHECK_EQUAL(round.Outputs(), 0u);
+}
+
 // A round opened without a denomination cannot check an opening, so it registers nothing
 // rather than accepting one it cannot judge.
 BOOST_AUTO_TEST_CASE(a_round_with_no_denomination_registers_no_output)
