@@ -1311,6 +1311,39 @@ bool CMixRound::AssemblePayload(std::vector<unsigned char>& vchPayloadOut,
     #undef FAIL
 }
 
+std::vector<std::vector<unsigned char> > CMixRound::ViewCertificate(
+    const uint256& hashAnnouncement) const
+{
+    std::vector<std::vector<unsigned char> > vOut;
+    if (!ViewAgreed(hashAnnouncement))
+        return vOut;
+    vOut.resize(vParticipants.size());
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        const CMixParticipant& p = vParticipants[i];
+        if (p.nInputIndex < 0 || p.nInputIndex >= (int)vOut.size())
+            return std::vector<std::vector<unsigned char> >();
+        vOut[p.nInputIndex] = p.vchViewSig;
+    }
+    return vOut;
+}
+
+std::vector<std::vector<unsigned char> > CMixRound::PrefixCertificate() const
+{
+    std::vector<std::vector<unsigned char> > vOut;
+    if (!PrefixAgreed())
+        return vOut;
+    vOut.resize(vParticipants.size());
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        const CMixParticipant& p = vParticipants[i];
+        if (p.nInputIndex < 0 || p.nInputIndex >= (int)vOut.size())
+            return std::vector<std::vector<unsigned char> >();
+        vOut[p.nInputIndex] = p.vchPrefixSig;
+    }
+    return vOut;
+}
+
 bool CMixRound::MarkComplete(std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
@@ -2086,6 +2119,8 @@ bool BuildMixSnapshot(const CMixRound& round, MixSnapshotAudience nAudience,
     snapshotOut.vchRsaN = round.RsaModulus();
     snapshotOut.vchRsaE = round.RsaExponent();
     snapshotOut.vchPrefix = round.FrozenPrefix();
+    snapshotOut.vViewSigs = round.ViewCertificate(round.PrefixAnnouncement());
+    snapshotOut.vPrefixSigs = round.PrefixCertificate();
     const std::vector<std::vector<unsigned char> > vNonces = round.NoncesInInputOrder();
     for (size_t i = 0; i < vNonces.size(); i++)
     {
@@ -2110,7 +2145,8 @@ bool BuildMixSnapshotBody(const CMixSnapshot& snapshot, std::vector<unsigned cha
         return false;
     if (snapshot.nAudience == MIX_SNAPSHOT_PUBLIC &&
         (!snapshot.vRoster.empty() || !snapshot.vchRsaN.empty() || !snapshot.vchRsaE.empty() ||
-         !snapshot.vchPrefix.empty() || !snapshot.vNonces.empty()))
+         !snapshot.vchPrefix.empty() || !snapshot.vNonces.empty() ||
+         !snapshot.vViewSigs.empty() || !snapshot.vPrefixSigs.empty()))
         return false;   // the public form carries none of it, by construction
     vchOut.push_back(snapshot.nVersion);
     vchOut.push_back(snapshot.nAudience);
@@ -2138,6 +2174,21 @@ bool BuildMixSnapshotBody(const CMixSnapshot& snapshot, std::vector<unsigned cha
     vchOut.push_back((unsigned char)snapshot.vNonces.size());
     for (size_t i = 0; i < snapshot.vNonces.size(); i++)
         vchOut.insert(vchOut.end(), snapshot.vNonces[i].begin(), snapshot.vNonces[i].end());
+    for (size_t nWhich = 0; nWhich < 2; nWhich++)
+    {
+        const std::vector<std::vector<unsigned char> >& vSigs =
+            nWhich == 0 ? snapshot.vViewSigs : snapshot.vPrefixSigs;
+        if (vSigs.size() > iv5::MAX_NULLSEND_INPUTS)
+            return false;
+        vchOut.push_back((unsigned char)vSigs.size());
+        for (size_t i = 0; i < vSigs.size(); i++)
+        {
+            if (vSigs[i].empty() || vSigs[i].size() > 0xffff)
+                return false;   // a certificate is complete or it is not published at all
+            PutU16(vchOut, vSigs[i].size());
+            vchOut.insert(vchOut.end(), vSigs[i].begin(), vSigs[i].end());
+        }
+    }
     return true;
 }
 
@@ -2185,6 +2236,24 @@ bool ReadMixSnapshotBody(const std::vector<unsigned char>& vchIn, CMixSnapshot& 
         PrivacyVNextDigest nonce;
         memcpy(nonce.data(), &vch[0], 32);
         snapshotOut.vNonces.push_back(nonce);
+    }
+    for (size_t nWhich = 0; nWhich < 2; nWhich++)
+    {
+        std::vector<std::vector<unsigned char> >& vSigs =
+            nWhich == 0 ? snapshotOut.vViewSigs : snapshotOut.vPrefixSigs;
+        if (!TakeBytes(vchIn, nAt, 1, vch))
+            return false;
+        const size_t nSigs = vch[0];
+        if (nSigs > iv5::MAX_NULLSEND_INPUTS)
+            return false;
+        for (size_t i = 0; i < nSigs; i++)
+        {
+            std::vector<unsigned char> vchSig;
+            if (!TakeU16(vchIn, nAt, nLen) || nLen == 0 ||
+                !TakeBytes(vchIn, nAt, nLen, vchSig))
+                return false;
+            vSigs.push_back(vchSig);
+        }
     }
     return nAt == vchIn.size();
 }
@@ -2543,4 +2612,393 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         return round.Phase() == MIX_PHASE_ABORTED ? MIX_DISPATCH_ABORTED : MIX_DISPATCH_REFUSED;
     return MIX_DISPATCH_OK;
     #undef REFUSE
+}
+
+// ---------------------------------------------------------------------------
+// The coordinator service
+// ---------------------------------------------------------------------------
+
+namespace {
+
+boost::filesystem::path MixRoundKeyLedgerPath()
+{
+    return GetDataDir() / "mixroundkeys.log";
+}
+
+uint256 MixRoundKeyFingerprint(const std::vector<unsigned char>& vchRSA_N)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/roundkey/used/v1");
+    ss << vchRSA_N;
+    return ss.GetHash();
+}
+
+} // namespace
+
+bool MixRoundKeyWasUsed(const std::vector<unsigned char>& vchRSA_N)
+{
+    if (vchRSA_N.empty())
+        return true;
+    const std::string strWanted = MixRoundKeyFingerprint(vchRSA_N).ToString();
+    FILE* file = fopen(MixRoundKeyLedgerPath().string().c_str(), "r");
+    if (file == NULL)
+        return false;
+    char pszLine[256];
+    bool fFound = false;
+    while (!fFound && fgets(pszLine, sizeof(pszLine), file) != NULL)
+    {
+        std::string strLine(pszLine);
+        if (strLine.find(strWanted) != std::string::npos)
+            fFound = true;
+    }
+    fclose(file);
+    return fFound;
+}
+
+bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint256& hashRound)
+{
+    if (vchRSA_N.empty())
+        return false;
+    FILE* file = fopen(MixRoundKeyLedgerPath().string().c_str(), "a");
+    if (file == NULL)
+        return false;
+    // Appended and flushed before the round runs: a crash that loses the record would let
+    // the key be offered again, which is the one thing the ledger exists to stop.
+    fprintf(file, "%s %s\n", MixRoundKeyFingerprint(vchRSA_N).ToString().c_str(),
+            hashRound.ToString().c_str());
+    fflush(file);
+    fclose(file);
+    return true;
+}
+
+CMixCoordinator::CMixCoordinator()
+    : fOpen(false), fPublished(false), nLastStage(MIX_STAGE_JOIN)
+{
+}
+
+bool CMixCoordinator::Open(const CMixRoundAnnouncement& announce,
+                           const CNullSendSession& roundKey, int64_t nNow,
+                           std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (fOpen)
+        FAIL("this coordinator is already running a round");
+    if (!announce.IsValidBasic(pstrError))
+        return false;
+    if (!announce.CheckSignature())
+        FAIL("the announcement is not signed by the key it names");
+    if (!announce.KeyOpensCommitment(roundKey.vchRSA_N, roundKey.vchRSA_E))
+        FAIL("the round key is not the one the announcement commits to");
+    if (roundKey.vchRSA_D.empty())
+        FAIL("the round key cannot sign");
+    if (MixRoundKeyWasUsed(roundKey.vchRSA_N))
+        FAIL("that round key has already run a round; a token from it would open in this one");
+    if (nNow >= announce.JoinCloses())
+        FAIL("the announced join window has already closed");
+    if (!round.Open(announce.hashRound, announce.nParticipants, roundKey.vchRSA_N,
+                    roundKey.vchRSA_E, true, false, announce.nDenomination, nNow, pstrError))
+        return false;
+    if (!RecordMixRoundKeyUse(roundKey.vchRSA_N, announce.hashRound))
+        FAIL("the round key could not be recorded as used");
+    announcement = announce;
+    key = roundKey;
+    vBlinded.assign(announce.nParticipants, std::vector<unsigned char>());
+    vBlindSignatures.assign(announce.nParticipants, std::vector<unsigned char>());
+    fOpen = true;
+    fPublished = false;
+    nLastStage = MIX_STAGE_JOIN;
+    return true;
+    #undef FAIL
+}
+
+MixServiceStage CMixCoordinator::Stage(int64_t nNow) const
+{
+    if (!fOpen)
+        return MIX_STAGE_TERMINAL;
+    if (nNow < announcement.JoinCloses())     return MIX_STAGE_JOIN;
+    if (nNow < announcement.ViewCloses())     return MIX_STAGE_VIEW;
+    if (nNow < announcement.TokenCloses())    return MIX_STAGE_TOKEN;
+    // Strictly past the close, matching the round's own comparison, so stage and round agree.
+    if (nNow <= announcement.OutputCloses())  return MIX_STAGE_OUTPUT;
+    if (nNow < announcement.ApproveCloses())  return MIX_STAGE_APPROVE;
+    if (nNow < announcement.NonceCloses())    return MIX_STAGE_NONCE;
+    if (nNow < announcement.ResponseCloses()) return MIX_STAGE_RESPONSE;
+    return MIX_STAGE_TERMINAL;
+}
+
+void CMixCoordinator::Tick(int64_t nNow)
+{
+    if (!fOpen || round.Phase() == MIX_PHASE_ABORTED || round.Phase() == MIX_PHASE_COMPLETE)
+        return;
+    const MixServiceStage nStage = Stage(nNow);
+    std::string strError;
+    // One transition per boundary crossed, in order, so a service that missed a tick
+    // still runs every step rather than skipping to the stage the clock is in.
+    while (nLastStage < nStage)
+    {
+        const MixServiceStage nCrossed = nLastStage;
+        nLastStage = (MixServiceStage)(nLastStage + 1);
+        switch (nCrossed)
+        {
+        case MIX_STAGE_JOIN:
+            if ((int)round.Seats() != announcement.nParticipants)
+            {
+                round.Abort("the round did not fill before its join window closed");
+                return;
+            }
+            if (!round.CloseJoin(nNow, &strError))
+            {
+                round.Abort("the join set could not be frozen: " + strError);
+                return;
+            }
+            break;
+        case MIX_STAGE_VIEW:
+            if (!round.ViewAgreed(announcement.hashRound) || !round.InputConstructionsComplete())
+            {
+                round.Abort("the seats did not all agree the view and construct their inputs");
+                return;
+            }
+            break;
+        case MIX_STAGE_TOKEN:
+            // Every seat must hold a token, or the round cannot fill its outputs; opening
+            // the window with the close the announcement scheduled, not one of its own.
+            if (!round.OpenOutputWindow(nNow, announcement.OutputCloses(), &strError))
+            {
+                round.Abort("the output window could not open: " + strError);
+                return;
+            }
+            break;
+        case MIX_STAGE_OUTPUT:
+            if (round.Outputs() != round.Seats())
+            {
+                round.Abort("the round is short of outputs");
+                return;
+            }
+            if (!round.OpenSigning(nNow, &strError))
+            {
+                round.Abort("signing could not open: " + strError);
+                return;
+            }
+            else
+            {
+                PrivacyVNextPrefixHeader header;
+                header.nOperation = iv5::NOTE_NULLSEND;
+                header.nDisclosureMask = iv5::NULLSEND_DISCLOSURE_MASK;
+                header.nNetwork = announcement.nNetwork;
+                header.genesis = announcement.genesis;
+                header.parameterDigest = announcement.parameterDigest;
+                header.finalizedRoot = announcement.finalizedRoot;
+                header.nFinalizedTreeSize = announcement.nFinalizedTreeSize;
+                header.nTransparentValueBalance = 0;
+                header.nFee = announcement.nFee;
+                header.transparentBinding = MixTransparentBinding();
+                if (!round.FreezePrefix(header, announcement.hashRound, &strError))
+                {
+                    round.Abort("the prefix could not be frozen: " + strError);
+                    return;
+                }
+            }
+            break;
+        case MIX_STAGE_APPROVE:
+            if (!round.PrefixAgreed() || !round.MembershipProofsComplete())
+            {
+                round.Abort("the seats did not all approve the prefix and prove their inputs");
+                return;
+            }
+            break;
+        case MIX_STAGE_NONCE:
+            if (!round.FreezeNonces(&strError))
+            {
+                round.Abort("the aggregate could not be fixed: " + strError);
+                return;
+            }
+            break;
+        case MIX_STAGE_RESPONSE:
+            Assemble(nNow);
+            return;
+        case MIX_STAGE_TERMINAL:
+            return;
+        }
+    }
+}
+
+void CMixCoordinator::Assemble(int64_t nNow)
+{
+    std::string strError;
+    std::vector<unsigned char> vchPayload;
+    if (!round.AssemblePayload(vchPayload, &strError))
+    {
+        round.Abort("the payload could not be assembled: " + strError);
+        return;
+    }
+    // Stamped now, once the proving and signing are done: a time taken earlier would
+    // publish how long the round's slowest seat took.
+    if (!BuildMixTransaction(vchPayload, (uint32_t)nNow, txPublished, strError))
+    {
+        round.Abort("the transaction could not be built: " + strError);
+        return;
+    }
+    if (!round.MarkComplete(&strError))
+    {
+        round.Abort("the round could not be completed: " + strError);
+        return;
+    }
+    fPublished = true;
+}
+
+bool CMixCoordinator::StageAccepts(MixServiceStage nStage, MixFrameType nType) const
+{
+    switch (nType)
+    {
+    case MIX_FRAME_JOIN:                return nStage == MIX_STAGE_JOIN;
+    case MIX_FRAME_VIEW_SIG:            return nStage == MIX_STAGE_VIEW;
+    case MIX_FRAME_INPUT_CONSTRUCTION:  return nStage == MIX_STAGE_VIEW;
+    case MIX_FRAME_BLIND_REQUEST:       return nStage == MIX_STAGE_TOKEN;
+    case MIX_FRAME_OUTPUT:              return nStage == MIX_STAGE_OUTPUT;
+    case MIX_FRAME_PREFIX_SIG:          return nStage == MIX_STAGE_APPROVE;
+    case MIX_FRAME_MEMBERSHIP_PROOF:    return nStage == MIX_STAGE_APPROVE;
+    case MIX_FRAME_NONCE:               return nStage == MIX_STAGE_NONCE;
+    case MIX_FRAME_RESPONSE:            return nStage == MIX_STAGE_RESPONSE;
+    default:                            return false;
+    }
+}
+
+bool CMixCoordinator::ServeSeatRead(const std::vector<unsigned char>& vchPayload,
+                                    MixFrameType& nReplyTypeOut,
+                                    std::vector<unsigned char>& vchReplyOut)
+{
+    // A seat read is authenticated, because the seat snapshot carries the frozen prefix
+    // and with it every output's disclosed opening. Anyone may have the public form.
+    std::vector<unsigned char> vchBody, vchSig;
+    if (!SplitAuthedMixFrame(vchPayload, vchBody, vchSig))
+        return false;
+    size_t nAt = 0;
+    CPubKey pubkeySession;
+    if (!TakeSessionKey(vchBody, nAt, pubkeySession))
+        return false;
+    if (!CheckMixSessionFrame(pubkeySession, round.RoundId(), MIX_FRAME_STATE_AUTH, vchBody,
+                              vchSig))
+        return false;
+    if (round.SeatFor(pubkeySession) < 0)
+        return false;
+    CMixSnapshot snapshot;
+    if (!BuildMixSnapshot(round, MIX_SNAPSHOT_SEAT, snapshot) ||
+        !BuildMixSnapshotBody(snapshot, vchReplyOut))
+        return false;
+    nReplyTypeOut = MIX_FRAME_SNAPSHOT;
+    return true;
+}
+
+bool CMixCoordinator::ServeTokenRequest(const std::vector<unsigned char>& vchPayload,
+                                        int64_t nNow, MixFrameType& nReplyTypeOut,
+                                        std::vector<unsigned char>& vchReplyOut)
+{
+    // The seat is named on this frame, so a lost reply can be re-served: the same blinded
+    // message gets the same signature back, and a different one under the same seat is not
+    // a retry and gets nothing.
+    std::vector<unsigned char> vchBody, vchSig;
+    size_t nAt = 0;
+    CPubKey pubkeySession;
+    if (SplitAuthedMixFrame(vchPayload, vchBody, vchSig) &&
+        TakeSessionKey(vchBody, nAt, pubkeySession) &&
+        CheckMixSessionFrame(pubkeySession, round.RoundId(), MIX_FRAME_BLIND_REQUEST, vchBody,
+                             vchSig))
+    {
+        const int nSeat = round.SeatFor(pubkeySession);
+        if (nSeat >= 0 && (size_t)nSeat < vBlinded.size() && !vBlinded[nSeat].empty())
+        {
+            std::vector<unsigned char> vchAnnounce, vchBlinded;
+            size_t nLen = 0;
+            if (TakeBytes(vchBody, nAt, 32, vchAnnounce) && TakeU16(vchBody, nAt, nLen) &&
+                TakeBytes(vchBody, nAt, nLen, vchBlinded) && vchBlinded == vBlinded[nSeat])
+            {
+                nReplyTypeOut = MIX_FRAME_BLIND_SIGNATURE;
+                vchReplyOut = vBlindSignatures[nSeat];
+                return true;
+            }
+            return false;
+        }
+    }
+
+    std::string strError;
+    CMixDispatchEffect effect;
+    if (DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchPayload, nNow, strError, &effect)
+            != MIX_DISPATCH_OK)
+        return false;
+    const int nSeat = round.SeatFor(effect.pubkeySession);
+    std::vector<unsigned char> vchSignature;
+    if (nSeat < 0 || (size_t)nSeat >= vBlinded.size() ||
+        !key.BlindSign(effect.vchBlinded, vchSignature))
+        return false;
+    vBlinded[nSeat] = effect.vchBlinded;
+    vBlindSignatures[nSeat] = vchSignature;
+    nReplyTypeOut = MIX_FRAME_BLIND_SIGNATURE;
+    vchReplyOut = vchSignature;
+    return true;
+}
+
+bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
+                            int64_t nNow, MixFrameType& nReplyTypeOut,
+                            std::vector<unsigned char>& vchReplyOut)
+{
+    nReplyTypeOut = MIX_FRAME_NONE;
+    vchReplyOut.clear();
+    if (!fOpen)
+        return false;
+    Tick(nNow);
+
+    if (nType == MIX_FRAME_STATE)
+    {
+        if (!vchPayload.empty())
+            return false;
+        CMixSnapshot snapshot;
+        if (!BuildMixSnapshot(round, MIX_SNAPSHOT_PUBLIC, snapshot) ||
+            !BuildMixSnapshotBody(snapshot, vchReplyOut))
+            return false;
+        nReplyTypeOut = MIX_FRAME_SNAPSHOT;
+        return true;
+    }
+    if (nType == MIX_FRAME_STATE_AUTH)
+        return ServeSeatRead(vchPayload, nReplyTypeOut, vchReplyOut);
+    if (nType == MIX_FRAME_RESULT)
+    {
+        if (!vchPayload.empty())
+            return false;
+        if (fPublished)
+        {
+            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+            ss << txPublished;
+            vchReplyOut.assign(ss.begin(), ss.end());
+            nReplyTypeOut = MIX_FRAME_TRANSACTION;
+            return true;
+        }
+        if (round.Phase() == MIX_PHASE_ABORTED)
+        {
+            // No reason and no list of who was missing: either would publish which roster
+            // position owns the output that did not arrive.
+            nReplyTypeOut = MIX_FRAME_ABORT;
+            vchReplyOut.clear();
+            return true;
+        }
+        return BuildMixAckBody(false, vchReplyOut) && (nReplyTypeOut = MIX_FRAME_ACK, true);
+    }
+
+    const MixServiceStage nStage = Stage(nNow);
+    if (!StageAccepts(nStage, nType))
+    {
+        nReplyTypeOut = MIX_FRAME_ACK;
+        return BuildMixAckBody(false, vchReplyOut);
+    }
+    if (nType == MIX_FRAME_BLIND_REQUEST)
+    {
+        if (ServeTokenRequest(vchPayload, nNow, nReplyTypeOut, vchReplyOut))
+            return true;
+        nReplyTypeOut = MIX_FRAME_ACK;
+        return BuildMixAckBody(false, vchReplyOut);
+    }
+
+    std::string strError;
+    const MixDispatch nVerdict = DispatchMixFrame(round, nType, vchPayload, nNow, strError);
+    nReplyTypeOut = MIX_FRAME_ACK;
+    return BuildMixAckBody(nVerdict == MIX_DISPATCH_OK, vchReplyOut);
 }

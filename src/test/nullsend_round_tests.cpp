@@ -3301,4 +3301,376 @@ BOOST_AUTO_TEST_CASE(a_snapshot_tells_the_public_the_phase_and_a_seat_the_transc
     BOOST_CHECK(!ReadMixAckBody(std::vector<unsigned char>(2, 1), fAccepted));
 }
 
+namespace {
+
+// A signed announcement over the proven round's own transcript, so the prefix the
+// coordinator freezes is the one the cached proofs were made for.
+CMixRoundAnnouncement ProvenAnnouncement(CKey& keyOut, const CNullSendSession& roundKey,
+                                         int64_t nStart)
+{
+    const MixProofSet& proofs = MixProofs();
+    keyOut.MakeNewKey(true);
+    CMixRoundAnnouncement announce;
+    announce.hashRoundKey = MixRoundKeyCommitment(roundKey.vchRSA_N, roundKey.vchRSA_E);
+    announce.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    announce.nPort = 8443;
+    announce.nParticipants = 2;
+    announce.nTime = nStart;
+    announce.nNetwork = proofs.header.nNetwork;
+    announce.genesis = proofs.header.genesis;
+    announce.parameterDigest = proofs.header.parameterDigest;
+    announce.finalizedRoot = proofs.header.finalizedRoot;
+    announce.nFinalizedTreeSize = proofs.header.nFinalizedTreeSize;
+    announce.nDenomination = MIX_DENOM;
+    announce.nFee = proofs.header.nFee;
+    announce.nJoinSecs = 60;
+    announce.nViewSecs = 60;
+    announce.nTokenSecs = 60;
+    announce.nOutputSecs = 120;
+    announce.nApproveSecs = 60;
+    announce.nNonceSecs = 60;
+    announce.nResponseSecs = 60;
+    announce.nTerminalSecs = 300;
+    BOOST_REQUIRE(announce.Sign(keyOut));
+    return announce;
+}
+
+// A fresh blind-signature key per round, which is what the ledger in the coordinator
+// enforces: a modulus that ran twice verifies the earlier round's tokens in the later one.
+CNullSendSession FreshRoundKey(int nId)
+{
+    CNullSendSession session;
+    session.nSessionID = nId;
+    BOOST_REQUIRE(session.GenerateSessionRSAKey());
+    return session;
+}
+
+// The authenticated frames, built against the announcement the coordinator is running
+// rather than the fixture's own constant.
+std::vector<unsigned char> ViewSigFrame(const Seat& seat, const uint256& hashRound,
+                                        const uint256& hashAnnounce, const uint256& hashView)
+{
+    std::vector<unsigned char> vchSig, vchBody;
+    BOOST_REQUIRE(seat.key.Sign(hashView, vchSig));
+    BOOST_REQUIRE(BuildMixViewSigBody(seat.pubkey, hashAnnounce, vchSig, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_VIEW_SIG, vchBody);
+}
+
+std::vector<unsigned char> ConstructionFrame(const Seat& seat, const uint256& hashRound,
+                                             const uint256& hashAnnounce,
+                                             const PrivacyVNextDigest& pseudoOut)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixInputConstructionBody(seat.pubkey, hashAnnounce, seat.keyImage,
+                                                pseudoOut, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_INPUT_CONSTRUCTION, vchBody);
+}
+
+std::vector<unsigned char> PrefixSigFrameFor(const Seat& seat, const uint256& hashRound,
+                                             const uint256& hashAnnounce,
+                                             const uint256& hashPrefix)
+{
+    std::vector<unsigned char> vchSig, vchBody;
+    BOOST_REQUIRE(seat.key.Sign(hashPrefix, vchSig));
+    BOOST_REQUIRE(BuildMixPrefixSigBody(seat.pubkey, hashAnnounce, vchSig, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_PREFIX_SIG, vchBody);
+}
+
+std::vector<unsigned char> MembershipFrameFor(const Seat& seat, const uint256& hashRound,
+                                              const uint256& hashAnnounce,
+                                              const std::vector<unsigned char>& vchProof)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixMembershipProofBody(seat.pubkey, hashAnnounce, vchProof, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_MEMBERSHIP_PROOF, vchBody);
+}
+
+// One request through the service, returning the frame it answers with.
+MixFrameType Ask(CMixCoordinator& coord, MixFrameType nType,
+                 const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                 std::vector<unsigned char>& vchReply)
+{
+    MixFrameType nReply = MIX_FRAME_NONE;
+    vchReply.clear();
+    if (!coord.Serve(nType, vchPayload, nNow, nReply, vchReply))
+        return MIX_FRAME_NONE;
+    return nReply;
+}
+
+bool Accepted(CMixCoordinator& coord, MixFrameType nType,
+              const std::vector<unsigned char>& vchPayload, int64_t nNow)
+{
+    std::vector<unsigned char> vchReply;
+    if (Ask(coord, nType, vchPayload, nNow, vchReply) != MIX_FRAME_ACK)
+        return false;
+    bool fAccepted = false;
+    return ReadMixAckBody(vchReply, fAccepted) && fAccepted;
+}
+
+} // namespace
+
+// The service end to end on its announced schedule, from join to a validating transaction.
+// Every phase transition is the clock reaching an instant fixed by the announcement.
+BOOST_AUTO_TEST_CASE(the_coordinator_runs_a_round_on_its_announced_schedule)
+{
+    const MixProofSet& proofs = MixProofs();
+    const int64_t T0 = 21000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4001);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    const uint256 hashRound = announce.hashRound;
+
+    CMixCoordinator coord;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(coord.Open(announce, roundKey, T0, &strError), strError);
+    BOOST_CHECK_EQUAL((int)coord.Stage(T0), (int)MIX_STAGE_JOIN);
+
+    // Anyone may read how far it has got; nobody unauthenticated gets the transcript.
+    std::vector<unsigned char> vchReply;
+    BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_STATE, std::vector<unsigned char>(), T0,
+                                 vchReply),
+                        (int)MIX_FRAME_SNAPSHOT);
+    CMixSnapshot snapshot;
+    BOOST_REQUIRE(ReadMixSnapshotBody(vchReply, snapshot));
+    BOOST_CHECK_EQUAL((int)snapshot.nAudience, (int)MIX_SNAPSHOT_PUBLIC);
+    BOOST_CHECK_EQUAL((int)snapshot.nSeats, 0);
+
+    std::vector<Seat> vSeats;
+    vSeats.push_back(ProvenSeat(0));
+    vSeats.push_back(ProvenSeat(1));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_MESSAGE(Accepted(coord, MIX_FRAME_JOIN, JoinFrame(vSeats[i], hashRound), T0),
+                              "the coordinator refused a join inside its join window");
+
+    // Out of its window, a frame is refused however well formed it is: the schedule is
+    // what decides, not whether the round could use it.
+    BOOST_CHECK_MESSAGE(!Accepted(coord, MIX_FRAME_VIEW_SIG,
+                                  ViewSigFrame(vSeats[0], hashRound, announce.hashRound,
+                                               coord.Round().ViewDigest(announce.hashRound)),
+                                  T0),
+                        "a view signature was taken before its window opened");
+
+    // View window: the join set freezes on the clock, and a seat reads the roster it must
+    // sign over rather than being told the digest.
+    const int64_t T1 = announce.JoinCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T1), (int)MIX_STAGE_VIEW);
+    coord.Tick(T1);
+    std::vector<unsigned char> vchAuthBody, vchAuthFrame;
+    BOOST_REQUIRE(BuildMixStateAuthBody(vSeats[0].pubkey, announce.hashRound, vchAuthBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[0].key, hashRound, MIX_FRAME_STATE_AUTH,
+                                      vchAuthBody, vchAuthFrame));
+    BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_STATE_AUTH, vchAuthFrame, T1, vchReply),
+                        (int)MIX_FRAME_SNAPSHOT);
+    BOOST_REQUIRE(ReadMixSnapshotBody(vchReply, snapshot));
+    BOOST_CHECK_EQUAL((int)snapshot.nAudience, (int)MIX_SNAPSHOT_SEAT);
+    BOOST_REQUIRE_EQUAL(snapshot.vRoster.size(), 2u);
+    BOOST_CHECK(snapshot.vchRsaN == roundKey.vchRSA_N);
+    const uint256 hashView = MixViewDigest(announce.hashRound, snapshot.vRoster);
+    BOOST_CHECK_MESSAGE(hashView == coord.Round().ViewDigest(announce.hashRound),
+                        "a seat could not derive the view it is asked to sign");
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_VIEW_SIG,
+                               ViewSigFrame(vSeats[i], hashRound, announce.hashRound, hashView),
+                               T1));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_INPUT_CONSTRUCTION,
+                               ConstructionFrame(vSeats[i], hashRound, announce.hashRound,
+                                                 proofs.vPseudoOuts[ProvenIndex(vSeats[i].keyImage)]),
+                               T1));
+
+    // A stranger cannot read it: the seat form carries every output's disclosed opening once the
+    // prefix freezes, and an abandoned round never publishes those any other way.
+    const Seat stranger = MakeSeat(9);
+    BOOST_REQUIRE(BuildMixStateAuthBody(stranger.pubkey, announce.hashRound, vchAuthBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(stranger.key, hashRound, MIX_FRAME_STATE_AUTH,
+                                      vchAuthBody, vchAuthFrame));
+    BOOST_CHECK_EQUAL((int)Ask(coord, MIX_FRAME_STATE_AUTH, vchAuthFrame, T1, vchReply),
+                        (int)MIX_FRAME_NONE);
+
+    // Token window: the coordinator signs what it is handed and re-serves a lost reply.
+    const int64_t T2 = announce.ViewCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T2), (int)MIX_STAGE_TOKEN);
+    std::vector<Token> vTokens;
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        const std::vector<CMixOutputRecord>& vBundle =
+            proofs.vBundles[ProvenIndex(vSeats[i].keyImage)];
+        CNullSendClient client;
+        BOOST_REQUIRE(client.BlindCredentialMessage(roundKey.vchRSA_N, roundKey.vchRSA_E,
+                                                    MixOutputBundleCredentialHash(vBundle)));
+        std::vector<unsigned char> vchBody, vchFrame;
+        BOOST_REQUIRE(BuildMixBlindRequestBody(vSeats[i].pubkey, announce.hashRound,
+                                               client.vchBlindedCredential, vchBody));
+        BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[i].key, hashRound, MIX_FRAME_BLIND_REQUEST,
+                                          vchBody, vchFrame));
+        BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_BLIND_REQUEST, vchFrame, T2, vchReply),
+                            (int)MIX_FRAME_BLIND_SIGNATURE);
+        const std::vector<unsigned char> vchFirst = vchReply;
+        // The same request again: a reply lost on its own circuit is routine, and a retry
+        // that came back empty-handed would strand the seat with no token and no way to
+        // ask for one.
+        BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_BLIND_REQUEST, vchFrame, T2, vchReply),
+                            (int)MIX_FRAME_BLIND_SIGNATURE);
+        BOOST_CHECK_MESSAGE(vchReply == vchFirst,
+                            "a retried token request got a different signature");
+        BOOST_REQUIRE(client.UnblindSignature(vchFirst));
+        Token token;
+        token.vchCredential = client.vchCredentialHash;
+        token.vchSignature = client.vchUnblindedSig;
+        vTokens.push_back(token);
+    }
+
+    // Output window: anonymous, and the registration is idempotent for the same reason.
+    const int64_t T3 = announce.TokenCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T3), (int)MIX_STAGE_OUTPUT);
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        const std::vector<CMixOutputRecord>& vBundle =
+            proofs.vBundles[ProvenIndex(vSeats[i].keyImage)];
+        const std::vector<unsigned char> vchFrame = OutputFrame(vTokens[i], vBundle);
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_OUTPUT, vchFrame, T3));
+        BOOST_CHECK_MESSAGE(Accepted(coord, MIX_FRAME_OUTPUT, vchFrame, T3),
+                            "a retransmitted registration was refused");
+    }
+    BOOST_CHECK_EQUAL(coord.Round().Outputs(), 2u);
+
+    // Approval window: the prefix is frozen by the clock, not by the last output arriving.
+    // The output window ends strictly after its close, which is the comparison the round
+    // itself makes, so a registration at exactly that instant is still in time.
+    const int64_t T4 = announce.OutputCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T4), (int)MIX_STAGE_OUTPUT);
+    BOOST_CHECK_EQUAL((int)coord.Stage(T4 + 1), (int)MIX_STAGE_APPROVE);
+    coord.Tick(T4 + 1);
+    BOOST_REQUIRE_MESSAGE(!coord.Round().FrozenPrefix().empty(),
+                          "the coordinator did not freeze a prefix at its scheduled instant");
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_PREFIX_SIG,
+                               PrefixSigFrameFor(vSeats[i], hashRound, announce.hashRound,
+                                                 coord.Round().PrefixDigest()),
+                               T4 + 1));
+
+    // A seat proves only once every seat has approved, learned from the certificate in its
+    // snapshot, which appears only when complete.
+    BOOST_REQUIRE(BuildMixStateAuthBody(vSeats[1].pubkey, announce.hashRound, vchAuthBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[1].key, hashRound, MIX_FRAME_STATE_AUTH,
+                                      vchAuthBody, vchAuthFrame));
+    BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_STATE_AUTH, vchAuthFrame, T4 + 1, vchReply),
+                        (int)MIX_FRAME_SNAPSHOT);
+    BOOST_REQUIRE(ReadMixSnapshotBody(vchReply, snapshot));
+    BOOST_CHECK_EQUAL(snapshot.vPrefixSigs.size(), 2u);
+    BOOST_CHECK_EQUAL(snapshot.vViewSigs.size(), 2u);
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_MEMBERSHIP_PROOF,
+                               MembershipFrameFor(vSeats[i], hashRound, announce.hashRound,
+                                                  proofs.vProofs[ProvenIndex(vSeats[i].keyImage)]),
+                               T4 + 1));
+
+    // Nonce and response windows.
+    const int64_t T5 = announce.ApproveCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T5), (int)MIX_STAGE_NONCE);
+    coord.Tick(T5);
+    const PrivacyVNextMixBalanceFacts facts = FactsFromPrefix(coord.Round().FrozenPrefix());
+    std::vector<PrivacyVNextMixBalanceShare> vShares;
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        vShares.push_back(SeatShare(coord.Round(), vSeats[i], 0x4d));
+        PrivacyVNextDigest nonce;
+        BOOST_REQUIRE_MESSAGE(PrivacyVNextMixBalanceNonce(facts, vShares[i], nonce, strError),
+                              strError);
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_NONCE,
+                               ShareFrame(vSeats[i], hashRound, MIX_FRAME_NONCE, nonce), T5));
+    }
+
+    const int64_t T6 = announce.NonceCloses();
+    BOOST_CHECK_EQUAL((int)coord.Stage(T6), (int)MIX_STAGE_RESPONSE);
+    coord.Tick(T6);
+    const std::vector<std::vector<unsigned char> > vNonceBytes =
+        coord.Round().NoncesInInputOrder();
+    std::vector<PrivacyVNextDigest> vNonces(vNonceBytes.size());
+    for (size_t i = 0; i < vNonceBytes.size(); i++)
+        memcpy(vNonces[i].data(), &vNonceBytes[i][0], 32);
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        PrivacyVNextDigest response;
+        BOOST_REQUIRE_MESSAGE(PrivacyVNextMixBalanceSign(facts, vShares[i], vNonces, response,
+                                                         strError), strError);
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_RESPONSE,
+                               ShareFrame(vSeats[i], hashRound, MIX_FRAME_RESPONSE, response),
+                               T6));
+    }
+
+    // The schedule ends and the round publishes.
+    const int64_t T7 = announce.ResponseCloses();
+    coord.Tick(T7);
+    BOOST_REQUIRE_MESSAGE(coord.HasTransaction(),
+                          "the coordinator did not assemble a transaction: "
+                          << coord.Round().AbortReason());
+    BOOST_CHECK_EQUAL((int)coord.Round().Phase(), (int)MIX_PHASE_COMPLETE);
+
+    // And anyone may collect it, without holding a seat.
+    BOOST_REQUIRE_EQUAL((int)Ask(coord, MIX_FRAME_RESULT, std::vector<unsigned char>(), T7,
+                                 vchReply),
+                        (int)MIX_FRAME_TRANSACTION);
+    CDataStream ssTx(vchReply, SER_NETWORK, PROTOCOL_VERSION);
+    CTransaction txRead;
+    ssTx >> txRead;
+    BOOST_CHECK(txRead.GetHash() == coord.Transaction().GetHash());
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, txRead.privacyVNext.vchPayload, effects);
+    BOOST_CHECK_MESSAGE(validation.nResult == INNOVA_PRIVACY_VNEXT_VALID, validation.strError);
+}
+
+// A round that does not fill dies at its own deadline, and says nothing about who was
+// missing. Nothing the coordinator publishes names a roster position.
+BOOST_AUTO_TEST_CASE(a_round_that_does_not_fill_ends_at_its_join_deadline)
+{
+    const int64_t T0 = 22000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4002);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    CMixCoordinator coord;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(coord.Open(announce, roundKey, T0, &strError), strError);
+
+    const Seat only = ProvenSeat(0);
+    BOOST_REQUIRE(Accepted(coord, MIX_FRAME_JOIN, JoinFrame(only, announce.hashRound), T0));
+    coord.Tick(announce.JoinCloses());
+    BOOST_CHECK_EQUAL((int)coord.Round().Phase(), (int)MIX_PHASE_ABORTED);
+
+    std::vector<unsigned char> vchReply;
+    BOOST_CHECK_EQUAL((int)Ask(coord, MIX_FRAME_RESULT, std::vector<unsigned char>(),
+                               announce.JoinCloses(), vchReply),
+                      (int)MIX_FRAME_ABORT);
+    BOOST_CHECK_MESSAGE(vchReply.empty(),
+                        "the abort reply carried something about who did not arrive");
+}
+
+// The round key is single use, and the record of use survives a restart.
+BOOST_AUTO_TEST_CASE(a_round_key_runs_one_round)
+{
+    const int64_t T0 = 23000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4003);
+    const CMixRoundAnnouncement first = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    CMixCoordinator coordFirst;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(coordFirst.Open(first, roundKey, T0, &strError), strError);
+
+    CKey keySecond;
+    const CMixRoundAnnouncement second = ProvenAnnouncement(keySecond, roundKey, T0 + 1000);
+    CMixCoordinator coordSecond;
+    BOOST_CHECK_MESSAGE(!coordSecond.Open(second, roundKey, T0 + 1000, &strError),
+                        "a blind-signature key ran a second round");
+    BOOST_CHECK(strError.find("already run") != std::string::npos);
+    BOOST_CHECK(MixRoundKeyWasUsed(roundKey.vchRSA_N));
+
+    // A fresh key opens fine, which is what makes the refusal above about reuse.
+    const CNullSendSession freshKey = FreshRoundKey(4004);
+    CKey keyThird;
+    const CMixRoundAnnouncement third = ProvenAnnouncement(keyThird, freshKey, T0 + 2000);
+    CMixCoordinator coordThird;
+    BOOST_CHECK_MESSAGE(coordThird.Open(third, freshKey, T0 + 2000, &strError), strError);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

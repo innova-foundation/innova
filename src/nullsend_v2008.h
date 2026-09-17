@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "key.h"
+#include "main.h"
+#include "nullsend.h"
 #include "netbase.h"
 #include "serialize.h"
 #include "privacy_vnext_ffi.h"
@@ -16,7 +18,6 @@
 #include "uint256.h"
 #include "util.h"
 
-class CTransaction;
 
 /** How long a peer may take to accept one frame before the sender gives up on it. */
 static const int MIX_SEND_TIMEOUT_MS = 30000;
@@ -599,12 +600,19 @@ public:
     bool FreezePrefix(const PrivacyVNextPrefixHeader& header, const uint256& hashAnnouncement,
                       std::string* pstrError = NULL);
     const std::vector<unsigned char>& FrozenPrefix() const { return vchFrozenPrefix; }
+    /** The announcement the frozen prefix was fixed under; zero until it is. */
+    const uint256& PrefixAnnouncement() const { return hashPrefixAnnouncement; }
     /** The digest every seat signs; zero until the prefix is frozen. */
     uint256 PrefixDigest() const;
     bool SubmitPrefixSignature(const CPubKey& pubkeySession, const std::vector<unsigned char>& vchSig,
                                std::string* pstrError = NULL);
     /** Whether every seat has signed the frozen prefix. Nonces wait for this. */
     bool PrefixAgreed() const;
+
+    /** The two certificates, in input order, and only once complete. A seat that sees one
+     *  knows the round may go on; a partial list would name the seat that has not moved. */
+    std::vector<std::vector<unsigned char> > ViewCertificate(const uint256& hashAnnouncement) const;
+    std::vector<std::vector<unsigned char> > PrefixCertificate() const;
 
     /** A seat's membership proof for its own input, verified on arrival against the approved
      *  prefix's root and signing hash and the seat's own construction, exactly as the
@@ -845,6 +853,10 @@ struct CMixSnapshot
     std::vector<unsigned char> vchRsaE;
     std::vector<unsigned char> vchPrefix;
     std::vector<PrivacyVNextDigest> vNonces;   // in input order, once the aggregate is fixed
+    // Both certificates are published only once complete: a partial list would reveal which
+    // roster position has not contributed yet.
+    std::vector<std::vector<unsigned char> > vViewSigs;
+    std::vector<std::vector<unsigned char> > vPrefixSigs;
 
     CMixSnapshot() : nVersion(1), nAudience(MIX_SNAPSHOT_PUBLIC), nPhase(0), nSeats(0),
                      hashRound(0) {}
@@ -885,5 +897,82 @@ MixDispatch DispatchMixFrame(CMixRound& round,
                              const std::vector<unsigned char>& vchPayload,
                              int64_t nNow, std::string& strError,
                              CMixDispatchEffect* pEffect = NULL);
+
+// The coordinator service: one request, one reply, one connection; the coordinator never
+// pushes. Every instant derives from the announcement's schedule.
+
+/** Where a round is in its schedule. Derived from the clock, never from what has
+ *  arrived: a stage that advanced on completion would let the coordinator choose when a
+ *  seat's window closes. */
+enum MixServiceStage
+{
+    MIX_STAGE_JOIN = 0,
+    MIX_STAGE_VIEW,        // view signatures and input constructions
+    MIX_STAGE_TOKEN,       // blind-signature requests
+    MIX_STAGE_OUTPUT,      // anonymous registrations
+    MIX_STAGE_APPROVE,     // prefix approvals and membership proofs
+    MIX_STAGE_NONCE,
+    MIX_STAGE_RESPONSE,
+    MIX_STAGE_TERMINAL,    // published or aborted; reads only
+};
+
+class CMixCoordinator
+{
+public:
+    CMixCoordinator();
+
+    /** Open the round under a blind-signature key the announcement's commitment opens. The key
+     *  must be new: a reused modulus verifies tokens minted in an earlier round. */
+    bool Open(const CMixRoundAnnouncement& announce, const CNullSendSession& roundKey,
+              int64_t nNow, std::string* pstrError = NULL);
+
+    /** Advance the schedule to nNow: close the join set, open and close the anonymous
+     *  window, freeze the prefix, fix the aggregate, and assemble when the signature is
+     *  complete. A stage whose work did not arrive in time ends the round. */
+    void Tick(int64_t nNow);
+
+    /** Answer one request, and say what frame to send back. Everything that changes the
+     *  round answers ACK; a read answers SNAPSHOT; a token request answers with its blind
+     *  signature; a result request answers with the transaction or with ABORT. */
+    bool Serve(MixFrameType nType, const std::vector<unsigned char>& vchPayload, int64_t nNow,
+               MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+
+    MixServiceStage Stage(int64_t nNow) const;
+    const CMixRound& Round() const { return round; }
+    const CMixRoundAnnouncement& Announcement() const { return announcement; }
+    const CTransaction& Transaction() const { return txPublished; }
+    bool HasTransaction() const { return fPublished; }
+    bool IsOpen() const { return fOpen; }
+
+private:
+    CMixCoordinator(const CMixCoordinator&);
+    CMixCoordinator& operator=(const CMixCoordinator&);
+
+    bool ServeTokenRequest(const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                           MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+    bool ServeSeatRead(const std::vector<unsigned char>& vchPayload,
+                       MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+    bool StageAccepts(MixServiceStage nStage, MixFrameType nType) const;
+    void Assemble(int64_t nNow);
+
+    CMixRoundAnnouncement announcement;
+    CMixRound round;
+    CNullSendSession key;
+    bool fOpen;
+    bool fPublished;
+    MixServiceStage nLastStage;
+    CTransaction txPublished;
+    // Per seat, what was blinded and what was signed. A reply lost on its own circuit is
+    // routine, so an identical request is re-served rather than refused; a different one
+    // under the same seat is not a retry and gets nothing.
+    std::vector<std::vector<unsigned char> > vBlinded;
+    std::vector<std::vector<unsigned char> > vBlindSignatures;
+};
+
+/** Whether this blind-signature modulus has run a round on this node before. Round keys
+ *  are single-use (a reused modulus lets a first-round token open in the second); kept on
+ *  disk so the check survives restarts. */
+bool MixRoundKeyWasUsed(const std::vector<unsigned char>& vchRSA_N);
+bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint256& hashRound);
 
 #endif // INNOVA_NULLSEND_V2008_H
