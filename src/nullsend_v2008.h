@@ -11,6 +11,7 @@
 #include "netbase.h"
 #include "serialize.h"
 #include "privacy_vnext_ffi.h"
+#include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 #include "uint256.h"
 #include "util.h"
 
@@ -125,7 +126,8 @@ enum MixFrameType
     MIX_FRAME_NONCE           = 8,   // round one of the joint balance signature
     MIX_FRAME_RESPONSE        = 9,   // round two
     MIX_FRAME_VIEW_SIG        = 10,  // a seat's signature over the view it accepted
-    MIX_FRAME_TYPE_MAX        = 10,
+    MIX_FRAME_INPUT_CONSTRUCTION = 11,  // a seat's pseudo-output for its joined key image
+    MIX_FRAME_TYPE_MAX        = 11,
 };
 
 enum MixFrameDecode
@@ -205,21 +207,53 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
  *  coordinator-chosen value (assume per-seat views and aborted rounds), and must be integrity
  *  bound, canonically encoded, and validated before the token is consumed. */
 
-/** What a token is signed over: the output key it authorises, and NOTHING ELSE.
+/** Everything one mix output puts on the chain, as its participant generated it. No position:
+ *  the coordinator orders outputs, and a seat-chosen position would name the seat. */
+struct CMixOutputRecord
+{
+    PrivacyVNextDigest owner;
+    PrivacyVNextDigest commitment;
+    PrivacyVNextDigest noteEphemeral;
+    PrivacyVNextDigest tweakEphemeral;
+    std::vector<unsigned char> vchRecipientCiphertext;
+    std::vector<unsigned char> vchOutgoingCiphertext;
+    PrivacyVNextDigest mask;
+
+    CMixOutputRecord()
+    {
+        owner.fill(0);
+        commitment.fill(0);
+        noteEphemeral.fill(0);
+        tweakEphemeral.fill(0);
+        mask.fill(0);
+    }
+    uint256 OwnerKey() const;
+};
+
+static const size_t MIX_OUTPUT_RECORD_BYTES =
+    5 * 32 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE +
+    INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE;
+
+/** The one canonical byte form: fixed-width fields in the order above. Refuses a record
+ *  whose ciphertexts are not exactly the sizes a payload carries. */
+bool EncodeMixOutputRecord(const CMixOutputRecord& record, std::vector<unsigned char>& vchOut);
+bool DecodeMixOutputRecord(const std::vector<unsigned char>& vchIn, CMixOutputRecord& recordOut);
+
+/** What a token is signed over: the canonical encoding of one complete output record, and
+ *  NOTHING ELSE. Zero for a record of the wrong shape.
  *
- *  An unbound token is a bearer token -- an on-path party rewrites the key in an OUTPUT
- *  frame and keeps the value. Binding the key closes that, and costs no unlinkability,
- *  because the coordinator sees this opening only at registration where the key is what
- *  it is being handed anyway.
+ *  An unbound token is a bearer token -- an on-path party rewrites the output and keeps
+ *  the value. A token over the owner key alone still let a registration pair an authorised
+ *  key with any commitment, ephemerals or ciphertexts; over the whole record, one
+ *  credential authorises exactly one output as its participant generated it.
  *
- *  The round MUST NOT be in here. A first version hashed the round id too, and that made
- *  the credential a seat tag: a coordinator that hands each seat an announcement differing
- *  only in nTime gives each a different round id, then recovers the seat from an
- *  unauthenticated OUTPUT by trying every id it minted against the key it was handed --
- *  one hash per seat. Rounds are separated by the KEY instead: a token verifies only under
- *  the round's own modulus, so a driver must generate a fresh key per round and never
- *  reuse one. That is a driver obligation this function cannot enforce. */
-uint256 MixOutputCredentialHash(const uint256& outputKey);
+ *  The round MUST NOT be in here, nor a session key or any seat index. A version that
+ *  hashed the round id made the credential a seat tag: a coordinator that hands each seat
+ *  an announcement differing only in nTime gives each a different round id, then recovers
+ *  the seat from an unauthenticated OUTPUT by trying every id it minted -- one hash per
+ *  seat. Rounds are separated by the KEY instead: a token verifies only under the round's
+ *  own modulus, so a driver must generate a fresh key per round and never reuse one. */
+uint256 MixOutputRecordCredentialHash(const CMixOutputRecord& record);
 
 /** One roster entry: a key image and the session key that committed it. */
 struct CMixRosterEntry
@@ -277,8 +311,16 @@ public:
     /** This seat's signature over the view it accepted. Empty until it signs, and it
      *  signs at most once: a second signature, over any view, is refused. */
     std::vector<unsigned char> vchViewSig;
+    /** The pseudo-output this seat's input will carry in the prefix, submitted on its
+     *  authenticated channel once the view is agreed. It is input-side data the
+     *  transaction publishes against this key image anyway, so it names nothing new. */
+    PrivacyVNextDigest pseudoOut;
+    bool fHavePseudoOut;
 
-    CMixParticipant() : fTokenIssued(false), nInputIndex(-1) {}
+    CMixParticipant() : fTokenIssued(false), nInputIndex(-1), fHavePseudoOut(false)
+    {
+        pseudoOut.fill(0);
+    }
 };
 
 class CMixRound
@@ -330,18 +372,28 @@ public:
      *  should sit behind. What it proves is narrow: see MixViewDigest. */
     bool ViewAgreed(const uint256& hashAnnouncement) const;
 
+    /** A seat's pseudo-output for the key image it joined with. Accepted only after every seat
+     *  signed the same view, once per seat, and never a pseudo-output already submitted. */
+    bool SubmitInputConstruction(const CPubKey& pubkeySession,
+                                 const uint256& hashAnnouncement,
+                                 const uint256& keyImage,
+                                 const PrivacyVNextDigest& pseudoOut,
+                                 std::string* pstrError = NULL);
+    bool InputConstructionsComplete() const;
+    /** Pseudo-outputs in input order, the order the prefix writes them. Empty until every
+     *  seat has submitted one. */
+    std::vector<PrivacyVNextDigest> PseudoOutsInInputOrder() const;
+
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
     /** Register an output against a token, NOT against a session key. Naming the
      *  session here would hand the coordinator the input-to-output mapping the blind
      *  signature exists to withhold, so this call cannot see one. The token must open as
-     *  MixOutputCredentialHash(outputKey), so it authorises this key and no other; the
-     *  round it belongs to is settled by which modulus verifies it, not by the message. */
+     *  MixOutputRecordCredentialHash(record), so it authorises this output as generated and
+     *  no other; the round it belongs to is settled by which modulus verifies it. */
     bool RegisterOutput(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
-                        const uint256& outputKey,
-                        const PrivacyVNextDigest& commitment,
-                        const PrivacyVNextDigest& mask,
+                        const CMixOutputRecord& record,
                         int64_t nNow,
                         std::string* pstrError = NULL);
 
@@ -353,6 +405,8 @@ public:
     {
         return vOutputCommitments;
     }
+    /** The complete registered outputs, in registration order. */
+    const std::vector<CMixOutputRecord>& OutputRecords() const { return vOutputRecords; }
 
     /** Whether the assembled transaction may be handed out: only once the window has
      *  closed and every seat has an output. Publishing earlier orders the two lists
@@ -399,6 +453,7 @@ public:
      *  a caller passes in: a driver holding several rounds with one stale id variable would
      *  otherwise let one round's frames verify in another. */
     const uint256& RoundId() const { return hashRound; }
+    const std::vector<CMixParticipant>& Participants() const { return vParticipants; }
     const std::string& AbortReason() const { return strAbortReason; }
     size_t Seats() const { return vParticipants.size(); }
     size_t Outputs() const { return vOutputs.size(); }
@@ -427,6 +482,7 @@ private:
     std::vector<uint256> vOutputs;
     std::vector<PrivacyVNextDigest> vOutputCommitments;
     std::vector<PrivacyVNextDigest> vOutputMasks;
+    std::vector<CMixOutputRecord> vOutputRecords;
     std::vector<uint256> vSpentCredentials;
     uint64_t nDenomination;
 };
@@ -477,11 +533,12 @@ bool BuildMixViewSigBody(const CPubKey& pubkeySession, const uint256& hashAnnoun
                          const std::vector<unsigned char>& vchViewSig,
                          std::vector<unsigned char>& vchOut);
 
-/** A seat's request for its token: its session key, the announcement it holds, and the
- *  blinded credential. Authenticated -- issuance is per-seat by design, so the
- *  coordinator has to know whose one token it is spending. If this is ever made
- *  unauthenticated, any connection can take tokens without holding a seat and each one
- *  registers an output, which is a free round-kill. */
+/** A seat's input construction: the announcement, its key image and its pseudo-output.
+ *  Authenticated like every input-side frame. */
+bool BuildMixInputConstructionBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                                   const uint256& keyImage, const PrivacyVNextDigest& pseudoOut,
+                                   std::vector<unsigned char>& vchOut);
+
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut);
@@ -497,15 +554,13 @@ bool BuildMixKeySetBody(const std::vector<uint256>& vKeyImages,
 bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
                        std::vector<uint256>& vOut);
 
-/** An output registration: a token, a one-time key, the output's commitment and its
- *  opening -- and no identity. The opening is here because the joint balance proof is
- *  combined from it and no authenticated frame can carry it without naming the seat's
- *  output. It is checked against the commitment before the token is spent. */
+/** An output registration: a token and the complete output record -- and no identity.
+ *  The opening is in the record because the joint balance proof is combined from it and
+ *  no authenticated frame can carry it without naming the seat's output. It is checked
+ *  against the commitment before the token is spent. */
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
-                        const uint256& outputKey,
-                        const PrivacyVNextDigest& commitment,
-                        const PrivacyVNextDigest& mask,
+                        const CMixOutputRecord& record,
                         std::vector<unsigned char>& vchOut);
 
 enum MixDispatch

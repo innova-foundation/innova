@@ -238,13 +238,64 @@ uint256 MixViewDigest(const uint256& hashAnnouncement,
     return ss.GetHash();
 }
 
-uint256 MixOutputCredentialHash(const uint256& outputKey)
+uint256 CMixOutputRecord::OwnerKey() const
 {
-    // The round is deliberately absent: see the header. Including it turned the credential
-    // into a per-seat tag under a coordinator that gives each seat its own round id.
+    uint256 key;
+    memcpy(key.begin(), owner.data(), 32);
+    return key;
+}
+
+bool EncodeMixOutputRecord(const CMixOutputRecord& record, std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (record.vchRecipientCiphertext.size() != INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE ||
+        record.vchOutgoingCiphertext.size() != INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE)
+        return false;
+    vchOut.reserve(MIX_OUTPUT_RECORD_BYTES);
+    vchOut.insert(vchOut.end(), record.owner.begin(), record.owner.end());
+    vchOut.insert(vchOut.end(), record.commitment.begin(), record.commitment.end());
+    vchOut.insert(vchOut.end(), record.noteEphemeral.begin(), record.noteEphemeral.end());
+    vchOut.insert(vchOut.end(), record.tweakEphemeral.begin(), record.tweakEphemeral.end());
+    vchOut.insert(vchOut.end(), record.vchRecipientCiphertext.begin(),
+                  record.vchRecipientCiphertext.end());
+    vchOut.insert(vchOut.end(), record.vchOutgoingCiphertext.begin(),
+                  record.vchOutgoingCiphertext.end());
+    vchOut.insert(vchOut.end(), record.mask.begin(), record.mask.end());
+    return vchOut.size() == MIX_OUTPUT_RECORD_BYTES;
+}
+
+bool DecodeMixOutputRecord(const std::vector<unsigned char>& vchIn, CMixOutputRecord& recordOut)
+{
+    recordOut = CMixOutputRecord();
+    if (vchIn.size() != MIX_OUTPUT_RECORD_BYTES)
+        return false;
+    size_t nAt = 0;
+    const auto take32 = [&](PrivacyVNextDigest& out) {
+        memcpy(out.data(), &vchIn[nAt], 32);
+        nAt += 32;
+    };
+    take32(recordOut.owner);
+    take32(recordOut.commitment);
+    take32(recordOut.noteEphemeral);
+    take32(recordOut.tweakEphemeral);
+    recordOut.vchRecipientCiphertext.assign(
+        vchIn.begin() + nAt, vchIn.begin() + nAt + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+    nAt += INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE;
+    recordOut.vchOutgoingCiphertext.assign(
+        vchIn.begin() + nAt, vchIn.begin() + nAt + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+    nAt += INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE;
+    take32(recordOut.mask);
+    return nAt == vchIn.size();
+}
+
+uint256 MixOutputRecordCredentialHash(const CMixOutputRecord& record)
+{
+    std::vector<unsigned char> vchRecord;
+    if (!EncodeMixOutputRecord(record, vchRecord))
+        return 0;
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/token/v2");
-    ss << outputKey;
+    ss << std::string("innova/iv5/mix/token/v3");
+    ss << vchRecord;
     return ss.GetHash();
 }
 
@@ -467,6 +518,66 @@ bool CMixRound::SubmitViewSignature(const CPubKey& pubkeySession,
     #undef FAIL
 }
 
+bool CMixRound::SubmitInputConstruction(const CPubKey& pubkeySession,
+                                        const uint256& hashAnnouncement,
+                                        const uint256& keyImage,
+                                        const PrivacyVNextDigest& pseudoOut,
+                                        std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_KEYED, pstrError))
+        return false;
+    if (!ViewAgreed(hashAnnouncement))
+        FAIL("the seats have not all signed this view");
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    if (pseudoOut == zero)
+        FAIL("the construction carries no pseudo-output");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].fHavePseudoOut && vParticipants[i].pseudoOut == pseudoOut)
+            FAIL("that pseudo-output is already submitted");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        if (vParticipants[i].keyImage != keyImage)
+            FAIL("the construction names a key image this seat did not join with");
+        if (vParticipants[i].fHavePseudoOut)
+            FAIL("that seat has already submitted its construction");
+        vParticipants[i].pseudoOut = pseudoOut;
+        vParticipants[i].fHavePseudoOut = true;
+        return true;
+    }
+    FAIL("that key holds no seat");
+    #undef FAIL
+}
+
+bool CMixRound::InputConstructionsComplete() const
+{
+    if (vParticipants.empty())
+        return false;
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (!vParticipants[i].fHavePseudoOut)
+            return false;
+    return true;
+}
+
+std::vector<PrivacyVNextDigest> CMixRound::PseudoOutsInInputOrder() const
+{
+    std::vector<PrivacyVNextDigest> vOut;
+    if (!InputConstructionsComplete())
+        return vOut;
+    vOut.resize(vParticipants.size());
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        const int nIndex = vParticipants[i].nInputIndex;
+        if (nIndex < 0 || (size_t)nIndex >= vOut.size())
+            return std::vector<PrivacyVNextDigest>();
+        vOut[nIndex] = vParticipants[i].pseudoOut;
+    }
+    return vOut;
+}
+
 bool CMixRound::ViewAgreed(const uint256& hashAnnouncement) const
 {
     const uint256 hashView = ViewDigest(hashAnnouncement);
@@ -499,9 +610,7 @@ bool CMixRound::OpenOutputWindow(int64_t nNow, std::string* pstrError)
 
 bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
                                const std::vector<unsigned char>& vchBlindSignature,
-                               const uint256& outputKey,
-                               const PrivacyVNextDigest& commitment,
-                               const PrivacyVNextDigest& mask,
+                               const CMixOutputRecord& record,
                                int64_t nNow,
                                std::string* pstrError)
 {
@@ -510,18 +619,24 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
         return false;
     if (nNow > nWindowCloses)
         FAIL("the output window has closed");
+    const uint256 outputKey = record.OwnerKey();
+    const PrivacyVNextDigest& commitment = record.commitment;
+    const PrivacyVNextDigest& mask = record.mask;
     if (outputKey == 0)
         FAIL("output has no key");
     if (vchCredential.empty() || vchBlindSignature.empty())
         FAIL("output carries no token");
-    // The token names the key it authorises, so rewriting the key in flight makes the
-    // token stop opening. A token from another round is refused by the signature check
-    // below instead, because it was signed under that round's modulus -- which is why the
-    // round must not appear in the message. Checked first: this is arithmetic-free.
-    const uint256 hashExpected = MixOutputCredentialHash(outputKey);
+    // The token names the whole record it authorises, so rewriting any field in flight
+    // makes the token stop opening. A token from another round is refused by the
+    // signature check below instead, because it was signed under that round's modulus --
+    // which is why the round must not appear in the message. Checked first: this is
+    // arithmetic-free, and a record of the wrong shape has no credential hash at all.
+    const uint256 hashExpected = MixOutputRecordCredentialHash(record);
+    if (hashExpected == 0)
+        FAIL("output record is not the shape a payload carries");
     if (vchCredential.size() != 32 ||
         !std::equal(hashExpected.begin(), hashExpected.end(), vchCredential.begin()))
-        FAIL("token does not authorise this output key in this round");
+        FAIL("token does not authorise this output record in this round");
     if (!VerifyMixCredential(vchRSA_N, vchRSA_E, vchCredential, vchBlindSignature))
         FAIL("token does not verify under the round key");
     // The opening, checked BEFORE the token is spent. The token authorises the KEY and
@@ -572,6 +687,7 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     vOutputs.push_back(outputKey);
     vOutputCommitments.push_back(commitment);
     vOutputMasks.push_back(mask);
+    vOutputRecords.push_back(record);
     return true;
     #undef FAIL
 }
@@ -1028,6 +1144,15 @@ bool BuildMixViewSigBody(const CPubKey& pubkeySession, const uint256& hashAnnoun
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchViewSig, vchOut);
 }
 
+bool BuildMixInputConstructionBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                                   const uint256& keyImage, const PrivacyVNextDigest& pseudoOut,
+                                   std::vector<unsigned char>& vchOut)
+{
+    std::vector<unsigned char> vchTail(keyImage.begin(), keyImage.end());
+    vchTail.insert(vchTail.end(), pseudoOut.begin(), pseudoOut.end());
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchTail, vchOut);
+}
+
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut)
@@ -1090,9 +1215,7 @@ bool ReadMixKeySetBody(const std::vector<unsigned char>& vchIn,
 
 bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
                         const std::vector<unsigned char>& vchBlindSignature,
-                        const uint256& outputKey,
-                        const PrivacyVNextDigest& commitment,
-                        const PrivacyVNextDigest& mask,
+                        const CMixOutputRecord& record,
                         std::vector<unsigned char>& vchOut)
 {
     vchOut.clear();
@@ -1100,13 +1223,14 @@ bool BuildMixOutputBody(const std::vector<unsigned char>& vchCredential,
         return false;
     if (vchBlindSignature.empty() || vchBlindSignature.size() > 0xFFFF)
         return false;
+    std::vector<unsigned char> vchRecord;
+    if (!EncodeMixOutputRecord(record, vchRecord))
+        return false;
     PutU16(vchOut, vchCredential.size());
     vchOut.insert(vchOut.end(), vchCredential.begin(), vchCredential.end());
     PutU16(vchOut, vchBlindSignature.size());
     vchOut.insert(vchOut.end(), vchBlindSignature.begin(), vchBlindSignature.end());
-    vchOut.insert(vchOut.end(), outputKey.begin(), outputKey.end());
-    vchOut.insert(vchOut.end(), commitment.begin(), commitment.end());
-    vchOut.insert(vchOut.end(), mask.begin(), mask.end());
+    vchOut.insert(vchOut.end(), vchRecord.begin(), vchRecord.end());
     return true;
 }
 
@@ -1126,29 +1250,24 @@ MixDispatch DispatchMixFrame(CMixRound& round,
     if (nType == MIX_FRAME_OUTPUT)
     {
         size_t nAt = 0, nLen = 0;
-        std::vector<unsigned char> vchCredential, vchBlindSignature, vchKey;
+        std::vector<unsigned char> vchCredential, vchBlindSignature;
         if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchCredential))
             REFUSE("output frame is malformed");
         if (!TakeU16(vchPayload, nAt, nLen) || !TakeBytes(vchPayload, nAt, nLen, vchBlindSignature))
             REFUSE("output frame is malformed");
-        std::vector<unsigned char> vchCommitment, vchMask;
-        if (!TakeBytes(vchPayload, nAt, 32, vchKey) ||
-            !TakeBytes(vchPayload, nAt, 32, vchCommitment) ||
-            !TakeBytes(vchPayload, nAt, 32, vchMask) || nAt != vchPayload.size())
+        std::vector<unsigned char> vchRecord;
+        CMixOutputRecord record;
+        if (!TakeBytes(vchPayload, nAt, MIX_OUTPUT_RECORD_BYTES, vchRecord) ||
+            nAt != vchPayload.size() || !DecodeMixOutputRecord(vchRecord, record))
             REFUSE("output frame is malformed");
-        uint256 outputKey;
-        memcpy(outputKey.begin(), &vchKey[0], 32);
-        PrivacyVNextDigest commitment, mask;
-        memcpy(commitment.data(), &vchCommitment[0], 32);
-        memcpy(mask.data(), &vchMask[0], 32);
-        if (!round.RegisterOutput(vchCredential, vchBlindSignature, outputKey, commitment,
-                                  mask, nNow, &strError))
+        if (!round.RegisterOutput(vchCredential, vchBlindSignature, record, nNow, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }
 
     if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE &&
-        nType != MIX_FRAME_VIEW_SIG && nType != MIX_FRAME_BLIND_REQUEST)
+        nType != MIX_FRAME_VIEW_SIG && nType != MIX_FRAME_BLIND_REQUEST &&
+        nType != MIX_FRAME_INPUT_CONSTRUCTION)
         REFUSE("a participant does not send that frame");
 
     std::vector<unsigned char> vchBody, vchSig;
@@ -1179,6 +1298,25 @@ MixDispatch DispatchMixFrame(CMixRound& round,
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }
+    if (nType == MIX_FRAME_INPUT_CONSTRUCTION)
+    {
+        std::vector<unsigned char> vchAnnounce, vchTail;
+        size_t nLen = 0;
+        if (!TakeBytes(vchBody, nAt, 32, vchAnnounce))
+            REFUSE("input construction is malformed");
+        if (!TakeU16(vchBody, nAt, nLen) || nLen != 64 ||
+            !TakeBytes(vchBody, nAt, nLen, vchTail) || nAt != vchBody.size())
+            REFUSE("input construction is malformed");
+        uint256 hashAnnouncement, keyImage;
+        memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
+        memcpy(keyImage.begin(), &vchTail[0], 32);
+        PrivacyVNextDigest pseudoOut;
+        memcpy(pseudoOut.data(), &vchTail[32], 32);
+        if (!round.SubmitInputConstruction(pubkeySession, hashAnnouncement, keyImage,
+                                           pseudoOut, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
     if (nType == MIX_FRAME_BLIND_REQUEST)
     {
         // A token is the authority to register an output, so issuance waits until every
@@ -1197,6 +1335,11 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
         if (!round.ViewAgreed(hashAnnouncement))
             REFUSE("the seats have not all signed this view");
+        // And until every seat has submitted its input construction: the prefix needs one
+        // per input, and a token issued before them lets outputs register for a round
+        // that can never be assembled.
+        if (!round.InputConstructionsComplete())
+            REFUSE("the seats have not all submitted their input constructions");
         if (!round.IssueToken(pubkeySession, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
