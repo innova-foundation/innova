@@ -184,6 +184,34 @@ private:
     std::vector<unsigned char> vchBuffer;
 };
 
+/** The coordinator's listening socket, forwarded to by its hidden service; one stream per
+ *  connection. Binds to loopback only, so the coordinator's address is never published. */
+class CMixListener
+{
+public:
+    CMixListener();
+    ~CMixListener();
+
+    /** Binds 127.0.0.1:nPort and listens. Port 0 takes any free port, readable from
+     *  Port() afterwards, which is what a test uses. */
+    bool Listen(int nPort, std::string* pstrError = NULL);
+    void Close();
+    bool IsOpen() const { return hListen != INVALID_SOCKET; }
+    int Port() const { return nBoundPort; }
+
+    /** Waits up to nTimeoutMs for one connection. Returns false with no error set when
+     *  the wait simply expired, so a service loop can tell "nobody called" from "the
+     *  listener is broken". */
+    bool Accept(CMixStream& streamOut, int nTimeoutMs, std::string* pstrError = NULL);
+
+private:
+    CMixListener(const CMixListener&);
+    CMixListener& operator=(const CMixListener&);
+
+    SOCKET hListen;
+    int nBoundPort;
+};
+
 /** Open one phase's connection through a SOCKS proxy. With fIsolate the dial draws
  *  a fresh username/password pair, so Tor puts this phase on its own circuit and a
  *  new connection from the same host is not the same exit address. */

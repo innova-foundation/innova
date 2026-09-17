@@ -1666,6 +1666,94 @@ bool CMixStream::Receive(MixFrameType& nTypeOut, std::vector<unsigned char>& vch
     #undef FAIL
 }
 
+CMixListener::CMixListener() : hListen(INVALID_SOCKET), nBoundPort(0) {}
+
+CMixListener::~CMixListener()
+{
+    Close();
+}
+
+void CMixListener::Close()
+{
+    if (hListen != INVALID_SOCKET)
+        CloseSocket(hListen);
+    hListen = INVALID_SOCKET;
+    nBoundPort = 0;
+}
+
+bool CMixListener::Listen(int nPort, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); Close(); return false; } while (0)
+    Close();
+    if (nPort < 0 || nPort > 0xFFFF)
+        FAIL("listen port is out of range");
+    hListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (hListen == INVALID_SOCKET)
+        FAIL("could not create a listening socket");
+#ifndef WIN32
+    int nOne = 1;
+    setsockopt(hListen, SOL_SOCKET, SO_REUSEADDR, (void*)&nOne, sizeof(int));
+#endif
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((unsigned short)nPort);
+    if (::bind(hListen, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+        FAIL("could not bind the mix listener");
+    if (::listen(hListen, 32) == SOCKET_ERROR)
+        FAIL("could not listen on the mix port");
+    socklen_t nLen = sizeof(addr);
+    if (getsockname(hListen, (struct sockaddr*)&addr, &nLen) == SOCKET_ERROR)
+        FAIL("could not read back the bound port");
+    nBoundPort = ntohs(addr.sin_port);
+    return true;
+    #undef FAIL
+}
+
+bool CMixListener::Accept(CMixStream& streamOut, int nTimeoutMs, std::string* pstrError)
+{
+    streamOut.Close();
+    if (pstrError)
+        pstrError->clear();
+    if (hListen == INVALID_SOCKET)
+    {
+        if (pstrError)
+            *pstrError = "the listener is not open";
+        return false;
+    }
+    // One wait, one connection. A service loop calls this on its tick, so an expiry is
+    // the ordinary case and carries no error: only a broken listener does.
+    struct timeval tv;
+    tv.tv_sec = nTimeoutMs / 1000;
+    tv.tv_usec = (nTimeoutMs % 1000) * 1000;
+    fd_set setRead;
+    FD_ZERO(&setRead);
+    FD_SET(hListen, &setRead);
+    const int nReady = select(hListen + 1, &setRead, NULL, NULL, &tv);
+    if (nReady == 0)
+        return false;
+    if (nReady < 0)
+    {
+#ifndef WIN32
+        if (errno == EINTR)
+            return false;
+#endif
+        if (pstrError)
+            *pstrError = "the mix listener failed while waiting";
+        return false;
+    }
+    const SOCKET hAccepted = accept(hListen, NULL, NULL);
+    if (hAccepted == INVALID_SOCKET)
+    {
+        if (pstrError)
+            *pstrError = "the mix listener could not accept a connection";
+        return false;
+    }
+    streamOut.Adopt(hAccepted);
+    return true;
+}
+
 bool DialMixPhase(const CService& addrProxy, const std::string& strEndpoint, int nPort,
                   bool fIsolate, int nTimeoutMs, CMixStream& streamOut,
                   std::string* pstrError)

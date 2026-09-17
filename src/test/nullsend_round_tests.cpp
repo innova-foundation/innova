@@ -10,6 +10,7 @@
 #include "../key.h"
 #include "../nullsend.h"
 #include "../nullsend_v2008.h"
+#include "../netbase.h"
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../ed25519_zk.h"
 #include "../main.h"
@@ -3084,6 +3085,64 @@ BOOST_AUTO_TEST_CASE(a_bundles_variants_differ_only_where_the_position_enters)
         BOOST_CHECK(vBundle[0].vchRecipientCiphertext != vBundle[1].vchRecipientCiphertext);
         BOOST_CHECK(!(vBundle[0].noteEphemeral == vBundle[1].noteEphemeral));
     }
+}
+
+// Coordinator transport: one request and one reply per connection, "nobody called" is not
+// an error. Binds loopback only; the endpoint is reached through its onion service.
+BOOST_AUTO_TEST_CASE(the_coordinator_listens_and_answers_one_connection_at_a_time)
+{
+    std::string strError;
+    CMixListener listener;
+    BOOST_REQUIRE_MESSAGE(listener.Listen(0, &strError), strError);
+    BOOST_REQUIRE(listener.IsOpen());
+    BOOST_REQUIRE(listener.Port() > 0);
+
+    // Nobody is calling: an expiry is not a failure, and says nothing.
+    CMixStream idle;
+    BOOST_CHECK(!listener.Accept(idle, 50, &strError));
+    BOOST_CHECK_MESSAGE(strError.empty(), "an empty wait reported an error: " << strError);
+    BOOST_CHECK(!idle.IsOpen());
+
+    // Dialled by hand rather than through ConnectSocket, which would consult whatever
+    // proxy the node is configured with; this test is about the listener, not the dialer.
+    const SOCKET hClient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    BOOST_REQUIRE(hClient != INVALID_SOCKET);
+    struct sockaddr_in addrLocal;
+    memset(&addrLocal, 0, sizeof(addrLocal));
+    addrLocal.sin_family = AF_INET;
+    addrLocal.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addrLocal.sin_port = htons((unsigned short)listener.Port());
+    BOOST_REQUIRE_MESSAGE(connect(hClient, (struct sockaddr*)&addrLocal, sizeof(addrLocal)) == 0,
+                          "could not dial the listener");
+    CMixStream client;
+    client.Adopt(hClient);
+
+    CMixStream served;
+    BOOST_REQUIRE_MESSAGE(listener.Accept(served, 2000, &strError), strError);
+    BOOST_REQUIRE(served.IsOpen());
+
+    const std::vector<unsigned char> vchRequest(16, 0x5a);
+    BOOST_REQUIRE(client.Send(MIX_FRAME_JOIN, vchRequest, &strError));
+    MixFrameType nType = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchPayload;
+    BOOST_REQUIRE_MESSAGE(served.Receive(nType, vchPayload, 2000, &strError), strError);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_JOIN);
+    BOOST_CHECK(vchPayload == vchRequest);
+
+    const std::vector<unsigned char> vchReply(4, 0xA1);
+    BOOST_REQUIRE(served.Send(MIX_FRAME_ABORT, vchReply, &strError));
+    BOOST_REQUIRE_MESSAGE(client.Receive(nType, vchPayload, 2000, &strError), strError);
+    BOOST_CHECK_EQUAL((int)nType, (int)MIX_FRAME_ABORT);
+    BOOST_CHECK(vchPayload == vchReply);
+
+    // The connection is dropped after its one exchange, and the listener survives it.
+    client.Close();
+    served.Close();
+    CMixStream after;
+    BOOST_CHECK(!listener.Accept(after, 50, &strError));
+    BOOST_CHECK(strError.empty());
+    listener.Close();
+    BOOST_CHECK(!listener.IsOpen());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
