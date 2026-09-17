@@ -697,6 +697,90 @@ else
 fi
 
 # ===========================================================================
+header "3b. Restart over a wallet acknowledgement that never cleared"
+# ===========================================================================
+# The outbox clear is unsynced and can be replayed after power loss
+# (-regtestholdoutboxack); replaying an applied transition must leave the same wallet.
+
+ACK_PHASE_OK="$WALLET_PHASE_OK"
+
+if [ "$ACK_PHASE_OK" = "1" ]; then
+    capture_notes "$EVIDENCE_DIR/notes.ack_before.txt"
+    ACK_LINES="$(wc -l < "$EVIDENCE_DIR/notes.ack_before.txt" | tr -d ' ')"
+    stop_node 1 || { fail "victim did not stop before the held-acknowledgement phase"; ACK_PHASE_OK=0; }
+fi
+
+if [ "$ACK_PHASE_OK" = "1" ]; then
+    if start_node_with 1 -regtestholdoutboxack=1; then
+        connect_peers 1
+        rpc 1 walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1
+        ACK_TARGET=$(( $(height 0) + 5 ))
+        mine_to 0 "$ACK_TARGET" >/dev/null 2>&1
+        wait_height 1 "$ACK_TARGET" 600 >/dev/null 2>&1
+        ACK_HEIGHT="$(height 1)"
+        if grep -q "holding the shielded-wallet recovery outbox" "$(node_dir 1)/regtest/debug.log"; then
+            success "victim connected blocks with its acknowledgement held at height $ACK_HEIGHT"
+        else
+            fail "the victim never held an acknowledgement: nothing is pending to recover"
+            ACK_PHASE_OK=0
+        fi
+        kill_node 1 || { fail "could not kill the victim with an acknowledgement pending"; ACK_PHASE_OK=0; }
+    else
+        diagnose_failed_start "held acknowledgement"
+        ACK_PHASE_OK=0
+    fi
+fi
+
+if [ "$ACK_PHASE_OK" = "1" ]; then
+    if start_node 1; then
+        connect_peers 1
+        rpc 1 walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1
+        wait_height 1 "$ACK_HEIGHT" 900 >/dev/null 2>&1
+        if grep -q "Shielded wallet recovery" "$(node_dir 1)/regtest/debug.log"; then
+            success "the victim recovered the transition its acknowledgement never cleared"
+        else
+            fail "the restart never ran shielded-wallet recovery over the pending outbox"
+        fi
+        capture_notes "$EVIDENCE_DIR/notes.ack_after.txt"
+        ACK_MISSING="$(missing_lines "$EVIDENCE_DIR/notes.ack_before.txt" \
+                                     "$EVIDENCE_DIR/notes.ack_after.txt" \
+                                     "$EVIDENCE_DIR/notes.ack_lost.txt")"
+        ACK_NC_BEFORE="$(note_count_in "$EVIDENCE_DIR/notes.ack_before.txt")"
+        ACK_NC_AFTER="$(note_count_in "$EVIDENCE_DIR/notes.ack_after.txt")"
+        ACK_NC_BEFORE="${ACK_NC_BEFORE:-0}"; ACK_NC_AFTER="${ACK_NC_AFTER:-0}"
+        echo "ack_note_count: before=$ACK_NC_BEFORE after=$ACK_NC_AFTER" >> "$EVIDENCE_DIR/manifest.txt"
+        if [ "$ACK_NC_BEFORE" -le 0 ]; then
+            fail "the victim held no shielded notes: replaying a transition over them proved nothing"
+        elif [ "$ACK_NC_AFTER" -lt "$ACK_NC_BEFORE" ]; then
+            fail "FUND LOSS: replaying the pending transition dropped notes ($ACK_NC_BEFORE to $ACK_NC_AFTER)"
+        elif [ "$ACK_MISSING" -ne 0 ]; then
+            fail "$ACK_MISSING wallet fields present before the replay are absent after it"
+            head -20 "$EVIDENCE_DIR/notes.ack_lost.txt"
+        else
+            success "replaying an already-applied transition left the wallet unchanged ($ACK_LINES fields)"
+        fi
+
+        # The outbox must be gone once recovery acknowledged it, and the node must
+        # accept further transitions rather than refusing them.
+        ACK_ADVANCE=$(( ACK_HEIGHT + 3 ))
+        mine_to 0 "$ACK_ADVANCE" >/dev/null 2>&1
+        if wait_height 1 "$ACK_ADVANCE" 600 >/dev/null 2>&1; then
+            success "the victim connected blocks again after the recovery acknowledged its outbox"
+        else
+            fail "the victim stalled after recovery: a pending outbox refuses every later transition"
+        fi
+    else
+        diagnose_failed_start "restart over a held acknowledgement"
+        ACK_PHASE_OK=0
+    fi
+fi
+
+if [ "$ACK_PHASE_OK" != "1" ]; then
+    fail "the held-acknowledgement phase could not run: unsynced acknowledgement is unproven"
+    echo "ack_phase: NOT RUN" >> "$EVIDENCE_DIR/manifest.txt"
+fi
+
+# ===========================================================================
 header "4. Startup rescan of an encrypted wallet that is locked"
 # ===========================================================================
 # A locked encrypted wallet's startup rescan (-rescan) must record the scan gap,

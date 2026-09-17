@@ -12796,6 +12796,14 @@ static bool ClearCommittedShieldedWalletRecovery(
         return false;
     }
 
+    // Regtest fault injection: leave the outbox so a restart must recover a transition
+    // whose wallet effects are already durable.
+    if (fRegTest && GetBoolArg("-regtestholdoutboxack", false))
+    {
+        printf("%s: holding the shielded-wallet recovery outbox for the next restart\n",
+               pszContext);
+        return true;
+    }
     BLOCK_PHASE(BP_RECOVERY_ERASE);
     CShieldedWalletRecoveryRecord persisted;
     if (txdb.ReadShieldedWalletRecoveryStatus(persisted) !=
@@ -12823,7 +12831,9 @@ static bool ClearCommittedShieldedWalletRecovery(
         StartShutdown();
         return false;
     }
-    if (!txdb.TxnCommit(true))
+    // Unsynced: the erase acknowledges wallet effects already durable, and recovery handles
+    // a surviving outbox. The commit that writes an outbox stays synced.
+    if (!txdb.TxnCommit(false))
     {
         printf("%s: FATAL could not commit shielded-wallet recovery outbox "
                "clear; shutting down\n", pszContext);
