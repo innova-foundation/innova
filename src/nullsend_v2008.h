@@ -16,6 +16,8 @@
 #include "uint256.h"
 #include "util.h"
 
+class CTransaction;
+
 /** How long an announcement stays joinable. */
 static const int64_t MIX_ROUND_ANNOUNCE_TIMEOUT = 300;
 /** Bound on the endpoint string, so a decoder cannot be made to hold an
@@ -316,6 +318,12 @@ bool CheckMixPrefixForSeat(const std::vector<unsigned char>& vchPrefix,
 /** The transparent binding of a mix transaction: no inputs, no outputs, lock time zero. */
 PrivacyVNextDigest MixTransparentBinding();
 
+/** The transaction that carries a mix payload: the v2008 version, no transparent side, lock
+ *  time zero, stamped with the caller's time. Refused unless the payload is a mix whose
+ *  declared binding is this transaction's. */
+bool BuildMixTransaction(const std::vector<unsigned char>& vchPayload, uint32_t nTime,
+                         CTransaction& txOut, std::string& strError);
+
 /** What a seat signs to approve a prefix: the view it agreed and the prefix's signing hash,
  *  so a certificate over one prefix cannot be presented for another or under another view. */
 uint256 MixPrefixDigest(const uint256& hashView, const PrivacyVNextDigest& signingHash);
@@ -482,6 +490,11 @@ public:
     bool MembershipProofsComplete() const;
     /** Every seat's proof concatenated in input order; empty until all are in. */
     std::vector<unsigned char> MembershipSection() const;
+
+    /** The complete mix payload, validated in full (proofs included) before it is returned, so
+     *  wrong shares yield no payload rather than one the network refuses. */
+    bool AssemblePayload(std::vector<unsigned char>& vchPayloadOut,
+                         std::string* pstrError = NULL) const;
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 

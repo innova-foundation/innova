@@ -238,6 +238,26 @@ uint256 MixViewDigest(const uint256& hashAnnouncement,
     return ss.GetHash();
 }
 
+static void PutMixCompactSize(std::vector<unsigned char>& vch, uint64_t nSize)
+{
+    if (nSize < 253)
+    {
+        vch.push_back((unsigned char)nSize);
+    }
+    else if (nSize <= 0xffff)
+    {
+        vch.push_back(253);
+        vch.push_back((unsigned char)nSize);
+        vch.push_back((unsigned char)(nSize >> 8));
+    }
+    else
+    {
+        vch.push_back(254);
+        for (size_t i = 0; i < 4; i++)
+            vch.push_back((unsigned char)(nSize >> (8 * i)));
+    }
+}
+
 // amount*H + mask*G == commitment. False for a mask that is not a usable scalar.
 static bool MixOpeningOpens(uint64_t nAmount, const PrivacyVNextDigest& mask,
                             const PrivacyVNextDigest& commitment)
@@ -409,6 +429,40 @@ bool ParseMixPrefix(const std::vector<unsigned char>& vchPrefix, CMixPrefixView&
         BAD("prefix has trailing bytes");
     return true;
     #undef BAD
+}
+
+bool BuildMixTransaction(const std::vector<unsigned char>& vchPayload, uint32_t nTime,
+                         CTransaction& txOut, std::string& strError)
+{
+    txOut = CTransaction();
+    strError.clear();
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vchPayload, effects);
+    if (validation.nResult != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        strError = "the payload does not validate: " + validation.strError;
+        return false;
+    }
+    // Byte 2 of the canonical header, which validation has just accepted.
+    if (vchPayload.size() < 9 || !iv5::IsNullSendOperation(vchPayload[2]))
+    {
+        strError = "the payload is not a mix";
+        return false;
+    }
+    CTransaction tx;
+    tx.nVersion = INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION;
+    tx.nTime = nTime;
+    tx.nLockTime = 0;
+    tx.privacyVNext.vchPayload = vchPayload;
+    const uint256 binding = GetPrivacyVNextTransparentBinding(tx);
+    if (memcmp(binding.begin(), effects.transparentBinding.data(), 32) != 0)
+    {
+        strError = "the payload's transparent binding is not a mix transaction's";
+        return false;
+    }
+    txOut = tx;
+    return true;
 }
 
 PrivacyVNextDigest MixTransparentBinding()
@@ -1027,6 +1081,73 @@ std::vector<unsigned char> CMixRound::MembershipSection() const
             return std::vector<unsigned char>();
     }
     return vchOut;
+}
+
+bool CMixRound::AssemblePayload(std::vector<unsigned char>& vchPayloadOut,
+                                std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchPayloadOut.clear();
+    if (!SigningComplete())
+        FAIL("not every seat has responded under the fixed aggregate");
+    if (!PrefixAgreed())
+        FAIL("the seats have not all approved the prefix");
+    const std::vector<unsigned char> vchMembership = MembershipSection();
+    if (vchMembership.empty())
+        FAIL("not every seat has proved its input");
+    CMixPrefixView view;
+    std::string strParse;
+    if (!ParseMixPrefix(vchFrozenPrefix, view, strParse))
+        FAIL(strParse);
+
+    PrivacyVNextMixBalanceFacts facts;
+    facts.nInputCount = (uint8_t)view.vPseudoOuts.size();
+    facts.nOutputCount = (uint8_t)view.vOutputs.size();
+    facts.nTransparentValueBalance = view.nTransparentValueBalance;
+    facts.nFee = view.nFee;
+    facts.signableHash = prefixSigningHash;
+    facts.vPseudoOuts = view.vPseudoOuts;
+    std::vector<PrivacyVNextDigest> vOutputMasks;
+    for (size_t i = 0; i < view.vOutputs.size(); i++)
+    {
+        facts.vOutputs.push_back(view.vOutputs[i].commitment);
+        vOutputMasks.push_back(view.vOutputs[i].mask);
+    }
+    const std::vector<std::vector<unsigned char> > vNonceBytes = NoncesInInputOrder();
+    const std::vector<std::vector<unsigned char> > vResponseBytes = ResponsesInInputOrder();
+    if (vNonceBytes.size() != view.vPseudoOuts.size() ||
+        vResponseBytes.size() != view.vPseudoOuts.size())
+        FAIL("the shares do not cover every input");
+    std::vector<PrivacyVNextDigest> vNonces(vNonceBytes.size()), vResponses(vResponseBytes.size());
+    for (size_t i = 0; i < vNonceBytes.size(); i++)
+    {
+        if (vNonceBytes[i].size() != 32 || vResponseBytes[i].size() != 32)
+            FAIL("a share is not 32 bytes");
+        memcpy(vNonces[i].data(), &vNonceBytes[i][0], 32);
+        memcpy(vResponses[i].data(), &vResponseBytes[i][0], 32);
+    }
+    std::vector<unsigned char> vchBalance;
+    std::string strCombine;
+    if (!PrivacyVNextMixBalanceCombine(facts, vNonces, vResponses, vOutputMasks, vchBalance,
+                                       strCombine))
+        FAIL("the joint balance proof does not verify: " + strCombine);
+
+    std::vector<unsigned char> vchPayload = vchFrozenPrefix;
+    PutMixCompactSize(vchPayload, vchMembership.size());
+    vchPayload.insert(vchPayload.end(), vchMembership.begin(), vchMembership.end());
+    PutMixCompactSize(vchPayload, 0);   // range: amounts are disclosed
+    PutMixCompactSize(vchPayload, vchBalance.size());
+    vchPayload.insert(vchPayload.end(), vchBalance.begin(), vchBalance.end());
+    PutMixCompactSize(vchPayload, 0);   // operation proof
+    PutMixCompactSize(vchPayload, 0);   // disclosure proofs: senders and receivers hidden
+
+    const PrivacyVNextPayloadValidation validation =
+        ValidatePrivacyVNextPayload(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vchPayload);
+    if (validation.nResult != INNOVA_PRIVACY_VNEXT_VALID)
+        FAIL("the assembled payload does not validate: " + validation.strError);
+    vchPayloadOut.swap(vchPayload);
+    return true;
+    #undef FAIL
 }
 
 bool CMixRound::InputConstructionsComplete() const

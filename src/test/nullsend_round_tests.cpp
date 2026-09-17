@@ -11,6 +11,8 @@
 #include "../nullsend.h"
 #include "../nullsend_v2008.h"
 #include "../privacy_vnext/iv5_protocol.h"
+#include "../ed25519_zk.h"
+#include "../main.h"
 #include "../privacy_vnext_ffi.h"
 #include "../privacy_vnext_store.h"
 #include "../txdb.h"
@@ -1874,17 +1876,21 @@ std::vector<unsigned char> OutputFrame(const Token& token, const CMixOutputRecor
     return vchBody;
 }
 
-// Two real inputs in one tree, proved once for the one prefix every proven round builds
-// over them. The prefix names no session key and no round, so the proofs hold for any
-// seats that join with these key images and register these records in this order.
+// Each seat's input carries its output's denomination plus its share of the fee.
+const uint64_t MIX_FEE_SHARE = 500;
+
+// A real two-seat mix built once: two notes in one tree, two outputs under the mix's input
+// context, and every proof for the one prefix. Valid for any seats with these key images.
 struct MixProofSet
 {
     PrivacyVNextPrefixHeader header;
     std::vector<uint256> vKeyImages;                     // funding order
     std::vector<PrivacyVNextDigest> vPseudoOuts;
-    std::vector<CMixOutputRecord> vRecords;              // registration order
+    std::vector<CMixOutputRecord> vRecords;              // registration order; seat i owns i
     std::vector<std::vector<unsigned char> > vProofs;    // funding order, under the prefix
     std::vector<unsigned char> vchOtherHashProof;        // input 0 under another signing hash
+    std::vector<PrivacyVNextDigest> vSeatMasks;          // note mask plus the proving delta
+    std::vector<PrivacyVNextScanKey> vRecipients;        // who each record pays
 };
 
 PrivacyVNextDigest LowScalar(unsigned char ch)
@@ -1925,7 +1931,8 @@ const MixProofSet& MixProofs()
         BOOST_REQUIRE_MESSAGE(
             EncryptPrivacyVNextNote(nNetwork, 0, 0, genesis, vKeys[i].spendPublic,
                                     vKeys[i].viewPublic, vKeys[i].outgoingViewSecret,
-                                    LowScalar(chBase), LowScalar(chBase + 1), MIX_DENOM,
+                                    LowScalar(chBase), LowScalar(chBase + 1),
+                                    MIX_DENOM + MIX_FEE_SHARE,
                                     LowScalar(chBase + 2), LowScalar(chBase + 3), context,
                                     vEncrypted[i], error),
             error);
@@ -1956,6 +1963,7 @@ const MixProofSet& MixProofs()
     BOOST_REQUIRE_EQUAL(vWitnesses.size(), nInputs);
 
     std::vector<PrivacyVNextSpendInput> vSpends(nInputs);
+    std::vector<PrivacyVNextDigest> vNoteMasks(nInputs);
     for (size_t i = 0; i < nInputs; i++)
     {
         PrivacyVNextEncryptedNote onChain;
@@ -1975,6 +1983,7 @@ const MixProofSet& MixProofs()
         vSpends[i].commitmentScalar = scanned.y;
         vSpends[i].leaf = vEncrypted[i].leaf;
         vSpends[i].vchWitnessRecord = vWitnesses[i].vchRecord;
+        vNoteMasks[i] = scanned.mask;
     }
 
     // Pass one fixes each input's pseudo-output and key image; the signing hash does not
@@ -2000,10 +2009,13 @@ const MixProofSet& MixProofs()
     }
 
     set.header = MixHeader();
+    set.header.nNetwork = nNetwork;
+    set.header.genesis = genesis;
+    BOOST_REQUIRE_EQUAL(epochSeed.vchParameterDigest.size(), 32u);
+    memcpy(set.header.parameterDigest.data(), &epochSeed.vchParameterDigest[0], 32);
     set.header.finalizedRoot = root;
     set.header.nFinalizedTreeSize = nTreeSize;
-    for (size_t i = 0; i < nInputs; i++)
-        set.vRecords.push_back(Rec(uint256(0x7E0 + i), (unsigned char)(0xB5 + i)));
+    set.header.nFee = nInputs * MIX_FEE_SHARE;
     std::vector<std::pair<uint256, PrivacyVNextDigest> > vSorted;
     for (size_t i = 0; i < nInputs; i++)
         vSorted.push_back(std::make_pair(set.vKeyImages[i], set.vPseudoOuts[i]));
@@ -2013,6 +2025,50 @@ const MixProofSet& MixProofs()
                   return std::lexicographical_compare(a.first.begin(), a.first.end(),
                                                       b.first.begin(), b.first.end());
               });
+
+    // Outputs derive under the mix's input context: its operation, its binding, and the key
+    // images in input order.
+    std::vector<PrivacyVNextDigest> vInputImages;
+    for (size_t i = 0; i < vSorted.size(); i++)
+    {
+        PrivacyVNextDigest d;
+        memcpy(d.data(), vSorted[i].first.begin(), 32);
+        vInputImages.push_back(d);
+    }
+    PrivacyVNextDigest mixContext;
+    BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextInputContext(iv5::NOTE_NULLSEND, MixTransparentBinding(),
+                                                         vInputImages, mixContext, error), error);
+    for (size_t i = 0; i < nInputs; i++)
+    {
+        PrivacyVNextDigest seed;
+        seed.fill((unsigned char)(0x91 + i));
+        PrivacyVNextDerivedKeys recipient;
+        BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(seed, genesis, 0, nNetwork, 0, recipient, error),
+                              error);
+        const unsigned char chBase = (unsigned char)(0x41 + 4 * i);
+        const PrivacyVNextDigest outputMask = LowScalar(chBase + 3);
+        PrivacyVNextEncryptedOutput out;
+        BOOST_REQUIRE_MESSAGE(
+            EncryptPrivacyVNextNote(nNetwork, 0, (uint32_t)i, genesis, recipient.spendPublic,
+                                    recipient.viewPublic, vKeys[i].outgoingViewSecret,
+                                    LowScalar(chBase), LowScalar(chBase + 1), MIX_DENOM,
+                                    LowScalar(chBase + 2), outputMask, mixContext, out, error),
+            error);
+        CMixOutputRecord record;
+        record.owner = out.leaf.owner;
+        record.commitment = out.leaf.commitment;
+        record.noteEphemeral = out.noteEphemeral;
+        record.tweakEphemeral = out.tweakEphemeral;
+        record.vchRecipientCiphertext = out.vchRecipientCiphertext;
+        record.vchOutgoingCiphertext = out.vchOutgoingCiphertext;
+        record.mask = outputMask;
+        set.vRecords.push_back(record);
+        PrivacyVNextScanKey scanKey;
+        scanKey.scanSecret = recipient.viewSecret;
+        scanKey.spendMaterial = recipient.spendSecret;
+        set.vRecipients.push_back(scanKey);
+    }
+
     const std::vector<unsigned char> vchPrefix =
         MixPrefixOver(set.header, vSorted, set.vRecords,
                       std::vector<uint64_t>(nInputs, MIX_DENOM));
@@ -2030,6 +2086,16 @@ const MixProofSet& MixProofs()
                                                           one, vFinal, vchProof, error), error);
         BOOST_REQUIRE(vFinal.size() == 1 && vFinal[0].pseudoOut == set.vPseudoOuts[i]);
         set.vProofs.push_back(vchProof);
+        std::vector<unsigned char> vchSeatMask;
+        BOOST_REQUIRE(Ed25519ScalarAdd(std::vector<unsigned char>(vNoteMasks[i].begin(),
+                                                                  vNoteMasks[i].end()),
+                                       std::vector<unsigned char>(vFinal[0].pseudoOutMaskDelta.begin(),
+                                                                  vFinal[0].pseudoOutMaskDelta.end()),
+                                       vchSeatMask));
+        BOOST_REQUIRE_EQUAL(vchSeatMask.size(), 32u);
+        PrivacyVNextDigest seatMask;
+        memcpy(seatMask.data(), &vchSeatMask[0], 32);
+        set.vSeatMasks.push_back(seatMask);
     }
     fBuilt = true;
     return set;
@@ -2116,6 +2182,15 @@ std::vector<unsigned char> MembershipFrame(const Seat& seat, const uint256& hash
     std::vector<unsigned char> vchBody;
     BOOST_REQUIRE(BuildMixMembershipProofBody(seat.pubkey, PREFIX_ANNOUNCE, vchProof, vchBody));
     return AuthedFrame(seat, hashRound, MIX_FRAME_MEMBERSHIP_PROOF, vchBody);
+}
+
+std::vector<unsigned char> ShareFrame(const Seat& seat, const uint256& hashRound,
+                                      MixFrameType nType, const PrivacyVNextDigest& share)
+{
+    std::vector<unsigned char> vchBody;
+    BOOST_REQUIRE(BuildMixScalarBody(seat.pubkey, std::vector<unsigned char>(share.begin(), share.end()),
+                                     vchBody));
+    return AuthedFrame(seat, hashRound, nType, vchBody);
 }
 
 // Every seat sends its membership proof, over the wire.
@@ -2594,9 +2669,20 @@ BOOST_AUTO_TEST_CASE(a_membership_proof_is_checked_against_its_seat_and_the_appr
 
     const std::vector<unsigned char>& vchMine = proofs.vProofs[ProvenIndex(vSeats[0].keyImage)];
     const std::vector<unsigned char>& vchTheirs = proofs.vProofs[ProvenIndex(vSeats[1].keyImage)];
+    BOOST_CHECK(!round.SubmitMembershipProof(vSeats[0].pubkey, vchMine, &strError));
+    // Frozen and approved by one seat of two: the proof would verify, and is still refused.
+    BOOST_REQUIRE_MESSAGE(round.FreezePrefix(proofs.header, PREFIX_ANNOUNCE, &strError), strError);
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_PREFIX_SIG,
+                                              PrefixSigFrame(vSeats[0], hashRound, round.PrefixDigest()),
+                                              nClosed, strError),
+                        (int)MIX_DISPATCH_OK);
     BOOST_CHECK_MESSAGE(!round.SubmitMembershipProof(vSeats[0].pubkey, vchMine, &strError),
-                        "a proof was taken before the prefix was approved");
-    AgreePrefixOverWire(round, vSeats, hashRound, nClosed);
+                        "a proof was taken before every seat approved the prefix");
+    BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_PREFIX_SIG,
+                                              PrefixSigFrame(vSeats[1], hashRound, round.PrefixDigest()),
+                                              nClosed, strError),
+                        (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.PrefixAgreed());
 
     BOOST_CHECK_MESSAGE(!round.SubmitMembershipProof(vSeats[0].pubkey, vchTheirs, &strError),
                         "one seat's proof stood for another seat's input");
@@ -2656,6 +2742,223 @@ BOOST_AUTO_TEST_CASE(a_membership_proof_is_checked_against_its_seat_and_the_appr
                                             ScalarFrame(vSeats[0], hashRound, MIX_FRAME_NONCE, 0xE0),
                                             nClosed, strError),
                       (int)MIX_DISPATCH_OK);
+}
+
+namespace {
+
+// A proven round driven over the wire to the point every membership proof is in.
+void ProvenRoundThroughProofs(CMixRound& round, std::vector<Seat>& vSeats,
+                              const uint256& hashRound, int64_t nNow)
+{
+    const MixProofSet& proofs = MixProofs();
+    CNullSendSession& server = Coordinator();
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, MIX_DENOM, nNow, &strError));
+    for (size_t i = 0; i < 2; i++)
+    {
+        vSeats.push_back(ProvenSeat(i));
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
+                                                  JoinFrame(vSeats[i], hashRound), nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    AgreeViewOverWire(round, vSeats, hashRound, nNow);
+    for (size_t i = 0; i < 2; i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+    for (size_t i = 0; i < 2; i++)
+    {
+        const Token token = MintToken(proofs.vRecords[i]);
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_OUTPUT,
+                                                  OutputFrame(token, proofs.vRecords[i]), nNow,
+                                                  strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+    const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
+    BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
+    AgreePrefixOverWire(round, vSeats, hashRound, nClosed);
+    ProveOverWire(round, vSeats, hashRound, nClosed);
+}
+
+// What every seat signs over: read from the frozen prefix, as a seat would from the bytes
+// it approved.
+PrivacyVNextMixBalanceFacts FactsFromPrefix(const std::vector<unsigned char>& vchPrefix)
+{
+    CMixPrefixView view;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(ParseMixPrefix(vchPrefix, view, strError), strError);
+    PrivacyVNextMixBalanceFacts facts;
+    facts.nInputCount = (uint8_t)view.vPseudoOuts.size();
+    facts.nOutputCount = (uint8_t)view.vOutputs.size();
+    facts.nTransparentValueBalance = view.nTransparentValueBalance;
+    facts.nFee = view.nFee;
+    BOOST_REQUIRE_MESSAGE(HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                        vchPrefix, facts.signableHash, strError),
+                          strError);
+    facts.vPseudoOuts = view.vPseudoOuts;
+    for (size_t i = 0; i < view.vOutputs.size(); i++)
+        facts.vOutputs.push_back(view.vOutputs[i].commitment);
+    return facts;
+}
+
+// Seat i's share: its input at the position the round sorted it to, its own output, its
+// fee share and the mask it proves with.
+PrivacyVNextMixBalanceShare SeatShare(const CMixRound& round, const Seat& seat, unsigned char chEntropy)
+{
+    const MixProofSet& proofs = MixProofs();
+    const size_t nFunded = ProvenIndex(seat.keyImage);
+    PrivacyVNextMixBalanceShare share;
+    const std::vector<uint256>& vOrder = round.FinalKeyImages();
+    share.nInputIndex = 0xff;
+    for (size_t k = 0; k < vOrder.size(); k++)
+        if (vOrder[k] == seat.keyImage)
+            share.nInputIndex = (uint8_t)k;
+    BOOST_REQUIRE(share.nInputIndex != 0xff);
+    share.nOutputIndex = (uint8_t)nFunded;
+    share.nFeeShare = MIX_FEE_SHARE;
+    share.mask = proofs.vSeatMasks[nFunded];
+    share.outputMask = proofs.vRecords[nFunded].mask;
+    share.entropy.fill(chEntropy);
+    share.entropy[31] = (unsigned char)nFunded;
+    return share;
+}
+
+// Every seat publishes its nonce, the aggregate is fixed, and every seat responds; with
+// fCopyResponse seat 0 sends seat 1's response in place of its own.
+void SignOverWire(CMixRound& round, const std::vector<Seat>& vSeats, const uint256& hashRound,
+                  int64_t nNow, bool fCopyResponse)
+{
+    std::string strError;
+    const PrivacyVNextMixBalanceFacts facts = FactsFromPrefix(round.FrozenPrefix());
+    std::vector<PrivacyVNextMixBalanceShare> vShares;
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        vShares.push_back(SeatShare(round, vSeats[i], 0x3c));
+        PrivacyVNextDigest nonce;
+        BOOST_REQUIRE_MESSAGE(PrivacyVNextMixBalanceNonce(facts, vShares[i], nonce, strError),
+                              strError);
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_NONCE,
+                                                  ShareFrame(vSeats[i], hashRound, MIX_FRAME_NONCE,
+                                                             nonce),
+                                                  nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+    BOOST_REQUIRE_MESSAGE(round.FreezeNonces(&strError), strError);
+    const std::vector<std::vector<unsigned char> > vNonceBytes = round.NoncesInInputOrder();
+    std::vector<PrivacyVNextDigest> vNonces(vNonceBytes.size());
+    for (size_t i = 0; i < vNonceBytes.size(); i++)
+        memcpy(vNonces[i].data(), &vNonceBytes[i][0], 32);
+    std::vector<PrivacyVNextDigest> vResponses(vSeats.size());
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_MESSAGE(PrivacyVNextMixBalanceSign(facts, vShares[i], vNonces, vResponses[i],
+                                                         strError),
+                              strError);
+    if (fCopyResponse)
+        vResponses[0] = vResponses[1];
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_RESPONSE,
+                                                  ShareFrame(vSeats[i], hashRound, MIX_FRAME_RESPONSE,
+                                                             vResponses[i]),
+                                                  nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.SigningComplete());
+}
+
+} // namespace
+
+// The assembled payload passes the same validation a node runs, every proof verified,
+// on a transaction with no transparent side.
+BOOST_AUTO_TEST_CASE(a_mix_round_assembles_a_payload_that_validates)
+{
+    const MixProofSet& proofs = MixProofs();
+    const uint256 hashRound = uint256(0xFEE2);
+    const int64_t nNow = 18000000;
+    const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    ProvenRoundThroughProofs(round, vSeats, hashRound, nNow);
+    std::string strError;
+    std::vector<unsigned char> vchPayload;
+    BOOST_CHECK_MESSAGE(!round.AssemblePayload(vchPayload, &strError),
+                        "a payload was assembled before any seat signed");
+    BOOST_CHECK(vchPayload.empty());
+
+    SignOverWire(round, vSeats, hashRound, nClosed, false);
+    BOOST_REQUIRE_MESSAGE(round.AssemblePayload(vchPayload, &strError), strError);
+
+    // The prefix it carries is the one the seats approved, and it validates as a node does.
+    BOOST_REQUIRE(vchPayload.size() > round.FrozenPrefix().size());
+    BOOST_CHECK(std::equal(round.FrozenPrefix().begin(), round.FrozenPrefix().end(),
+                           vchPayload.begin()));
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vchPayload, effects);
+    BOOST_REQUIRE_MESSAGE(validation.nResult == INNOVA_PRIVACY_VNEXT_VALID, validation.strError);
+    BOOST_CHECK_EQUAL(effects.nFee, 2 * MIX_FEE_SHARE);
+    BOOST_CHECK_EQUAL(effects.nTransparentValueBalance, 0);
+    BOOST_REQUIRE_EQUAL(effects.keyImages.size(), 2u);
+    BOOST_REQUIRE_EQUAL(effects.outputLeaves.size(), 2u);
+    for (size_t k = 0; k < 2; k++)
+    {
+        BOOST_CHECK(memcmp(effects.keyImages[k].data(), round.FinalKeyImages()[k].begin(), 32) == 0);
+        BOOST_CHECK(effects.outputLeaves[k].owner == proofs.vRecords[k].owner);
+        BOOST_CHECK(effects.outputLeaves[k].commitment == proofs.vRecords[k].commitment);
+    }
+
+    // Each recipient finds its own output, at its own position and at the denomination, and
+    // nothing else.
+    for (size_t k = 0; k < 2; k++)
+    {
+        std::vector<PrivacyVNextScanKey> vKeys(1, proofs.vRecipients[k]);
+        std::vector<PrivacyVNextScanMatch> vMatches;
+        std::vector<PrivacyVNextDigest> vScannedImages;
+        uint8_t nOutputCount = 0;
+        BOOST_REQUIRE_MESSAGE(ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, proofs.header.nNetwork,
+                                                      0, INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                      vchPayload, vKeys, vMatches, vScannedImages,
+                                                      nOutputCount, strError),
+                              strError);
+        BOOST_CHECK_EQUAL((int)nOutputCount, 2);
+        BOOST_REQUIRE_EQUAL(vMatches.size(), 1u);
+        BOOST_CHECK_EQUAL(vMatches[0].nOutputIndex, (uint32_t)k);
+        BOOST_CHECK_EQUAL(vMatches[0].nAmount, MIX_DENOM);
+    }
+
+    CTransaction tx;
+    BOOST_REQUIRE_MESSAGE(BuildMixTransaction(vchPayload, 1500000000U, tx, strError), strError);
+    BOOST_CHECK(tx.vin.empty());
+    BOOST_CHECK(tx.vout.empty());
+    BOOST_CHECK_EQUAL(tx.nLockTime, 0U);
+    BOOST_CHECK(tx.privacyVNext.vchPayload == vchPayload);
+    const uint256 binding = GetPrivacyVNextTransparentBinding(tx);
+    const PrivacyVNextDigest mixBinding = MixTransparentBinding();
+    BOOST_CHECK(memcmp(binding.begin(), mixBinding.data(), 32) == 0);
+
+    // A payload that does not validate has no carrier.
+    std::vector<unsigned char> vchBroken = vchPayload;
+    vchBroken[vchBroken.size() - 10] ^= 0x01;
+    CTransaction txBroken;
+    BOOST_CHECK(!BuildMixTransaction(vchBroken, 1500000000U, txBroken, strError));
+    BOOST_CHECK(txBroken.privacyVNext.vchPayload.empty());
+}
+
+// A seat that sends another seat's valid response: the share is well formed and made under
+// the fixed aggregate, but the joint proof does not verify, so no payload comes out. Only
+// the sum of the responses enters the proof, which is why the failure names no seat.
+BOOST_AUTO_TEST_CASE(a_round_with_a_copied_response_assembles_nothing)
+{
+    const uint256 hashRound = uint256(0xFEE3);
+    const int64_t nNow = 19000000;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    ProvenRoundThroughProofs(round, vSeats, hashRound, nNow);
+    SignOverWire(round, vSeats, hashRound, nNow + MIX_OUTPUT_WINDOW + 1, true);
+    std::vector<unsigned char> vchPayload;
+    std::string strError;
+    BOOST_CHECK_MESSAGE(!round.AssemblePayload(vchPayload, &strError),
+                        "a payload was assembled over a copied response");
+    BOOST_CHECK(vchPayload.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
