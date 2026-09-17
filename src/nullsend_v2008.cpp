@@ -238,6 +238,281 @@ uint256 MixViewDigest(const uint256& hashAnnouncement,
     return ss.GetHash();
 }
 
+// amount*H + mask*G == commitment. False for a mask that is not a usable scalar.
+static bool MixOpeningOpens(uint64_t nAmount, const PrivacyVNextDigest& mask,
+                            const PrivacyVNextDigest& commitment)
+{
+    std::vector<PrivacyVNextCombineTerm> vTerms(2);
+    PrivacyVNextDigest amountScalar;
+    amountScalar.fill(0);
+    uint64_t nLeft = nAmount;
+    for (size_t i = 0; i < 8; i++)
+    {
+        amountScalar[i] = (uint8_t)(nLeft & 0xff);
+        nLeft >>= 8;
+    }
+    vTerms[0].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
+    vTerms[0].scalar = amountScalar;
+    vTerms[1].nSource = PRIVACY_VNEXT_TERM_ED25519_G;
+    vTerms[1].scalar = mask;
+    PrivacyVNextDigest derived;
+    std::string strCombine;
+    if (!CombinePrivacyVNextPoints(vTerms, derived, strCombine))
+        return false;
+    return derived == commitment;
+}
+
+namespace
+{
+struct PrefixReader
+{
+    const std::vector<unsigned char>& vch;
+    size_t nAt;
+    explicit PrefixReader(const std::vector<unsigned char>& vchIn) : vch(vchIn), nAt(0) {}
+    bool U8(uint8_t& out)
+    {
+        if (nAt + 1 > vch.size())
+            return false;
+        out = vch[nAt++];
+        return true;
+    }
+    bool U64(uint64_t& out)
+    {
+        if (nAt + 8 > vch.size())
+            return false;
+        out = 0;
+        for (size_t i = 0; i < 8; i++)
+            out |= (uint64_t)vch[nAt + i] << (8 * i);
+        nAt += 8;
+        return true;
+    }
+    bool Digest(PrivacyVNextDigest& out)
+    {
+        if (nAt + 32 > vch.size())
+            return false;
+        memcpy(out.data(), &vch[nAt], 32);
+        nAt += 32;
+        return true;
+    }
+    // The canonical compact size the builder writes, and nothing longer than needed.
+    bool CompactSize(uint64_t& out)
+    {
+        uint8_t nFirst = 0;
+        if (!U8(nFirst))
+            return false;
+        if (nFirst < 253)
+        {
+            out = nFirst;
+            return true;
+        }
+        if (nFirst == 253)
+        {
+            if (nAt + 2 > vch.size())
+                return false;
+            out = (uint64_t)vch[nAt] | ((uint64_t)vch[nAt + 1] << 8);
+            nAt += 2;
+            return out >= 253;
+        }
+        if (nFirst == 254)
+        {
+            if (nAt + 4 > vch.size())
+                return false;
+            out = 0;
+            for (size_t i = 0; i < 4; i++)
+                out |= (uint64_t)vch[nAt + i] << (8 * i);
+            nAt += 4;
+            return out > 0xffff;
+        }
+        return false;
+    }
+    bool Bytes(size_t nLen, std::vector<unsigned char>& out)
+    {
+        if (nAt + nLen > vch.size())
+            return false;
+        out.assign(vch.begin() + nAt, vch.begin() + nAt + nLen);
+        nAt += nLen;
+        return true;
+    }
+};
+} // namespace
+
+bool ParseMixPrefix(const std::vector<unsigned char>& vchPrefix, CMixPrefixView& view,
+                    std::string& strError)
+{
+    view = CMixPrefixView();
+    strError.clear();
+    #define BAD(msg) do { strError = (msg); return false; } while (0)
+    PrefixReader r(vchPrefix);
+    uint8_t nSchema = 0, nZero = 0, nProfile = 0, nAuth = 0, nFinalityObject = 0, nReserved = 0;
+    if (!r.U8(nSchema) || !r.U8(nZero) || !r.U8(view.nOperation) || !r.U8(nProfile) ||
+        !r.U8(nAuth) || !r.U8(view.nDisclosureMask) || !r.U8(nFinalityObject) ||
+        !r.U8(view.nNetwork) || !r.U8(nReserved))
+        BAD("prefix header is truncated");
+    if (nSchema != (uint8_t)iv5::PROTOCOL_SCHEMA || nZero != 0 || nProfile != 0 || nAuth != 0 ||
+        nFinalityObject != 0 || nReserved != 0)
+        BAD("prefix header is not the mix layout");
+    if (!iv5::IsNullSendOperation(view.nOperation))
+        BAD("prefix does not name the NullSend operation");
+    if (view.nDisclosureMask != iv5::NULLSEND_DISCLOSURE_MASK)
+        BAD("prefix is not at the NullSend disclosure mask");
+    uint64_t nBalance = 0;
+    if (!r.Digest(view.genesis) || !r.Digest(view.parameterDigest) ||
+        !r.Digest(view.finalizedRoot) || !r.U64(view.nFinalizedTreeSize) || !r.U64(nBalance) ||
+        !r.U64(view.nFee) || !r.Digest(view.transparentBinding))
+        BAD("prefix fixed fields are truncated");
+    view.nTransparentValueBalance = (int64_t)nBalance;
+
+    uint64_t nInputs = 0;
+    if (!r.CompactSize(nInputs) || nInputs == 0 || nInputs > iv5::MAX_NULLSEND_INPUTS)
+        BAD("prefix input count is out of range");
+    for (uint64_t i = 0; i < nInputs; i++)
+    {
+        PrivacyVNextDigest pseudoOut, keyImage;
+        if (!r.Digest(pseudoOut) || !r.Digest(keyImage))
+            BAD("prefix inputs are truncated");
+        uint256 key;
+        memcpy(key.begin(), keyImage.data(), 32);
+        view.vPseudoOuts.push_back(pseudoOut);
+        view.vKeyImages.push_back(key);
+    }
+    uint64_t nOutputs = 0;
+    if (!r.CompactSize(nOutputs) || nOutputs == 0 || nOutputs > iv5::MAX_NULLSEND_INPUTS)
+        BAD("prefix output count is out of range");
+    for (uint64_t i = 0; i < nOutputs; i++)
+    {
+        CMixOutputRecord record;
+        uint64_t nLen = 0;
+        if (!r.Digest(record.owner) || !r.Digest(record.commitment) ||
+            !r.Digest(record.noteEphemeral) || !r.Digest(record.tweakEphemeral))
+            BAD("prefix outputs are truncated");
+        if (!r.CompactSize(nLen) || nLen != INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE ||
+            !r.Bytes(nLen, record.vchRecipientCiphertext))
+            BAD("prefix recipient ciphertext is not the payload size");
+        if (!r.CompactSize(nLen) || nLen != INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE ||
+            !r.Bytes(nLen, record.vchOutgoingCiphertext))
+            BAD("prefix outgoing ciphertext is not the payload size");
+        view.vOutputs.push_back(record);
+    }
+    // Mask 3 hides senders and receivers and discloses amounts: one amount and mask per
+    // output, then the empty finality body, then nothing.
+    for (uint64_t i = 0; i < nOutputs; i++)
+    {
+        uint64_t nAmount = 0;
+        if (!r.U64(nAmount) || !r.Digest(view.vOutputs[i].mask))
+            BAD("prefix disclosed amounts are truncated");
+        view.vAmounts.push_back(nAmount);
+    }
+    uint64_t nFinalityBody = 0;
+    if (!r.CompactSize(nFinalityBody) || nFinalityBody != 0)
+        BAD("prefix carries a finality body");
+    if (r.nAt != vchPrefix.size())
+        BAD("prefix has trailing bytes");
+    return true;
+    #undef BAD
+}
+
+PrivacyVNextDigest MixTransparentBinding()
+{
+    CTransaction tx;
+    tx.vin.clear();
+    tx.vout.clear();
+    tx.nLockTime = 0;
+    const uint256 binding = GetPrivacyVNextTransparentBinding(tx);
+    PrivacyVNextDigest out;
+    memcpy(out.data(), binding.begin(), 32);
+    return out;
+}
+
+uint256 MixPrefixDigest(const uint256& hashView, const PrivacyVNextDigest& signingHash)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/prefix/v1");
+    ss << hashView;
+    ss.write((const char*)signingHash.data(), signingHash.size());
+    return ss.GetHash();
+}
+
+bool CheckMixPrefixForSeat(const std::vector<unsigned char>& vchPrefix,
+                           const CMixSeatExpectation& expect, std::string& strError)
+{
+    #define BAD(msg) do { strError = (msg); return false; } while (0)
+    CMixPrefixView view;
+    if (!ParseMixPrefix(vchPrefix, view, strError))
+        return false;
+    if (view.nNetwork != expect.nNetwork || !(view.genesis == expect.genesis))
+        BAD("prefix names another network");
+    if (!(view.parameterDigest == expect.parameterDigest))
+        BAD("prefix names another parameter digest");
+    if (!(view.finalizedRoot == expect.finalizedRoot) ||
+        view.nFinalizedTreeSize != expect.nFinalizedTreeSize)
+        BAD("prefix anchors to a tree this seat did not expect");
+    if (view.nTransparentValueBalance != 0)
+        BAD("prefix moves value across the transparent boundary");
+    if (view.nFee != expect.nFee)
+        BAD("prefix fee is not the agreed fee");
+    if (!(view.transparentBinding == expect.transparentBinding))
+        BAD("prefix transparent binding is not a mix's");
+
+    // Inputs: exactly the agreed roster, in the byte order the round sorts it, with this
+    // seat's own construction at its own key image.
+    std::vector<uint256> vRoster = expect.vRosterKeyImages;
+    std::sort(vRoster.begin(), vRoster.end(), [](const uint256& a, const uint256& b) {
+        return memcmp(a.begin(), b.begin(), 32) < 0;
+    });
+    if (view.vKeyImages != vRoster)
+        BAD("prefix inputs are not the agreed roster in its order");
+    bool fFoundInput = false;
+    for (size_t i = 0; i < view.vKeyImages.size(); i++)
+    {
+        for (size_t j = 0; j < i; j++)
+            if (view.vPseudoOuts[j] == view.vPseudoOuts[i])
+                BAD("prefix repeats a pseudo-output");
+        if (view.vKeyImages[i] != expect.myKeyImage)
+            continue;
+        if (!(view.vPseudoOuts[i] == expect.myPseudoOut))
+            BAD("prefix carries another pseudo-output for this seat's input");
+        fFoundInput = true;
+    }
+    if (!fFoundInput)
+        BAD("prefix does not carry this seat's input");
+
+    // Outputs: one per seat, every one at the denomination with an opening that opens.
+    if (view.vOutputs.size() != view.vKeyImages.size())
+        BAD("prefix output count is not the seat count");
+    std::vector<unsigned char> vchMine, vchTheirs;
+    size_t nMine = 0;
+    for (size_t i = 0; i < view.vOutputs.size(); i++)
+    {
+        const CMixOutputRecord& output = view.vOutputs[i];
+        if (view.vAmounts[i] != expect.nDenomination)
+            BAD("prefix discloses an amount other than the denomination");
+        if (!MixOpeningOpens(view.vAmounts[i], output.mask, output.commitment))
+            BAD("prefix discloses an opening that does not open its commitment");
+        for (size_t j = 0; j < i; j++)
+        {
+            if (view.vOutputs[j].owner == output.owner)
+                BAD("prefix repeats an output owner");
+            if (view.vOutputs[j].commitment == output.commitment)
+                BAD("prefix repeats an output commitment");
+        }
+        if (!EncodeMixOutputRecord(output, vchTheirs))
+            BAD("prefix output is malformed");
+        for (size_t k = 0; k < expect.vMyOutputs.size(); k++)
+        {
+            if (!EncodeMixOutputRecord(expect.vMyOutputs[k].second, vchMine) || vchMine != vchTheirs)
+                continue;
+            if (expect.vMyOutputs[k].first >= 0 && (size_t)expect.vMyOutputs[k].first != i)
+                BAD("prefix places this seat's output at a position it is not valid at");
+            nMine++;
+        }
+    }
+    if (nMine != 1)
+        BAD(nMine == 0 ? "prefix does not carry this seat's output"
+                       : "prefix carries this seat's output more than once");
+    return true;
+    #undef BAD
+}
+
 uint256 CMixOutputRecord::OwnerKey() const
 {
     uint256 key;
@@ -329,9 +604,10 @@ bool CheckMixSessionFrame(const CPubKey& pubkey, const uint256& hashRound, MixFr
 CMixRound::CMixRound()
     : nPhase(MIX_PHASE_ABORTED), hashRound(0), nTargetParticipants(0),
       fStreamIsolated(false), fNoncesFrozen(false), fHasSigned(false),
-      nOpened(0), nWindowCloses(0), nDenomination(0)
+      nOpened(0), nWindowCloses(0), hashPrefixAnnouncement(0), nDenomination(0)
 {
     strAbortReason = "not opened";
+    prefixSigningHash.fill(0);
 }
 
 bool CMixRound::Require(MixRoundPhase nExpected, std::string* pstrError)
@@ -379,8 +655,12 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
     vOutputs.clear();
     vOutputCommitments.clear();
     vOutputMasks.clear();
+    vOutputRecords.clear();
     vRoster.clear();
     vSpentCredentials.clear();
+    vchFrozenPrefix.clear();
+    prefixSigningHash.fill(0);
+    hashPrefixAnnouncement = 0;
     nDenomination = nDenominationIn;
     nPhase = MIX_PHASE_JOIN;
     return true;
@@ -603,6 +883,86 @@ bool CMixRound::AssemblePrefix(const PrivacyVNextPrefixHeader& header,
     #undef FAIL
 }
 
+bool CMixRound::FreezePrefix(const PrivacyVNextPrefixHeader& header,
+                             const uint256& hashAnnouncement, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    if (!vchFrozenPrefix.empty())
+        FAIL("the prefix is already frozen");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (!vParticipants[i].vchNonce.empty())
+            FAIL("a nonce is already in; the prefix must be agreed before any nonce");
+    if (!ViewAgreed(hashAnnouncement))
+        FAIL("the seats have not all signed this view");
+    if (!(header.transparentBinding == MixTransparentBinding()))
+        FAIL("a mix prefix carries the binding of a transaction with no transparent side");
+    std::vector<unsigned char> vchPrefix;
+    if (!AssemblePrefix(header, vchPrefix, pstrError))
+        return false;
+    PrivacyVNextDigest signingHash;
+    std::string strHash;
+    if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vchPrefix,
+                                       signingHash, strHash))
+        FAIL(strHash);
+    vchFrozenPrefix = vchPrefix;
+    prefixSigningHash = signingHash;
+    hashPrefixAnnouncement = hashAnnouncement;
+    return true;
+    #undef FAIL
+}
+
+uint256 CMixRound::PrefixDigest() const
+{
+    if (vchFrozenPrefix.empty())
+        return 0;
+    const uint256 hashView = ViewDigest(hashPrefixAnnouncement);
+    if (hashView == 0)
+        return 0;
+    return MixPrefixDigest(hashView, prefixSigningHash);
+}
+
+bool CMixRound::SubmitPrefixSignature(const CPubKey& pubkeySession,
+                                      const std::vector<unsigned char>& vchSig,
+                                      std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    const uint256 hashPrefix = PrefixDigest();
+    if (hashPrefix == 0)
+        FAIL("no prefix is frozen");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        if (!vParticipants[i].vchPrefixSig.empty())
+            FAIL("that seat has already approved the prefix");
+        if (!pubkeySession.Verify(hashPrefix, vchSig))
+            FAIL("the signature does not verify over the frozen prefix");
+        vParticipants[i].vchPrefixSig = vchSig;
+        return true;
+    }
+    FAIL("that key holds no seat");
+    #undef FAIL
+}
+
+bool CMixRound::PrefixAgreed() const
+{
+    const uint256 hashPrefix = PrefixDigest();
+    if (hashPrefix == 0 || vParticipants.empty())
+        return false;
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (vParticipants[i].vchPrefixSig.empty())
+            return false;
+        if (!vParticipants[i].pubkeySession.Verify(hashPrefix, vParticipants[i].vchPrefixSig))
+            return false;
+    }
+    return true;
+}
+
 bool CMixRound::InputConstructionsComplete() const
 {
     if (vParticipants.empty())
@@ -697,27 +1057,8 @@ bool CMixRound::RegisterOutput(const std::vector<unsigned char>& vchCredential,
     // and therefore registers nothing.
     if (nDenomination == 0)
         FAIL("the round carries no denomination, so an opening cannot be checked");
-    {
-        std::vector<PrivacyVNextCombineTerm> vTerms(2);
-        PrivacyVNextDigest amountScalar;
-        amountScalar.fill(0);
-        uint64_t nLeft = nDenomination;
-        for (size_t i = 0; i < 8; i++)
-        {
-            amountScalar[i] = (uint8_t)(nLeft & 0xff);
-            nLeft >>= 8;
-        }
-        vTerms[0].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
-        vTerms[0].scalar = amountScalar;
-        vTerms[1].nSource = PRIVACY_VNEXT_TERM_ED25519_G;
-        vTerms[1].scalar = mask;
-        PrivacyVNextDigest derived;
-        std::string strCombine;
-        if (!CombinePrivacyVNextPoints(vTerms, derived, strCombine))
-            FAIL("output opening is not a usable scalar");
-        if (!(derived == commitment))
-            FAIL("output opening does not open the commitment it is registered with");
-    }
+    if (!MixOpeningOpens(nDenomination, mask, commitment))
+        FAIL("output opening does not open the commitment it is registered with");
     for (size_t i = 0; i < vOutputCommitments.size(); i++)
         if (vOutputCommitments[i] == commitment)
             FAIL("that output commitment is already registered");
@@ -1204,6 +1545,35 @@ bool BuildMixInputConstructionBody(const CPubKey& pubkeySession, const uint256& 
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchTail, vchOut);
 }
 
+bool BuildMixPrefixBody(const std::vector<unsigned char>& vchPrefix, std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vchPrefix.empty() || vchPrefix.size() > 0xffff)
+        return false;
+    PutU16(vchOut, vchPrefix.size());
+    vchOut.insert(vchOut.end(), vchPrefix.begin(), vchPrefix.end());
+    return true;
+}
+
+bool ReadMixPrefixBody(const std::vector<unsigned char>& vchIn, std::vector<unsigned char>& vchPrefixOut)
+{
+    vchPrefixOut.clear();
+    size_t nAt = 0, nLen = 0;
+    if (!TakeU16(vchIn, nAt, nLen) || nLen == 0 || !TakeBytes(vchIn, nAt, nLen, vchPrefixOut) ||
+        nAt != vchIn.size())
+    {
+        vchPrefixOut.clear();
+        return false;
+    }
+    return true;
+}
+
+bool BuildMixPrefixSigBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                           const std::vector<unsigned char>& vchSig, std::vector<unsigned char>& vchOut)
+{
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchSig, vchOut);
+}
+
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut)
@@ -1318,7 +1688,7 @@ MixDispatch DispatchMixFrame(CMixRound& round,
 
     if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE &&
         nType != MIX_FRAME_VIEW_SIG && nType != MIX_FRAME_BLIND_REQUEST &&
-        nType != MIX_FRAME_INPUT_CONSTRUCTION)
+        nType != MIX_FRAME_INPUT_CONSTRUCTION && nType != MIX_FRAME_PREFIX_SIG)
         REFUSE("a participant does not send that frame");
 
     std::vector<unsigned char> vchBody, vchSig;
@@ -1331,7 +1701,7 @@ MixDispatch DispatchMixFrame(CMixRound& round,
     if (!CheckMixSessionFrame(pubkeySession, hashRound, nType, vchBody, vchSig))
         REFUSE("session signature does not verify");
 
-    // Two frames carry a variable tail rather than one 32-byte field, so they are taken
+    // These frames carry a variable tail rather than one 32-byte field, so they are taken
     // before the fixed-shape parse below.
     if (nType == MIX_FRAME_VIEW_SIG)
     {
@@ -1346,6 +1716,23 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
         if (!round.SubmitViewSignature(pubkeySession, hashAnnouncement, vchViewSig,
                                        &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+    if (nType == MIX_FRAME_PREFIX_SIG)
+    {
+        std::vector<unsigned char> vchAnnounce, vchPrefixSig;
+        size_t nLen = 0;
+        if (!TakeBytes(vchBody, nAt, 32, vchAnnounce))
+            REFUSE("prefix approval is malformed");
+        if (!TakeU16(vchBody, nAt, nLen) || !TakeBytes(vchBody, nAt, nLen, vchPrefixSig) ||
+            nAt != vchBody.size())
+            REFUSE("prefix approval is malformed");
+        uint256 hashAnnouncement;
+        memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
+        if (!round.ViewAgreed(hashAnnouncement))
+            REFUSE("the seats have not all signed this view");
+        if (!round.SubmitPrefixSignature(pubkeySession, vchPrefixSig, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }
@@ -1410,6 +1797,10 @@ MixDispatch DispatchMixFrame(CMixRound& round,
     }
     if (nType == MIX_FRAME_NONCE)
     {
+        // A nonce fixes this seat's share of the challenge. Before every seat has approved
+        // one prefix, the statement under that challenge can still change.
+        if (!round.PrefixAgreed())
+            REFUSE("the seats have not all approved the prefix");
         if (!round.SubmitNonce(pubkeySession, vchTail, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;

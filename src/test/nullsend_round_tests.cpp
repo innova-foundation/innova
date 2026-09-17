@@ -825,6 +825,359 @@ BOOST_AUTO_TEST_CASE(a_mix_prefix_is_the_builder_layout_over_the_round_state)
     BOOST_CHECK_EQUAL(nAmount, MIX_DENOM);
 }
 
+namespace {
+
+const uint256 PREFIX_ANNOUNCE = uint256(0xFACE);
+
+PrivacyVNextPrefixHeader MixHeader()
+{
+    PrivacyVNextPrefixHeader header;
+    header.nOperation = iv5::NOTE_NULLSEND;
+    header.nDisclosureMask = iv5::NULLSEND_DISCLOSURE_MASK;
+    header.nNetwork = 1;
+    header.genesis.fill(0x11);
+    header.parameterDigest.fill(0x22);
+    header.finalizedRoot.fill(0x33);
+    header.nFinalizedTreeSize = 77;
+    header.nFee = 1000;
+    header.transparentBinding = MixTransparentBinding();
+    return header;
+}
+
+// A two-seat round with the view signed, every construction in and every output
+// registered; the output window is still open.
+void RoundWithOutputs(CMixRound& round, std::vector<Seat>& vSeats, int64_t nNow)
+{
+    std::string strError;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
+    BOOST_REQUIRE_MESSAGE(round.CloseJoin(nNow, &strError), strError);
+    const uint256 hashView = round.ViewDigest(PREFIX_ANNOUNCE);
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        std::vector<unsigned char> vchSig;
+        BOOST_REQUIRE(vSeats[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE_MESSAGE(round.SubmitViewSignature(vSeats[i].pubkey, PREFIX_ANNOUNCE,
+                                                        vchSig, &strError), strError);
+    }
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        BOOST_REQUIRE_MESSAGE(round.SubmitInputConstruction(vSeats[i].pubkey, PREFIX_ANNOUNCE,
+                                                            vSeats[i].keyImage,
+                                                            MaskOf((unsigned char)(0x81 + i)),
+                                                            &strError), strError);
+        BOOST_REQUIRE_MESSAGE(round.IssueToken(vSeats[i].pubkey, &strError), strError);
+    }
+    BOOST_REQUIRE_MESSAGE(round.OpenOutputWindow(nNow, &strError), strError);
+    for (int i = 0; i < 2; i++)
+    {
+        const CMixOutputRecord record = Rec(uint256(0x7B0 + i), (unsigned char)(0x95 + i));
+        const Token token = MintToken(record);
+        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
+                                                   record, nNow, &strError), strError);
+    }
+}
+
+std::vector<unsigned char> MixPrefixOver(
+    const PrivacyVNextPrefixHeader& header,
+    const std::vector<std::pair<uint256, PrivacyVNextDigest> >& vInputs,
+    const std::vector<CMixOutputRecord>& vRecords, const std::vector<uint64_t>& vAmounts)
+{
+    std::vector<PrivacyVNextPrefixInput> vIn(vInputs.size());
+    for (size_t i = 0; i < vIn.size(); i++)
+    {
+        memcpy(vIn[i].keyImage.data(), vInputs[i].first.begin(), 32);
+        vIn[i].pseudoOut = vInputs[i].second;
+        vIn[i].senderAuthority.fill(0);
+    }
+    std::vector<PrivacyVNextPrefixOutput> vOut(vRecords.size());
+    for (size_t i = 0; i < vOut.size(); i++)
+    {
+        vOut[i].owner = vRecords[i].owner;
+        vOut[i].commitment = vRecords[i].commitment;
+        vOut[i].noteEphemeral = vRecords[i].noteEphemeral;
+        vOut[i].tweakEphemeral = vRecords[i].tweakEphemeral;
+        vOut[i].vchRecipientCiphertext = vRecords[i].vchRecipientCiphertext;
+        vOut[i].vchOutgoingCiphertext = vRecords[i].vchOutgoingCiphertext;
+        vOut[i].recipientSpend.fill(0);
+        vOut[i].recipientView.fill(0);
+        vOut[i].nAmount = vAmounts[i];
+        vOut[i].mask = vRecords[i].mask;
+    }
+    std::vector<unsigned char> vchPrefix;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(AssemblePrivacyVNextPayloadPrefix(header, vIn, vOut, vchPrefix, strError),
+                          strError);
+    return vchPrefix;
+}
+
+} // namespace
+
+// The coordinator fixes one prefix under the agreed view, and it cannot move once seats
+// start approving it: a certificate collected over two prefixes would let a coordinator
+// show each seat the statement that seat would accept.
+BOOST_AUTO_TEST_CASE(a_prefix_is_frozen_once_and_every_seat_approves_the_same_one)
+{
+    const int64_t nNow = 3665000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    RoundWithOutputs(round, vSeats, nNow);
+    const PrivacyVNextPrefixHeader header = MixHeader();
+
+    BOOST_CHECK_MESSAGE(!round.FreezePrefix(header, PREFIX_ANNOUNCE, &strError),
+                        "a prefix froze while outputs could still register");
+    const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
+    BOOST_REQUIRE_MESSAGE(round.OpenSigning(nClosed, &strError), strError);
+    BOOST_CHECK(round.PrefixDigest() == 0);
+    BOOST_CHECK(!round.PrefixAgreed());
+
+    BOOST_CHECK_MESSAGE(!round.FreezePrefix(header, uint256(0xBAD), &strError),
+                        "a prefix froze under a view the seats did not sign");
+    PrivacyVNextPrefixHeader wrong = header;
+    wrong.transparentBinding.fill(0x44);
+    BOOST_CHECK_MESSAGE(!round.FreezePrefix(wrong, PREFIX_ANNOUNCE, &strError),
+                        "a prefix froze with a transparent binding no mix carries");
+    wrong = header;
+    wrong.nTransparentValueBalance = 1;
+    BOOST_CHECK(!round.FreezePrefix(wrong, PREFIX_ANNOUNCE, &strError));
+
+    BOOST_REQUIRE_MESSAGE(round.FreezePrefix(header, PREFIX_ANNOUNCE, &strError), strError);
+    std::vector<unsigned char> vchAssembled;
+    BOOST_REQUIRE(round.AssemblePrefix(header, vchAssembled, &strError));
+    BOOST_CHECK(round.FrozenPrefix() == vchAssembled);
+    PrivacyVNextDigest signingHash;
+    BOOST_REQUIRE(HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                vchAssembled, signingHash, strError));
+    const uint256 hashPrefix = round.PrefixDigest();
+    BOOST_CHECK(hashPrefix == MixPrefixDigest(round.ViewDigest(PREFIX_ANNOUNCE), signingHash));
+
+    PrivacyVNextPrefixHeader other = header;
+    other.nFee = header.nFee + 1;
+    BOOST_CHECK_MESSAGE(!round.FreezePrefix(other, PREFIX_ANNOUNCE, &strError),
+                        "a frozen prefix was replaced under the approvals collecting for it");
+    BOOST_CHECK(round.FrozenPrefix() == vchAssembled);
+    BOOST_CHECK(round.PrefixDigest() == hashPrefix);
+
+    // An approval is a seated key's signature over the frozen digest, once per seat.
+    std::vector<unsigned char> vchWrong;
+    BOOST_REQUIRE(vSeats[0].key.Sign(MixPrefixDigest(round.ViewDigest(PREFIX_ANNOUNCE),
+                                                     MaskOf(0x01)), vchWrong));
+    BOOST_CHECK_MESSAGE(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchWrong, &strError),
+                        "an approval of another prefix counted for this one");
+    const Seat stranger = MakeSeat(7);
+    std::vector<unsigned char> vchStranger;
+    BOOST_REQUIRE(stranger.key.Sign(hashPrefix, vchStranger));
+    BOOST_CHECK(!round.SubmitPrefixSignature(stranger.pubkey, vchStranger, &strError));
+    std::vector<unsigned char> vchSig0, vchSig1;
+    BOOST_REQUIRE(vSeats[0].key.Sign(hashPrefix, vchSig0));
+    BOOST_REQUIRE_MESSAGE(round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0, &strError),
+                          strError);
+    BOOST_CHECK(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0, &strError));
+    BOOST_CHECK_MESSAGE(!round.PrefixAgreed(), "one approval of two agreed the prefix");
+    BOOST_REQUIRE(vSeats[1].key.Sign(hashPrefix, vchSig1));
+    BOOST_REQUIRE_MESSAGE(round.SubmitPrefixSignature(vSeats[1].pubkey, vchSig1, &strError),
+                          strError);
+    BOOST_CHECK(round.PrefixAgreed());
+}
+
+// A nonce is a seat's share of the challenge; a prefix fixed after one is in would put
+// that share under a statement the seat never saw.
+BOOST_AUTO_TEST_CASE(a_prefix_cannot_be_frozen_under_a_nonce)
+{
+    const int64_t nNow = 3667000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    RoundWithOutputs(round, vSeats, nNow);
+    BOOST_REQUIRE_MESSAGE(round.OpenSigning(nNow + MIX_OUTPUT_WINDOW + 1, &strError), strError);
+    BOOST_REQUIRE_MESSAGE(round.SubmitNonce(vSeats[0].pubkey,
+                                            std::vector<unsigned char>(32, 0xA5), &strError),
+                          strError);
+    BOOST_CHECK_MESSAGE(!round.FreezePrefix(MixHeader(), PREFIX_ANNOUNCE, &strError),
+                        "a prefix froze after a seat's nonce was already in");
+}
+
+// A round object reopened for the next round keeps nothing of the last one: an output
+// record or a frozen prefix carried over would be assembled into a statement no seat of
+// the new round agreed.
+BOOST_AUTO_TEST_CASE(a_reopened_round_carries_no_records_or_prefix)
+{
+    const int64_t nNow = 3668000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    RoundWithOutputs(round, vSeats, nNow);
+    BOOST_REQUIRE_MESSAGE(round.OpenSigning(nNow + MIX_OUTPUT_WINDOW + 1, &strError), strError);
+    BOOST_REQUIRE_MESSAGE(round.FreezePrefix(MixHeader(), PREFIX_ANNOUNCE, &strError), strError);
+    BOOST_REQUIRE_EQUAL(round.OutputRecords().size(), 2u);
+
+    CNullSendSession& server = Coordinator();
+    BOOST_REQUIRE(round.Open(ROUND_HASH, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, MIX_DENOM, nNow + 1000, &strError));
+    BOOST_CHECK(round.OutputRecords().empty());
+    BOOST_CHECK(round.FrozenPrefix().empty());
+    BOOST_CHECK(round.PrefixDigest() == 0);
+}
+
+// The seat does not trust the coordinator's statement. It holds every field it can know
+// on its own, and refuses a prefix that differs in any of them, including the parts that
+// are not its own entries.
+BOOST_AUTO_TEST_CASE(a_seat_checks_the_whole_prefix_before_approving_it)
+{
+    std::string strError;
+    const PrivacyVNextPrefixHeader header = MixHeader();
+    std::vector<uint256> vRoster;
+    vRoster.push_back(uint256(0x0200));
+    vRoster.push_back(uint256(0x0100));
+    std::vector<uint256> vSorted = vRoster;
+    std::sort(vSorted.begin(), vSorted.end(), [](const uint256& a, const uint256& b) {
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+    });
+    BOOST_REQUIRE(vSorted != vRoster);
+
+    std::vector<std::pair<uint256, PrivacyVNextDigest> > vInputs;
+    vInputs.push_back(std::make_pair(vSorted[0], MaskOf(0xE1)));
+    vInputs.push_back(std::make_pair(vSorted[1], MaskOf(0xE2)));
+    const CMixOutputRecord mine = Rec(uint256(0x7C0), 0xE5);
+    const CMixOutputRecord theirs = Rec(uint256(0x7C1), 0xE6);
+    std::vector<CMixOutputRecord> vRecords;
+    vRecords.push_back(theirs);
+    vRecords.push_back(mine);
+    const std::vector<uint64_t> vAmounts(2, MIX_DENOM);
+    const std::vector<unsigned char> vchPrefix = MixPrefixOver(header, vInputs, vRecords, vAmounts);
+
+    CMixSeatExpectation expect;
+    expect.nNetwork = header.nNetwork;
+    expect.genesis = header.genesis;
+    expect.parameterDigest = header.parameterDigest;
+    expect.finalizedRoot = header.finalizedRoot;
+    expect.nFinalizedTreeSize = header.nFinalizedTreeSize;
+    expect.nFee = header.nFee;
+    expect.nDenomination = MIX_DENOM;
+    expect.transparentBinding = MixTransparentBinding();
+    expect.vRosterKeyImages = vRoster;
+    expect.myKeyImage = vSorted[1];
+    expect.myPseudoOut = MaskOf(0xE2);
+    expect.vMyOutputs.push_back(std::make_pair(-1, mine));
+    BOOST_REQUIRE_MESSAGE(CheckMixPrefixForSeat(vchPrefix, expect, strError), strError);
+
+    CMixPrefixView view;
+    BOOST_REQUIRE_MESSAGE(ParseMixPrefix(vchPrefix, view, strError), strError);
+    BOOST_CHECK_EQUAL((int)view.nOperation, (int)iv5::NOTE_NULLSEND);
+    BOOST_CHECK_EQUAL((int)view.nNetwork, (int)header.nNetwork);
+    BOOST_CHECK(view.finalizedRoot == header.finalizedRoot);
+    BOOST_CHECK_EQUAL(view.nFinalizedTreeSize, header.nFinalizedTreeSize);
+    BOOST_CHECK_EQUAL(view.nFee, header.nFee);
+    BOOST_CHECK(view.transparentBinding == MixTransparentBinding());
+    BOOST_CHECK(view.vKeyImages == vSorted);
+    BOOST_REQUIRE_EQUAL(view.vOutputs.size(), 2u);
+    std::vector<unsigned char> vchParsed, vchMine;
+    BOOST_REQUIRE(EncodeMixOutputRecord(view.vOutputs[1], vchParsed));
+    BOOST_REQUIRE(EncodeMixOutputRecord(mine, vchMine));
+    BOOST_CHECK(vchParsed == vchMine);
+
+    const auto refused = [](const std::vector<unsigned char>& vch, const CMixSeatExpectation& e,
+                            const char* pszWhat) {
+        std::string strWhy;
+        BOOST_CHECK_MESSAGE(!CheckMixPrefixForSeat(vch, e, strWhy), pszWhat);
+    };
+
+    // What the seat knows on its own.
+    CMixSeatExpectation e = expect;
+    e.nFee = expect.nFee + 1;
+    refused(vchPrefix, e, "a prefix at another fee was approved");
+    e = expect;
+    e.finalizedRoot.fill(0x34);
+    refused(vchPrefix, e, "a prefix over another tree root was approved");
+    e = expect;
+    e.nFinalizedTreeSize = expect.nFinalizedTreeSize + 1;
+    refused(vchPrefix, e, "a prefix over another tree size was approved");
+    e = expect;
+    e.nNetwork = 2;
+    refused(vchPrefix, e, "a prefix for another network was approved");
+    e = expect;
+    e.genesis.fill(0x12);
+    refused(vchPrefix, e, "a prefix under another genesis was approved");
+    e = expect;
+    e.parameterDigest.fill(0x23);
+    refused(vchPrefix, e, "a prefix under another parameter digest was approved");
+    e = expect;
+    e.nDenomination = MIX_DENOM + 1;
+    refused(vchPrefix, e, "a prefix at another denomination was approved");
+    e = expect;
+    e.transparentBinding.fill(0x44);
+    refused(vchPrefix, e, "a prefix with another transparent binding was approved");
+    e = expect;
+    e.vRosterKeyImages.push_back(uint256(0x0300));
+    refused(vchPrefix, e, "a prefix missing a rostered input was approved");
+    e = expect;
+    e.myPseudoOut = MaskOf(0xE3);
+    refused(vchPrefix, e, "a prefix carrying another construction for this seat was approved");
+    e = expect;
+    e.vMyOutputs[0].second = Rec(uint256(0x7C3), 0xE7);
+    refused(vchPrefix, e, "a prefix without this seat's output was approved");
+    e = expect;
+    e.vMyOutputs[0].first = 0;
+    refused(vchPrefix, e, "this seat's output was approved at a position it is not valid at");
+    e.vMyOutputs[0].first = 1;
+    BOOST_CHECK_MESSAGE(CheckMixPrefixForSeat(vchPrefix, e, strError), strError);
+
+    // What the coordinator could change in the prefix.
+    PrivacyVNextPrefixHeader h = header;
+    h.nFee = header.nFee + 1;
+    refused(MixPrefixOver(h, vInputs, vRecords, vAmounts), expect, "a raised fee was approved");
+    h = header;
+    h.nTransparentValueBalance = 1;
+    refused(MixPrefixOver(h, vInputs, vRecords, vAmounts), expect,
+            "a prefix moving transparent value was approved");
+    h = header;
+    h.nDisclosureMask = iv5::DISCLOSURE_MASK;
+    refused(MixPrefixOver(h, vInputs, vRecords, vAmounts), expect,
+            "a prefix at another disclosure mask was approved");
+
+    std::vector<std::pair<uint256, PrivacyVNextDigest> > vIn = vInputs;
+    std::swap(vIn[0], vIn[1]);
+    refused(MixPrefixOver(header, vIn, vRecords, vAmounts), expect,
+            "inputs out of the agreed order were approved");
+    vIn = vInputs;
+    vIn[0].second = vIn[1].second;
+    refused(MixPrefixOver(header, vIn, vRecords, vAmounts), expect,
+            "a repeated pseudo-output was approved");
+
+    std::vector<CMixOutputRecord> vRec = vRecords;
+    vRec.push_back(Rec(uint256(0x7C2), 0xE8));
+    refused(MixPrefixOver(header, vInputs, vRec, std::vector<uint64_t>(3, MIX_DENOM)), expect,
+            "an added output was approved");
+    vRec = vRecords;
+    vRec.erase(vRec.begin());
+    refused(MixPrefixOver(header, vInputs, vRec, std::vector<uint64_t>(1, MIX_DENOM)), expect,
+            "a dropped output was approved");
+    vRec = vRecords;
+    vRec[0] = mine;
+    refused(MixPrefixOver(header, vInputs, vRec, vAmounts), expect,
+            "this seat's output twice was approved");
+    vRec = vRecords;
+    vRec[0] = Rec(uint256(0x7C1), mine.commitment, mine.mask);
+    refused(MixPrefixOver(header, vInputs, vRec, vAmounts), expect,
+            "a repeated commitment was approved");
+    vRec = vRecords;
+    vRec[0] = Rec(uint256(0x7C1), Commit(MIX_DENOM + 1, MaskOf(0xE9)), MaskOf(0xE9));
+    std::vector<uint64_t> vAmt = vAmounts;
+    vAmt[0] = MIX_DENOM + 1;
+    refused(MixPrefixOver(header, vInputs, vRec, vAmt), expect,
+            "an output above the denomination was approved");
+    vRec = vRecords;
+    vRec[0] = Rec(uint256(0x7C1), theirs.commitment, MaskOf(0xEA));
+    refused(MixPrefixOver(header, vInputs, vRec, vAmounts), expect,
+            "a disclosed opening that does not open its commitment was approved");
+
+    std::vector<unsigned char> vchLong = vchPrefix;
+    vchLong.push_back(0);
+    refused(vchLong, expect, "a prefix with a trailing byte was approved");
+    const std::vector<unsigned char> vchShort(vchPrefix.begin(), vchPrefix.end() - 1);
+    refused(vchShort, expect, "a truncated prefix was approved");
+}
+
 // The opening is checked BEFORE the token is spent: the token authorises only the output
 // key, and the combiner sees only the sum of openings, so a bad one cannot be attributed later.
 BOOST_AUTO_TEST_CASE(an_output_opening_is_checked_before_its_token_is_spent)
@@ -1519,6 +1872,62 @@ std::vector<unsigned char> OutputFrame(const Token& token, const CMixOutputRecor
     return vchBody;
 }
 
+// Every seat signs the view and submits its construction, over the wire.
+void AgreeViewOverWire(CMixRound& round, const std::vector<Seat>& vSeats,
+                       const uint256& hashRound, int64_t nNow)
+{
+    std::string strError;
+    const uint256 hashView = round.ViewDigest(PREFIX_ANNOUNCE);
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        std::vector<unsigned char> vchSig, vchBody;
+        BOOST_REQUIRE(vSeats[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE(BuildMixViewSigBody(vSeats[i].pubkey, PREFIX_ANNOUNCE, vchSig, vchBody));
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_VIEW_SIG,
+                                                  AuthedFrame(vSeats[i], hashRound,
+                                                              MIX_FRAME_VIEW_SIG, vchBody),
+                                                  nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        std::vector<unsigned char> vchBody;
+        BOOST_REQUIRE(BuildMixInputConstructionBody(vSeats[i].pubkey, PREFIX_ANNOUNCE,
+                                                    vSeats[i].keyImage,
+                                                    MaskOf((unsigned char)(0xD1 + i)), vchBody));
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_INPUT_CONSTRUCTION,
+                                                  AuthedFrame(vSeats[i], hashRound,
+                                                              MIX_FRAME_INPUT_CONSTRUCTION,
+                                                              vchBody),
+                                                  nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    }
+}
+
+std::vector<unsigned char> PrefixSigFrame(const Seat& seat, const uint256& hashRound,
+                                          const uint256& hashPrefix)
+{
+    std::vector<unsigned char> vchSig, vchBody;
+    BOOST_REQUIRE(seat.key.Sign(hashPrefix, vchSig));
+    BOOST_REQUIRE(BuildMixPrefixSigBody(seat.pubkey, PREFIX_ANNOUNCE, vchSig, vchBody));
+    return AuthedFrame(seat, hashRound, MIX_FRAME_PREFIX_SIG, vchBody);
+}
+
+// The coordinator freezes the prefix and every seat approves it, over the wire.
+void AgreePrefixOverWire(CMixRound& round, const std::vector<Seat>& vSeats,
+                         const uint256& hashRound, int64_t nNow)
+{
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(round.FreezePrefix(MixHeader(), PREFIX_ANNOUNCE, &strError), strError);
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_PREFIX_SIG,
+                                                  PrefixSigFrame(vSeats[i], hashRound,
+                                                                 round.PrefixDigest()),
+                                                  nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.PrefixAgreed());
+}
+
 } // namespace
 
 // A whole two-seat round driven through the wire format and a pair of connected
@@ -1557,6 +1966,7 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
     BOOST_REQUIRE_EQUAL(round.Seats(), 2u);
 
     BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    AgreeViewOverWire(round, vSeats, hashRound, nNow);
     BOOST_REQUIRE(round.IssueToken(vSeats[0].pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(vSeats[1].pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
@@ -1580,6 +1990,12 @@ BOOST_AUTO_TEST_CASE(a_round_runs_over_the_wire)
 
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
     BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, MIX_FRAME_NONCE,
+                         ScalarFrame(vSeats[0], hashRound, MIX_FRAME_NONCE, 0x80), nClosed,
+                         strError) == MIX_DISPATCH_REFUSED,
+        "a nonce was taken before every seat approved the prefix");
+    AgreePrefixOverWire(round, vSeats, hashRound, nClosed);
     for (size_t i = 0; i < vSeats.size(); i++)
         BOOST_REQUIRE_EQUAL(
             (int)DispatchMixFrame(round, MIX_FRAME_NONCE,
@@ -1724,6 +2140,10 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
                                               JoinFrame(b, hashRound), nNow, strError),
                         (int)MIX_DISPATCH_OK);
     BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    std::vector<Seat> vSeats;
+    vSeats.push_back(a);
+    vSeats.push_back(b);
+    AgreeViewOverWire(round, vSeats, hashRound, nNow);
     BOOST_REQUIRE(round.IssueToken(a.pubkey, &strError));
     BOOST_REQUIRE(round.IssueToken(b.pubkey, &strError));
     BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
@@ -1736,6 +2156,7 @@ BOOST_AUTO_TEST_CASE(a_frame_signed_as_another_type_is_not_a_response)
     }
     const int64_t nClosed = nNow + MIX_OUTPUT_WINDOW + 1;
     BOOST_REQUIRE(round.OpenSigning(nClosed, &strError));
+    AgreePrefixOverWire(round, vSeats, hashRound, nClosed);
     BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_NONCE,
                                               ScalarFrame(a, hashRound, MIX_FRAME_NONCE, 0xB1),
                                               nClosed, strError),
@@ -1872,6 +2293,54 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
     BOOST_CHECK(round.RegisterOutput(other.vchCredential, other.vchSignature,
                                      Rec(uint256(321), 0xaf), nNow, &strError));
     BOOST_CHECK_EQUAL(round.Outputs(), 2u);
+}
+
+// The prefix travels coordinator to seat, never the other way, and its frame carries the
+// prefix and nothing else. An approval reaches the round only once the prefix is frozen.
+BOOST_AUTO_TEST_CASE(a_prefix_frame_carries_exactly_the_prefix)
+{
+    const std::vector<unsigned char> vchPrefix(300, 0x5a);
+    std::vector<unsigned char> vchBody, vchRead;
+    BOOST_REQUIRE(BuildMixPrefixBody(vchPrefix, vchBody));
+    BOOST_REQUIRE(ReadMixPrefixBody(vchBody, vchRead));
+    BOOST_CHECK(vchRead == vchPrefix);
+    std::vector<unsigned char> vchLong = vchBody;
+    vchLong.push_back(0);
+    BOOST_CHECK(!ReadMixPrefixBody(vchLong, vchRead));
+    const std::vector<unsigned char> vchShort(vchBody.begin(), vchBody.end() - 1);
+    BOOST_CHECK(!ReadMixPrefixBody(vchShort, vchRead));
+    BOOST_CHECK(!BuildMixPrefixBody(std::vector<unsigned char>(), vchBody));
+
+    const uint256 hashRound = uint256(0xF00D);
+    const int64_t nNow = 16000000;
+    CNullSendSession& server = Coordinator();
+    CMixRound round;
+    std::string strError;
+    BOOST_REQUIRE(round.Open(hashRound, 2, server.vchRSA_N, server.vchRSA_E,
+                             true, false, MIX_DENOM, nNow, &strError));
+    std::vector<Seat> vSeats;
+    vSeats.push_back(MakeSeat(50));
+    vSeats.push_back(MakeSeat(51));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_JOIN,
+                                                  JoinFrame(vSeats[i], hashRound), nNow, strError),
+                            (int)MIX_DISPATCH_OK);
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    AgreeViewOverWire(round, vSeats, hashRound, nNow);
+
+    std::vector<unsigned char> vchAsPrefix;
+    BOOST_REQUIRE(BuildMixPrefixBody(vchPrefix, vchAsPrefix));
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, MIX_FRAME_TRANSACTION_PREFIX,
+                         AuthedFrame(vSeats[0], hashRound, MIX_FRAME_TRANSACTION_PREFIX,
+                                     vchAsPrefix),
+                         nNow, strError) == MIX_DISPATCH_REFUSED,
+        "a participant sent the coordinator a prefix");
+    BOOST_CHECK_MESSAGE(
+        DispatchMixFrame(round, MIX_FRAME_PREFIX_SIG,
+                         PrefixSigFrame(vSeats[0], hashRound, uint256(0x1234)), nNow,
+                         strError) == MIX_DISPATCH_REFUSED,
+        "an approval was taken with no prefix frozen");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

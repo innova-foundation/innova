@@ -128,7 +128,9 @@ enum MixFrameType
     MIX_FRAME_RESPONSE        = 9,   // round two
     MIX_FRAME_VIEW_SIG        = 10,  // a seat's signature over the view it accepted
     MIX_FRAME_INPUT_CONSTRUCTION = 11,  // a seat's pseudo-output for its joined key image
-    MIX_FRAME_TYPE_MAX        = 11,
+    MIX_FRAME_TRANSACTION_PREFIX = 12,  // the complete prefix every seat must approve
+    MIX_FRAME_PREFIX_SIG      = 13,  // a seat's signature over the prefix it approved
+    MIX_FRAME_TYPE_MAX        = 13,
 };
 
 enum MixFrameDecode
@@ -256,6 +258,67 @@ bool DecodeMixOutputRecord(const std::vector<unsigned char>& vchIn, CMixOutputRe
  *  own modulus, so a driver must generate a fresh key per round and never reuse one. */
 uint256 MixOutputRecordCredentialHash(const CMixOutputRecord& record);
 
+/** A mix prefix, parsed. Strict: only the NullSend layout at the NullSend disclosure mask,
+ *  with nothing after the empty finality body. */
+struct CMixPrefixView
+{
+    uint8_t nOperation;
+    uint8_t nDisclosureMask;
+    uint8_t nNetwork;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDigest parameterDigest;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    int64_t nTransparentValueBalance;
+    uint64_t nFee;
+    PrivacyVNextDigest transparentBinding;
+    std::vector<PrivacyVNextDigest> vPseudoOuts;
+    std::vector<uint256> vKeyImages;
+    std::vector<CMixOutputRecord> vOutputs;  // the disclosed mask folded into each record
+    std::vector<uint64_t> vAmounts;
+
+    CMixPrefixView()
+        : nOperation(0), nDisclosureMask(0), nNetwork(0), nFinalizedTreeSize(0),
+          nTransparentValueBalance(0), nFee(0) {}
+};
+
+bool ParseMixPrefix(const std::vector<unsigned char>& vchPrefix, CMixPrefixView& viewOut,
+                    std::string& strError);
+
+/** What a seat knows independently of the coordinator, and holds a prefix to. */
+struct CMixSeatExpectation
+{
+    uint8_t nNetwork;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDigest parameterDigest;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    uint64_t nFee;
+    uint64_t nDenomination;
+    PrivacyVNextDigest transparentBinding;
+    std::vector<uint256> vRosterKeyImages;   // the roster the seat signed the view over
+    uint256 myKeyImage;
+    PrivacyVNextDigest myPseudoOut;
+    /** The seat's own output records, each with the position it is valid at, or -1 where
+     *  any position will do. Exactly one of them must appear, at that position. */
+    std::vector<std::pair<int, CMixOutputRecord> > vMyOutputs;
+
+    CMixSeatExpectation() : nNetwork(0), nFinalizedTreeSize(0), nFee(0), nDenomination(0) {}
+};
+
+/** A seat's check of the whole prefix before it proves or signs: fixed fields, inputs against
+ *  the roster, its own construction, output count, amounts and openings, no duplicates, and
+ *  exactly one copy of its own output. */
+bool CheckMixPrefixForSeat(const std::vector<unsigned char>& vchPrefix,
+                           const CMixSeatExpectation& expect, std::string& strError);
+
+/** The transparent binding of a mix transaction: no inputs, no outputs, lock time zero. */
+PrivacyVNextDigest MixTransparentBinding();
+
+/** What a seat signs to approve a prefix: the view it agreed and the prefix's signing hash,
+ *  so a certificate over one prefix cannot be presented for another or under another view. */
+uint256 MixPrefixDigest(const uint256& hashView, const PrivacyVNextDigest& signingHash);
+
 /** One roster entry: a key image and the session key that committed it. */
 struct CMixRosterEntry
 {
@@ -312,6 +375,8 @@ public:
     /** This seat's signature over the view it accepted. Empty until it signs, and it
      *  signs at most once: a second signature, over any view, is refused. */
     std::vector<unsigned char> vchViewSig;
+    /** This seat's signature approving the frozen prefix; empty until it signs, once. */
+    std::vector<unsigned char> vchPrefixSig;
     /** The pseudo-output this seat's input will carry in the prefix, submitted on its
      *  authenticated channel once the view is agreed. It is input-side data the
      *  transaction publishes against this key image anyway, so it names nothing new. */
@@ -391,6 +456,19 @@ public:
     bool AssemblePrefix(const PrivacyVNextPrefixHeader& header,
                         std::vector<unsigned char>& vchPrefixOut,
                         std::string* pstrError = NULL) const;
+
+    /** Fix the prefix the seats will approve: it must be exactly what AssemblePrefix writes
+     *  from the round's state under this header, and the announcement must be the view the
+     *  seats agreed. Once only; the prefix cannot change underneath a certificate. */
+    bool FreezePrefix(const PrivacyVNextPrefixHeader& header, const uint256& hashAnnouncement,
+                      std::string* pstrError = NULL);
+    const std::vector<unsigned char>& FrozenPrefix() const { return vchFrozenPrefix; }
+    /** The digest every seat signs; zero until the prefix is frozen. */
+    uint256 PrefixDigest() const;
+    bool SubmitPrefixSignature(const CPubKey& pubkeySession, const std::vector<unsigned char>& vchSig,
+                               std::string* pstrError = NULL);
+    /** Whether every seat has signed the frozen prefix. Nonces wait for this. */
+    bool PrefixAgreed() const;
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
@@ -491,6 +569,9 @@ private:
     std::vector<PrivacyVNextDigest> vOutputCommitments;
     std::vector<PrivacyVNextDigest> vOutputMasks;
     std::vector<CMixOutputRecord> vOutputRecords;
+    std::vector<unsigned char> vchFrozenPrefix;
+    PrivacyVNextDigest prefixSigningHash;
+    uint256 hashPrefixAnnouncement;
     std::vector<uint256> vSpentCredentials;
     uint64_t nDenomination;
 };
@@ -546,6 +627,13 @@ bool BuildMixViewSigBody(const CPubKey& pubkeySession, const uint256& hashAnnoun
 bool BuildMixInputConstructionBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                                    const uint256& keyImage, const PrivacyVNextDigest& pseudoOut,
                                    std::vector<unsigned char>& vchOut);
+
+/** The coordinator's prefix frame: the complete prefix bytes, length-prefixed. */
+bool BuildMixPrefixBody(const std::vector<unsigned char>& vchPrefix, std::vector<unsigned char>& vchOut);
+bool ReadMixPrefixBody(const std::vector<unsigned char>& vchIn, std::vector<unsigned char>& vchPrefixOut);
+/** A seat's approval of the frozen prefix: its signature over MixPrefixDigest. */
+bool BuildMixPrefixSigBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                           const std::vector<unsigned char>& vchSig, std::vector<unsigned char>& vchOut);
 
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,
