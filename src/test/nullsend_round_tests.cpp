@@ -3220,4 +3220,85 @@ BOOST_AUTO_TEST_CASE(the_roster_frame_carries_the_pairs_in_the_order_the_round_f
     BOOST_CHECK(!ReadMixRosterBody(vchBadKey, vRead));
 }
 
+// The public snapshot carries only the phase; the seat snapshot carries the frozen
+// transcript. An aborted round's prefix holds disclosed openings and must stay seat-only.
+BOOST_AUTO_TEST_CASE(a_snapshot_tells_the_public_the_phase_and_a_seat_the_transcript)
+{
+    const uint256 hashRound = uint256(0xFEE5);
+    const int64_t nNow = 20000000;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    ProvenRoundThroughProofs(round, vSeats, hashRound, nNow);
+    std::string strError;
+
+    CMixSnapshot open;
+    BOOST_REQUIRE(BuildMixSnapshot(round, MIX_SNAPSHOT_PUBLIC, open));
+    BOOST_CHECK_EQUAL((int)open.nPhase, (int)round.Phase());
+    BOOST_CHECK_EQUAL((int)open.nSeats, (int)round.Seats());
+    BOOST_CHECK(open.hashRound == hashRound);
+    BOOST_CHECK_MESSAGE(open.vchPrefix.empty() && open.vRoster.empty() &&
+                        open.vchRsaN.empty() && open.vNonces.empty(),
+                        "the public snapshot carried the round's frozen transcript");
+
+    CMixSnapshot seat;
+    BOOST_REQUIRE(BuildMixSnapshot(round, MIX_SNAPSHOT_SEAT, seat));
+    BOOST_CHECK(seat.vRoster.size() == round.Seats());
+    BOOST_CHECK(seat.vchRsaN == round.RsaModulus());
+    BOOST_CHECK(seat.vchPrefix == round.FrozenPrefix());
+    BOOST_CHECK(seat.vNonces.empty());   // nothing has published a nonce yet
+
+    // Both forms round-trip, and the reader refuses a public snapshot carrying more.
+    std::vector<unsigned char> vchOpen, vchSeat;
+    BOOST_REQUIRE(BuildMixSnapshotBody(open, vchOpen));
+    BOOST_REQUIRE(BuildMixSnapshotBody(seat, vchSeat));
+    BOOST_CHECK_MESSAGE(vchOpen.size() == 36u, "the public snapshot is four bytes and a hash");
+    CMixSnapshot readOpen, readSeat;
+    BOOST_REQUIRE(ReadMixSnapshotBody(vchOpen, readOpen));
+    BOOST_REQUIRE(ReadMixSnapshotBody(vchSeat, readSeat));
+    BOOST_CHECK_EQUAL((int)readOpen.nAudience, (int)MIX_SNAPSHOT_PUBLIC);
+    BOOST_CHECK(readSeat.vchPrefix == seat.vchPrefix);
+    BOOST_REQUIRE_EQUAL(readSeat.vRoster.size(), seat.vRoster.size());
+    for (size_t i = 0; i < readSeat.vRoster.size(); i++)
+    {
+        BOOST_CHECK(readSeat.vRoster[i].keyImage == seat.vRoster[i].keyImage);
+        BOOST_CHECK(readSeat.vRoster[i].pubkeySession == seat.vRoster[i].pubkeySession);
+    }
+
+    CMixSnapshot leaky = open;
+    leaky.vchPrefix = round.FrozenPrefix();
+    std::vector<unsigned char> vchLeaky;
+    BOOST_CHECK_MESSAGE(!BuildMixSnapshotBody(leaky, vchLeaky),
+                        "a public snapshot was allowed to carry the frozen prefix");
+
+    std::vector<unsigned char> vchLong = vchSeat;
+    vchLong.push_back(0);
+    BOOST_CHECK(!ReadMixSnapshotBody(vchLong, readSeat));
+    for (size_t n = 0; n + 1 < vchOpen.size(); n++)
+        BOOST_CHECK(!ReadMixSnapshotBody(std::vector<unsigned char>(vchOpen.begin(),
+                                                                    vchOpen.begin() + n),
+                                         readOpen));
+
+    // The aggregate appears once it is fixed, in input order, and not before.
+    SignOverWire(round, vSeats, hashRound, nNow + MIX_OUTPUT_WINDOW + 1, false);
+    BOOST_REQUIRE(BuildMixSnapshot(round, MIX_SNAPSHOT_SEAT, seat));
+    BOOST_REQUIRE_EQUAL(seat.vNonces.size(), round.Seats());
+    const std::vector<std::vector<unsigned char> > vNonces = round.NoncesInInputOrder();
+    for (size_t i = 0; i < seat.vNonces.size(); i++)
+        BOOST_CHECK(std::equal(seat.vNonces[i].begin(), seat.vNonces[i].end(),
+                               vNonces[i].begin()));
+
+    // The reply to anything that changes the round says only whether it was taken.
+    std::vector<unsigned char> vchAck;
+    bool fAccepted = false;
+    BOOST_REQUIRE(BuildMixAckBody(true, vchAck));
+    BOOST_CHECK_EQUAL(vchAck.size(), 1u);
+    BOOST_REQUIRE(ReadMixAckBody(vchAck, fAccepted));
+    BOOST_CHECK(fAccepted);
+    BOOST_REQUIRE(BuildMixAckBody(false, vchAck));
+    BOOST_REQUIRE(ReadMixAckBody(vchAck, fAccepted));
+    BOOST_CHECK(!fAccepted);
+    BOOST_CHECK(!ReadMixAckBody(std::vector<unsigned char>(1, 2), fAccepted));
+    BOOST_CHECK(!ReadMixAckBody(std::vector<unsigned char>(2, 1), fAccepted));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

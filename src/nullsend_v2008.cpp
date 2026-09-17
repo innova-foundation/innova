@@ -2069,6 +2069,150 @@ bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashA
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchBlinded, vchOut);
 }
 
+bool BuildMixSnapshot(const CMixRound& round, MixSnapshotAudience nAudience,
+                      CMixSnapshot& snapshotOut)
+{
+    snapshotOut = CMixSnapshot();
+    snapshotOut.nAudience = (uint8_t)nAudience;
+    snapshotOut.nPhase = (uint8_t)round.Phase();
+    if (round.Seats() > 0xff)
+        return false;
+    snapshotOut.nSeats = (uint8_t)round.Seats();
+    snapshotOut.hashRound = round.RoundId();
+    if (nAudience != MIX_SNAPSHOT_SEAT)
+        return true;
+    // All of this exists only once the round froze it, and a seat needs all of it.
+    snapshotOut.vRoster = round.Roster();
+    snapshotOut.vchRsaN = round.RsaModulus();
+    snapshotOut.vchRsaE = round.RsaExponent();
+    snapshotOut.vchPrefix = round.FrozenPrefix();
+    const std::vector<std::vector<unsigned char> > vNonces = round.NoncesInInputOrder();
+    for (size_t i = 0; i < vNonces.size(); i++)
+    {
+        if (vNonces[i].size() != 32)
+        {
+            snapshotOut.vNonces.clear();
+            break;
+        }
+        PrivacyVNextDigest nonce;
+        memcpy(nonce.data(), &vNonces[i][0], 32);
+        snapshotOut.vNonces.push_back(nonce);
+    }
+    return true;
+}
+
+bool BuildMixSnapshotBody(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (snapshot.nVersion != 1)
+        return false;
+    if (snapshot.nAudience != MIX_SNAPSHOT_PUBLIC && snapshot.nAudience != MIX_SNAPSHOT_SEAT)
+        return false;
+    if (snapshot.nAudience == MIX_SNAPSHOT_PUBLIC &&
+        (!snapshot.vRoster.empty() || !snapshot.vchRsaN.empty() || !snapshot.vchRsaE.empty() ||
+         !snapshot.vchPrefix.empty() || !snapshot.vNonces.empty()))
+        return false;   // the public form carries none of it, by construction
+    vchOut.push_back(snapshot.nVersion);
+    vchOut.push_back(snapshot.nAudience);
+    vchOut.push_back(snapshot.nPhase);
+    vchOut.push_back(snapshot.nSeats);
+    vchOut.insert(vchOut.end(), snapshot.hashRound.begin(), snapshot.hashRound.end());
+    if (snapshot.nAudience == MIX_SNAPSHOT_PUBLIC)
+        return true;
+
+    std::vector<unsigned char> vchRoster;
+    if (!snapshot.vRoster.empty() && !BuildMixRosterBody(snapshot.vRoster, vchRoster))
+        return false;
+    if (vchRoster.size() > 0xffff || snapshot.vchRsaN.size() > 0xffff ||
+        snapshot.vchRsaE.size() > 0xffff || snapshot.vchPrefix.size() > 0xffff ||
+        snapshot.vNonces.size() > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    PutU16(vchOut, vchRoster.size());
+    vchOut.insert(vchOut.end(), vchRoster.begin(), vchRoster.end());
+    PutU16(vchOut, snapshot.vchRsaN.size());
+    vchOut.insert(vchOut.end(), snapshot.vchRsaN.begin(), snapshot.vchRsaN.end());
+    PutU16(vchOut, snapshot.vchRsaE.size());
+    vchOut.insert(vchOut.end(), snapshot.vchRsaE.begin(), snapshot.vchRsaE.end());
+    PutU16(vchOut, snapshot.vchPrefix.size());
+    vchOut.insert(vchOut.end(), snapshot.vchPrefix.begin(), snapshot.vchPrefix.end());
+    vchOut.push_back((unsigned char)snapshot.vNonces.size());
+    for (size_t i = 0; i < snapshot.vNonces.size(); i++)
+        vchOut.insert(vchOut.end(), snapshot.vNonces[i].begin(), snapshot.vNonces[i].end());
+    return true;
+}
+
+bool ReadMixSnapshotBody(const std::vector<unsigned char>& vchIn, CMixSnapshot& snapshotOut)
+{
+    snapshotOut = CMixSnapshot();
+    size_t nAt = 0;
+    std::vector<unsigned char> vch;
+    if (!TakeBytes(vchIn, nAt, 4, vch))
+        return false;
+    snapshotOut.nVersion = vch[0];
+    snapshotOut.nAudience = vch[1];
+    snapshotOut.nPhase = vch[2];
+    snapshotOut.nSeats = vch[3];
+    if (snapshotOut.nVersion != 1)
+        return false;
+    if (!TakeBytes(vchIn, nAt, 32, vch))
+        return false;
+    memcpy(snapshotOut.hashRound.begin(), &vch[0], 32);
+    if (snapshotOut.nAudience == MIX_SNAPSHOT_PUBLIC)
+        return nAt == vchIn.size();
+    if (snapshotOut.nAudience != MIX_SNAPSHOT_SEAT)
+        return false;
+
+    size_t nLen = 0;
+    if (!TakeU16(vchIn, nAt, nLen) || !TakeBytes(vchIn, nAt, nLen, vch))
+        return false;
+    if (nLen > 0 && !ReadMixRosterBody(vch, snapshotOut.vRoster))
+        return false;
+    if (!TakeU16(vchIn, nAt, nLen) || !TakeBytes(vchIn, nAt, nLen, snapshotOut.vchRsaN))
+        return false;
+    if (!TakeU16(vchIn, nAt, nLen) || !TakeBytes(vchIn, nAt, nLen, snapshotOut.vchRsaE))
+        return false;
+    if (!TakeU16(vchIn, nAt, nLen) || !TakeBytes(vchIn, nAt, nLen, snapshotOut.vchPrefix))
+        return false;
+    if (!TakeBytes(vchIn, nAt, 1, vch))
+        return false;
+    const size_t nNonces = vch[0];
+    if (nNonces > iv5::MAX_NULLSEND_INPUTS)
+        return false;
+    for (size_t i = 0; i < nNonces; i++)
+    {
+        if (!TakeBytes(vchIn, nAt, 32, vch))
+            return false;
+        PrivacyVNextDigest nonce;
+        memcpy(nonce.data(), &vch[0], 32);
+        snapshotOut.vNonces.push_back(nonce);
+    }
+    return nAt == vchIn.size();
+}
+
+bool BuildMixAckBody(bool fAccepted, std::vector<unsigned char>& vchOut)
+{
+    vchOut.assign(1, fAccepted ? 1 : 0);
+    return true;
+}
+
+bool ReadMixAckBody(const std::vector<unsigned char>& vchIn, bool& fAcceptedOut)
+{
+    fAcceptedOut = false;
+    if (vchIn.size() != 1 || vchIn[0] > 1)
+        return false;
+    fAcceptedOut = vchIn[0] == 1;
+    return true;
+}
+
+bool BuildMixStateAuthBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                           std::vector<unsigned char>& vchOut)
+{
+    // One byte of tail, because an announced body carries a length-prefixed tail and an
+    // empty one would not round-trip. It names nothing: the read carries no argument.
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement,
+                                 std::vector<unsigned char>(1, 0), vchOut);
+}
+
 bool BuildMixRosterBody(const std::vector<CMixRosterEntry>& vRoster,
                         std::vector<unsigned char>& vchOut)
 {

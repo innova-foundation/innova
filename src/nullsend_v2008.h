@@ -212,7 +212,12 @@ enum MixFrameType
     MIX_FRAME_TRANSACTION_PREFIX = 12,  // the complete prefix every seat must approve
     MIX_FRAME_PREFIX_SIG      = 13,  // a seat's signature over the prefix it approved
     MIX_FRAME_MEMBERSHIP_PROOF = 14, // a seat's membership proof for its input
-    MIX_FRAME_TYPE_MAX        = 14,
+    MIX_FRAME_STATE           = 15,  // anyone -> coordinator: how far has the round got
+    MIX_FRAME_STATE_AUTH      = 16,  // a seat -> coordinator: the same, in full
+    MIX_FRAME_SNAPSHOT        = 17,  // the reply to either
+    MIX_FRAME_ACK             = 18,  // the reply to anything that changes the round
+    MIX_FRAME_RESULT          = 19,  // anyone -> coordinator: the finished transaction
+    MIX_FRAME_TYPE_MAX        = 19,
 };
 
 enum MixFrameDecode
@@ -815,6 +820,52 @@ enum MixDispatch
     MIX_DISPATCH_REFUSED,     // the frame was not acted on; the round is unharmed
     MIX_DISPATCH_ABORTED,     // the round ended as a result
 };
+
+/** Who a snapshot is for. The public form carries only the phase; the frozen prefix holds
+ *  disclosed openings, so it goes only to seats. Every seat gets the same bytes. */
+enum MixSnapshotAudience
+{
+    MIX_SNAPSHOT_PUBLIC = 0,
+    MIX_SNAPSHOT_SEAT = 1,
+};
+
+/** The round's state as a caller may read it. Same bytes for every caller of one audience,
+ *  so a coordinator that answered per seat would have to do it by writing different bytes,
+ *  not by the protocol offering it a per-seat field. */
+struct CMixSnapshot
+{
+    uint8_t nVersion;
+    uint8_t nAudience;
+    uint8_t nPhase;
+    uint8_t nSeats;                 // how many have joined; the target is in the announcement
+    uint256 hashRound;
+    // Seat audience only, and only once each exists.
+    std::vector<CMixRosterEntry> vRoster;
+    std::vector<unsigned char> vchRsaN;
+    std::vector<unsigned char> vchRsaE;
+    std::vector<unsigned char> vchPrefix;
+    std::vector<PrivacyVNextDigest> vNonces;   // in input order, once the aggregate is fixed
+
+    CMixSnapshot() : nVersion(1), nAudience(MIX_SNAPSHOT_PUBLIC), nPhase(0), nSeats(0),
+                     hashRound(0) {}
+};
+
+/** Read the round into a snapshot for one audience. Nothing here names a seat: no progress
+ *  bitmap, no list of missing contributions, no abort reason. */
+bool BuildMixSnapshot(const CMixRound& round, MixSnapshotAudience nAudience,
+                      CMixSnapshot& snapshotOut);
+bool BuildMixSnapshotBody(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchOut);
+bool ReadMixSnapshotBody(const std::vector<unsigned char>& vchIn, CMixSnapshot& snapshotOut);
+
+/** The reply to anything that changes the round: accepted, or not. No reason code and no
+ *  detail, because the anonymous registration gets this reply too and a distinguishable
+ *  refusal is a probe a coordinator can aim at one output. */
+bool BuildMixAckBody(bool fAccepted, std::vector<unsigned char>& vchOut);
+bool ReadMixAckBody(const std::vector<unsigned char>& vchIn, bool& fAcceptedOut);
+
+/** A seat's authenticated read: its session key and the announcement it holds. */
+bool BuildMixStateAuthBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                           std::vector<unsigned char>& vchOut);
 
 /** What a dispatched frame leaves for its driver, e.g. the blinded message the round cannot
  *  sign itself. Input-side only: nothing from an OUTPUT frame appears here. */
