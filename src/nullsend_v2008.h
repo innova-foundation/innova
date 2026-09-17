@@ -603,28 +603,8 @@ private:
     uint64_t nDenomination;
 };
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-//
-// Which frames carry a session key is the design. JOIN, NONCE and RESPONSE are
-// authenticated: they act on a named seat, so the coordinator has to know which.
-// OUTPUT is not, and there is nowhere in its body to put a key -- an authenticated
-// output registration would hand over the input-to-output mapping the blind
-// signature exists to withhold.
-//
-// This is NOT the whole frame set, and an earlier version of this comment claimed it
-// was. Four of the nine declared types have no handler on either side, and the round
-// cannot be driven without them: no frame issues a token (IssueToken has only test
-// callers and BLIND_REQUEST falls through to the refusal), the OUTPUT body carries no
-// field for the output opening the combiner needs, nothing conveys the frozen key-image
-// set a seat derives its index from, and Drop is written for a wire-driven leave that
-// has no frame. doc/nullsend-v2008-wire.md specifies what is settled and what is not.
-//
-// Do not add frames before the announcement model is settled. A coordinator can still
-// hand each seat its own announcement, and until a participant can establish that its
-// co-seats hold the same one, every frame written against the current model is written
-// against a model that has to change.
+// Dispatch. Every input-side frame is authenticated with the session key; OUTPUT is not, as
+// that would reveal the input-to-output mapping. See doc/nullsend-v2008-wire.md.
 
 /** Body of an authenticated frame, with the session signature split off its tail.
  *  Returns false on any payload that is not exactly one body plus one signature. */
