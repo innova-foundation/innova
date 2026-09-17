@@ -999,9 +999,8 @@ BOOST_AUTO_TEST_CASE(a_prefix_cannot_be_frozen_under_a_nonce)
                         "a prefix froze after a seat's nonce was already in");
 }
 
-// A round object reopened for the next round keeps nothing of the last one: an output
-// record or a frozen prefix carried over would be assembled into a statement no seat of
-// the new round agreed.
+// A live round is not reusable, and a reopened one carries no output record, frozen
+// prefix, token or authenticated frame from the last.
 BOOST_AUTO_TEST_CASE(a_reopened_round_carries_no_records_or_prefix)
 {
     const int64_t nNow = 3668000;
@@ -1014,6 +1013,10 @@ BOOST_AUTO_TEST_CASE(a_reopened_round_carries_no_records_or_prefix)
     BOOST_REQUIRE_EQUAL(round.OutputRecords().size(), 2u);
 
     CNullSendSession& server = Coordinator();
+    BOOST_CHECK_MESSAGE(!round.Open(ROUND_HASH, 2, server.vchRSA_N, server.vchRSA_E,
+                                    true, false, MIX_DENOM, nNow + 1000, &strError),
+                        "a live round was reopened, carrying its spent credentials with it");
+    round.Abort("test");
     BOOST_REQUIRE(round.Open(ROUND_HASH, 2, server.vchRSA_N, server.vchRSA_E,
                              true, false, MIX_DENOM, nNow + 1000, &strError));
     BOOST_CHECK(round.OutputRecords().empty());

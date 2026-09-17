@@ -112,6 +112,9 @@ OBJS= \
     obj/crypter.o \
     obj/key.o \
     obj/hash.o \
+    obj/bip39.o \
+    obj/hdroot.o \
+    obj/bip39_wordlist.o \
     obj/base58.o \
     obj/db.o \
     obj/init.o \
@@ -134,8 +137,11 @@ OBJS= \
     obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
+    obj/nullsend_v2008.o \
     obj/shielded.o \
     obj/privacy_vnext_ffi.o \
+    obj/privacy_vnext_store.o \
+    obj/privacy_vnext_builder.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -148,8 +154,11 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/subsidy.o \
     obj/finality_note.o \
+    obj/finality_schedule.o \
     obj/dag.o \
+    obj/mstimestamp.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
@@ -173,6 +182,7 @@ OBJS= \
     obj/bloom.o \
     obj/state.o \
     obj/idns.o \
+    obj/idnsdescriptor.o \
     obj/namecoin.o \
     obj/utiltime.o \
     obj/stun.o \

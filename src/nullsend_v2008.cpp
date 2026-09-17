@@ -753,6 +753,14 @@ CMixRound::CMixRound()
     prefixFinalizedRoot.fill(0);
 }
 
+int CMixRound::SeatFor(const CPubKey& pubkeySession) const
+{
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].pubkeySession == pubkeySession)
+            return (int)i;
+    return -1;
+}
+
 bool CMixRound::Require(MixRoundPhase nExpected, std::string* pstrError)
 {
     if (nPhase != nExpected)
@@ -772,6 +780,10 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
                      int64_t nNow, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    // Only a finished round is reusable: reopening a live one keeps its id and blind-signing
+    // key, so old tokens and frames would still open.
+    if (nPhase != MIX_PHASE_ABORTED && nPhase != MIX_PHASE_COMPLETE)
+        FAIL("the round is still live; abort it before opening another");
     if (hashRoundIn == 0)
         FAIL("round identifier is zero");
     if (nTargetParticipantsIn < NULLSEND_MIN_PARTICIPANTS ||
@@ -1413,10 +1425,8 @@ void CMixRound::Abort(const std::string& strReason)
 bool CMixRound::OpenSigning(int64_t nNow, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
-    // A round signs once. Signing again over one payload with a different set of
-    // nonce points is how a coordinator recovers a participant's mask from two
-    // responses under two challenges, so the second attempt ends the round instead
-    // of producing the pair that leaks.
+    // A round signs once: a second signing with different nonce points lets the coordinator
+    // recover a mask. No retry path by design.
     if (fHasSigned)
     {
         Abort("signing was opened twice; a second aggregate would solve for a share");

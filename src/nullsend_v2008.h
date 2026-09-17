@@ -575,6 +575,17 @@ public:
     const std::vector<CMixParticipant>& Participants() const { return vParticipants; }
     const std::string& AbortReason() const { return strAbortReason; }
     size_t Seats() const { return vParticipants.size(); }
+    int TargetParticipants() const { return nTargetParticipants; }
+    uint64_t Denomination() const { return nDenomination; }
+    int64_t Opened() const { return nOpened; }
+    /** When the output window closes, which is when signing may open. Zero until it opens. */
+    int64_t WindowCloses() const { return nWindowCloses; }
+    bool StreamIsolated() const { return fStreamIsolated; }
+    const std::vector<unsigned char>& RsaModulus() const { return vchRSA_N; }
+    const std::vector<unsigned char>& RsaExponent() const { return vchRSA_E; }
+    /** The seat a session key holds, or -1. Input-side only: nothing that touches an output
+     *  may call it, or the coordinator learns which seat registered which output. */
+    int SeatFor(const CPubKey& pubkeySession) const;
     size_t Outputs() const { return vOutputs.size(); }
     /** The frozen input set, sorted, which the self-pay index binds. Empty until
      *  CloseJoin. */
