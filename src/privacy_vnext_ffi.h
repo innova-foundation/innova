@@ -571,6 +571,16 @@ bool ProvePrivacyVNextMembershipPerInput(
     std::vector<unsigned char>& vchProof,
     std::string& error);
 
+/** One input's membership proof, checked exactly as a mix payload checks each segment of
+ *  its membership section. */
+bool VerifyPrivacyVNextInputMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& pseudoOut,
+    const PrivacyVNextDigest& keyImage,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error);
+
 bool ProvePrivacyVNextMembership(
     const PrivacyVNextDigest& finalizedRoot,
     const PrivacyVNextDigest& signableHash,

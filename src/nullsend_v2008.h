@@ -130,7 +130,8 @@ enum MixFrameType
     MIX_FRAME_INPUT_CONSTRUCTION = 11,  // a seat's pseudo-output for its joined key image
     MIX_FRAME_TRANSACTION_PREFIX = 12,  // the complete prefix every seat must approve
     MIX_FRAME_PREFIX_SIG      = 13,  // a seat's signature over the prefix it approved
-    MIX_FRAME_TYPE_MAX        = 13,
+    MIX_FRAME_MEMBERSHIP_PROOF = 14, // a seat's membership proof for its input
+    MIX_FRAME_TYPE_MAX        = 14,
 };
 
 enum MixFrameDecode
@@ -377,6 +378,9 @@ public:
     std::vector<unsigned char> vchViewSig;
     /** This seat's signature approving the frozen prefix; empty until it signs, once. */
     std::vector<unsigned char> vchPrefixSig;
+    /** This seat's one-input membership proof under the approved prefix; empty until it
+     *  arrives and verifies, and taken once. */
+    std::vector<unsigned char> vchMembershipProof;
     /** The pseudo-output this seat's input will carry in the prefix, submitted on its
      *  authenticated channel once the view is agreed. It is input-side data the
      *  transaction publishes against this key image anyway, so it names nothing new. */
@@ -469,6 +473,15 @@ public:
                                std::string* pstrError = NULL);
     /** Whether every seat has signed the frozen prefix. Nonces wait for this. */
     bool PrefixAgreed() const;
+
+    /** A seat's membership proof for its own input, verified on arrival against the approved
+     *  prefix's root and signing hash and the seat's own construction, exactly as the
+     *  payload's membership section is checked. A proof that fails names its seat. */
+    bool SubmitMembershipProof(const CPubKey& pubkeySession, const std::vector<unsigned char>& vchProof,
+                               std::string* pstrError = NULL);
+    bool MembershipProofsComplete() const;
+    /** Every seat's proof concatenated in input order; empty until all are in. */
+    std::vector<unsigned char> MembershipSection() const;
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 
@@ -571,6 +584,7 @@ private:
     std::vector<CMixOutputRecord> vOutputRecords;
     std::vector<unsigned char> vchFrozenPrefix;
     PrivacyVNextDigest prefixSigningHash;
+    PrivacyVNextDigest prefixFinalizedRoot;
     uint256 hashPrefixAnnouncement;
     std::vector<uint256> vSpentCredentials;
     uint64_t nDenomination;
@@ -634,6 +648,9 @@ bool ReadMixPrefixBody(const std::vector<unsigned char>& vchIn, std::vector<unsi
 /** A seat's approval of the frozen prefix: its signature over MixPrefixDigest. */
 bool BuildMixPrefixSigBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                            const std::vector<unsigned char>& vchSig, std::vector<unsigned char>& vchOut);
+bool BuildMixMembershipProofBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                                 const std::vector<unsigned char>& vchProof,
+                                 std::vector<unsigned char>& vchOut);
 
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,

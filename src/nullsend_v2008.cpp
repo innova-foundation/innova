@@ -608,6 +608,7 @@ CMixRound::CMixRound()
 {
     strAbortReason = "not opened";
     prefixSigningHash.fill(0);
+    prefixFinalizedRoot.fill(0);
 }
 
 bool CMixRound::Require(MixRoundPhase nExpected, std::string* pstrError)
@@ -660,6 +661,7 @@ bool CMixRound::Open(const uint256& hashRoundIn, int nTargetParticipantsIn,
     vSpentCredentials.clear();
     vchFrozenPrefix.clear();
     prefixSigningHash.fill(0);
+    prefixFinalizedRoot.fill(0);
     hashPrefixAnnouncement = 0;
     nDenomination = nDenominationIn;
     nPhase = MIX_PHASE_JOIN;
@@ -908,6 +910,7 @@ bool CMixRound::FreezePrefix(const PrivacyVNextPrefixHeader& header,
         FAIL(strHash);
     vchFrozenPrefix = vchPrefix;
     prefixSigningHash = signingHash;
+    prefixFinalizedRoot = header.finalizedRoot;
     hashPrefixAnnouncement = hashAnnouncement;
     return true;
     #undef FAIL
@@ -961,6 +964,69 @@ bool CMixRound::PrefixAgreed() const
             return false;
     }
     return true;
+}
+
+bool CMixRound::SubmitMembershipProof(const CPubKey& pubkeySession,
+                                      const std::vector<unsigned char>& vchProof,
+                                      std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!Require(MIX_PHASE_SIGN, pstrError))
+        return false;
+    if (!PrefixAgreed())
+        FAIL("the seats have not all approved the prefix");
+    for (size_t i = 0; i < vParticipants.size(); i++)
+    {
+        if (!(vParticipants[i].pubkeySession == pubkeySession))
+            continue;
+        if (!vParticipants[i].vchMembershipProof.empty())
+            FAIL("that seat has already proved its input");
+        if (!vParticipants[i].fHavePseudoOut)
+            FAIL("that seat has no construction to prove");
+        PrivacyVNextDigest keyImage;
+        memcpy(keyImage.data(), vParticipants[i].keyImage.begin(), 32);
+        std::string strVerify;
+        if (!VerifyPrivacyVNextInputMembership(prefixFinalizedRoot, prefixSigningHash,
+                                               vParticipants[i].pseudoOut, keyImage, vchProof,
+                                               strVerify))
+            FAIL("the membership proof does not verify for this seat's input under the approved prefix");
+        vParticipants[i].vchMembershipProof = vchProof;
+        return true;
+    }
+    FAIL("that key holds no seat");
+    #undef FAIL
+}
+
+bool CMixRound::MembershipProofsComplete() const
+{
+    if (vParticipants.empty())
+        return false;
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].vchMembershipProof.empty())
+            return false;
+    return true;
+}
+
+std::vector<unsigned char> CMixRound::MembershipSection() const
+{
+    std::vector<unsigned char> vchOut;
+    if (!MembershipProofsComplete())
+        return vchOut;
+    for (size_t k = 0; k < vFinalKeyImages.size(); k++)
+    {
+        size_t nFound = 0;
+        for (size_t i = 0; i < vParticipants.size(); i++)
+        {
+            if (vParticipants[i].keyImage != vFinalKeyImages[k])
+                continue;
+            vchOut.insert(vchOut.end(), vParticipants[i].vchMembershipProof.begin(),
+                          vParticipants[i].vchMembershipProof.end());
+            nFound++;
+        }
+        if (nFound != 1)
+            return std::vector<unsigned char>();
+    }
+    return vchOut;
 }
 
 bool CMixRound::InputConstructionsComplete() const
@@ -1574,6 +1640,13 @@ bool BuildMixPrefixSigBody(const CPubKey& pubkeySession, const uint256& hashAnno
     return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchSig, vchOut);
 }
 
+bool BuildMixMembershipProofBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
+                                 const std::vector<unsigned char>& vchProof,
+                                 std::vector<unsigned char>& vchOut)
+{
+    return BuildMixAnnouncedBody(pubkeySession, hashAnnouncement, vchProof, vchOut);
+}
+
 bool BuildMixBlindRequestBody(const CPubKey& pubkeySession, const uint256& hashAnnouncement,
                               const std::vector<unsigned char>& vchBlinded,
                               std::vector<unsigned char>& vchOut)
@@ -1688,7 +1761,8 @@ MixDispatch DispatchMixFrame(CMixRound& round,
 
     if (nType != MIX_FRAME_JOIN && nType != MIX_FRAME_NONCE && nType != MIX_FRAME_RESPONSE &&
         nType != MIX_FRAME_VIEW_SIG && nType != MIX_FRAME_BLIND_REQUEST &&
-        nType != MIX_FRAME_INPUT_CONSTRUCTION && nType != MIX_FRAME_PREFIX_SIG)
+        nType != MIX_FRAME_INPUT_CONSTRUCTION && nType != MIX_FRAME_PREFIX_SIG &&
+        nType != MIX_FRAME_MEMBERSHIP_PROOF)
         REFUSE("a participant does not send that frame");
 
     std::vector<unsigned char> vchBody, vchSig;
@@ -1733,6 +1807,23 @@ MixDispatch DispatchMixFrame(CMixRound& round,
         if (!round.ViewAgreed(hashAnnouncement))
             REFUSE("the seats have not all signed this view");
         if (!round.SubmitPrefixSignature(pubkeySession, vchPrefixSig, &strError))
+            return MIX_DISPATCH_REFUSED;
+        return MIX_DISPATCH_OK;
+    }
+    if (nType == MIX_FRAME_MEMBERSHIP_PROOF)
+    {
+        std::vector<unsigned char> vchAnnounce, vchProof;
+        size_t nLen = 0;
+        if (!TakeBytes(vchBody, nAt, 32, vchAnnounce))
+            REFUSE("membership proof is malformed");
+        if (!TakeU16(vchBody, nAt, nLen) || !TakeBytes(vchBody, nAt, nLen, vchProof) ||
+            nAt != vchBody.size())
+            REFUSE("membership proof is malformed");
+        uint256 hashAnnouncement;
+        memcpy(hashAnnouncement.begin(), &vchAnnounce[0], 32);
+        if (!round.ViewAgreed(hashAnnouncement))
+            REFUSE("the seats have not all signed this view");
+        if (!round.SubmitMembershipProof(pubkeySession, vchProof, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;
     }
@@ -1798,9 +1889,12 @@ MixDispatch DispatchMixFrame(CMixRound& round,
     if (nType == MIX_FRAME_NONCE)
     {
         // A nonce fixes this seat's share of the challenge. Before every seat has approved
-        // one prefix, the statement under that challenge can still change.
+        // one prefix, the statement under that challenge can still change; before every
+        // proof is in, a round that can never assemble would still collect shares.
         if (!round.PrefixAgreed())
             REFUSE("the seats have not all approved the prefix");
+        if (!round.MembershipProofsComplete())
+            REFUSE("the seats have not all proved their inputs");
         if (!round.SubmitNonce(pubkeySession, vchTail, &strError))
             return MIX_DISPATCH_REFUSED;
         return MIX_DISPATCH_OK;

@@ -1895,6 +1895,49 @@ bool ProvePrivacyVNextMembershipPerInput(
     return true;
 }
 
+bool VerifyPrivacyVNextInputMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& pseudoOut,
+    const PrivacyVNextDigest& keyImage,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error)
+{
+    error.clear();
+    size_t nProofSize = 0;
+    if (!GetPrivacyVNextProofSize(1, nProofSize, error))
+        return false;
+    if (vchProof.size() != nProofSize)
+    {
+        error = "IV5 input membership proof is not the one-input size";
+        return false;
+    }
+    std::vector<uint8_t> request;
+    request.reserve(8 + 64 + 64 + 4 + vchProof.size());
+    request.push_back(static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA));
+    request.push_back(0);
+    request.push_back(INNOVA_PRIVACY_VNEXT_TREE_LAYERS);
+    request.push_back(2);   // Helios root curve
+    request.push_back(1);   // one input
+    request.push_back(0);
+    request.push_back(0);
+    request.push_back(0);
+    request.insert(request.end(), finalizedRoot.begin(), finalizedRoot.end());
+    request.insert(request.end(), signableHash.begin(), signableHash.end());
+    request.insert(request.end(), pseudoOut.begin(), pseudoOut.end());
+    request.insert(request.end(), keyImage.begin(), keyImage.end());
+    for (size_t i = 0; i < 4; ++i)
+        request.push_back(static_cast<uint8_t>(vchProof.size() >> (8 * i)));
+    request.insert(request.end(), vchProof.begin(), vchProof.end());
+    const int32_t rc = innova_privacy_vnext_fcmp_verify(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 input membership proof", rc);
+        return false;
+    }
+    return true;
+}
+
 bool ProvePrivacyVNextMembership(
     const PrivacyVNextDigest& finalizedRoot,
     const PrivacyVNextDigest& signableHash,
