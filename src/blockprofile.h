@@ -51,6 +51,8 @@ enum BlockPhase
     BP_SHIELD_SCAN,
     BP_WALLET_LOCATOR,
     BP_RECOVERY_CLEAR,
+    BP_RECOVERY_FLUSH,       // inside recovery_clear: the auxiliary log flush
+    BP_RECOVERY_ERASE,       // inside recovery_clear: the synced outbox erase
     BP_PHASE_COUNT
 };
 

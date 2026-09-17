@@ -75,6 +75,8 @@ const char* kPhaseNames[] = {
     "shield_scan",
     "wallet_locator",
     "recovery_clear",
+    "recovery_flush",
+    "recovery_erase",
 };
 
 const int kMaxCounters = 24;

@@ -12782,7 +12782,12 @@ static bool ClearCommittedShieldedWalletRecovery(
     // Wallet/name Berkeley DB uses DB_TXN_WRITE_NOSYNC.  Force its committed
     // log records durable before deleting the LevelDB outbox; otherwise a
     // power loss could retain the acknowledgement but lose wallet mutations.
-    if (!bitdb.FlushLog())
+    bool fLogFlushed;
+    {
+        BLOCK_PHASE(BP_RECOVERY_FLUSH);
+        fLogFlushed = bitdb.FlushLog();
+    }
+    if (!fLogFlushed)
     {
         printf("%s: FATAL could not flush auxiliary Berkeley DB logs before "
                "shielded-wallet recovery acknowledgement; shutting down\n",
@@ -12791,6 +12796,7 @@ static bool ClearCommittedShieldedWalletRecovery(
         return false;
     }
 
+    BLOCK_PHASE(BP_RECOVERY_ERASE);
     CShieldedWalletRecoveryRecord persisted;
     if (txdb.ReadShieldedWalletRecoveryStatus(persisted) !=
             TXDB_READ_FOUND ||
