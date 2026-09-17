@@ -244,6 +244,8 @@ struct SPVUtxo
 /** A CWallet is an extension of a keystore, which also maintains a set of transactions and balances,
  * and provides the ability to create new transactions.
  */
+class CPrivacyVNextSpendClaim;
+
 class CWallet : public CCryptoKeyStore
 {
 private:
@@ -479,13 +481,27 @@ public:
         CWalletTx& wtxNew,
         uint256& keyImageOut,
         std::string& strErrorOut);
-    // Spendable means confirmed to the shielded depth and holding a tree
-    // position, which a note only gains once its epoch finalizes.
-    // Collateral-locked notes are in none of these totals; they are reported on
-    // their own so the operator sees the value without it looking spendable.
+    // Spendable: at shielded depth and inside the current spend anchor; the overloads take
+    // that anchor's tree size. Collateral-locked and held notes are excluded and reported
+    // separately.
     int64_t GetPrivacyVNextBalance() const;
+    int64_t GetPrivacyVNextBalance(uint64_t nAnchorTreeSize) const;
     int64_t GetPrivacyVNextUnconfirmedBalance() const;
+    int64_t GetPrivacyVNextUnconfirmedBalance(uint64_t nAnchorTreeSize) const;
     int64_t GetPrivacyVNextCollateralBalance() const;
+    int64_t GetPrivacyVNextHeldBalance() const;
+
+    // Notes held by the operator, by outpoint, so a hold can precede scanning. Every selector
+    // skips them except a registration that names one. Persisted across restarts.
+    std::set<std::pair<uint256, uint32_t> > setPrivacyVNextHolds;
+    bool SetPrivacyVNextHold(const uint256& txhash, uint32_t nOutputIndex, bool fHold,
+                             std::string& strErrorOut);
+    bool IsPrivacyVNextNoteHeld(const CPrivacyVNextWalletNote& note) const;
+    void ListPrivacyVNextHolds(std::vector<std::pair<uint256, uint32_t> >& vOut) const;
+
+    // Key images selected by a build in progress, claimed under cs_shielded during selection
+    // so two builds cannot prove over one note. Released once the spend is in the mempool.
+    mutable std::set<uint256> setPrivacyVNextInFlight;
     // Unspent notes held, spendable or not. Separates "nothing was ever
     // detected" from "detected but not yet spendable".
     size_t GetPrivacyVNextNoteCount() const;
@@ -493,7 +509,8 @@ public:
         int64_t nTargetValue, int nSpendHeight,
         std::vector<CPrivacyVNextWalletNote>& vSelected,
         int64_t& nSelectedValue,
-        uint64_t nAnchorTreeSize = std::numeric_limits<uint64_t>::max()) const;
+        uint64_t nAnchorTreeSize = std::numeric_limits<uint64_t>::max(),
+        CPrivacyVNextSpendClaim* pClaim = NULL) const;
     // The vote note and its witness from the caller's anchor. Excludes notes spent on chain or
     // in the mempool (the double-vote guard) and `setSkipKeyImages`.
     bool SelectPrivacyVNextVoteNote(
@@ -506,7 +523,8 @@ public:
         const std::set<uint256>& setSkipKeyImages,
         CPrivacyVNextWalletNote& noteOut,
         std::vector<unsigned char>& vchWitnessRecordOut,
-        std::string& strErrorOut) const;
+        std::string& strErrorOut,
+        CPrivacyVNextSpendClaim* pClaim = NULL) const;
 
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
@@ -828,11 +846,9 @@ public:
         std::vector<unsigned char>& vchPayloadOut,
         std::string& strErrorOut);
 
-    // Spend notes to a shielded recipient. Nothing crosses the transparent
-    // boundary, so the transaction carries no transparent input or output at all.
-    //
-    // `nDisclosureMask` chooses what the payload reveals; a set bit hides that field, so
-    // iv5::WALLET_DEFAULT_DISCLOSURE_MASK reveals nothing.
+    // Spend notes to a shielded recipient; no transparent input or output.
+    // `nDisclosureMask`: a set bit hides that field (WALLET_DEFAULT_DISCLOSURE_MASK reveals
+    // nothing). fHoldRecipient holds the recipient output before commit.
     bool CreatePrivacyVNextTransfer(
         const std::string& strToAddress,
         int64_t nAmount,
@@ -841,7 +857,9 @@ public:
         CWalletTx& wtxNew,
         int64_t& nFeeOut,
         size_t& nNotesUsedOut,
-        std::string& strErrorOut);
+        std::string& strErrorOut,
+        bool fHoldRecipient = false,
+        int* pnRecipientOutputOut = NULL);
 
     // Build this node's note vote for the epoch `hashBoundaryBlock` opens; it spends its note
     // and reissues the value. `anchor` is state E-1. Caller holds cs_main and cs_wallet.
@@ -1115,6 +1133,25 @@ public:
 };
 
 /** A key allocated from the key pool. */
+// A build's claim on its selected key images, all-or-nothing and released on destruction.
+class CPrivacyVNextSpendClaim
+{
+public:
+    explicit CPrivacyVNextSpendClaim(const CWallet* pwalletIn) : pwallet(pwalletIn) {}
+    ~CPrivacyVNextSpendClaim() { Release(); }
+    // Takes cs_shielded; safe to call with it already held.
+    bool Claim(const std::vector<uint256>& vKeyImages);
+    void Release();
+    bool Contains(const uint256& keyImage) const;
+    size_t Size() const { return vClaimed.size(); }
+
+private:
+    const CWallet* pwallet;
+    std::vector<uint256> vClaimed;
+    CPrivacyVNextSpendClaim(const CPrivacyVNextSpendClaim&);
+    CPrivacyVNextSpendClaim& operator=(const CPrivacyVNextSpendClaim&);
+};
+
 class CReserveKey
 {
 protected:

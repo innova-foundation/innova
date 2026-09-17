@@ -392,6 +392,8 @@ extern json_spirit::Value z_shield(const json_spirit::Array& params, bool fHelp)
 extern json_spirit::Value z_shieldall(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_migratetopool(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_iv5transfer(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_holdiv5note(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_listiv5holds(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_iv5unshield(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_mintmofncoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_reclaimmofncoldstake(const json_spirit::Array& params, bool fHelp);

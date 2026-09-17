@@ -508,6 +508,139 @@ static CPrivacyVNextWalletNote MakeVNextNote(uint64_t nAmount, int nHeight,
     return note;
 }
 
+namespace
+{
+// nBestHeight drives the balance views, and the harness leaves it at genesis.
+struct BestHeightOverride
+{
+    int nSaved;
+    explicit BestHeightOverride(int nHeight) : nSaved(nBestHeight)
+    {
+        nBestHeight = nHeight;
+    }
+    ~BestHeightOverride() { nBestHeight = nSaved; }
+};
+
+} // namespace
+
+// A hold keeps a note out of every spend until it is released, and it is a wallet
+// record, not process state: a restart must not free collateral still maturing.
+BOOST_AUTO_TEST_CASE(privacy_vnext_hold_excludes_a_note_across_reload)
+{
+    const std::string walletFile("iv5-hold-test.dat");
+    const int nSpendHeight = 1000;
+    const int nDeep = nSpendHeight - MIN_SHIELDED_SPEND_DEPTH;
+    const CPrivacyVNextWalletNote large = MakeVNextNote(2500000000000ULL, nDeep, true, 21);
+    const CPrivacyVNextWalletNote small = MakeVNextNote(500, nDeep, true, 22);
+    {
+        CWalletDB walletdb(walletFile);
+        BOOST_REQUIRE(walletdb.WritePrivacyVNextNote(large.txhash, large.nOutputIndex, large));
+        BOOST_REQUIRE(walletdb.WritePrivacyVNextNote(small.txhash, small.nOutputIndex, small));
+    }
+    std::vector<CPrivacyVNextWalletNote> vSelected;
+    int64_t nValue = 0;
+    std::string error;
+    {
+        CWallet wallet(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&wallet), DB_LOAD_OK);
+        BOOST_REQUIRE_MESSAGE(wallet.SetPrivacyVNextHold(large.txhash, large.nOutputIndex,
+                                                         true, error), error);
+        BOOST_CHECK(wallet.IsPrivacyVNextNoteHeld(large));
+        BOOST_REQUIRE(wallet.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected, nValue));
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, small.nAmount);
+        BOOST_CHECK(!wallet.SelectPrivacyVNextNotes(1000, nSpendHeight, vSelected, nValue));
+
+        BestHeightOverride height(nSpendHeight);
+        const uint64_t nAnchor = std::numeric_limits<uint64_t>::max();
+        BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(nAnchor), (int64_t)small.nAmount);
+        BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(nAnchor), 0);
+        BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextHeldBalance(), (int64_t)large.nAmount);
+    }
+    {
+        CWallet reloaded(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&reloaded), DB_LOAD_OK);
+        BOOST_CHECK(reloaded.IsPrivacyVNextNoteHeld(large));
+        BOOST_REQUIRE(reloaded.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected, nValue));
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, small.nAmount);
+        BOOST_REQUIRE_MESSAGE(reloaded.SetPrivacyVNextHold(large.txhash, large.nOutputIndex,
+                                                           false, error), error);
+        BOOST_REQUIRE(reloaded.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected, nValue));
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, large.nAmount);
+    }
+    {
+        CWallet released(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&released), DB_LOAD_OK);
+        BOOST_CHECK(!released.IsPrivacyVNextNoteHeld(large));
+    }
+    // The test databases are shared across cases, so leave nothing behind.
+    CWalletDB cleanup(walletFile);
+    cleanup.ErasePrivacyVNextNote(large.txhash, large.nOutputIndex);
+    cleanup.ErasePrivacyVNextNote(small.txhash, small.nOutputIndex);
+    cleanup.ErasePrivacyVNextHold(large.txhash, large.nOutputIndex);
+}
+
+// Two builds in progress cannot select one note: the claim is taken in the same pass
+// that selects, and a build that ends -- committed or abandoned -- returns it.
+BOOST_AUTO_TEST_CASE(privacy_vnext_spend_claim_keeps_a_note_from_a_second_build)
+{
+    CWallet wallet;
+    const int nSpendHeight = 1000;
+    const int nDeep = nSpendHeight - MIN_SHIELDED_SPEND_DEPTH;
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(50, nDeep, true, 31));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(30, nDeep, true, 32));
+
+    std::vector<CPrivacyVNextWalletNote> vFirst;
+    std::vector<CPrivacyVNextWalletNote> vSecond;
+    int64_t nValue = 0;
+    const uint64_t nAnchor = std::numeric_limits<uint64_t>::max();
+    {
+        CPrivacyVNextSpendClaim first(&wallet);
+        BOOST_REQUIRE(wallet.SelectPrivacyVNextNotes(40, nSpendHeight, vFirst, nValue,
+                                                     nAnchor, &first));
+        BOOST_REQUIRE_EQUAL(vFirst.size(), 1U);
+        BOOST_CHECK_EQUAL(vFirst[0].nAmount, 50U);
+        BOOST_CHECK_EQUAL(first.Size(), 1U);
+
+        CPrivacyVNextSpendClaim second(&wallet);
+        BOOST_CHECK(!wallet.SelectPrivacyVNextNotes(40, nSpendHeight, vSecond, nValue,
+                                                    nAnchor, &second));
+        BOOST_REQUIRE(wallet.SelectPrivacyVNextNotes(20, nSpendHeight, vSecond, nValue,
+                                                     nAnchor, &second));
+        BOOST_REQUIRE_EQUAL(vSecond.size(), 1U);
+        BOOST_CHECK_EQUAL(vSecond[0].nAmount, 30U);
+
+        // A claim on key images another build holds is refused whole.
+        uint256 keyImage;
+        std::memcpy(keyImage.begin(), &vFirst[0].vchKeyImage[0], 32);
+        CPrivacyVNextSpendClaim third(&wallet);
+        BOOST_CHECK(!third.Claim(std::vector<uint256>(1, keyImage)));
+        BOOST_CHECK_EQUAL(third.Size(), 0U);
+    }
+    BOOST_CHECK(wallet.setPrivacyVNextInFlight.empty());
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextNotes(40, nSpendHeight, vFirst, nValue));
+    BOOST_CHECK_EQUAL(vFirst[0].nAmount, 50U);
+}
+
+// Spendable is what the spend path would accept now: a note past its depth whose epoch
+// the anchor does not reach yet is unconfirmed, not spendable.
+BOOST_AUTO_TEST_CASE(privacy_vnext_balance_follows_the_spend_anchor)
+{
+    CWallet wallet;
+    const int nSpendHeight = 1000;
+    const int nDeep = nSpendHeight - MIN_SHIELDED_SPEND_DEPTH;
+    // Leaf indexes are the tags: 41 sits under an anchor of 42 leaves, 43 does not.
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(60, nDeep, true, 41));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(25, nDeep, true, 43));
+    BestHeightOverride height(nSpendHeight);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(42), 60);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(42), 25);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(44), 85);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(44), 0);
+    // No anchor at all: nothing is spendable yet, and nothing is lost from the totals.
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(0), 0);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(0), 85);
+}
+
 // A note is only spendable once it is deep enough and its epoch has given it a
 // tree position. Selection must respect both, and never exceed the input bound.
 BOOST_AUTO_TEST_CASE(privacy_vnext_selection_honours_depth_position_and_bound)
@@ -574,17 +707,6 @@ CPrivacyVNextCollateralRegistration MakeCollateralRecord(
     return record;
 }
 
-// nBestHeight drives the balance views, and the harness leaves it at genesis.
-struct BestHeightOverride
-{
-    int nSaved;
-    explicit BestHeightOverride(int nHeight) : nSaved(nBestHeight)
-    {
-        nBestHeight = nHeight;
-    }
-    ~BestHeightOverride() { nBestHeight = nSaved; }
-};
-
 } // namespace
 
 // Largest-first selection would pick a 25,000 collateral note first, and spending it
@@ -643,11 +765,12 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_collateral_lock_excludes_a_note_across_reload
                                                     nValue));
 
         BestHeightOverride height(nSpendHeight);
-        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextBalance(),
+        const uint64_t nAnchor = std::numeric_limits<uint64_t>::max();
+        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextBalance(nAnchor),
                           (int64_t)ordinary.nAmount);
         BOOST_CHECK_EQUAL(locked.GetPrivacyVNextCollateralBalance(),
                           (int64_t)collateral.nAmount);
-        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextUnconfirmedBalance(), 0);
+        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextUnconfirmedBalance(nAnchor), 0);
     }
 
     // A fresh wallet over the same file: the lock is a record, not process state.

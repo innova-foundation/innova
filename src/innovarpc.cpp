@@ -479,6 +479,8 @@ static const CRPCCommand vRPCCommands[] =
     { "z_shieldall",            &z_shieldall,            false,  true },
     { "z_migratetopool",        &z_migratetopool,        false,  true },
     { "z_iv5transfer",          &z_iv5transfer,          false,  true },
+    { "z_holdiv5note",          &z_holdiv5note,          false,  true },
+    { "z_listiv5holds",         &z_listiv5holds,         true,   true },
     { "z_iv5unshield",          &z_iv5unshield,          false,  true },
     { "z_getnewaddress",        &z_getnewaddress,        false,  true },
     { "z_listaddresses",        &z_listaddresses,        true,   false },
@@ -1673,6 +1675,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_unshield"            && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_iv5transfer"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_iv5transfer"         && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "z_iv5transfer"         && n > 3) ConvertTo<bool>(params[3]);
+    if (strMethod == "z_holdiv5note"         && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "z_iv5unshield"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_send"                && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_send"                && n > 3) ConvertTo<int64_t>(params[3]);

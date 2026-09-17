@@ -493,6 +493,23 @@ public:
         return Erase(std::make_pair(std::string("iv5coll"), keyImage));
     }
 
+    // Keyed by outpoint, not key image: a hold can be placed on an output before the
+    // wallet has scanned it.
+    bool WritePrivacyVNextHold(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5hold"),
+                                    std::make_pair(txhash, nOutputIndex)),
+                     (unsigned char)1, true);
+    }
+
+    bool ErasePrivacyVNextHold(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5hold"),
+                                    std::make_pair(txhash, nOutputIndex)));
+    }
+
     bool WritePrivacyVNextNoteSpent(const uint256& txhash, uint32_t nOutputIndex,
                                     bool fSpent)
     {

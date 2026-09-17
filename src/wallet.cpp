@@ -11577,25 +11577,51 @@ bool CWallet::IsPrivacyVNextNoteCollateralLocked(
     return mapPrivacyVNextCollateral.count(keyImage) != 0;
 }
 
+static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
+                                        std::vector<unsigned char>& vchRootOut,
+                                        uint64_t& nTreeSizeOut,
+                                        std::vector<unsigned char>& vchParameterDigestOut,
+                                        std::string& strErrorOut);
+
+// The tree size of the anchor a spend made now would prove against, or zero when there
+// is none. Taken before cs_shielded: it needs cs_main, and the order is cs_main first.
+static uint64_t PrivacyVNextSpendAnchorTreeSize()
+{
+    std::vector<unsigned char> vchState;
+    std::vector<unsigned char> vchRoot;
+    std::vector<unsigned char> vchDigest;
+    uint64_t nTreeSize = 0;
+    std::string strError;
+    if (!LoadPrivacyVNextSpendAnchor(vchState, vchRoot, nTreeSize, vchDigest, strError))
+        return 0;
+    return nTreeSize;
+}
+
 int64_t CWallet::GetPrivacyVNextBalance() const
 {
-    LOCK(cs_shielded);
+    return GetPrivacyVNextBalance(PrivacyVNextSpendAnchorTreeSize());
+}
+
+int64_t CWallet::GetPrivacyVNextBalance(uint64_t nAnchorTreeSize) const
+{
     int nSpendHeight = 0;
     {
         LOCK(cs_main);
         nSpendHeight = nBestHeight;
     }
+    LOCK(cs_shielded);
     int64_t nTotal = 0;
     for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
     {
-        if (!PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight))
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (!PrivacyVNextNoteIsSpendable(note, nSpendHeight) ||
+            note.nLeafIndex >= nAnchorTreeSize)
             continue;
-        if (IsPrivacyVNextNoteCollateralLocked(vPrivacyVNextNotes[i]))
+        if (IsPrivacyVNextNoteCollateralLocked(note) || IsPrivacyVNextNoteHeld(note))
             continue;
-        if (vPrivacyVNextNotes[i].nAmount >
-            (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+        if (note.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
             return std::numeric_limits<int64_t>::max();
-        nTotal += (int64_t)vPrivacyVNextNotes[i].nAmount;
+        nTotal += (int64_t)note.nAmount;
     }
     return nTotal;
 }
@@ -11624,27 +11650,125 @@ int64_t CWallet::GetPrivacyVNextCollateralBalance() const
 // waiting for the epoch that gives it a tree position.
 int64_t CWallet::GetPrivacyVNextUnconfirmedBalance() const
 {
-    LOCK(cs_shielded);
+    return GetPrivacyVNextUnconfirmedBalance(PrivacyVNextSpendAnchorTreeSize());
+}
+
+int64_t CWallet::GetPrivacyVNextUnconfirmedBalance(uint64_t nAnchorTreeSize) const
+{
     int nSpendHeight = 0;
     {
         LOCK(cs_main);
         nSpendHeight = nBestHeight;
     }
+    LOCK(cs_shielded);
     int64_t nTotal = 0;
     for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
     {
         const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
         if (note.fSpent || !note.IsComplete())
             continue;
-        if (PrivacyVNextNoteIsSpendable(note, nSpendHeight))
+        if (PrivacyVNextNoteIsSpendable(note, nSpendHeight) &&
+            note.nLeafIndex < nAnchorTreeSize)
             continue;
-        if (IsPrivacyVNextNoteCollateralLocked(note))
+        if (IsPrivacyVNextNoteCollateralLocked(note) || IsPrivacyVNextNoteHeld(note))
             continue;
         if (note.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
             return std::numeric_limits<int64_t>::max();
         nTotal += (int64_t)note.nAmount;
     }
     return nTotal;
+}
+
+// Value the operator set aside: owned, unspent and held, and in no other total.
+int64_t CWallet::GetPrivacyVNextHeldBalance() const
+{
+    LOCK(cs_shielded);
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (note.fSpent || !note.IsComplete() || IsPrivacyVNextNoteCollateralLocked(note) ||
+            !IsPrivacyVNextNoteHeld(note))
+            continue;
+        if (note.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+            return std::numeric_limits<int64_t>::max();
+        nTotal += (int64_t)note.nAmount;
+    }
+    return nTotal;
+}
+
+bool CWallet::SetPrivacyVNextHold(const uint256& txhash, uint32_t nOutputIndex, bool fHold,
+                                  std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (txhash == 0)
+    {
+        strErrorOut = "a hold names a transaction";
+        return false;
+    }
+    const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
+    LOCK(cs_shielded);
+    if (fHold == (setPrivacyVNextHolds.count(outpoint) > 0))
+        return true;
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        const bool fWritten = fHold ? walletdb.WritePrivacyVNextHold(txhash, nOutputIndex)
+                                    : walletdb.ErasePrivacyVNextHold(txhash, nOutputIndex);
+        if (!fWritten)
+        {
+            strErrorOut = "the hold could not be written to the wallet";
+            return false;
+        }
+    }
+    if (fHold)
+        setPrivacyVNextHolds.insert(outpoint);
+    else
+        setPrivacyVNextHolds.erase(outpoint);
+    return true;
+}
+
+bool CWallet::IsPrivacyVNextNoteHeld(const CPrivacyVNextWalletNote& note) const
+{
+    LOCK(cs_shielded);
+    return setPrivacyVNextHolds.count(std::make_pair(note.txhash, note.nOutputIndex)) > 0;
+}
+
+void CWallet::ListPrivacyVNextHolds(std::vector<std::pair<uint256, uint32_t> >& vOut) const
+{
+    LOCK(cs_shielded);
+    vOut.assign(setPrivacyVNextHolds.begin(), setPrivacyVNextHolds.end());
+}
+
+bool CPrivacyVNextSpendClaim::Claim(const std::vector<uint256>& vKeyImages)
+{
+    LOCK(pwallet->cs_shielded);
+    for (size_t i = 0; i < vKeyImages.size(); ++i)
+        if (pwallet->setPrivacyVNextInFlight.count(vKeyImages[i]) && !Contains(vKeyImages[i]))
+            return false;
+    for (size_t i = 0; i < vKeyImages.size(); ++i)
+    {
+        if (Contains(vKeyImages[i]))
+            continue;
+        pwallet->setPrivacyVNextInFlight.insert(vKeyImages[i]);
+        vClaimed.push_back(vKeyImages[i]);
+    }
+    return true;
+}
+
+void CPrivacyVNextSpendClaim::Release()
+{
+    if (vClaimed.empty())
+        return;
+    LOCK(pwallet->cs_shielded);
+    for (size_t i = 0; i < vClaimed.size(); ++i)
+        pwallet->setPrivacyVNextInFlight.erase(vClaimed[i]);
+    vClaimed.clear();
+}
+
+bool CPrivacyVNextSpendClaim::Contains(const uint256& keyImage) const
+{
+    return std::find(vClaimed.begin(), vClaimed.end(), keyImage) != vClaimed.end();
 }
 
 size_t CWallet::GetPrivacyVNextNoteCount() const
@@ -11663,7 +11787,8 @@ bool CWallet::SelectPrivacyVNextNotes(
     int64_t nTargetValue, int nSpendHeight,
     std::vector<CPrivacyVNextWalletNote>& vSelected,
     int64_t& nSelectedValue,
-    uint64_t nAnchorTreeSize) const
+    uint64_t nAnchorTreeSize,
+    CPrivacyVNextSpendClaim* pClaim) const
 {
     vSelected.clear();
     nSelectedValue = 0;
@@ -11692,6 +11817,9 @@ bool CWallet::SelectPrivacyVNextNotes(
             nCollateralLocked++;
             continue;
         }
+        if (IsPrivacyVNextNoteHeld(vPrivacyVNextNotes[i]) ||
+            setPrivacyVNextInFlight.count(keyImage))
+            continue;
         CPrivacyVNextNullifierSpent spent;
         if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) ==
             TXDB_READ_FOUND)
@@ -11742,7 +11870,21 @@ bool CWallet::SelectPrivacyVNextNotes(
         vSelected.push_back(*vCandidates[i]);
         nSelectedValue += (int64_t)vCandidates[i]->nAmount;
         if (nSelectedValue >= nTargetValue)
+        {
+            if (pClaim)
+            {
+                std::vector<uint256> vKeyImages;
+                for (size_t j = 0; j < vSelected.size(); ++j)
+                {
+                    uint256 keyImage;
+                    std::memcpy(keyImage.begin(), &vSelected[j].vchKeyImage[0], 32);
+                    vKeyImages.push_back(keyImage);
+                }
+                if (!pClaim->Claim(vKeyImages))
+                    break;
+            }
             return true;
+        }
     }
 
     vSelected.clear();
@@ -11760,7 +11902,8 @@ bool CWallet::SelectPrivacyVNextVoteNote(
     const std::set<uint256>& setSkipKeyImages,
     CPrivacyVNextWalletNote& noteOut,
     std::vector<unsigned char>& vchWitnessRecordOut,
-    std::string& strErrorOut) const
+    std::string& strErrorOut,
+    CPrivacyVNextSpendClaim* pClaim) const
 {
     noteOut = CPrivacyVNextWalletNote();
     vchWitnessRecordOut.clear();
@@ -11791,7 +11934,8 @@ bool CWallet::SelectPrivacyVNextVoteNote(
         uint256 keyImage;
         if (!PrivacyVNextNoteKeyImage(note, keyImage))
             continue;
-        if (setSkipKeyImages.count(keyImage))
+        if (setSkipKeyImages.count(keyImage) || setPrivacyVNextInFlight.count(keyImage) ||
+            IsPrivacyVNextNoteHeld(note))
             continue;
         // A collateral note is weight this wallet holds but must not move; a vote does
         // not move it, and the attestation's key image is already public, so voting with
@@ -11810,7 +11954,10 @@ bool CWallet::SelectPrivacyVNextVoteNote(
                 mempool.mapPrivacyVNextAttestation.count(keyImage))
                 continue;
         }
-        if (!pBest || note.nAmount > pBest->nAmount ||
+        // The smallest note that clears the floor. The reward is flat per vote and weight
+        // has no tier effect, so a larger note buys nothing and ties up the value a user
+        // is most likely to spend or register.
+        if (!pBest || note.nAmount < pBest->nAmount ||
             (note.nAmount == pBest->nAmount &&
              (note.txhash < pBest->txhash ||
               (note.txhash == pBest->txhash &&
@@ -11821,6 +11968,16 @@ bool CWallet::SelectPrivacyVNextVoteNote(
     {
         strErrorOut = "no unspent IV5 note reaches the minimum vote weight under this anchor";
         return false;
+    }
+    if (pClaim)
+    {
+        uint256 keyImage;
+        if (!PrivacyVNextNoteKeyImage(*pBest, keyImage) ||
+            !pClaim->Claim(std::vector<uint256>(1, keyImage)))
+        {
+            strErrorOut = "the vote note is claimed by another build in progress";
+            return false;
+        }
     }
 
     std::vector<uint64_t> vLeafIndexes(1, pBest->nLeafIndex);
@@ -12027,7 +12184,8 @@ static bool PreparePrivacyVNextSpend(
     PrivacyVNextDigest& genesisOut,
     PrivacyVNextDerivedKeys& changeKeysOut,
     uint8_t& nNetworkOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    CPrivacyVNextSpendClaim* pClaim)
 {
     vNotesOut.clear();
     nSelectedOut = 0;
@@ -12077,7 +12235,7 @@ static bool PreparePrivacyVNextSpend(
         return false;
 
     if (!pwallet->SelectPrivacyVNextNotes(nAmount + nFee, nSpendHeight, vNotesOut,
-                                          nSelectedOut, nAnchorTreeSize))
+                                          nSelectedOut, nAnchorTreeSize, pClaim))
     {
         int64_t nIgnored = 0;
         std::vector<CPrivacyVNextWalletNote> vAll;
@@ -12152,11 +12310,15 @@ bool CWallet::CreatePrivacyVNextTransfer(
     CWalletTx& wtxNew,
     int64_t& nFeeOut,
     size_t& nNotesUsedOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    bool fHoldRecipient,
+    int* pnRecipientOutputOut)
 {
     wtxNew.SetNull();
     nFeeOut = 0;
     nNotesUsedOut = 0;
+    if (pnRecipientOutputOut)
+        *pnRecipientOutputOut = -1;
     strErrorOut.clear();
 
     if (nDisclosureMask > iv5::DISCLOSURE_MASK)
@@ -12184,9 +12346,11 @@ bool CWallet::CreatePrivacyVNextTransfer(
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
+    // Held from selection through commit, so no concurrent build proves over these notes.
+    CPrivacyVNextSpendClaim claim(this);
     if (!PreparePrivacyVNextSpend(this, nAmount, transparentBinding, nFee, vNotes,
                                   nSelected, genesis, changeKeys, nNetwork,
-                                  strErrorOut))
+                                  strErrorOut, &claim))
         return false;
 
     PrivacyVNextAddressComponents recipient;
@@ -12207,8 +12371,12 @@ bool CWallet::CreatePrivacyVNextTransfer(
     vOutputs[1].nAmount = (uint64_t)nChange;
     // A fixed position tells the payee which output is the sender's change, and the
     // payee is the one party who can already open the other one.
+    int nRecipientOutput = 0;
     if (GetRandInt(2) == 1)
+    {
         std::swap(vOutputs[0], vOutputs[1]);
+        nRecipientOutput = 1;
+    }
 
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
@@ -12228,12 +12396,30 @@ bool CWallet::CreatePrivacyVNextTransfer(
     wtxNew.fTimeReceivedIsTxTime = true;
     nFeeOut = nFee;
     nNotesUsedOut = vNotes.size();
+    if (pnRecipientOutputOut)
+        *pnRecipientOutputOut = nRecipientOutput;
 
     if (fCommit)
     {
+        // Held before commit, so the note is never selectable without its hold.
+        bool fPlacedHold = false;
+        {
+            LOCK(cs_shielded);
+            fPlacedHold = fHoldRecipient &&
+                setPrivacyVNextHolds.count(std::make_pair(wtxNew.GetHash(),
+                                                          (uint32_t)nRecipientOutput)) == 0;
+        }
+        if (fHoldRecipient &&
+            !SetPrivacyVNextHold(wtxNew.GetHash(), (uint32_t)nRecipientOutput, true,
+                                 strErrorOut))
+            return false;
         CReserveKey reservekey(this);
         if (!CommitTransaction(wtxNew, reservekey))
         {
+            std::string strIgnored;
+            if (fPlacedHold)
+                SetPrivacyVNextHold(wtxNew.GetHash(), (uint32_t)nRecipientOutput, false,
+                                    strIgnored);
             strErrorOut = "the transfer was built but could not be committed";
             return false;
         }
@@ -12291,9 +12477,11 @@ bool CWallet::CreatePrivacyVNextStamp(
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
+    // Held from selection through commit, so no concurrent build proves over these notes.
+    CPrivacyVNextSpendClaim claim(this);
     if (!PreparePrivacyVNextSpend(this, 0, transparentBinding, nFee, vNotes,
                                   nSelected, genesis, changeKeys, nNetwork,
-                                  strErrorOut))
+                                  strErrorOut, &claim))
         return false;
 
     // Two outputs to one internal receiver, split at a random point: the same arity
@@ -12493,6 +12681,18 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
         strErrorOut = "a collateral attestation names a complete note of exactly "
                       "25000 INN";
         return false;
+    }
+    // A registration takes the note it names, held or not, but never one another build
+    // is already proving over.
+    CPrivacyVNextSpendClaim claim(this);
+    {
+        uint256 keyImage;
+        if (!PrivacyVNextNoteKeyImage(note, keyImage) ||
+            !claim.Claim(std::vector<uint256>(1, keyImage)))
+        {
+            strErrorOut = "the note is claimed by another build in progress";
+            return false;
+        }
     }
 
     std::vector<unsigned char> vchAnchorState;
@@ -12718,11 +12918,12 @@ bool CWallet::CreatePrivacyVNextNoteVote(
 
     CPrivacyVNextWalletNote note;
     std::vector<unsigned char> vchWitnessRecord;
+    CPrivacyVNextSpendClaim claim(this);
     if (!SelectPrivacyVNextVoteNote(txdb, anchor.vchVNextTreeState,
                                     anchor.vchVNextRoot, anchor.nVNextTreeSize,
                                     nSpendHeight, nMinVoteWeight,
                                     std::set<uint256>(), note, vchWitnessRecord,
-                                    strErrorOut))
+                                    strErrorOut, &claim))
         return false;
     if (!note.IsComplete() || vchWitnessRecord.empty())
     {
@@ -12999,9 +13200,11 @@ bool CWallet::CreatePrivacyVNextUnshield(
     PrivacyVNextDigest genesis;
     PrivacyVNextDerivedKeys changeKeys;
     uint8_t nNetwork = 0;
+    // Held from selection through commit, so no concurrent build proves over these notes.
+    CPrivacyVNextSpendClaim claim(this);
     if (!PreparePrivacyVNextSpend(this, nAmount, transparentBinding, nFee, vNotes,
                                   nSelected, genesis, changeKeys, nNetwork,
-                                  strErrorOut))
+                                  strErrorOut, &claim))
         return false;
 
     // Only the change stays in the pool. The arity is still two so the payload

@@ -1527,6 +1527,13 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             LOCK(pwallet->cs_shielded);
             pwallet->mapPrivacyVNextCollateral[keyImage] = record;
         }
+        else if (strType == "iv5hold")
+        {
+            std::pair<uint256, uint32_t> outpoint;
+            ssKey >> outpoint;
+            LOCK(pwallet->cs_shielded);
+            pwallet->setPrivacyVNextHolds.insert(outpoint);
+        }
         else if (strType == "csdeleg")
         {
             uint256 hashOwner;

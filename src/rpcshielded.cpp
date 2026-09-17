@@ -2257,9 +2257,9 @@ Value z_migratetopool(const Array& params, bool fHelp)
 
 Value z_iv5transfer(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 2 || params.size() > 3)
+    if (fHelp || params.size() < 2 || params.size() > 4)
         throw runtime_error(
-            "z_iv5transfer <toaddress> <amount> [disclosure]\n"
+            "z_iv5transfer <toaddress> <amount> [disclosure] [hold]\n"
             "Spends shielded notes to another IV5 address.\n"
             "\nNothing crosses the transparent boundary, so the transaction has no\n"
             "transparent input or output. Change returns to this wallet as a second\n"
@@ -2270,9 +2270,15 @@ Value z_iv5transfer(const Array& params, bool fHelp)
             "each output, and bit 4 the amount of each output. Everything published\n"
             "is proved against what the transaction already commits to, so a\n"
             "disclosure cannot name a different address or amount.\n"
+            "\n<hold> true places a hold on the recipient's output before the transfer is\n"
+            "committed, for a note paid to this wallet and set aside: no spend and no\n"
+            "note vote selects a held note, and only a registration that names it takes\n"
+            "it. Release it with z_holdiv5note.\n"
             "\nResult:\n"
             "{\n"
             "  \"txid\": \"...\",             (string) the transfer transaction\n"
+            "  \"recipient_note\": \"...\",   (string) txid:index of the recipient's output\n"
+            "  \"held\": bool,              (boolean) whether that output is held\n"
             "  \"amount\": x.xxx,           (numeric) value sent\n"
             "  \"fee\": x.xxx,              (numeric) fee paid\n"
             "  \"notes\": n,                (numeric) notes consumed\n"
@@ -2304,22 +2310,104 @@ Value z_iv5transfer(const Array& params, bool fHelp)
                                "disclosure must be a three-bit mask, 0 to 7");
     }
     const uint8_t nMask = (uint8_t)nDisclosure;
+    const bool fHold = params.size() > 3 && params[3].get_bool();
 
     CWalletTx wtx;
     int64_t nFee = 0;
     size_t nNotes = 0;
+    int nRecipientOutput = -1;
     std::string strError;
     if (!pwalletMain->CreatePrivacyVNextTransfer(strTo, nAmount, nMask, true,
-                                                 wtx, nFee, nNotes, strError))
+                                                 wtx, nFee, nNotes, strError, fHold,
+                                                 &nRecipientOutput))
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     Object result;
     result.push_back(Pair("txid", wtx.GetHash().GetHex()));
+    result.push_back(Pair("recipient_note",
+                          strprintf("%s:%d", wtx.GetHash().GetHex().c_str(),
+                                    nRecipientOutput)));
+    result.push_back(Pair("held", fHold));
     result.push_back(Pair("amount", ValueFromAmount(nAmount)));
     result.push_back(Pair("fee", ValueFromAmount(nFee)));
     result.push_back(Pair("notes", (int64_t)nNotes));
     PrivacyVNextDisclosureToJSON(nMask, result);
     return result;
+}
+
+static bool ParsePrivacyVNextNoteId(const std::string& strNote, uint256& txhashOut,
+                                    uint32_t& nOutputIndexOut)
+{
+    const size_t nColon = strNote.find(':');
+    if (nColon != 64 || strNote.size() < 66 || strNote.size() > 75)
+        return false;
+    const std::string strHash = strNote.substr(0, 64);
+    const std::string strIndex = strNote.substr(65);
+    if (!IsHex(strHash) || strIndex.find_first_not_of("0123456789") != std::string::npos)
+        return false;
+    const unsigned long nIndex = strtoul(strIndex.c_str(), NULL, 10);
+    if (nIndex > std::numeric_limits<uint32_t>::max())
+        return false;
+    txhashOut.SetHex(strHash);
+    nOutputIndexOut = (uint32_t)nIndex;
+    return true;
+}
+
+Value z_holdiv5note(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw runtime_error(
+            "z_holdiv5note <txid:index> <true|false>\n"
+            "Places or releases a hold on one IV5 output of this wallet.\n"
+            "\nNo spend and no note vote selects a held note; a registration that names it\n"
+            "still takes it. The output need not be scanned yet, so a hold can be placed\n"
+            "the moment the transaction that creates it is known. Holds survive restarts.\n");
+
+    uint256 txhash;
+    uint32_t nOutputIndex = 0;
+    if (!ParsePrivacyVNextNoteId(params[0].get_str(), txhash, nOutputIndex))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "the note is named as <txid>:<index>");
+    const bool fHold = params[1].get_bool();
+    std::string strError;
+    if (!pwalletMain->SetPrivacyVNextHold(txhash, nOutputIndex, fHold, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("note", params[0].get_str()));
+    result.push_back(Pair("held", fHold));
+    return result;
+}
+
+Value z_listiv5holds(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "z_listiv5holds\n"
+            "Lists the IV5 outputs this wallet holds, with the amount of each once scanned.\n");
+
+    std::vector<std::pair<uint256, uint32_t> > vHolds;
+    pwalletMain->ListPrivacyVNextHolds(vHolds);
+    Array arr;
+    {
+        LOCK(pwalletMain->cs_shielded);
+        for (size_t i = 0; i < vHolds.size(); ++i)
+        {
+            Object entry;
+            entry.push_back(Pair("note", strprintf("%s:%u", vHolds[i].first.GetHex().c_str(),
+                                                   vHolds[i].second)));
+            for (size_t j = 0; j < pwalletMain->vPrivacyVNextNotes.size(); ++j)
+            {
+                const CPrivacyVNextWalletNote& note = pwalletMain->vPrivacyVNextNotes[j];
+                if (note.txhash != vHolds[i].first || note.nOutputIndex != vHolds[i].second)
+                    continue;
+                entry.push_back(Pair("amount", ValueFromAmount((int64_t)note.nAmount)));
+                entry.push_back(Pair("spent", note.fSpent));
+                break;
+            }
+            arr.push_back(entry);
+        }
+    }
+    return arr;
 }
 
 Value z_iv5unshield(const Array& params, bool fHelp)
@@ -2478,6 +2566,8 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                            ValueFromAmount(pwalletMain->GetPrivacyVNextBalance())));
         obj.push_back(Pair("privacy_vnext_unconfirmed_balance",
                            ValueFromAmount(pwalletMain->GetPrivacyVNextUnconfirmedBalance())));
+        obj.push_back(Pair("privacy_vnext_held_balance",
+                           ValueFromAmount(pwalletMain->GetPrivacyVNextHeldBalance())));
         obj.push_back(Pair("privacy_vnext_note_count",
                            (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
         obj.push_back(Pair("privacy_vnext_seed_unlocked",
