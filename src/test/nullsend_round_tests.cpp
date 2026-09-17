@@ -3513,6 +3513,19 @@ BOOST_AUTO_TEST_CASE(the_coordinator_runs_a_round_on_its_announced_schedule)
                             (int)MIX_FRAME_BLIND_SIGNATURE);
         BOOST_CHECK_MESSAGE(vchReply == vchFirst,
                             "a retried token request got a different signature");
+        // A different blinded message under the same seat is not a retry: it would hand
+        // back a signature over the FIRST message, which this seat cannot unblind, and it
+        // has no second token to ask for.
+        std::vector<unsigned char> vchOtherBody, vchOtherFrame;
+        BOOST_REQUIRE(BuildMixBlindRequestBody(vSeats[i].pubkey, announce.hashRound,
+                                               std::vector<unsigned char>(
+                                                   client.vchBlindedCredential.size(), 0x5a),
+                                               vchOtherBody));
+        BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[i].key, hashRound, MIX_FRAME_BLIND_REQUEST,
+                                          vchOtherBody, vchOtherFrame));
+        BOOST_CHECK_MESSAGE(
+            Ask(coord, MIX_FRAME_BLIND_REQUEST, vchOtherFrame, T2, vchReply) != MIX_FRAME_BLIND_SIGNATURE,
+            "a second blinded message under one seat was answered with the first signature");
         BOOST_REQUIRE(client.UnblindSignature(vchFirst));
         Token token;
         token.vchCredential = client.vchCredentialHash;
@@ -3564,6 +3577,21 @@ BOOST_AUTO_TEST_CASE(the_coordinator_runs_a_round_on_its_announced_schedule)
                                MembershipFrameFor(vSeats[i], hashRound, announce.hashRound,
                                                   proofs.vProofs[ProvenIndex(vSeats[i].keyImage)]),
                                T4 + 1));
+
+    // Everything the round needs is in, and the nonce window has still not opened: the
+    // round itself would take a nonce now, and the schedule is what refuses it. A phase
+    // that opened as soon as its predecessor filled would be a phase the coordinator times.
+    {
+        const PrivacyVNextMixBalanceFacts early = FactsFromPrefix(coord.Round().FrozenPrefix());
+        const PrivacyVNextMixBalanceShare share = SeatShare(coord.Round(), vSeats[0], 0x4c);
+        PrivacyVNextDigest nonce;
+        BOOST_REQUIRE_MESSAGE(PrivacyVNextMixBalanceNonce(early, share, nonce, strError),
+                              strError);
+        BOOST_CHECK_MESSAGE(!Accepted(coord, MIX_FRAME_NONCE,
+                                      ShareFrame(vSeats[0], hashRound, MIX_FRAME_NONCE, nonce),
+                                      T4 + 1),
+                            "a nonce was taken before its window opened");
+    }
 
     // Nonce and response windows.
     const int64_t T5 = announce.ApproveCloses();
