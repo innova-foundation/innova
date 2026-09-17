@@ -2568,6 +2568,8 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                            ValueFromAmount(pwalletMain->GetPrivacyVNextUnconfirmedBalance())));
         obj.push_back(Pair("privacy_vnext_held_balance",
                            ValueFromAmount(pwalletMain->GetPrivacyVNextHeldBalance())));
+        obj.push_back(Pair("privacy_vnext_unplaced_balance",
+                           ValueFromAmount(pwalletMain->GetPrivacyVNextUnplacedBalance())));
         obj.push_back(Pair("privacy_vnext_note_count",
                            (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
         obj.push_back(Pair("privacy_vnext_seed_unlocked",

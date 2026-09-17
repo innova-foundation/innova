@@ -11679,6 +11679,23 @@ int64_t CWallet::GetPrivacyVNextUnconfirmedBalance(uint64_t nAnchorTreeSize) con
     return nTotal;
 }
 
+int64_t CWallet::GetPrivacyVNextUnplacedBalance() const
+{
+    LOCK(cs_shielded);
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (note.fSpent || !note.IsComplete() || note.fLeafIndexKnown ||
+            IsPrivacyVNextNoteCollateralLocked(note) || IsPrivacyVNextNoteHeld(note))
+            continue;
+        if (note.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+            return std::numeric_limits<int64_t>::max();
+        nTotal += (int64_t)note.nAmount;
+    }
+    return nTotal;
+}
+
 // Value the operator set aside: owned, unspent and held, and in no other total.
 int64_t CWallet::GetPrivacyVNextHeldBalance() const
 {

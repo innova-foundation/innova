@@ -639,6 +639,11 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_balance_follows_the_spend_anchor)
     // No anchor at all: nothing is spendable yet, and nothing is lost from the totals.
     BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(0), 0);
     BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(0), 85);
+    // Placed notes are not unplaced, however far the anchor is behind them.
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnplacedBalance(), 0);
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(9, nDeep, false, 45));
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnplacedBalance(), 9);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextUnconfirmedBalance(44), 9);
 }
 
 // A note is only spendable once it is deep enough and its epoch has given it a

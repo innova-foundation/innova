@@ -490,6 +490,9 @@ public:
     int64_t GetPrivacyVNextUnconfirmedBalance(uint64_t nAnchorTreeSize) const;
     int64_t GetPrivacyVNextCollateralBalance() const;
     int64_t GetPrivacyVNextHeldBalance() const;
+    // The part of unconfirmed with no tree position at all yet: detected, but not placed by
+    // an epoch build. The rest of unconfirmed is placed and waiting on depth or the anchor.
+    int64_t GetPrivacyVNextUnplacedBalance() const;
 
     // Notes held by the operator, by outpoint, so a hold can precede scanning. Every selector
     // skips them except a registration that names one. Persisted across restarts.

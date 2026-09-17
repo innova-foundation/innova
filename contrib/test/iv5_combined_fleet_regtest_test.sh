@@ -164,19 +164,17 @@ COMMITTEE_THRESHOLD_M=2
 COLLATERAL_ROWS=$(( COMMITTEE_SEAT_COUNT * 2 ))
 PRIVATE_CN_ROWS=1
 REGISTER_ROWS=$(( COLLATERAL_ROWS + PRIVATE_CN_ROWS ))
-# node0 note-votes, and its voter takes the wallet's largest eligible note and skips only
-# collateral that is already registered. The epoch the carved notes become spendable is
-# the epoch their registrations run in, so the voter takes one of them at that boundary,
-# before the harness can register it. One spare keeps every registration row funded.
-VOTE_SPARE_ROWS=1
-CARVE_ROWS=$(( REGISTER_ROWS + VOTE_SPARE_ROWS ))
+# Each carve holds its collateral output as it is created. node0 note-votes, and the
+# epoch the carved notes become spendable is the epoch they are registered in; without
+# the hold its voter could spend one at that boundary, before registration names it.
+CARVE_ROWS="$REGISTER_ROWS"
 COLLATERAL_VALUE=25000
 
 # Funding the pool. A shield splits its value across two notes at a uniformly
 # random point, so no amount shielded in one step can be made to land as a single
 # 25000 INN note: the collateral notes are carved by in-pool transfer. Selection is
 # largest-first and every carve strands whatever it over-selected, so many smaller
-# shields keep the strand small. Eight carves need 200000; the rest is strand
+# shields keep the strand small. Seven carves need 175000; the rest is strand
 # headroom and the notes the mask section spends.
 POOL_SHIELD_ROWS=24
 POOL_SHIELD_VALUE=11500
@@ -1040,6 +1038,24 @@ tx_height() {
 # Spendability predicate: pool value was detected AND given a tree position.
 # ------------------------------------------------------------------
 POOL_DIAG=""
+# Detected and placed by an epoch build. A note vote reissues its note every
+# epoch and the reissue waits for the next build.
+pool_is_placed() {
+    local node="$1" info bal unconf unplaced notes tree
+    info="$(rpc "$node" z_getshieldedinfo 2>/dev/null)"
+    bal="$(jget "$info" privacy_vnext_balance)"
+    unconf="$(jget "$info" privacy_vnext_unconfirmed_balance)"
+    unplaced="$(jget "$info" privacy_vnext_unplaced_balance)"
+    notes="$(jget "$info" privacy_vnext_note_count)"
+    tree="$(jget "$info" privacy_vnext_tree_size)"
+    POOL_DIAG="spendable=${bal:-0} unconfirmed=${unconf:-0} unplaced=${unplaced:-?} notes=${notes:-0} tree=${tree:-0}"
+    is_int "${notes:-x}" && [ "${notes:-0}" -gt 0 ] || return 1
+    is_int "${tree:-x}" && [ "${tree:-0}" -gt 0 ] || return 1
+    [ -n "$unplaced" ] || return 1
+    fgt "$(fsub "$(fadd "${bal:-0}" "${unconf:-0}")" "$unplaced")" 0 || return 1
+    return 0
+}
+
 pool_is_spendable() {
     local node="$1" info bal unconf notes tree
     info="$(rpc "$node" z_getshieldedinfo 2>/dev/null)"
@@ -1291,12 +1307,9 @@ preflight_refusal "a supply cap above MAX_MONEY is refused at startup" \
 header "N. NEGATIVE PHASE: the spendability predicate must be able to fail"
 # ============================================================
 
-# Same switch set, plus -regtestiv5holdleafindex, which holds wallet leaf-index
-# assignment and so leaves every received note without the tree position that makes
-# it provable. The pool is funded exactly as the positive path funds it and the tip
-# is carried a full epoch past the shield, so nothing but the hold can keep the
-# value unspendable. pool_is_spendable is then called -- the same function, not a
-# copy -- and must report a failure.
+# Same switches plus -regtestiv5holdleafindex (no tree positions assigned).
+# Funded as the positive path, tip carried a full epoch past the shield, then
+# pool_is_placed (the same function) must report failure.
 
 write_config "$NEG_NODE" 1 1
 start_node "$NEG_NODE" || { fail "the negative-phase node did not start"; exit 1; }
@@ -1371,7 +1384,9 @@ NEG_MINE "$NEG_END_HEIGHT" || { fail "the negative phase could not carry the tip
 NEG_INFO="$(rpc "$NEG_NODE" z_getshieldedinfo 2>/dev/null)"
 NEG_NOTES="$(jget "$NEG_INFO" privacy_vnext_note_count)"
 NEG_UNCONF="$(jget "$NEG_INFO" privacy_vnext_unconfirmed_balance)"
-if is_int "${NEG_NOTES:-x}" && [ "${NEG_NOTES:-0}" -ge 1 ] && feq "${NEG_UNCONF:-0}" "$NEG_SHIELDED"; then
+NEG_UNPLACED="$(jget "$NEG_INFO" privacy_vnext_unplaced_balance)"
+if is_int "${NEG_NOTES:-x}" && [ "${NEG_NOTES:-0}" -ge 1 ] && feq "${NEG_UNCONF:-0}" "$NEG_SHIELDED" && \
+   feq "${NEG_UNPLACED:-0}" "$NEG_SHIELDED"; then
     success "all $NEG_UNCONF INN was detected across $NEG_NOTES note(s) and none of it was placed"
 else
     fail "the hold did not produce the stranded state (notes=$NEG_NOTES detected=$NEG_UNCONF expected $NEG_SHIELDED)"
@@ -1380,12 +1395,12 @@ fi
 
 # THE MUTATION. The predicate the positive path asserts with, run against a chain
 # whose notes are provably unspendable.
-if pool_is_spendable "$NEG_NODE"; then
-    fail "THE HARNESS CANNOT FAIL: pool_is_spendable reported a spendable pool on a chain built with the leaf-index hold ($POOL_DIAG)"
+if pool_is_placed "$NEG_NODE"; then
+    fail "THE HARNESS CANNOT FAIL: pool_is_placed reported a placed pool on a chain built with the leaf-index hold ($POOL_DIAG)"
     fail "  every later use of that predicate in this run is worthless; fix the predicate before trusting the positive result"
     exit 1
 else
-    success "the spendability predicate reports the injected fault rather than passing through it ($POOL_DIAG)"
+    success "the placement predicate reports the injected fault rather than passing through it ($POOL_DIAG)"
 fi
 
 stop_node "$NEG_NODE" || warn "the negative-phase node needed a kill"
@@ -1927,13 +1942,12 @@ header "9. Three consecutive HARD epochs produce a finalized height"
 
 vote_round 911 || { fail "epoch 4 vote round failed"; exit 1; }
 
-# A note is spendable only once an epoch build has put it in the IV5 tree and given
-# it a leaf index, which happens when the chain crosses into the next epoch. This is
-# the positive side of the predicate the negative phase proved can fail.
-if pool_is_spendable 0; then
-    success "node0's pool value is detected, placed in the tree and spendable ($POOL_DIAG)"
+# A note gets a tree position when the chain crosses into the next epoch.
+# Spendability comes later, when the anchor reaches the shield epoch.
+if pool_is_placed 0; then
+    success "node0's pool value is detected and placed in the tree ($POOL_DIAG)"
 else
-    fail "node0 has no spendable IV5 note ($POOL_DIAG)"
+    fail "node0's IV5 notes are not placed ($POOL_DIAG)"
     exit 1
 fi
 
@@ -1965,10 +1979,19 @@ done
 success "node0 imported the private half of all $NUM_NODES member keys"
 
 # ============================================================
-header "11. The pool is funded for eight collateral notes"
+header "11. The pool is funded for seven collateral notes"
 # ============================================================
 
 advance_through_epochs 5 "$POOL_FUND_EPOCH" || { fail "the epoch 5-$POOL_FUND_EPOCH vote rounds failed"; exit 1; }
+
+# By now the spend anchor reaches the epoch-2 shields, so the value is spendable in the
+# sense a spend would accept, not merely placed.
+if pool_is_spendable 0; then
+    success "node0's pool value is spendable under the spend anchor ($POOL_DIAG)"
+else
+    fail "node0's IV5 notes are placed but not spendable at epoch $POOL_FUND_EPOCH ($POOL_DIAG)"
+    exit 1
+fi
 
 log "mining to $POOL_FUND_HEIGHT and waiting for node0's mature coinbase to cover $POOL_SHIELD_TOTAL INN"
 mine_to 0 "$POOL_FUND_HEIGHT" || { fail "could not mine to the pool-funding height"; exit 1; }
@@ -2025,7 +2048,7 @@ else
 fi
 
 # ============================================================
-header "12. Eight 25000 INN collateral notes are carved in the pool"
+header "12. Seven 25000 INN collateral notes are carved and held in the pool"
 # ============================================================
 
 advance_through_epochs "$CARVE_EPOCH" "$CARVE_EPOCH" || { fail "the epoch $CARVE_EPOCH vote round failed"; exit 1; }
@@ -2044,7 +2067,7 @@ fi
 # spend a 25000 INN note just made.
 CARVED=0
 for ((r=0; r<CARVE_ROWS; r++)); do
-    TR="$(rpc 0 z_iv5transfer "$IV5ADDR" "$COLLATERAL_VALUE" 2>&1)"
+    TR="$(rpc 0 z_iv5transfer "$IV5ADDR" "$COLLATERAL_VALUE" 7 true 2>&1)"
     TR_TXID="$(jget "$TR" txid)"
     if [ ${#TR_TXID} -ne 64 ]; then
         fail "carving note $r failed: $(echo "$TR" | head -3)"
@@ -2057,6 +2080,12 @@ for ((r=0; r<CARVE_ROWS; r++)); do
 done
 if [ "$CARVED" -eq "$CARVE_ROWS" ]; then
     success "$CARVED exact-$COLLATERAL_VALUE INN notes carved by in-pool transfer"
+    HOLDS="$(rpc 0 z_listiv5holds 2>/dev/null | grep -c '"note"')"
+    if is_int "${HOLDS:-x}" && [ "$HOLDS" -eq "$CARVE_ROWS" ]; then
+        success "all $HOLDS carved notes are held from the moment they were created"
+    else
+        fail "expected $CARVE_ROWS held carved notes, the wallet lists ${HOLDS:-none}"
+    fi
 else
     fail "only $CARVED of $CARVE_ROWS collateral notes were carved"
     exit 1
