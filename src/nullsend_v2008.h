@@ -692,10 +692,23 @@ enum MixDispatch
     MIX_DISPATCH_ABORTED,     // the round ended as a result
 };
 
+/** What a dispatched frame leaves for its driver, e.g. the blinded message the round cannot
+ *  sign itself. Input-side only: nothing from an OUTPUT frame appears here. */
+struct CMixDispatchEffect
+{
+    MixFrameType nFrame;
+    CPubKey pubkeySession;                  // the seat the frame authenticated as
+    std::vector<unsigned char> vchBlinded;  // BLIND_REQUEST: what the driver must sign
+
+    CMixDispatchEffect() : nFrame(MIX_FRAME_NONE) {}
+    void Clear() { nFrame = MIX_FRAME_NONE; pubkeySession = CPubKey(); vchBlinded.clear(); }
+};
+
 /** Act on one frame from a participant. */
 MixDispatch DispatchMixFrame(CMixRound& round,
                              MixFrameType nType,
                              const std::vector<unsigned char>& vchPayload,
-                             int64_t nNow, std::string& strError);
+                             int64_t nNow, std::string& strError,
+                             CMixDispatchEffect* pEffect = NULL);
 
 #endif // INNOVA_NULLSEND_V2008_H

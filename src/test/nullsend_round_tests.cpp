@@ -631,21 +631,31 @@ BOOST_AUTO_TEST_CASE(a_token_is_not_issued_until_every_seat_signed_one_view)
     }
     BOOST_REQUIRE(round.InputConstructionsComplete());
 
-    // Now the token issues, and only once per seat.
+    // Now the token issues, and only once per seat. The round holds no private exponent, so
+    // the blinded message has to come back out or nothing can ever sign it.
+    CMixDispatchEffect effect;
     BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchFrame, nNow,
-                                            strError), (int)MIX_DISPATCH_OK);
+                                            strError, &effect), (int)MIX_DISPATCH_OK);
+    BOOST_CHECK_EQUAL((int)effect.nFrame, (int)MIX_FRAME_BLIND_REQUEST);
+    BOOST_CHECK_MESSAGE(effect.vchBlinded == vchBlinded,
+                        "the driver was not handed the message it has to blind-sign");
+    BOOST_CHECK(effect.pubkeySession == a.pubkey);
     BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchFrame, nNow,
                                             strError), (int)MIX_DISPATCH_REFUSED);
 
     // And a request naming a DIFFERENT announcement is refused even after agreement:
     // the gate is the view these seats actually signed, not any view.
     std::vector<unsigned char> vchOtherBody, vchOtherFrame;
+    effect.Clear();
     BOOST_REQUIRE(BuildMixBlindRequestBody(b.pubkey, uint256(0xBEEF), vchBlinded,
                                            vchOtherBody));
     BOOST_REQUIRE(BuildAuthedMixFrame(b.key, hashRound, MIX_FRAME_BLIND_REQUEST,
                                       vchOtherBody, vchOtherFrame));
     BOOST_CHECK_EQUAL((int)DispatchMixFrame(round, MIX_FRAME_BLIND_REQUEST, vchOtherFrame,
-                                            nNow, strError), (int)MIX_DISPATCH_REFUSED);
+                                            nNow, strError, &effect),
+                      (int)MIX_DISPATCH_REFUSED);
+    BOOST_CHECK_MESSAGE(effect.vchBlinded.empty(),
+                        "a refused request still handed the driver something to sign");
 
     // An unauthenticated blind request is not a frame the dispatcher acts on. If it ever
     // became one, any connection takes tokens without holding a seat.

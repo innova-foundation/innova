@@ -1957,8 +1957,11 @@ bool BuildMixOutputBundleBody(const std::vector<unsigned char>& vchCredential,
 MixDispatch DispatchMixFrame(CMixRound& round,
                              MixFrameType nType,
                              const std::vector<unsigned char>& vchPayload,
-                             int64_t nNow, std::string& strError)
+                             int64_t nNow, std::string& strError,
+                             CMixDispatchEffect* pEffect)
 {
+    if (pEffect)
+        pEffect->Clear();
     // The round's own id, never one the caller names: the two disagreeing is what would
     // let a coordinator run one round while telling each seat it is in a different one.
     const uint256& hashRound = round.RoundId();
@@ -2096,6 +2099,12 @@ MixDispatch DispatchMixFrame(CMixRound& round,
             REFUSE("the seats have not all submitted their input constructions");
         if (!round.IssueToken(pubkeySession, &strError))
             return MIX_DISPATCH_REFUSED;
+        if (pEffect)
+        {
+            pEffect->nFrame = MIX_FRAME_BLIND_REQUEST;
+            pEffect->pubkeySession = pubkeySession;
+            pEffect->vchBlinded = vchBlinded;
+        }
         return MIX_DISPATCH_OK;
     }
 
