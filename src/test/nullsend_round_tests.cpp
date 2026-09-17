@@ -710,6 +710,121 @@ BOOST_AUTO_TEST_CASE(an_input_construction_belongs_to_its_seat_and_its_key_image
         BOOST_CHECK(vOrdered[vParticipants[i].nInputIndex] == vParticipants[i].pseudoOut);
 }
 
+// The prefix a seat approves is written through the payload builder's own assembler, from the
+// frozen inputs in input order and the registered records at the round's denomination -- and
+// only for a NullSend operation at the NullSend mask, with every piece in.
+BOOST_AUTO_TEST_CASE(a_mix_prefix_is_the_builder_layout_over_the_round_state)
+{
+    const int64_t nNow = 3660000;
+    std::string strError;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 2, nNow));
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    const uint256 hashAnnounce = uint256(0xFEED);
+    const uint256 hashView = round.ViewDigest(hashAnnounce);
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        std::vector<unsigned char> vchSig;
+        BOOST_REQUIRE(vSeats[i].key.Sign(hashView, vchSig));
+        BOOST_REQUIRE(round.SubmitViewSignature(vSeats[i].pubkey, hashAnnounce, vchSig,
+                                                &strError));
+    }
+    for (size_t i = 0; i < vSeats.size(); i++)
+    {
+        BOOST_REQUIRE(round.SubmitInputConstruction(vSeats[i].pubkey, hashAnnounce,
+                                                    vSeats[i].keyImage,
+                                                    MaskOf((unsigned char)(0x81 + i)),
+                                                    &strError));
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    }
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, &strError));
+
+    PrivacyVNextPrefixHeader header;
+    header.nOperation = iv5::NOTE_NULLSEND;
+    header.nDisclosureMask = iv5::NULLSEND_DISCLOSURE_MASK;
+    header.nNetwork = 1;
+    header.genesis.fill(0x11);
+    header.parameterDigest.fill(0x22);
+    header.finalizedRoot.fill(0x33);
+    header.nFinalizedTreeSize = 77;
+    header.nFee = 1000;
+    header.transparentBinding.fill(0x44);
+    std::vector<unsigned char> vchPrefix;
+
+    // Not until every output is in.
+    const CMixOutputRecord first = Rec(uint256(0x7A0), 0x91);
+    const Token firstToken = MintToken(first);
+    BOOST_REQUIRE(round.RegisterOutput(firstToken.vchCredential, firstToken.vchSignature, first,
+                                       nNow, &strError));
+    BOOST_CHECK(!round.AssemblePrefix(header, vchPrefix, &strError));
+    const CMixOutputRecord second = Rec(uint256(0x7A1), 0x92);
+    const Token secondToken = MintToken(second);
+    BOOST_REQUIRE(round.RegisterOutput(secondToken.vchCredential, secondToken.vchSignature,
+                                       second, nNow, &strError));
+
+    // Only the mix shape.
+    PrivacyVNextPrefixHeader wrong = header;
+    wrong.nOperation = iv5::NOTE_TRANSFER;
+    BOOST_CHECK(!round.AssemblePrefix(wrong, vchPrefix, &strError));
+    wrong = header;
+    wrong.nDisclosureMask = iv5::DISCLOSURE_MASK;
+    BOOST_CHECK(!round.AssemblePrefix(wrong, vchPrefix, &strError));
+    wrong = header;
+    wrong.nTransparentValueBalance = 1;
+    BOOST_CHECK(!round.AssemblePrefix(wrong, vchPrefix, &strError));
+
+    BOOST_REQUIRE_MESSAGE(round.AssemblePrefix(header, vchPrefix, &strError), strError);
+
+    // The same bytes the builder's assembler writes from the same pieces.
+    const std::vector<PrivacyVNextDigest> vPseudo = round.PseudoOutsInInputOrder();
+    const std::vector<uint256>& vKeyImages = round.FinalKeyImages();
+    std::vector<PrivacyVNextPrefixInput> vInputs(2);
+    for (size_t i = 0; i < 2; i++)
+    {
+        vInputs[i].pseudoOut = vPseudo[i];
+        memcpy(vInputs[i].keyImage.data(), vKeyImages[i].begin(), 32);
+        vInputs[i].senderAuthority.fill(0);
+    }
+    std::vector<PrivacyVNextPrefixOutput> vOutputs(2);
+    const CMixOutputRecord vRecords[2] = { first, second };
+    for (size_t i = 0; i < 2; i++)
+    {
+        vOutputs[i].owner = vRecords[i].owner;
+        vOutputs[i].commitment = vRecords[i].commitment;
+        vOutputs[i].noteEphemeral = vRecords[i].noteEphemeral;
+        vOutputs[i].tweakEphemeral = vRecords[i].tweakEphemeral;
+        vOutputs[i].vchRecipientCiphertext = vRecords[i].vchRecipientCiphertext;
+        vOutputs[i].vchOutgoingCiphertext = vRecords[i].vchOutgoingCiphertext;
+        vOutputs[i].recipientSpend.fill(0);
+        vOutputs[i].recipientView.fill(0);
+        vOutputs[i].nAmount = MIX_DENOM;
+        vOutputs[i].mask = vRecords[i].mask;
+    }
+    std::vector<unsigned char> vchExpected;
+    BOOST_REQUIRE(AssemblePrivacyVNextPayloadPrefix(header, vInputs, vOutputs, vchExpected,
+                                                    strError));
+    BOOST_CHECK(vchPrefix == vchExpected);
+
+    // And the layout itself: nine header bytes, three digests, three 64-bit fields, the
+    // binding, then the input count and the first input's pseudo-output and key image.
+    const size_t nInputs = 9 + 3 * 32 + 3 * 8 + 32;
+    BOOST_REQUIRE(vchPrefix.size() > nInputs + 1 + 64);
+    BOOST_CHECK_EQUAL(vchPrefix[2], iv5::NOTE_NULLSEND);
+    BOOST_CHECK_EQUAL(vchPrefix[5], iv5::NULLSEND_DISCLOSURE_MASK);
+    BOOST_CHECK_EQUAL(vchPrefix[nInputs], 2);
+    BOOST_CHECK(std::equal(vPseudo[0].begin(), vPseudo[0].end(), vchPrefix.begin() + nInputs + 1));
+    BOOST_CHECK(std::equal(vKeyImages[0].begin(), vKeyImages[0].end(),
+                           vchPrefix.begin() + nInputs + 1 + 32));
+    // The disclosed amounts close the prefix: each output's amount and mask, then an empty
+    // finality body.
+    const size_t nTail = 2 * (8 + 32) + 1;
+    uint64_t nAmount = 0;
+    for (size_t i = 0; i < 8; i++)
+        nAmount |= (uint64_t)vchPrefix[vchPrefix.size() - nTail + i] << (8 * i);
+    BOOST_CHECK_EQUAL(nAmount, MIX_DENOM);
+}
+
 // The opening is checked BEFORE the token is spent: the token authorises only the output
 // key, and the combiner sees only the sum of openings, so a bad one cannot be attributed later.
 BOOST_AUTO_TEST_CASE(an_output_opening_is_checked_before_its_token_is_spent)

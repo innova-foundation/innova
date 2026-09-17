@@ -249,6 +249,101 @@ static bool BuildPrivacyVNextNoteVoteFloorProof(
 }
 
 // one function is what stops the two drifting apart in how they serialize or balance.
+bool AssemblePrivacyVNextPayloadPrefix(const PrivacyVNextPrefixHeader& header,
+                                       const std::vector<PrivacyVNextPrefixInput>& vInputs,
+                                       const std::vector<PrivacyVNextPrefixOutput>& vOutputs,
+                                       std::vector<unsigned char>& vchPrefixOut,
+                                       std::string& strErrorOut)
+{
+    vchPrefixOut.clear();
+    strErrorOut.clear();
+    if (header.nDisclosureMask > iv5::DISCLOSURE_MASK)
+    {
+        strErrorOut = "an IV5 disclosure mask is three bits";
+        return false;
+    }
+    const bool fDiscloseSender = (header.nDisclosureMask & iv5::DISCLOSURE_HIDE_SENDER) == 0;
+    const bool fDiscloseReceiver =
+        (header.nDisclosureMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0;
+    const bool fDiscloseAmount = (header.nDisclosureMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0;
+
+    std::vector<unsigned char>& prefix = vchPrefixOut;
+    prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
+    prefix.push_back(0);
+    prefix.push_back(header.nOperation);
+    prefix.push_back(0);                         // finality profile: none
+    prefix.push_back(0);                         // authorization: owner
+    prefix.push_back(header.nDisclosureMask);
+    prefix.push_back(0);                         // finality object: none
+    prefix.push_back(header.nNetwork);
+    prefix.push_back(0);                         // reserved
+    PutBytes(prefix, header.genesis);
+    PutBytes(prefix, header.parameterDigest);
+    PutBytes(prefix, header.finalizedRoot);
+    PutU64(prefix, header.nFinalizedTreeSize);
+    PutI64(prefix, header.nTransparentValueBalance);
+    PutU64(prefix, header.nFee);
+    // Before the proofs, so the signing hash covers it and no assembler can restate the
+    // transparent side of a payload that already verified.
+    PutBytes(prefix, header.transparentBinding);
+
+    PutCompactSize(prefix, vInputs.size());
+    for (size_t i = 0; i < vInputs.size(); ++i)
+    {
+        PutBytes(prefix, vInputs[i].pseudoOut);
+        PutBytes(prefix, vInputs[i].keyImage);
+    }
+    PutCompactSize(prefix, vOutputs.size());
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        // I is absent by design: validators derive it from this output's own owner key.
+        PutBytes(prefix, vOutputs[i].owner);
+        PutBytes(prefix, vOutputs[i].commitment);
+        PutBytes(prefix, vOutputs[i].noteEphemeral);
+        PutBytes(prefix, vOutputs[i].tweakEphemeral);
+        PutVector(prefix, vOutputs[i].vchRecipientCiphertext);
+        PutVector(prefix, vOutputs[i].vchOutgoingCiphertext);
+    }
+    // The vote's own two fields, in the slot an attestation uses for its registration
+    // context: after the outputs and ahead of the disclosure records, so the signing hash
+    // covers them. That is what stops a vote being replayed into another epoch.
+    if (header.pVoteBoundaryHash != NULL)
+    {
+        PutBytes(prefix, *header.pVoteBoundaryHash);
+        for (size_t i = 0; i < 4; ++i)
+            prefix.push_back(
+                static_cast<unsigned char>(header.nVoteBoundaryHeight >> (8 * i)));
+    }
+    // Disclosed records, in the order the decoder reads them: senders per input, then
+    // receivers per output, then amounts per output. They sit inside the signing hash, so
+    // a payload cannot be re-disclosed after its proofs are made.
+    if (fDiscloseSender)
+    {
+        for (size_t i = 0; i < vInputs.size(); ++i)
+            PutBytes(prefix, vInputs[i].senderAuthority);
+    }
+    if (fDiscloseReceiver)
+    {
+        for (size_t i = 0; i < vOutputs.size(); ++i)
+        {
+            PutBytes(prefix, vOutputs[i].recipientSpend);
+            PutBytes(prefix, vOutputs[i].recipientView);
+        }
+    }
+    if (fDiscloseAmount)
+    {
+        // The disclosed amount is the same value the commitment was made over, so the
+        // builder has no way to publish one figure and commit to another.
+        for (size_t i = 0; i < vOutputs.size(); ++i)
+        {
+            PutU64(prefix, vOutputs[i].nAmount);
+            PutBytes(prefix, vOutputs[i].mask);
+        }
+    }
+    PutVector(prefix, std::vector<unsigned char>());   // empty finality body
+    return true;
+}
+
 static bool BuildPrivacyVNextPayload(
     uint8_t nNetwork,
     uint8_t nOperation,
@@ -433,80 +528,44 @@ static bool BuildPrivacyVNextPayload(
             return false;
     }
 
-    std::vector<unsigned char> prefix;
-    prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
-    prefix.push_back(0);
-    prefix.push_back(nOperation);
-    prefix.push_back(0);                         // finality profile: none
-    prefix.push_back(0);                         // authorization: owner
-    prefix.push_back(nDisclosureMask);
-    prefix.push_back(0);                         // finality object: none
-    prefix.push_back(nNetwork);
-    prefix.push_back(0);                         // reserved
-    PutBytes(prefix, genesis);
-    PutBytes(prefix, parameterDigest);
-    PutBytes(prefix, finalizedRoot);
-    PutU64(prefix, nFinalizedTreeSize);
-    PutI64(prefix, nTransparentValueBalance);
-    PutU64(prefix, nFee);
-    // Before the proofs, so the signing hash covers it and no assembler can restate the
-    // transparent side of a payload that already verified.
-    PutBytes(prefix, transparentBinding);
-
-    PutCompactSize(prefix, vDraft.size());
+    PrivacyVNextPrefixHeader header;
+    header.nOperation = nOperation;
+    header.nDisclosureMask = nDisclosureMask;
+    header.nNetwork = nNetwork;
+    header.genesis = genesis;
+    header.parameterDigest = parameterDigest;
+    header.finalizedRoot = finalizedRoot;
+    header.nFinalizedTreeSize = nFinalizedTreeSize;
+    header.nTransparentValueBalance = nTransparentValueBalance;
+    header.nFee = nFee;
+    header.transparentBinding = transparentBinding;
+    header.pVoteBoundaryHash = pVoteBoundaryHash;
+    header.nVoteBoundaryHeight = nVoteBoundaryHeight;
+    std::vector<PrivacyVNextPrefixInput> vPrefixInputs(vDraft.size());
     for (size_t i = 0; i < vDraft.size(); ++i)
     {
-        PutBytes(prefix, vDraft[i].pseudoOut);
-        PutBytes(prefix, vDraft[i].keyImage);
+        vPrefixInputs[i].pseudoOut = vDraft[i].pseudoOut;
+        vPrefixInputs[i].keyImage = vDraft[i].keyImage;
+        vPrefixInputs[i].senderAuthority = vDraft[i].senderAuthority;
     }
-    PutCompactSize(prefix, vEncrypted.size());
+    std::vector<PrivacyVNextPrefixOutput> vPrefixOutputs(vEncrypted.size());
     for (size_t i = 0; i < vEncrypted.size(); ++i)
     {
-        // I is absent by design: validators derive it from this output's own owner key.
-        PutBytes(prefix, vEncrypted[i].leaf.owner);
-        PutBytes(prefix, vEncrypted[i].leaf.commitment);
-        PutBytes(prefix, vEncrypted[i].noteEphemeral);
-        PutBytes(prefix, vEncrypted[i].tweakEphemeral);
-        PutVector(prefix, vEncrypted[i].vchRecipientCiphertext);
-        PutVector(prefix, vEncrypted[i].vchOutgoingCiphertext);
+        vPrefixOutputs[i].owner = vEncrypted[i].leaf.owner;
+        vPrefixOutputs[i].commitment = vEncrypted[i].leaf.commitment;
+        vPrefixOutputs[i].noteEphemeral = vEncrypted[i].noteEphemeral;
+        vPrefixOutputs[i].tweakEphemeral = vEncrypted[i].tweakEphemeral;
+        vPrefixOutputs[i].vchRecipientCiphertext = vEncrypted[i].vchRecipientCiphertext;
+        vPrefixOutputs[i].vchOutgoingCiphertext = vEncrypted[i].vchOutgoingCiphertext;
+        vPrefixOutputs[i].recipientSpend = outputs[i].recipient.spendPublic;
+        vPrefixOutputs[i].recipientView = outputs[i].recipient.viewPublic;
+        vPrefixOutputs[i].nAmount = outputs[i].nAmount;
+        vPrefixOutputs[i].mask = vOutputMasks[i];
     }
-    // The vote's own two fields, in the slot an attestation uses for its registration
-    // context: after the outputs and ahead of the disclosure records, so the signing hash
-    // covers them. That is what stops a vote being replayed into another epoch.
-    if (pVoteBoundaryHash != NULL)
-    {
-        PutBytes(prefix, *pVoteBoundaryHash);
-        for (size_t i = 0; i < 4; ++i)
-            prefix.push_back(
-                static_cast<unsigned char>(nVoteBoundaryHeight >> (8 * i)));
-    }
-    // Disclosed records, in the order the decoder reads them: senders per input, then
-    // receivers per output, then amounts per output. They sit inside the signing hash, so
-    // a payload cannot be re-disclosed after its proofs are made.
-    if (fDiscloseSender)
-    {
-        for (size_t i = 0; i < vDraft.size(); ++i)
-            PutBytes(prefix, vDraft[i].senderAuthority);
-    }
-    if (fDiscloseReceiver)
-    {
-        for (size_t i = 0; i < outputs.size(); ++i)
-        {
-            PutBytes(prefix, outputs[i].recipient.spendPublic);
-            PutBytes(prefix, outputs[i].recipient.viewPublic);
-        }
-    }
-    if (fDiscloseAmount)
-    {
-        // The disclosed amount is the same value the commitment was made over, so the
-        // builder has no way to publish one figure and commit to another.
-        for (size_t i = 0; i < outputs.size(); ++i)
-        {
-            PutU64(prefix, outputs[i].nAmount);
-            PutBytes(prefix, vOutputMasks[i]);
-        }
-    }
-    PutVector(prefix, std::vector<unsigned char>());   // empty finality body
+    std::vector<unsigned char> prefix;
+    if (!AssemblePrivacyVNextPayloadPrefix(header, vPrefixInputs, vPrefixOutputs, prefix,
+                                           strErrorOut))
+        return false;
 
     PrivacyVNextDigest signingHash;
     if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,

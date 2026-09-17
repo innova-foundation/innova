@@ -44,6 +44,71 @@ struct PrivacyVNextNewOutput
     PrivacyVNextNewOutput() : nAmount(0) {}
 };
 
+// The fields of a spend-shaped payload prefix that are not per input or per output.
+struct PrivacyVNextPrefixHeader
+{
+    uint8_t nOperation;
+    uint8_t nDisclosureMask;
+    uint8_t nNetwork;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDigest parameterDigest;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    int64_t nTransparentValueBalance;
+    uint64_t nFee;
+    PrivacyVNextDigest transparentBinding;
+    // A note finality vote's boundary; NULL for every other operation.
+    const PrivacyVNextDigest* pVoteBoundaryHash;
+    uint32_t nVoteBoundaryHeight;
+
+    PrivacyVNextPrefixHeader()
+        : nOperation(0), nDisclosureMask(0), nNetwork(0), nFinalizedTreeSize(0),
+          nTransparentValueBalance(0), nFee(0), pVoteBoundaryHash(NULL),
+          nVoteBoundaryHeight(0)
+    {
+        genesis.fill(0);
+        parameterDigest.fill(0);
+        finalizedRoot.fill(0);
+        transparentBinding.fill(0);
+    }
+};
+
+// One input as the prefix names it. The sender authority is written only when the mask
+// discloses senders.
+struct PrivacyVNextPrefixInput
+{
+    PrivacyVNextDigest pseudoOut;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextDigest senderAuthority;
+};
+
+// One output as the prefix names it. The recipient keys are written only when the mask
+// discloses receivers, and the amount and mask only when it discloses amounts.
+struct PrivacyVNextPrefixOutput
+{
+    PrivacyVNextDigest owner;
+    PrivacyVNextDigest commitment;
+    PrivacyVNextDigest noteEphemeral;
+    PrivacyVNextDigest tweakEphemeral;
+    std::vector<unsigned char> vchRecipientCiphertext;
+    std::vector<unsigned char> vchOutgoingCiphertext;
+    PrivacyVNextDigest recipientSpend;
+    PrivacyVNextDigest recipientView;
+    uint64_t nAmount;
+    PrivacyVNextDigest mask;
+
+    PrivacyVNextPrefixOutput() : nAmount(0) {}
+};
+
+// The one byte layout of a spend-shaped payload prefix -- everything the signing hash
+// covers, in the order the decoder reads it. The builder and a mix coordinator both write
+// through this, so a mix prefix cannot drift from the layout a payload is decoded with.
+bool AssemblePrivacyVNextPayloadPrefix(const PrivacyVNextPrefixHeader& header,
+                                       const std::vector<PrivacyVNextPrefixInput>& vInputs,
+                                       const std::vector<PrivacyVNextPrefixOutput>& vOutputs,
+                                       std::vector<unsigned char>& vchPrefixOut,
+                                       std::string& strErrorOut);
+
 // Disclosure mask: a set bit hides that field (7 = nothing disclosed, 0 = senders,
 // recipients and amounts disclosed). Disclosed fields are proved against the commitments;
 // disclosed amounts replace the range proof.

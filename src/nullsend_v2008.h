@@ -11,6 +11,7 @@
 #include "netbase.h"
 #include "serialize.h"
 #include "privacy_vnext_ffi.h"
+#include "privacy_vnext_builder.h"
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 #include "uint256.h"
 #include "util.h"
@@ -383,6 +384,13 @@ public:
     /** Pseudo-outputs in input order, the order the prefix writes them. Empty until every
      *  seat has submitted one. */
     std::vector<PrivacyVNextDigest> PseudoOutsInInputOrder() const;
+
+    /** The prefix every seat approves before any proof or nonce, built by the payload builder's
+     *  assembler. Refuses anything but a NullSend operation at the NullSend mask with no
+     *  transparent crossing, and refuses until every construction and output is in. */
+    bool AssemblePrefix(const PrivacyVNextPrefixHeader& header,
+                        std::vector<unsigned char>& vchPrefixOut,
+                        std::string* pstrError = NULL) const;
 
     bool OpenOutputWindow(int64_t nNow, std::string* pstrError = NULL);
 

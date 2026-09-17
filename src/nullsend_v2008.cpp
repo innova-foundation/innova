@@ -552,6 +552,57 @@ bool CMixRound::SubmitInputConstruction(const CPubKey& pubkeySession,
     #undef FAIL
 }
 
+bool CMixRound::AssemblePrefix(const PrivacyVNextPrefixHeader& header,
+                               std::vector<unsigned char>& vchPrefixOut,
+                               std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchPrefixOut.clear();
+    if (nPhase != MIX_PHASE_OUTPUT && nPhase != MIX_PHASE_SIGN)
+        FAIL("the round has not reached its outputs");
+    if (!iv5::IsNullSendOperation(header.nOperation))
+        FAIL("a mix prefix names the NullSend operation");
+    if (header.nDisclosureMask != iv5::NULLSEND_DISCLOSURE_MASK)
+        FAIL("a mix prefix discloses amounts and nothing else");
+    if (header.nTransparentValueBalance != 0)
+        FAIL("nothing crosses the transparent boundary in a mix");
+    if (header.pVoteBoundaryHash != NULL)
+        FAIL("a mix names no vote boundary");
+    const std::vector<PrivacyVNextDigest> vPseudoOuts = PseudoOutsInInputOrder();
+    if (vPseudoOuts.empty() || vPseudoOuts.size() != vFinalKeyImages.size())
+        FAIL("not every input construction is in");
+    if (vOutputRecords.size() != vParticipants.size())
+        FAIL("not every output is registered");
+
+    std::vector<PrivacyVNextPrefixInput> vInputs(vPseudoOuts.size());
+    for (size_t i = 0; i < vInputs.size(); i++)
+    {
+        vInputs[i].pseudoOut = vPseudoOuts[i];
+        memcpy(vInputs[i].keyImage.data(), vFinalKeyImages[i].begin(), 32);
+        vInputs[i].senderAuthority.fill(0);
+    }
+    std::vector<PrivacyVNextPrefixOutput> vOutputs(vOutputRecords.size());
+    for (size_t i = 0; i < vOutputs.size(); i++)
+    {
+        const CMixOutputRecord& record = vOutputRecords[i];
+        vOutputs[i].owner = record.owner;
+        vOutputs[i].commitment = record.commitment;
+        vOutputs[i].noteEphemeral = record.noteEphemeral;
+        vOutputs[i].tweakEphemeral = record.tweakEphemeral;
+        vOutputs[i].vchRecipientCiphertext = record.vchRecipientCiphertext;
+        vOutputs[i].vchOutgoingCiphertext = record.vchOutgoingCiphertext;
+        vOutputs[i].recipientSpend.fill(0);
+        vOutputs[i].recipientView.fill(0);
+        vOutputs[i].nAmount = nDenomination;
+        vOutputs[i].mask = record.mask;
+    }
+    std::string strAssemble;
+    if (!AssemblePrivacyVNextPayloadPrefix(header, vInputs, vOutputs, vchPrefixOut, strAssemble))
+        FAIL(strAssemble);
+    return true;
+    #undef FAIL
+}
+
 bool CMixRound::InputConstructionsComplete() const
 {
     if (vParticipants.empty())
