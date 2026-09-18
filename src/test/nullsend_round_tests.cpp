@@ -4262,6 +4262,21 @@ BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
     BOOST_CHECK_MESSAGE(!CheckMixRendezvousRecord(squatter, pubkey, nSlot),
                         "anyone could publish a record for this coordinator's slot");
 
+    // Every byte of a record is under the signature or is the signature. Altering any of
+    // them leaves a record that is not this coordinator's, so there is no variant of an
+    // authorised record that authorises anything else.
+    for (size_t i = 0; i < recFirst.vchSig.size(); i += 7)
+    {
+        CMixRendezvousRecord tweaked = recFirst;
+        tweaked.vchSig[i] = (unsigned char)(tweaked.vchSig[i] ^ 0x01);
+        BOOST_CHECK_MESSAGE(!CheckMixRendezvousRecord(tweaked, pubkey, nSlot),
+                            "a record with an altered signature still passed as authorised");
+    }
+    CMixRendezvousRecord swapped = recFirst;
+    swapped.hashCommitment = recSecond.hashCommitment;
+    BOOST_CHECK_MESSAGE(!CheckMixRendezvousRecord(swapped, pubkey, nSlot),
+                        "a commitment was moved under another record's signature");
+
     // Another feature's OP_RETURN is not a malformed record, it is not a record.
     CScript untagged;
     std::vector<unsigned char> vchOther(MIX_RENDEZVOUS_PAYLOAD_SIZE, 0x7a);
