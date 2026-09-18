@@ -48,11 +48,11 @@ void FillTranscript(CMixRoundAnnouncement& announce)
     announce.nFee = 4 * 25;
     announce.nJoinSecs = 120;
     announce.nViewSecs = 60;
-    announce.nTokenSecs = 60;
+    announce.nTokenSecs = 45;
     announce.nOutputSecs = 120;
-    announce.nApproveSecs = 120;
-    announce.nNonceSecs = 60;
-    announce.nResponseSecs = 60;
+    announce.nApproveSecs = 60;
+    announce.nNonceSecs = 45;
+    announce.nResponseSecs = 30;
     announce.nTerminalSecs = 300;
 }
 
@@ -183,6 +183,16 @@ BOOST_AUTO_TEST_CASE(the_signature_covers_the_commitment)
     BOOST_REQUIRE(snap.Sign(key));
     BOOST_CHECK_MESSAGE(!snap.IsValidBasic(&strError),
                         "a join window too short to reach from a standing start was accepted");
+    // A schedule that cannot finish while its own anchor is still accepted yields a
+    // transaction consensus refuses after every seat has revealed a key image, so the
+    // announcement is refused instead.
+    CMixRoundAnnouncement overlong = announce;
+    overlong.nApproveSecs = (uint16_t)(announce.nApproveSecs + 1);
+    BOOST_REQUIRE(overlong.Sign(key));
+    BOOST_CHECK_MESSAGE(!overlong.IsValidBasic(&strError),
+                        "a round that cannot land before its anchor expires was accepted");
+    BOOST_CHECK(strError.find("anchor") != std::string::npos);
+
     CMixRoundAnnouncement endless = announce;
     endless.nJoinSecs = MIX_WINDOW_MAX_SECS + 1;
     BOOST_REQUIRE(endless.Sign(key));

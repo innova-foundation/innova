@@ -183,7 +183,14 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
         FAIL("the output window is shorter than a registration is given");
     if (nTotal > MIX_SCHEDULE_MAX_TOTAL_SECS)
-        FAIL("the schedule holds the round's anchor open for too long");
+        FAIL("the schedule holds the round open for too long");
+    // Everything up to the broadcast spends the anchor's life. A schedule that does not fit
+    // the budget yields a transaction consensus refuses after every seat has already revealed
+    // a key image, so it is refused here instead -- before anyone has disclosed anything.
+    const int64_t nToBroadcast = (int64_t)nJoinSecs + nViewSecs + nTokenSecs + nOutputSecs +
+                                 nApproveSecs + nNonceSecs + nResponseSecs;
+    if (nToBroadcast > MIX_SCHEDULE_MAX_TO_BROADCAST_SECS)
+        FAIL("the schedule cannot finish while the round's own anchor is still accepted");
     if (nTime <= 0)
         FAIL("announcement carries no time");
     if (!pubkeyCoordinator.IsValid())

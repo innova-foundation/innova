@@ -61,6 +61,30 @@ static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
 static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 300;
 static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
 
+/** The round's anchor is frozen when the announcement is signed, and consensus accepts a
+ *  shielded anchor only while it is within EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS (6) of the
+ *  connecting block's own resolved epoch -- about 1500 s of chain time once the anchor's own
+ *  epoch is already partway through. Everything from signing to the transaction being
+ *  connected has to fit inside that:
+ *
+ *      (slot opening - signing)      <= 600   one slot of publication lead
+ *    + MIX_RENDEZVOUS_MIN_START_SLACK = 300
+ *    + the windows up to broadcast   <= 480   this bound
+ *    + inclusion margin               = 120
+ *                                     -----
+ *                                      1500
+ *
+ *  A schedule that does not fit produces a transaction ConnectBlock refuses AFTER every seat
+ *  has revealed a key image and proved its input. The loss is what they disclosed and the
+ *  work they did, not the value of the notes -- a refused transaction spends nothing -- but
+ *  the disclosure is the part that cannot be taken back, so the round is refused up front.
+ *
+ *  This is the interim shape. The long-term fix is an announcement that commits to an anchor
+ *  RULE rather than an anchor value, resolved once and frozen into the view certificate
+ *  before any proving; that removes publication-lead ageing entirely. */
+static const int MIX_SCHEDULE_MAX_TO_BROADCAST_SECS = 480;
+static const int MIX_LANDING_MARGIN_SECS = 120;
+
 class CMixRoundAnnouncement
 {
 public:
@@ -1076,10 +1100,9 @@ struct CMixRendezvous
     bool IsNull() const { return hashCommitment == 0; }
 };
 
-/** How far back a record may be published for a slot. Without an earliest point a scan
- *  window could miss the record that actually came first, so this is a rule of the protocol
- *  and not a reader's convenience: a record outside the window is not for this slot. */
-static const int MIX_RENDEZVOUS_PUBLISH_SLOTS = 3;
+/** How far back a record may be published for a slot; a record outside the window is not
+ *  for this slot. One slot, because publication lead spends the frozen anchor's life. */
+static const int MIX_RENDEZVOUS_PUBLISH_SLOTS = 1;
 
 /** The window, in median-time-past, which only moves forward, so once the finalized chain
  *  passes a slot's opening the blocks in its window are fixed. */
