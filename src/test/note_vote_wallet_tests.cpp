@@ -20,6 +20,7 @@
 #include "../ed25519_zk.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
+#include "../verifycache.h"
 #include "../privacy_vnext_store.h"
 #include "../shielded.h"
 #include "../txdb.h"
@@ -1063,6 +1064,30 @@ BOOST_AUTO_TEST_CASE(a_vote_builds_inside_its_inclusion_window)
     CastVote(note, chain.pBoundary, 1500001501, vote);
     const int64_t nBuildMs = GetTimeMillis() - nBuildStart;
 
+    // Verification cost paid by every other voter and validator: the membership proof,
+    // verified as the mix verifies its segments, with the proof cache cleared.
+    PrivacyVNextStateEffects verifyEffects;
+    const PrivacyVNextPayloadValidation verifyResult =
+        ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                          vote.payload, verifyEffects);
+    BOOST_CHECK_MESSAGE(verifyResult.nResult == INNOVA_PRIVACY_VNEXT_VALID,
+                        verifyResult.strError);
+    BOOST_REQUIRE(!vProved.empty());
+    PrivacyVNextDigest verifyKeyImage;
+    std::memcpy(verifyKeyImage.data(), vote.keyImage.data(), 32);
+    std::string strVerify;
+    VerifyProofCacheClear();
+    const int64_t nVerifyStart = GetTimeMillis();
+    const bool fVerified = VerifyPrivacyVNextInputMembership(
+        note.finalizedRoot, LowScalar(1), vProved[0].pseudoOut, verifyKeyImage, vchProof,
+        strVerify);
+    const int64_t nVerifyMs = GetTimeMillis() - nVerifyStart;
+    BOOST_CHECK_MESSAGE(fVerified, strVerify);
+    const int64_t nWarmStart = GetTimeMillis();
+    VerifyPrivacyVNextInputMembership(note.finalizedRoot, LowScalar(1), vProved[0].pseudoOut,
+                                      verifyKeyImage, vchProof, strVerify);
+    const int64_t nWarmMs = GetTimeMillis() - nWarmStart;
+
     const int64_t nWindowMs =
         (int64_t)(FINALITY_VOTE_INCLUSION_WINDOW -
                   GetFinalityVoteEmitOffset(BoundaryHeight())) *
@@ -1074,9 +1099,15 @@ BOOST_AUTO_TEST_CASE(a_vote_builds_inside_its_inclusion_window)
                  " ms) against a %" PRId64 " ms window, payload %u bytes\n",
                  nBuildMs, nProveMs, nWindowMs,
                  (unsigned int)vote.payload.size());
+    std::fprintf(stderr,
+                 "note vote membership verify: %" PRId64 " ms cold, %" PRId64 " ms again; "
+                 "an epoch costs a voter one build plus one cold verify per other voter\n",
+                 nVerifyMs, nWarmMs);
     printf("note vote build: %" PRId64 " ms (one membership prove %" PRId64 " ms) "
            "against a %" PRId64 " ms window, payload %u bytes\n",
            nBuildMs, nProveMs, nWindowMs, (unsigned int)vote.payload.size());
+    printf("note vote membership verify: %" PRId64 " ms cold, %" PRId64 " ms again\n",
+           nVerifyMs, nWarmMs);
 
     // The consensus deadline, not a comfort margin. A build that does not fit means the
     // lane cannot cast a vote on this hardware and the two-phase prove is required.
