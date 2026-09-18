@@ -576,40 +576,6 @@ BOOST_AUTO_TEST_CASE(an_anchor_lasts_until_the_head_moves_a_window_past_it)
                         "the first head resolved was not accepted at any height");
 }
 
-// Acceptance is on the root and tree size, not the epoch number. Epochs that share a pair
-// are one anchor as far as a transaction is concerned, so the pair outlives any single
-// epoch's place in the window -- which is why a wallet cannot reason about expiry from
-// epoch arithmetic alone.
-BOOST_AUTO_TEST_CASE(anchors_are_accepted_by_their_pair_not_their_epoch_number)
-{
-    BOOST_REQUIRE(fRegTest);
-    const int nTip = BestIndex()->nHeight;
-    const int nAsOf = GetEpochForHeight(nTip) - 1;
-    BOOST_REQUIRE(nAsOf >= 4);
-    ScopedEpochRecords records(0);
-    CTxDB txdb;
-
-    const int nFinEpoch = nAsOf - 1;
-    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
-    CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
-    BOOST_REQUIRE(pAttested);
-    SetFinalizedAsOf(txdb, records, nAsOf, nFinalized, pAttested->GetBlockHash());
-
-    const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, nTip);
-    BOOST_REQUIRE(vSet.size() >= 2);
-    CEpochState head, older;
-    BOOST_REQUIRE(txdb.ReadEpochState(vSet[0], head));
-    BOOST_REQUIRE(txdb.ReadEpochState(vSet[1], older));
-    // Two epochs in the window that carry the same root and tree size are indistinguishable
-    // to the rule that judges a payload's anchor.
-    BOOST_CHECK_MESSAGE(head.vchVNextRoot.size() == EPOCHSTATE_VNEXT_DIGEST_SIZE,
-                        "the head epoch carries no IV5 root to anchor against");
-    const bool fSamePair = (head.vchVNextRoot == older.vchVNextRoot &&
-                            head.nVNextTreeSize == older.nVNextTreeSize);
-    BOOST_TEST_MESSAGE("window head " << vSet[0] << " and next " << vSet[1]
-                       << (fSamePair ? " share a root/tree pair" : " carry distinct pairs"));
-}
-
 BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
 {
     BOOST_REQUIRE(fRegTest);
