@@ -1054,6 +1054,35 @@ struct CMixRendezvous
     bool IsNull() const { return hashCommitment == 0; }
 };
 
+/** How far back a record may be published for a slot. A coordinator whose transaction is
+ *  slow to confirm still gets its round, and the window a seat has to read stays bounded. */
+static const int MIX_RENDEZVOUS_PUBLISH_SLOTS = 3;
+
+/** How deep the chain view a seat selects from has to be. Reading at the tip would let two
+ *  seats select different records across a reorg, which is the disagreement the commitment
+ *  exists to remove. */
+static const int MIX_RENDEZVOUS_MIN_DEPTH = 12;
+
+/** Never scan more than this many blocks, or hold more than this many records, whichever
+ *  comes first: records are one cheap output each and the key they carry is opaque, so they
+ *  cannot be filtered before they are read. */
+static const int MIX_RENDEZVOUS_MAX_BLOCKS = 4096;
+static const size_t MIX_RENDEZVOUS_MAX_RECORDS = 8192;
+
+/** Every record in one block, in output order. */
+void CollectMixRendezvousRecords(const CBlock& block,
+                                 std::vector<std::pair<uint256, uint256> >& vRecordsOut);
+
+/** The records a slot may select from, in chain order, from a settled view. */
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int64_t nSlot,
+                              std::vector<std::pair<uint256, uint256> >& vRecordsOut,
+                              std::string* pstrError = NULL);
+
+/** What the chain says about this coordinator and slot. */
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CPubKey& pubkeyCoordinator,
+                         int64_t nSlot, CMixRendezvous& rendezvousOut,
+                         std::string* pstrError = NULL);
+
 /** The one record that counts: the first for this identity and slot in the order given, which
  *  callers supply in chain order. A second is ignored -- a coordinator that publishes twice
  *  has not offered an alternative, and treating it as one is the equivocation this exists to

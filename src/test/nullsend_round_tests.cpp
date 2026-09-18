@@ -4163,6 +4163,13 @@ BOOST_AUTO_TEST_CASE(a_seat_joins_only_the_round_its_slot_published)
     // precisely the case the commitment exists to refuse.
     BOOST_CHECK(!MixAnnouncementMatchesRendezvous(announce, CMixRendezvous(), &strError));
 
+    // And an empty announcement agrees with an empty slot on every later check: the two
+    // invalid keys compare equal, both slots are zero, and the commitment over an invalid key
+    // is the zero an empty record holds. Only refusing emptiness outright catches it.
+    const CMixRoundAnnouncement nothing;
+    BOOST_CHECK_MESSAGE(!MixAnnouncementMatchesRendezvous(nothing, CMixRendezvous(), &strError),
+                        "an empty announcement matched an empty slot");
+
     // A second announcement from the same coordinator for the same slot: well formed, signed,
     // and not the one the slot authorises.
     CMixRoundAnnouncement other = announce;
@@ -4177,12 +4184,14 @@ BOOST_AUTO_TEST_CASE(a_seat_joins_only_the_round_its_slot_published)
     const CMixRoundAnnouncement elsewhere = ProvenAnnouncement(keyOther, FreshRoundKey(4403), T0);
     BOOST_CHECK(!MixAnnouncementMatchesRendezvous(elsewhere, rendezvous, &strError));
 
-    // Publish once, run later: the slot is the announcement's own start time, so the
-    // commitment cannot be reused for a round at a time of the coordinator's choosing.
-    CMixRoundAnnouncement late = announce;
-    late.nTime = T0 + MIX_RENDEZVOUS_SLOT_SECONDS;
-    late.hashRound = late.DerivedRoundId();
-    BOOST_CHECK(!MixAnnouncementMatchesRendezvous(late, rendezvous, &strError));
+    // The slot is taken from the announcement's start time. The commitment matches the
+    // rendezvous slot, so only the slot check can refuse this.
+    CMixRendezvous elsewhen = rendezvous;
+    elsewhen.nSlot = rendezvous.nSlot + 1;
+    elsewhen.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator,
+                                                      elsewhen.nSlot, announce.hashRound);
+    BOOST_CHECK_MESSAGE(!MixAnnouncementMatchesRendezvous(announce, elsewhen, &strError),
+                        "a record published for one slot authorised a round in another");
     BOOST_CHECK(strError.find("slot") != std::string::npos);
 
     // And the seat itself refuses, before it proves an input or reveals a key image.
@@ -4257,6 +4266,42 @@ BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
     BOOST_CHECK(MixRendezvousPublishedInTime(nSlotStart - 1, nSlot));
     BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart, nSlot));
     BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart + 60, nSlot));
+}
+
+// What a block yields, in output order, with everything else in it invisible.
+BOOST_AUTO_TEST_CASE(a_block_yields_its_rendezvous_records_in_output_order)
+{
+    CKey keyCoordinator;
+    keyCoordinator.MakeNewKey(true);
+    const int64_t nSlot = 45002;
+    const uint256 idSlot = MixRendezvousIdentitySlot(keyCoordinator.GetPubKey(), nSlot);
+    uint256 hashA, hashB;
+    hashA.SetHex("0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a");
+    hashB.SetHex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
+
+    CBlock block;
+    CTransaction txFirst;
+    txFirst.vout.resize(3);
+    txFirst.vout[0].scriptPubKey = CScript() << OP_TRUE;          // an ordinary payment
+    txFirst.vout[1].scriptPubKey = BuildMixRendezvousScript(idSlot, hashA);
+    std::vector<unsigned char> vchElse(8, 0x11);
+    txFirst.vout[2].scriptPubKey = CScript() << OP_RETURN << vchElse;  // another feature's
+    CTransaction txSecond;
+    txSecond.vout.resize(1);
+    txSecond.vout[0].scriptPubKey = BuildMixRendezvousScript(idSlot, hashB);
+    block.vtx.push_back(txFirst);
+    block.vtx.push_back(txSecond);
+
+    std::vector<std::pair<uint256, uint256> > vRecords;
+    CollectMixRendezvousRecords(block, vRecords);
+    BOOST_REQUIRE_EQUAL(vRecords.size(), 2u);
+    BOOST_CHECK(vRecords[0].second == hashA);
+    BOOST_CHECK(vRecords[1].second == hashB);
+
+    // And within one block the earlier output is the one that counts.
+    CMixRendezvous rendezvous;
+    BOOST_REQUIRE(SelectMixRendezvous(vRecords, keyCoordinator.GetPubKey(), nSlot, rendezvous));
+    BOOST_CHECK(rendezvous.hashCommitment == hashA);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -3183,6 +3183,79 @@ bool SelectMixRendezvous(const std::vector<std::pair<uint256, uint256> >& vRecor
     return false;
 }
 
+void CollectMixRendezvousRecords(const CBlock& block,
+                                 std::vector<std::pair<uint256, uint256> >& vRecordsOut)
+{
+    for (size_t i = 0; i < block.vtx.size(); ++i)
+        for (size_t j = 0; j < block.vtx[i].vout.size(); ++j)
+        {
+            uint256 idSlot, hashCommitment;
+            if (DecodeMixRendezvousScript(block.vtx[i].vout[j].scriptPubKey, idSlot,
+                                          hashCommitment))
+                vRecordsOut.push_back(std::make_pair(idSlot, hashCommitment));
+        }
+}
+
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int64_t nSlot,
+                              std::vector<std::pair<uint256, uint256> >& vRecordsOut,
+                              std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vRecordsOut.clear();
+    if (!pindexTip || nSlot <= 0)
+        FAIL("a rendezvous read needs a chain and a slot");
+    const int64_t nSlotOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    const int64_t nEarliest = nSlotOpens -
+        (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS * MIX_RENDEZVOUS_SLOT_SECONDS;
+
+    // A settled view, not the tip: two seats reading at the tip can select different records
+    // across a reorg, which is the disagreement the commitment exists to remove.
+    const CBlockIndex* pindex = pindexTip->GetAncestor(pindexTip->nHeight -
+                                                       MIX_RENDEZVOUS_MIN_DEPTH);
+    if (!pindex)
+        FAIL("the chain is not deep enough to select a rendezvous from a settled view");
+
+    std::vector<const CBlockIndex*> vScan;
+    for (int nScanned = 0; pindex && nScanned < MIX_RENDEZVOUS_MAX_BLOCKS;
+         pindex = pindex->pprev, ++nScanned)
+    {
+        const int64_t nBlockTime = pindex->GetBlockTime();
+        if (nBlockTime < nEarliest)
+            break;
+        if (MixRendezvousPublishedInTime(nBlockTime, nSlot))
+            vScan.push_back(pindex);
+    }
+    // Chain order, which is what first-wins is defined over.
+    for (size_t i = vScan.size(); i-- > 0; )
+    {
+        CBlock block;
+        if (!block.ReadFromDisk(vScan[i], true))
+            FAIL("a block this rendezvous window covers could not be read");
+        CollectMixRendezvousRecords(block, vRecordsOut);
+        if (vRecordsOut.size() > MIX_RENDEZVOUS_MAX_RECORDS)
+            FAIL("this rendezvous window carries more records than a seat will read");
+    }
+    return true;
+    #undef FAIL
+}
+
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CPubKey& pubkeyCoordinator,
+                         int64_t nSlot, CMixRendezvous& rendezvousOut,
+                         std::string* pstrError)
+{
+    rendezvousOut = CMixRendezvous();
+    std::vector<std::pair<uint256, uint256> > vRecords;
+    if (!ReadMixRendezvousRecords(pindexTip, nSlot, vRecords, pstrError))
+        return false;
+    if (!SelectMixRendezvous(vRecords, pubkeyCoordinator, nSlot, rendezvousOut))
+    {
+        if (pstrError)
+            *pstrError = "this slot published no round for that coordinator";
+        return false;
+    }
+    return true;
+}
+
 bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
                                       const CMixRendezvous& rendezvous,
                                       std::string* pstrError)
