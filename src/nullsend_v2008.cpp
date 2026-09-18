@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 
+#include "ed25519_zk.h"
 #include "netbase.h"
 #include "nullsend.h"
 #include "privacy_vnext/iv5_protocol.h"
@@ -3001,4 +3002,420 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
     const MixDispatch nVerdict = DispatchMixFrame(round, nType, vchPayload, nNow, strError);
     nReplyTypeOut = MIX_FRAME_ACK;
     return BuildMixAckBody(nVerdict == MIX_DISPATCH_OK, vchReplyOut);
+}
+
+// ---------------------------------------------------------------------------
+// The seat
+// ---------------------------------------------------------------------------
+
+CMixSeat::CMixSeat() : fBegun(false), keyImage(0), hashViewSigned(0), nMyPosition(-1)
+{
+    pseudoOut.fill(0);
+    pseudoOutMaskDelta.fill(0);
+    approvedSigningHash.fill(0);
+}
+
+bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessionIn,
+                     const CMixSeatMaterial& materialIn, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (fBegun)
+        FAIL("this seat is already in an attempt; a new one needs fresh entropy");
+    if (!announce.IsValidBasic(pstrError))
+        return false;
+    if (!announce.CheckSignature())
+        FAIL("the announcement is not signed by the key it names");
+    if (!keySessionIn.IsValid())
+        FAIL("the session key is not usable");
+    if ((int)materialIn.vEphemerals.size() != announce.nParticipants)
+        FAIL("a bundle needs one variant per announced seat");
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    // Fresh per attempt, and the caller has to have drawn them: reusing either is how a
+    // repeated proof or a repeated nonce gives up what it was hiding.
+    if (materialIn.membershipEntropy == zero || materialIn.balanceEntropy == zero)
+        FAIL("this attempt has no entropy of its own");
+
+    announcement = announce;
+    keySession = keySessionIn;
+    pubkeySession = keySessionIn.GetPubKey();
+    material = materialIn;
+
+    // The proving pass that fixes what this seat will publish about its input. The
+    // signable hash does not enter it, which is why the pseudo-output and key image can be
+    // committed to before the prefix that names them exists.
+    PrivacyVNextDigest provisional;
+    provisional.fill(0);
+    provisional[0] = 1;
+    std::vector<PrivacyVNextSpendInput> vInputs(1, material.input);
+    std::vector<PrivacyVNextSpendConstruction> vDraft;
+    std::vector<unsigned char> vchDraft;
+    std::string strProve;
+    if (!ProvePrivacyVNextMembership(announce.finalizedRoot, provisional,
+                                     material.membershipEntropy, vInputs, vDraft, vchDraft,
+                                     strProve))
+        FAIL("this seat could not prove its own input: " + strProve);
+    if (vDraft.size() != 1)
+        FAIL("proving returned the wrong input count");
+    pseudoOut = vDraft[0].pseudoOut;
+    pseudoOutMaskDelta = vDraft[0].pseudoOutMaskDelta;
+    memcpy(keyImage.begin(), vDraft[0].keyImage.data(), 32);
+    fBegun = true;
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (!fBegun)
+        FAIL("this seat has not started an attempt");
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixJoinBody(pubkeySession, keyImage, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_JOIN, vchBody,
+                             vchFrameOut))
+        FAIL("the join frame could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::AcceptRoster(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                            std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (!fBegun)
+        FAIL("this seat has not started an attempt");
+    // One view per attempt. A seat that signs a second has signed two rosters, and a
+    // coordinator holding both can run two rounds against one input.
+    if (hashViewSigned != 0)
+        FAIL("this attempt has already signed a view");
+    if ((int)snapshot.vRoster.size() != announcement.nParticipants)
+        FAIL("the roster is not the size the announcement published");
+    bool fFound = false;
+    for (size_t i = 0; i < snapshot.vRoster.size(); i++)
+    {
+        if (snapshot.vRoster[i].keyImage != keyImage)
+            continue;
+        if (!(snapshot.vRoster[i].pubkeySession == pubkeySession))
+            FAIL("the roster pairs this seat's input with another session key");
+        fFound = true;
+    }
+    if (!fFound)
+        FAIL("the roster does not carry this seat");
+
+    const uint256 hashView = MixViewDigest(announcement.hashRound, snapshot.vRoster);
+    if (hashView == 0)
+        FAIL("that roster has no view digest");
+    std::vector<unsigned char> vchSig, vchBody;
+    if (!keySession.Sign(hashView, vchSig) ||
+        !BuildMixViewSigBody(pubkeySession, announcement.hashRound, vchSig, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_VIEW_SIG, vchBody,
+                             vchFrameOut))
+        FAIL("the view signature could not be built");
+    vRoster = snapshot.vRoster;
+    hashViewSigned = hashView;
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildConstruction(std::vector<unsigned char>& vchFrameOut,
+                                 std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (hashViewSigned == 0)
+        FAIL("this seat has not agreed a view to construct under");
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixInputConstructionBody(pubkeySession, announcement.hashRound, keyImage,
+                                       pseudoOut, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_INPUT_CONSTRUCTION,
+                             vchBody, vchFrameOut))
+        FAIL("the construction frame could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildTokenRequest(const CMixSnapshot& snapshot,
+                                 std::vector<unsigned char>& vchFrameOut, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (hashViewSigned == 0)
+        FAIL("this seat has not agreed a view");
+    // Checked BEFORE anything is blinded to it: a key the announcement did not commit to
+    // is a per-seat key, and a token under one is a tag the coordinator reads off the
+    // anonymous connection.
+    if (!announcement.KeyOpensCommitment(snapshot.vchRsaN, snapshot.vchRsaE))
+        FAIL("the round key is not the one the announcement commits to");
+    if (vBundle.empty())
+    {
+        // The input context of the round this seat is in, which is what its own output
+        // derives under -- and the roster it signed is where the key images come from.
+        std::vector<PrivacyVNextDigest> vImages;
+        for (size_t i = 0; i < vRoster.size(); i++)
+        {
+            PrivacyVNextDigest image;
+            memcpy(image.data(), vRoster[i].keyImage.begin(), 32);
+            vImages.push_back(image);
+        }
+        PrivacyVNextDigest context;
+        std::string strContext;
+        if (!DerivePrivacyVNextInputContext(iv5::NOTE_NULLSEND, MixTransparentBinding(), vImages,
+                                            context, strContext))
+            FAIL("this seat could not derive the round's input context: " + strContext);
+        std::string strBundle;
+        if (!BuildMixOutputBundle(announcement.nNetwork, announcement.genesis,
+                                  material.recipientSpend, material.recipientView,
+                                  material.outgoingSecret, context, announcement.nDenomination,
+                                  material.outputY, material.outputMask, material.vEphemerals,
+                                  vBundle, strBundle))
+            FAIL("this seat could not build its output bundle: " + strBundle);
+    }
+    vchRsaN = snapshot.vchRsaN;
+    vchRsaE = snapshot.vchRsaE;
+    if (!blinder.BlindCredentialMessage(snapshot.vchRsaN, snapshot.vchRsaE,
+                                        MixOutputBundleCredentialHash(vBundle)))
+        FAIL("the bundle credential could not be blinded");
+    vchBlinded = blinder.vchBlindedCredential;
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixBlindRequestBody(pubkeySession, announcement.hashRound, vchBlinded, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_BLIND_REQUEST, vchBody,
+                             vchFrameOut))
+        FAIL("the token request could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::AcceptToken(const std::vector<unsigned char>& vchBlindSignature,
+                           std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (vchBlinded.empty())
+        FAIL("this seat has not asked for a token");
+    if (!blinder.UnblindSignature(vchBlindSignature))
+        FAIL("the blind signature could not be unblinded");
+    // Verified here, on the authenticated connection, and never discovered on the
+    // anonymous one: a registration refused for a bad token is a refusal aimed at an
+    // output, and which seat retries after it is the mapping the token exists to hide.
+    // Against the key the announcement's commitment opened to, checked before blinding.
+    if (!VerifyMixCredential(vchRsaN, vchRsaE, blinder.vchCredentialHash,
+                             blinder.vchUnblindedSig))
+        FAIL("the token does not verify under the round key this seat blinded to");
+    vchToken = blinder.vchCredentialHash;
+    vchTokenSig = blinder.vchUnblindedSig;
+    if (vchToken.size() != 32 || vchTokenSig.empty())
+        FAIL("the token is not the shape a registration carries");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildRegistration(std::vector<unsigned char>& vchBodyOut,
+                                 std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchBodyOut.clear();
+    if (vchToken.empty() || vBundle.empty())
+        FAIL("this seat has no token to register with");
+    if (!BuildMixOutputBundleBody(vchToken, vchTokenSig, vBundle, vchBodyOut))
+        FAIL("the registration could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::AcceptPrefix(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                            std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (hashViewSigned == 0 || vBundle.empty())
+        FAIL("this seat has nothing to check a prefix against");
+    // One prefix per attempt. Approving a second is how one input ends up proved under two
+    // statements, and the coordinator refusing to offer one is not this seat's guarantee.
+    if (!vchApprovedPrefix.empty())
+        FAIL("this attempt has already approved a prefix");
+    if (snapshot.vchPrefix.empty())
+        FAIL("the round has not frozen a prefix");
+
+    CMixSeatExpectation expect;
+    expect.nNetwork = announcement.nNetwork;
+    expect.genesis = announcement.genesis;
+    expect.parameterDigest = announcement.parameterDigest;
+    expect.finalizedRoot = announcement.finalizedRoot;
+    expect.nFinalizedTreeSize = announcement.nFinalizedTreeSize;
+    expect.nFee = announcement.nFee;
+    expect.nDenomination = announcement.nDenomination;
+    expect.transparentBinding = MixTransparentBinding();
+    for (size_t i = 0; i < vRoster.size(); i++)
+        expect.vRosterKeyImages.push_back(vRoster[i].keyImage);
+    expect.myKeyImage = keyImage;
+    expect.myPseudoOut = pseudoOut;
+    // Every variant, each valid only at its own position: the encryption binds the slot,
+    // so a record kept anywhere else is a note this seat could not see.
+    for (size_t i = 0; i < vBundle.size(); i++)
+        expect.vMyOutputs.push_back(std::make_pair((int)i, vBundle[i]));
+    std::string strCheck;
+    if (!CheckMixPrefixForSeat(snapshot.vchPrefix, expect, strCheck))
+        FAIL("this seat refuses the prefix: " + strCheck);
+
+    // Which slot it was given, which is what its response has to answer for.
+    CMixPrefixView view;
+    if (!ParseMixPrefix(snapshot.vchPrefix, view, strCheck))
+        FAIL(strCheck);
+    nMyPosition = -1;
+    std::vector<unsigned char> vchMine, vchTheirs;
+    for (size_t i = 0; i < view.vOutputs.size(); i++)
+    {
+        if (!EncodeMixOutputRecord(view.vOutputs[i], vchTheirs) ||
+            !EncodeMixOutputRecord(vBundle[i], vchMine))
+            continue;
+        if (vchMine == vchTheirs)
+            nMyPosition = (int)i;
+    }
+    if (nMyPosition < 0)
+        FAIL("this seat cannot find its own output in a prefix it just accepted");
+
+    std::string strHash;
+    if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                       snapshot.vchPrefix, approvedSigningHash, strHash))
+        FAIL(strHash);
+    const uint256 hashPrefix = MixPrefixDigest(hashViewSigned, approvedSigningHash);
+    std::vector<unsigned char> vchSig, vchBody;
+    if (!keySession.Sign(hashPrefix, vchSig) ||
+        !BuildMixPrefixSigBody(pubkeySession, announcement.hashRound, vchSig, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_PREFIX_SIG, vchBody,
+                             vchFrameOut))
+        FAIL("the approval could not be built");
+    vchApprovedPrefix = snapshot.vchPrefix;
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildMembershipProof(std::vector<unsigned char>& vchFrameOut,
+                                    std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    if (vchApprovedPrefix.empty())
+        FAIL("this seat has approved no prefix to prove under");
+    std::vector<PrivacyVNextSpendInput> vInputs(1, material.input);
+    std::vector<PrivacyVNextSpendConstruction> vFinal;
+    std::vector<unsigned char> vchProof;
+    std::string strProve;
+    // The same entropy as the draft pass, which is what makes the pseudo-output it
+    // published the one this proof opens; the signable hash is the approved prefix's, and
+    // the prover's two streams keep the nonces apart.
+    if (!ProvePrivacyVNextMembership(announcement.finalizedRoot, approvedSigningHash,
+                                     material.membershipEntropy, vInputs, vFinal, vchProof,
+                                     strProve))
+        FAIL("this seat could not prove its input: " + strProve);
+    if (vFinal.size() != 1 || !(vFinal[0].pseudoOut == pseudoOut))
+        FAIL("proving did not reproduce the pseudo-output this seat published");
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixMembershipProofBody(pubkeySession, announcement.hashRound, vchProof, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_MEMBERSHIP_PROOF,
+                             vchBody, vchFrameOut))
+        FAIL("the proof frame could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BalanceFacts(PrivacyVNextMixBalanceFacts& factsOut,
+                            PrivacyVNextMixBalanceShare& shareOut, std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (vchApprovedPrefix.empty() || nMyPosition < 0)
+        FAIL("this seat has approved no prefix to sign under");
+    CMixPrefixView view;
+    std::string strParse;
+    if (!ParseMixPrefix(vchApprovedPrefix, view, strParse))
+        FAIL(strParse);
+    factsOut = PrivacyVNextMixBalanceFacts();
+    factsOut.nInputCount = (uint8_t)view.vPseudoOuts.size();
+    factsOut.nOutputCount = (uint8_t)view.vOutputs.size();
+    factsOut.nTransparentValueBalance = view.nTransparentValueBalance;
+    factsOut.nFee = view.nFee;
+    factsOut.signableHash = approvedSigningHash;
+    factsOut.vPseudoOuts = view.vPseudoOuts;
+    for (size_t i = 0; i < view.vOutputs.size(); i++)
+        factsOut.vOutputs.push_back(view.vOutputs[i].commitment);
+
+    shareOut = PrivacyVNextMixBalanceShare();
+    shareOut.nInputIndex = 0xff;
+    for (size_t i = 0; i < view.vKeyImages.size(); i++)
+        if (view.vKeyImages[i] == keyImage)
+            shareOut.nInputIndex = (uint8_t)i;
+    if (shareOut.nInputIndex == 0xff)
+        FAIL("the approved prefix does not carry this seat's input");
+    shareOut.nOutputIndex = (uint8_t)nMyPosition;
+    if (announcement.nParticipants <= 0)
+        FAIL("the announcement carries no seat count");
+    shareOut.nFeeShare = announcement.nFee / (uint64_t)announcement.nParticipants;
+    // What this seat signs with is its pseudo-output's mask: the note's own mask plus the
+    // rerandomisation the proving pass drew. It never signs the difference against its
+    // output, which would name that output as its own.
+    std::vector<unsigned char> vchSum;
+    if (!Ed25519ScalarAdd(std::vector<unsigned char>(material.noteMask.begin(),
+                                                     material.noteMask.end()),
+                          std::vector<unsigned char>(pseudoOutMaskDelta.begin(),
+                                                     pseudoOutMaskDelta.end()),
+                          vchSum) ||
+        vchSum.size() != 32)
+        FAIL("this seat could not form the mask it signs with");
+    memcpy(shareOut.mask.data(), &vchSum[0], 32);
+    shareOut.outputMask = material.outputMask;
+    shareOut.entropy = material.balanceEntropy;
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildNonce(std::vector<unsigned char>& vchFrameOut, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    PrivacyVNextMixBalanceFacts facts;
+    PrivacyVNextMixBalanceShare share;
+    if (!BalanceFacts(facts, share, pstrError))
+        return false;
+    PrivacyVNextDigest nonce;
+    std::string strNonce;
+    if (!PrivacyVNextMixBalanceNonce(facts, share, nonce, strNonce))
+        FAIL("this seat could not draw its nonce: " + strNonce);
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixScalarBody(pubkeySession, std::vector<unsigned char>(nonce.begin(), nonce.end()),
+                            vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_NONCE, vchBody,
+                             vchFrameOut))
+        FAIL("the nonce frame could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildResponse(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                             std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vchFrameOut.clear();
+    PrivacyVNextMixBalanceFacts facts;
+    PrivacyVNextMixBalanceShare share;
+    if (!BalanceFacts(facts, share, pstrError))
+        return false;
+    if (snapshot.vNonces.size() != facts.nInputCount)
+        FAIL("the aggregate this seat was shown does not cover every input");
+    // The challenge is rebuilt from the prefix this seat approved and the aggregate it read
+    // back, never from anything the coordinator states about either.
+    PrivacyVNextDigest response;
+    std::string strSign;
+    if (!PrivacyVNextMixBalanceSign(facts, share, snapshot.vNonces, response, strSign))
+        FAIL("this seat could not answer the challenge: " + strSign);
+    std::vector<unsigned char> vchBody;
+    if (!BuildMixScalarBody(pubkeySession,
+                            std::vector<unsigned char>(response.begin(), response.end()),
+                            vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_RESPONSE, vchBody,
+                             vchFrameOut))
+        FAIL("the response frame could not be built");
+    return true;
+    #undef FAIL
 }

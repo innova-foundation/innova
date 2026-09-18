@@ -975,4 +975,111 @@ private:
 bool MixRoundKeyWasUsed(const std::vector<unsigned char>& vchRSA_N);
 bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint256& hashRound);
 
+// The seat: signs one view and one prefix per attempt, uses fresh entropy for every proof and
+// nonce, rebuilds the challenge from what it approved, and checks its token and the prefix.
+
+/** What a seat brings to one attempt. Every scalar here is drawn fresh for the attempt: a
+ *  membership proof repeated under a second statement, or a balance nonce reused under a
+ *  second challenge, hands over the secret each was protecting. */
+struct CMixSeatMaterial
+{
+    PrivacyVNextSpendInput input;             // the note being spent, with its witness
+    PrivacyVNextDigest recipientSpend;        // who the output pays
+    PrivacyVNextDigest recipientView;
+    PrivacyVNextDigest outgoingSecret;
+    PrivacyVNextDigest noteMask;              // the mask the note being spent was committed under
+    PrivacyVNextDigest outputY;               // the opening every variant of the bundle shares
+    PrivacyVNextDigest outputMask;
+    std::vector<std::pair<PrivacyVNextDigest, PrivacyVNextDigest> > vEphemerals;  // per position
+    PrivacyVNextDigest membershipEntropy;
+    PrivacyVNextDigest balanceEntropy;
+};
+
+class CMixSeat
+{
+public:
+    CMixSeat();
+
+    /** Take the announcement, check what can be checked without the coordinator, and do
+     *  the proving pass that fixes this attempt's pseudo-output and key image. */
+    bool Begin(const CMixRoundAnnouncement& announce, const CKey& keySession,
+               const CMixSeatMaterial& material, std::string* pstrError = NULL);
+
+    const uint256& KeyImage() const { return keyImage; }
+    const PrivacyVNextDigest& PseudoOut() const { return pseudoOut; }
+    const std::vector<CMixOutputRecord>& Bundle() const { return vBundle; }
+
+    bool BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL) const;
+
+    /** Accept the frozen roster from a snapshot and sign its view. Refused if this seat's pair is
+     *  missing, the roster is not the announced size, or a view was already signed. */
+    bool AcceptRoster(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                      std::string* pstrError = NULL);
+
+    bool BuildConstruction(std::vector<unsigned char>& vchFrameOut,
+                           std::string* pstrError = NULL) const;
+
+    /** Check the round key against the announcement's commitment, then blind this attempt's
+     *  bundle credential under it. A key the commitment does not open is refused before
+     *  anything is blinded to it. */
+    bool BuildTokenRequest(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                           std::string* pstrError = NULL);
+    /** Unblind, and verify the token locally before it is ever presented: a signature that
+     *  does not verify is a round this seat cannot register in, and finding that out on the
+     *  anonymous connection would be finding it out with a tag attached. */
+    bool AcceptToken(const std::vector<unsigned char>& vchBlindSignature,
+                     std::string* pstrError = NULL);
+
+    /** The anonymous registration. Carries the token and the bundle and names no seat. */
+    bool BuildRegistration(std::vector<unsigned char>& vchBodyOut,
+                           std::string* pstrError = NULL) const;
+
+    /** Check the whole prefix and approve it. One prefix per attempt: a second, however
+     *  well formed, is refused, because approving two is how a seat proves one input under
+     *  two statements. */
+    bool AcceptPrefix(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                      std::string* pstrError = NULL);
+
+    /** Prove this seat's input under the approved prefix, with entropy drawn for this
+     *  attempt. */
+    bool BuildMembershipProof(std::vector<unsigned char>& vchFrameOut,
+                              std::string* pstrError = NULL);
+
+    /** The balance share. The nonce answers one aggregate and the response is computed
+     *  against the aggregate this seat read back, not one it was told. */
+    bool BuildNonce(std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL);
+    bool BuildResponse(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
+                       std::string* pstrError = NULL);
+
+private:
+    CMixSeat(const CMixSeat&);
+    CMixSeat& operator=(const CMixSeat&);
+
+    bool BalanceFacts(PrivacyVNextMixBalanceFacts& factsOut, PrivacyVNextMixBalanceShare& shareOut,
+                      std::string* pstrError) const;
+
+    CMixRoundAnnouncement announcement;
+    CKey keySession;
+    CPubKey pubkeySession;
+    CMixSeatMaterial material;
+    bool fBegun;
+
+    uint256 keyImage;
+    PrivacyVNextDigest pseudoOut;
+    PrivacyVNextDigest pseudoOutMaskDelta;
+    std::vector<CMixOutputRecord> vBundle;
+
+    std::vector<CMixRosterEntry> vRoster;     // the roster this seat signed, held fixed
+    uint256 hashViewSigned;
+    std::vector<unsigned char> vchToken;      // the unblinded credential
+    std::vector<unsigned char> vchTokenSig;
+    std::vector<unsigned char> vchBlinded;
+    std::vector<unsigned char> vchRsaN;
+    std::vector<unsigned char> vchRsaE;
+    CNullSendClient blinder;
+    std::vector<unsigned char> vchApprovedPrefix;
+    PrivacyVNextDigest approvedSigningHash;
+    int nMyPosition;
+};
+
 #endif // INNOVA_NULLSEND_V2008_H

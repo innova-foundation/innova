@@ -2011,6 +2011,8 @@ struct MixProofSet
     std::vector<unsigned char> vchOtherHashProof;        // input 0 under another signing hash
     std::vector<PrivacyVNextDigest> vSeatMasks;          // note mask plus the proving delta
     std::vector<PrivacyVNextScanKey> vRecipients;        // who each record pays
+    std::vector<PrivacyVNextSpendInput> vSpends;         // the notes themselves, for a client
+    std::vector<PrivacyVNextDigest> vNoteMasks;
 };
 
 PrivacyVNextDigest LowScalar(unsigned char ch)
@@ -2128,6 +2130,8 @@ const MixProofSet& MixProofs()
             set.vchOtherHashProof = vchDraft;
     }
 
+    set.vSpends = vSpends;
+    set.vNoteMasks = vNoteMasks;
     set.header = MixHeader();
     set.header.nNetwork = nNetwork;
     set.header.genesis = genesis;
@@ -3693,12 +3697,240 @@ BOOST_AUTO_TEST_CASE(a_round_key_runs_one_round)
     BOOST_CHECK(strError.find("already run") != std::string::npos);
     BOOST_CHECK(MixRoundKeyWasUsed(roundKey.vchRSA_N));
 
+    // And a key the announcement did not commit to is refused whether or not it is fresh:
+    // a per-seat key is how a coordinator reads the seat off an anonymous registration, and
+    // the commitment is what a seat checks before it blinds anything.
+    const CNullSendSession otherKey = FreshRoundKey(4005);
+    CKey keyOther;
+    const CMixRoundAnnouncement mismatched = ProvenAnnouncement(keyOther, roundKey, T0 + 3000);
+    CMixCoordinator coordMismatch;
+    BOOST_CHECK_MESSAGE(!coordMismatch.Open(mismatched, otherKey, T0 + 3000, &strError),
+                        "a round opened under a key its announcement does not commit to");
+    BOOST_CHECK(strError.find("commits to") != std::string::npos);
+
     // A fresh key opens fine, which is what makes the refusal above about reuse.
     const CNullSendSession freshKey = FreshRoundKey(4004);
     CKey keyThird;
     const CMixRoundAnnouncement third = ProvenAnnouncement(keyThird, freshKey, T0 + 2000);
     CMixCoordinator coordThird;
     BOOST_CHECK_MESSAGE(coordThird.Open(third, freshKey, T0 + 2000, &strError), strError);
+}
+
+namespace {
+
+// What a seat brings to an attempt, drawn for this attempt only.
+CMixSeatMaterial SeatMaterial(size_t nIndex, size_t nSeats, unsigned char chSeed)
+{
+    const MixProofSet& proofs = MixProofs();
+    PrivacyVNextDigest seed;
+    seed.fill(chSeed);
+    PrivacyVNextDerivedKeys recipient;
+    std::string strError;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextLocalGenesis(genesis.data());
+    BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(seed, genesis, 0, PrivacyVNextLocalNetworkId(),
+                                                 0, recipient, strError), strError);
+    CMixSeatMaterial material;
+    material.input.spendScalar = proofs.vSpends[nIndex].spendScalar;
+    material.input.commitmentScalar = proofs.vSpends[nIndex].commitmentScalar;
+    material.input.leaf = proofs.vSpends[nIndex].leaf;
+    material.input.vchWitnessRecord = proofs.vSpends[nIndex].vchWitnessRecord;
+    material.recipientSpend = recipient.spendPublic;
+    material.recipientView = recipient.viewPublic;
+    material.outgoingSecret = recipient.outgoingViewSecret;
+    material.noteMask = proofs.vNoteMasks[nIndex];
+    material.outputY = LowScalar((unsigned char)(chSeed + 1));
+    material.outputMask = LowScalar((unsigned char)(chSeed + 2));
+    for (size_t j = 0; j < nSeats; j++)
+        material.vEphemerals.push_back(std::make_pair(LowScalar((unsigned char)(chSeed + 3 + 2 * j)),
+                                                      LowScalar((unsigned char)(chSeed + 4 + 2 * j))));
+    material.membershipEntropy = LowScalar((unsigned char)(chSeed + 0x20));
+    material.balanceEntropy = LowScalar((unsigned char)(chSeed + 0x30));
+    return material;
+}
+
+// Whether a frame was taken, rather than merely answered.
+bool AcceptedFrame(CMixCoordinator& coord, MixFrameType nType,
+                   const std::vector<unsigned char>& vchFrame, int64_t nNow)
+{
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchReply;
+    if (!coord.Serve(nType, vchFrame, nNow, nReply, vchReply) || nReply != MIX_FRAME_ACK)
+        return false;
+    bool fAccepted = false;
+    return ReadMixAckBody(vchReply, fAccepted) && fAccepted;
+}
+
+// The reply a seat gets, unpacked.
+bool AskSeat(CMixCoordinator& coord, MixFrameType nType,
+             const std::vector<unsigned char>& vchFrame, int64_t nNow,
+             MixFrameType& nReplyOut, std::vector<unsigned char>& vchReplyOut)
+{
+    nReplyOut = MIX_FRAME_NONE;
+    return coord.Serve(nType, vchFrame, nNow, nReplyOut, vchReplyOut);
+}
+
+// A seat's own read of the round.
+bool ReadSnapshot(CMixCoordinator& coord, const Seat& seat, const uint256& hashRound,
+                  const uint256& hashAnnounce, int64_t nNow, CMixSnapshot& snapshotOut)
+{
+    std::vector<unsigned char> vchBody, vchFrame, vchReply;
+    if (!BuildMixStateAuthBody(seat.pubkey, hashAnnounce, vchBody) ||
+        !BuildAuthedMixFrame(seat.key, hashRound, MIX_FRAME_STATE_AUTH, vchBody, vchFrame))
+        return false;
+    MixFrameType nReply = MIX_FRAME_NONE;
+    if (!coord.Serve(MIX_FRAME_STATE_AUTH, vchFrame, nNow, nReply, vchReply) ||
+        nReply != MIX_FRAME_SNAPSHOT)
+        return false;
+    return ReadMixSnapshotBody(vchReply, snapshotOut);
+}
+
+} // namespace
+
+// Two real clients against the real service, every step a frame: the coordinator publishes
+// a validating transaction and each recipient finds its note in it.
+BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
+{
+    const int64_t T0 = 24000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4101);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    const uint256 hashRound = announce.hashRound;
+    CMixCoordinator coord;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(coord.Open(announce, roundKey, T0, &strError), strError);
+
+    // Each seat starts its attempt, which is where it proves its input once to fix what it
+    // will publish about it.
+    CMixSeat seatA, seatB;
+    Seat idA = MakeSeat(1), idB = MakeSeat(2);
+    BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), &strError),
+                          strError);
+    BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), &strError),
+                          strError);
+    idA.keyImage = seatA.KeyImage();
+    idB.keyImage = seatB.KeyImage();
+    BOOST_CHECK(idA.keyImage != idB.keyImage);
+
+    CMixSeat* vSeatsPtr[2] = { &seatA, &seatB };
+    Seat vIds[2] = { idA, idB };
+
+    std::vector<unsigned char> vchFrame, vchReply;
+    MixFrameType nReply = MIX_FRAME_NONE;
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(vSeatsPtr[i]->BuildJoin(vchFrame, &strError));
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_JOIN, vchFrame, T0, nReply, vchReply));
+        BOOST_CHECK_EQUAL((int)nReply, (int)MIX_FRAME_ACK);
+    }
+
+    // The view: each seat reads the roster and signs what it implies, rather than being
+    // handed a digest.
+    const int64_t T1 = announce.JoinCloses();
+    coord.Tick(T1);
+    CMixSnapshot snapshot;
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T1, snapshot));
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptRoster(snapshot, vchFrame, &strError), strError);
+        BOOST_REQUIRE_MESSAGE(AcceptedFrame(coord, MIX_FRAME_VIEW_SIG, vchFrame, T1),
+                              "the coordinator refused a seat's view signature");
+    }
+    // A construction only counts once every seat has signed the same view, so the round
+    // cannot be handed an input set under a roster the seats have not all accepted.
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(vSeatsPtr[i]->BuildConstruction(vchFrame, &strError));
+        BOOST_REQUIRE_MESSAGE(AcceptedFrame(coord, MIX_FRAME_INPUT_CONSTRUCTION, vchFrame, T1),
+                              "the coordinator refused a seat's input construction");
+    }
+    // A second view, however well formed, is refused by the seat itself: signing two is how
+    // one input ends up in two rounds.
+    BOOST_CHECK_MESSAGE(!seatA.AcceptRoster(snapshot, vchFrame, &strError),
+                        "a seat signed a second view in one attempt");
+
+    // The token, checked against the announcement's commitment before anything is blinded,
+    // and verified before it is ever presented anonymously.
+    const int64_t T2 = announce.ViewCloses();
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T2, snapshot));
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildTokenRequest(snapshot, vchFrame, &strError),
+                              strError);
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_BLIND_REQUEST, vchFrame, T2, nReply, vchReply));
+        BOOST_REQUIRE_EQUAL((int)nReply, (int)MIX_FRAME_BLIND_SIGNATURE);
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptToken(vchReply, &strError), strError);
+    }
+
+    // The registration, which names no seat.
+    const int64_t T3 = announce.TokenCloses();
+    for (size_t i = 0; i < 2; i++)
+    {
+        std::vector<unsigned char> vchBody;
+        BOOST_REQUIRE(vSeatsPtr[i]->BuildRegistration(vchBody, &strError));
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_OUTPUT, vchBody, T3, nReply, vchReply));
+        bool fAccepted = false;
+        BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+        BOOST_CHECK(fAccepted);
+    }
+
+    // The prefix: each seat checks the whole thing itself before approving it.
+    const int64_t T4 = announce.OutputCloses() + 1;
+    coord.Tick(T4);
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T4, snapshot));
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptPrefix(snapshot, vchFrame, &strError), strError);
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_PREFIX_SIG, vchFrame, T4, nReply, vchReply));
+    }
+    BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, vchFrame, &strError),
+                        "a seat approved a second prefix in one attempt");
+
+    // The proofs, under the prefix each seat approved and nothing else.
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildMembershipProof(vchFrame, &strError), strError);
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_MEMBERSHIP_PROOF, vchFrame, T4, nReply, vchReply));
+        bool fAccepted = false;
+        BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+        BOOST_CHECK_MESSAGE(fAccepted, "the coordinator refused a seat's own proof");
+    }
+
+    // The joint signature: a nonce each, then a response computed against the aggregate
+    // each seat reads back rather than one it is told.
+    const int64_t T5 = announce.ApproveCloses();
+    coord.Tick(T5);
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildNonce(vchFrame, &strError), strError);
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_NONCE, vchFrame, T5, nReply, vchReply));
+        bool fAccepted = false;
+        BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+        BOOST_CHECK(fAccepted);
+    }
+    const int64_t T6 = announce.NonceCloses();
+    coord.Tick(T6);
+    for (size_t i = 0; i < 2; i++)
+    {
+        BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T6, snapshot));
+        BOOST_REQUIRE_EQUAL(snapshot.vNonces.size(), 2u);
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildResponse(snapshot, vchFrame, &strError), strError);
+        BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_RESPONSE, vchFrame, T6, nReply, vchReply));
+        bool fAccepted = false;
+        BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+        BOOST_CHECK(fAccepted);
+    }
+
+    coord.Tick(announce.ResponseCloses());
+    BOOST_REQUIRE_MESSAGE(coord.HasTransaction(),
+                          "the round did not publish: " << coord.Round().AbortReason());
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+        coord.Transaction().privacyVNext.vchPayload, effects);
+    BOOST_REQUIRE_MESSAGE(validation.nResult == INNOVA_PRIVACY_VNEXT_VALID, validation.strError);
+    BOOST_CHECK_EQUAL(effects.keyImages.size(), 2u);
+    BOOST_CHECK_EQUAL(effects.outputLeaves.size(), 2u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
