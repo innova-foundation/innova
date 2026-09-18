@@ -3611,12 +3611,16 @@ static bool GetPrivacyVNextTransparentFlowInner(const CTransaction& tx,
     // Private. The two public entry points below differ only in what they pass here, so
     // which one a call site named is visible at the call site rather than in an argument
     // it may have omitted.
-    const PrivacyVNextPayloadValidation validation =
-        fAssumeValid
-            ? ExtractPrivacyVNextPayloadEffectsAssumeValid(
-                  static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects)
-            : ExtractPrivacyVNextPayloadEffects(
-                  static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    PrivacyVNextPayloadValidation validation;
+    {
+        BLOCK_PHASE(BP_VFLOW_EXTRACT);
+        validation =
+            fAssumeValid
+                ? ExtractPrivacyVNextPayloadEffectsAssumeValid(
+                      static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects)
+                : ExtractPrivacyVNextPayloadEffects(
+                      static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    }
     if (validation.fLocalFailure)
     {
         fLocalFailure = true;
@@ -3630,8 +3634,11 @@ static bool GetPrivacyVNextTransparentFlowInner(const CTransaction& tx,
     }
 
     int64_t nDelta = 0;
-    if (!GetPrivacyVNextPoolDelta(effects, nDelta, strError))
-        return false;
+    {
+        BLOCK_PHASE(BP_VFLOW_DELTA);
+        if (!GetPrivacyVNextPoolDelta(effects, nDelta, strError))
+            return false;
+    }
     if (!MoneyRange(nDelta < 0 ? -nDelta : nDelta))
     {
         strError = "IV5 pool delta is out of range";
@@ -3639,14 +3646,20 @@ static bool GetPrivacyVNextTransparentFlowInner(const CTransaction& tx,
     }
     // Every IV5 shape is checked, not just the releasing ones: released value is safe only
     // if the payload named the outputs that receive it.
-    if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError))
-        return false;
+    {
+        BLOCK_PHASE(BP_VFLOW_BINDING);
+        if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError))
+            return false;
+    }
 
     // A note finality vote's value is a mint with no transparent side. The entitlement is
     // bounded here, the derivation all fee-accounting callers share.
     int64_t nNoteVoteMint = 0;
-    if (!GetPrivacyVNextNoteVoteMint(effects, nNoteVoteMint, strError))
-        return false;
+    {
+        BLOCK_PHASE(BP_VFLOW_MINT);
+        if (!GetPrivacyVNextNoteVoteMint(effects, nNoteVoteMint, strError))
+            return false;
+    }
     if (pnNoteVoteMintOut)
         *pnNoteVoteMintOut = nNoteVoteMint;
 
@@ -10024,6 +10037,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     // Answered once, by ancestry and never by height: a fabricated low fork is not below
     // the assume-valid block and must not skip its proofs.
     const bool fAssumeValidBlock = IsPrivacyVNextAssumeValidAncestor(pindex);
+    BlockProfileCount(fAssumeValidBlock ? "av_gate_open" : "av_gate_closed", 1);
     int64_t nConnectBlockStart = GetTimeMillis();
     int64_t nConnectCheckStart = GetTimeMillis();
 

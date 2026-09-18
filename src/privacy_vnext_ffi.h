@@ -88,8 +88,8 @@ struct PrivacyVNextPayloadValidation
 uint8_t PrivacyVNextLocalNetworkId();
 void PrivacyVNextLocalGenesis(unsigned char out[32]);
 
-// Validates outer-version binding and canonical payload shape. Proof
-// verification remains a separate contextual ABI operation.
+// Full verdict: outer-version binding, shape and every proof. Only
+// ExtractPrivacyVNextPayloadEffectsAssumeValid skips proofs. Cached per payload on success.
 PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload);

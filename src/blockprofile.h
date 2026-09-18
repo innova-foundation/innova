@@ -53,6 +53,11 @@ enum BlockPhase
     BP_RECOVERY_CLEAR,
     BP_RECOVERY_FLUSH,       // inside recovery_clear: the auxiliary log flush
     BP_RECOVERY_ERASE,       // inside recovery_clear: the synced outbox erase
+    // inside cb_vnext_flow, split by stage
+    BP_VFLOW_EXTRACT,
+    BP_VFLOW_DELTA,
+    BP_VFLOW_BINDING,
+    BP_VFLOW_MINT,
     BP_PHASE_COUNT
 };
 

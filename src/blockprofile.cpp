@@ -77,6 +77,10 @@ const char* kPhaseNames[] = {
     "recovery_clear",
     "recovery_flush",
     "recovery_erase",
+    "vflow_extract",
+    "vflow_delta",
+    "vflow_binding",
+    "vflow_mint",
 };
 
 const int kMaxCounters = 24;

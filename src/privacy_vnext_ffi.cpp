@@ -13,6 +13,7 @@
 #include "util.h"
 #include "uint256.h"
 #include "verifycache.h"
+#include "blockprofile.h"
 
 namespace {
 // Defined with the effects cache below; the payload-verdict cache above uses the
@@ -938,12 +939,14 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
                                             VNextEffectsCacheKey(wireVersion, payload));
     if (VerifyProofCacheCheck(key))
     {
+        BlockProfileCount("vnext_verdict_hit", 1);
         PrivacyVNextPayloadValidation hit;
         hit.nResult = INNOVA_PRIVACY_VNEXT_VALID;
         hit.fLocalFailure = false;
         return hit;
     }
 
+    BlockProfileCount("vnext_verdict_miss", 1);
     const PrivacyVNextPayloadValidation validation =
         ValidatePrivacyVNextPayloadUncached(wireVersion, payload);
     if (validation.IsValid())
