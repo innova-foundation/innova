@@ -1008,6 +1008,9 @@ public:
     const uint256& KeyImage() const { return keyImage; }
     const PrivacyVNextDigest& PseudoOut() const { return pseudoOut; }
     const std::vector<CMixOutputRecord>& Bundle() const { return vBundle; }
+    /** What this seat asked to have signed, so a driver can re-send the identical request
+     *  after a lost reply rather than blinding a second message. */
+    const std::vector<unsigned char>& Blinded() const { return vchBlinded; }
 
     bool BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL) const;
 

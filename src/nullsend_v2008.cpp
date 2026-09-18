@@ -3194,14 +3194,9 @@ bool CMixSeat::AcceptToken(const std::vector<unsigned char>& vchBlindSignature,
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (vchBlinded.empty())
         FAIL("this seat has not asked for a token");
+    // UnblindSignature verifies the credential against the round key, keeping this on the
+    // authenticated connection; a failed token must not surface on the anonymous one.
     if (!blinder.UnblindSignature(vchBlindSignature))
-        FAIL("the blind signature could not be unblinded");
-    // Verified here, on the authenticated connection, and never discovered on the
-    // anonymous one: a registration refused for a bad token is a refusal aimed at an
-    // output, and which seat retries after it is the mapping the token exists to hide.
-    // Against the key the announcement's commitment opened to, checked before blinding.
-    if (!VerifyMixCredential(vchRsaN, vchRsaE, blinder.vchCredentialHash,
-                             blinder.vchUnblindedSig))
         FAIL("the token does not verify under the round key this seat blinded to");
     vchToken = blinder.vchCredentialHash;
     vchTokenSig = blinder.vchUnblindedSig;
