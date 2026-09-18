@@ -1004,42 +1004,58 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             std::memcpy(&request[kValidationPrefixSize], &payload[0],
                         payload.size());
 
-        size_t required = 0;
-        int32_t result =
-            (mode == VNEXT_EFFECTS_ASSUME_VALID)
-                ? innova_privacy_vnext_payload_effects_assume_valid(
-                      &request[0], request.size(), NULL, 0, &required)
-                : innova_privacy_vnext_payload_effects(
-                      &request[0], request.size(), NULL, 0, &required);
+        // One call into a maximum-size buffer: a size probe would run the full validator
+        // twice. If limits drift from the crate, the call reports the exact size and is
+        // retried, never rejected.
+        static const size_t kMaxEffectsBytes =
+            INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE +
+            INNOVA_PRIVACY_VNEXT_MAX_INPUTS * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE +
+            INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS * 3 * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE +
+            INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE +
+            INNOVA_PRIVACY_VNEXT_MAX_INPUTS * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE;
+        std::vector<uint8_t> encoded(kMaxEffectsBytes);
+        size_t written = 0;
+        int32_t result = (mode == VNEXT_EFFECTS_ASSUME_VALID)
+                             ? innova_privacy_vnext_payload_effects_assume_valid(
+                                   &request[0], request.size(), &encoded[0],
+                                   encoded.size(), &written)
+                             : innova_privacy_vnext_payload_effects(
+                                   &request[0], request.size(), &encoded[0],
+                                   encoded.size(), &written);
+        if (result == INNOVA_PRIVACY_VNEXT_RESOURCE_LIMIT && written > encoded.size() &&
+            written <= INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+        {
+            const size_t required = written;
+            encoded.assign(required, 0);
+            written = 0;
+            result = (mode == VNEXT_EFFECTS_ASSUME_VALID)
+                         ? innova_privacy_vnext_payload_effects_assume_valid(
+                               &request[0], request.size(), &encoded[0], encoded.size(),
+                               &written)
+                         : innova_privacy_vnext_payload_effects(
+                               &request[0], request.size(), &encoded[0], encoded.size(),
+                               &written);
+            if (result == INNOVA_PRIVACY_VNEXT_VALID && written != required)
+            {
+                validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
+                validation.fLocalFailure = false;
+                validation.strError = "Rust IV5 effects extraction changed after validation";
+                return validation;
+            }
+        }
         if (result != INNOVA_PRIVACY_VNEXT_VALID ||
-            required < INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE ||
-            required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+            written < INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE ||
+            written > encoded.size())
         {
             // Same pure inputs as the validate call that just succeeded, so a
             // disagreement here is a property of the payload and this binary, not of
             // this node.
             validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
             validation.fLocalFailure = false;
-            validation.strError = "Rust IV5 effects-size query failed after validation";
+            validation.strError = "Rust IV5 effects extraction failed after validation";
             return validation;
         }
-
-        std::vector<uint8_t> encoded(required);
-        size_t written = 0;
-        result = (mode == VNEXT_EFFECTS_ASSUME_VALID)
-                     ? innova_privacy_vnext_payload_effects_assume_valid(
-                           &request[0], request.size(), &encoded[0], encoded.size(),
-                           &written)
-                     : innova_privacy_vnext_payload_effects(
-                           &request[0], request.size(), &encoded[0], encoded.size(),
-                           &written);
-        if (result != INNOVA_PRIVACY_VNEXT_VALID || written != required)
-        {
-            validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
-            validation.fLocalFailure = false;
-            validation.strError = "Rust IV5 effects extraction changed after validation";
-            return validation;
-        }
+        encoded.resize(written);
 
         // The encoded effects are a function of the payload alone, so a shape this
         // side refuses is refused identically everywhere: reject rather than stop.
@@ -1242,18 +1258,29 @@ void WarmPrivacyVNextEffectsCache(
         vWorkers[i].join();
 }
 
-// Effects with the proof verdicts skipped, for a block the caller has already established
-// is an ancestor of a hash compiled into this binary.
-//
-// DELIBERATELY UNCACHED. The effects cache is keyed on the payload alone, so a result
-// produced here would be indistinguishable from a verified one and could be served later to
-// a caller that must verify. Assume-valid costs about 2 ms, so the cache saves little and
-// conflating the two would cost correctness.
+// Effects with proof verification skipped, for a block known to be an ancestor of a
+// compiled-in hash. READS the effects cache and NEVER WRITES it: an unverified result
+// must never be served to a caller that has to verify.
 PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsAssumeValid(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload,
     PrivacyVNextStateEffects& effects)
 {
+    if (VerifyProofCacheEnabled())
+    {
+        const uint256 key = VNextEffectsCacheKey(wireVersion, payload);
+        LOCK(cs_vnextEffects);
+        std::map<uint256, PrivacyVNextStateEffects>::const_iterator it =
+            mapVNextEffects.find(key);
+        if (it != mapVNextEffects.end())
+        {
+            effects = it->second;
+            PrivacyVNextPayloadValidation hit;
+            hit.nResult = INNOVA_PRIVACY_VNEXT_VALID;
+            hit.fLocalFailure = false;
+            return hit;
+        }
+    }
     return ExtractPrivacyVNextPayloadEffectsUncached(wireVersion, payload, effects,
                                                      VNEXT_EFFECTS_ASSUME_VALID);
 }
