@@ -4445,6 +4445,8 @@ BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
     const CMixSettledPoint bare(nBehind + 1, uint256(1));
     BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexTip, bare, nSlot, vScan, &strError),
                         "a settled point naming the wrong block was read from");
+    // Name the check that refused it, so a future reorder cannot let this pass on the height.
+    BOOST_CHECK(strError.find("names a block") != std::string::npos);
     BOOST_CHECK(!SelectMixRendezvousBlocks(pindexTip, CMixSettledPoint(), nSlot, vScan,
                                            &strError));
 

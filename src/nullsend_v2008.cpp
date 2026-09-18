@@ -155,13 +155,9 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
         FAIL("the round announces an empty anchor tree");
     const uint16_t vWindows[8] = { nJoinSecs, nViewSecs, nTokenSecs, nOutputSecs,
                                    nApproveSecs, nNonceSecs, nResponseSecs, nTerminalSecs };
-    int64_t nTotal = 0;
     for (size_t i = 0; i < 8; i++)
-    {
         if (vWindows[i] < MIX_WINDOW_MIN_SECS || vWindows[i] > MIX_WINDOW_MAX_SECS)
             FAIL("a scheduled window is outside the range a round may use");
-        nTotal += (int64_t)vWindows[i];
-    }
     // Two windows carry a one-input prove, not one: the pseudo-output a seat submits in
     // the view window comes out of the same proving pass its membership proof does.
     if (nApproveSecs < MIX_PROOF_WINDOW_MIN_SECS || nViewSecs < MIX_PROOF_WINDOW_MIN_SECS)
@@ -182,8 +178,10 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     // bundle, then pick an instant inside the window to submit at.
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
         FAIL("the output window is shorter than a registration is given");
-    if (nTotal > MIX_SCHEDULE_MAX_TOTAL_SECS)
-        FAIL("the schedule holds the round open for too long");
+    // Terminal is the only window after the broadcast, so it spends no anchor life and is
+    // bounded on its own account: it is how long the round keeps answering, nothing more.
+    if (nTerminalSecs > MIX_SCHEDULE_MAX_TERMINAL_SECS)
+        FAIL("the round keeps answering for too long after it has published");
     // Everything up to the broadcast spends the anchor's life. A schedule that does not fit
     // the budget yields a transaction consensus refuses after every seat has already revealed
     // a key image, so it is refused here instead -- before anyone has disclosed anything.
@@ -3295,10 +3293,10 @@ bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, const CMixSettledPo
     const CBlockIndex* pindexFinal = pindexTip->GetAncestor(settled.nHeight);
     if (!pindexFinal)
         FAIL("the settled block this rendezvous would be read from is not on this chain");
-    // The attested block, not merely the height: a height alone can be had from the node-local
-    // live streak, which differs between nodes, and this read must be one every node makes
-    // alike. Only the deterministic latch hands back a hash to match.
-    if (pindexFinal->GetBlockHash() != settled.hashBlock)
+    // On this chain, at the height it names. A holed index walks GetAncestor past the target
+    // and answers with a higher block, so the height is checked as well as the hash.
+    if (pindexFinal->nHeight != settled.nHeight ||
+        pindexFinal->GetBlockHash() != settled.hashBlock)
         FAIL("the settled point names a block this chain does not carry at that height");
 
     // Finality must have passed the slot's opening, or seats reading at different moments

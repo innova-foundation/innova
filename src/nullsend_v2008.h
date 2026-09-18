@@ -59,7 +59,9 @@ static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
  *  told in advance" outcome as a short join window, by a different route. Half a slot leaves
  *  the settle-and-fetch time on one side and the round's own start on the other. */
 static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 300;
-static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
+/** How long the round may keep answering after it has published. Terminal is the only window
+ *  after the broadcast, so it spends no anchor life. */
+static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
 
 /** The round's anchor is frozen when the announcement is signed, and consensus accepts a
  *  shielded anchor only while it is within EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS (6) of the
@@ -83,7 +85,6 @@ static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
  *  RULE rather than an anchor value, resolved once and frozen into the view certificate
  *  before any proving; that removes publication-lead ageing entirely. */
 static const int MIX_SCHEDULE_MAX_TO_BROADCAST_SECS = 480;
-static const int MIX_LANDING_MARGIN_SECS = 120;
 
 class CMixRoundAnnouncement
 {
@@ -1126,16 +1127,9 @@ static const size_t MIX_RENDEZVOUS_MAX_RECORDS = 8192;
 void CollectMixRendezvousRecords(const CBlock& block,
                                  std::vector<CMixRendezvousRecord>& vRecordsOut);
 
-/** The settled point a slot is read from: a height AND the block attested at it.
- *
- *  Both, and not a bare height, because there are two finalized heights in this node and only
- *  one of them is safe here. The node-local live streak (CFinalityTracker::GetFinalizedHeight)
- *  stalls and resumes with vote arrival order and DIFFERS BETWEEN NODES -- the reorg guard in
- *  main.cpp says so in as many words -- and two seats reading a slot from two different views
- *  is the disagreement this whole mechanism exists to remove. The deterministic latch
- *  (CDagManager::TryGetDeterministicFinalizedAnchor) is the one every node computes alike, and
- *  it is the one that hands back a hash. Carrying the hash makes the safe source the only one
- *  a caller can satisfy. */
+/** The settled point a slot is read from: a height and the block attested at it. The height
+ *  must come from CDagManager::TryGetDeterministicFinalizedAnchor, not the node-local
+ *  CFinalityTracker::GetFinalizedHeight; the hash only ties it to the caller's best chain. */
 struct CMixSettledPoint
 {
     int nHeight;
