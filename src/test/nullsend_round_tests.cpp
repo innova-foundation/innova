@@ -3418,7 +3418,7 @@ bool Accepted(CMixCoordinator& coord, MixFrameType nType,
 BOOST_AUTO_TEST_CASE(the_coordinator_runs_a_round_on_its_announced_schedule)
 {
     const MixProofSet& proofs = MixProofs();
-    const int64_t T0 = 21000000;
+    const int64_t T0 = 21000300;
     CKey keyCoordinator;
     const CNullSendSession roundKey = FreshRoundKey(4001);
     const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
@@ -3681,7 +3681,7 @@ BOOST_AUTO_TEST_CASE(a_round_that_does_not_fill_ends_at_its_join_deadline)
 // The round key is single use, and the record of use survives a restart.
 BOOST_AUTO_TEST_CASE(a_round_key_runs_one_round)
 {
-    const int64_t T0 = 23000000;
+    const int64_t T0 = 23000100;
     CKey keyCoordinator;
     const CNullSendSession roundKey = FreshRoundKey(4003);
     const CMixRoundAnnouncement first = ProvenAnnouncement(keyCoordinator, roundKey, T0);
@@ -3690,9 +3690,9 @@ BOOST_AUTO_TEST_CASE(a_round_key_runs_one_round)
     BOOST_REQUIRE_MESSAGE(coordFirst.Open(first, roundKey, T0, &strError), strError);
 
     CKey keySecond;
-    const CMixRoundAnnouncement second = ProvenAnnouncement(keySecond, roundKey, T0 + 1000);
+    const CMixRoundAnnouncement second = ProvenAnnouncement(keySecond, roundKey, T0 + MIX_RENDEZVOUS_SLOT_SECONDS);
     CMixCoordinator coordSecond;
-    BOOST_CHECK_MESSAGE(!coordSecond.Open(second, roundKey, T0 + 1000, &strError),
+    BOOST_CHECK_MESSAGE(!coordSecond.Open(second, roundKey, T0 + MIX_RENDEZVOUS_SLOT_SECONDS, &strError),
                         "a blind-signature key ran a second round");
     BOOST_CHECK(strError.find("already run") != std::string::npos);
     BOOST_CHECK(MixRoundKeyWasUsed(roundKey.vchRSA_N));
@@ -3813,7 +3813,7 @@ bool ReadSnapshot(CMixCoordinator& coord, const Seat& seat, const uint256& hashR
 // a validating transaction and each recipient finds its note in it.
 BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
 {
-    const int64_t T0 = 24000000;
+    const int64_t T0 = 24000300;
     CKey keyCoordinator;
     const CNullSendSession roundKey = FreshRoundKey(4101);
     const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
@@ -4133,7 +4133,7 @@ BOOST_AUTO_TEST_CASE(a_seat_mixes_at_its_own_denominations_and_its_own_share)
 
     // And the seat refuses the round before it proves anything: the announcement is
     // checked against the wallet's own policy, not taken on the coordinator's word.
-    const int64_t T0 = 26000000;
+    const int64_t T0 = 26000100;
     CKey keyCoordinator;
     const CNullSendSession roundKey = FreshRoundKey(4301);
     const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
@@ -4149,7 +4149,7 @@ BOOST_AUTO_TEST_CASE(a_seat_mixes_at_its_own_denominations_and_its_own_share)
 // and slot before it reveals a key image.
 BOOST_AUTO_TEST_CASE(a_seat_joins_only_the_round_its_slot_published)
 {
-    const int64_t T0 = 27000000;
+    const int64_t T0 = 27000300;
     CKey keyCoordinator;
     const CNullSendSession roundKey = FreshRoundKey(4401);
     const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
@@ -4320,6 +4320,34 @@ BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
                                                     MIX_RENDEZVOUS_SLOT_SECONDS - 1, nSlot));
 }
 
+// A round must start far enough into its slot that a seat can have settled it first. Median
+// time past and finality both lag, so a round starting at the opening is one honest seats
+// reach late -- the short-join-window outcome by another route.
+BOOST_AUTO_TEST_CASE(a_round_starts_far_enough_into_its_slot_to_be_settled_first)
+{
+    CKey key;
+    const CNullSendSession roundKey = FreshRoundKey(4501);
+    const int64_t T0 = 28000200;                       // 200s into its slot
+    BOOST_REQUIRE(T0 % MIX_RENDEZVOUS_SLOT_SECONDS < MIX_RENDEZVOUS_MIN_START_SLACK);
+    const CMixRoundAnnouncement early = ProvenAnnouncement(key, roundKey, T0);
+    std::string strError;
+    BOOST_CHECK_MESSAGE(!early.IsValidBasic(&strError),
+                        "a round starting before its slot could be settled was accepted");
+    BOOST_CHECK(strError.find("slot") != std::string::npos);
+
+    CKey keyLater;
+    const CMixRoundAnnouncement onTime =
+        ProvenAnnouncement(keyLater, FreshRoundKey(4502),
+                           T0 - T0 % MIX_RENDEZVOUS_SLOT_SECONDS +
+                           MIX_RENDEZVOUS_MIN_START_SLACK);
+    BOOST_CHECK_MESSAGE(onTime.IsValidBasic(&strError), strError);
+
+    // What a whole announcement costs, which decides whether putting one on chain instead of
+    // a commitment is a simplification or a cost.
+    BOOST_TEST_MESSAGE("announcement serialized bytes: "
+                       << ::GetSerializeSize(onTime, SER_NETWORK, PROTOCOL_VERSION));
+}
+
 // What a block yields, in output order, with everything else in it invisible.
 BOOST_AUTO_TEST_CASE(a_block_yields_its_rendezvous_records_in_output_order)
 {
@@ -4484,6 +4512,19 @@ BOOST_AUTO_TEST_CASE(a_rendezvous_record_relays_and_nothing_else_grows)
     reason.clear();
     BOOST_CHECK_MESSAGE(!IsStandardTx(txBig, reason),
                         "an ordinary data push of a record's size became standard");
+
+    // The exemption covers the record's own output and nothing else about the transaction:
+    // a record does not launder a change output that policy would refuse on its own.
+    CScript scriptOdd;
+    scriptOdd << OP_RETURN << OP_RETURN << OP_RETURN;
+    CTransaction txOddChange;
+    txOddChange.nTime = GetAdjustedTime();
+    txOddChange.vin.push_back(CTxIn());
+    txOddChange.vout.push_back(CTxOut(CENT, scriptOdd));
+    txOddChange.vout.push_back(CTxOut(0, scriptRecord));
+    reason.clear();
+    BOOST_CHECK_MESSAGE(!IsStandardTx(txOddChange, reason),
+                        "a rendezvous record made a nonstandard output standard");
 
     // And one byte off the record is not the record.
     CScript scriptOff = scriptRecord;

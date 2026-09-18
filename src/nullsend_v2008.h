@@ -52,6 +52,13 @@ static const int MIX_PROOF_WINDOW_MIN_SECS = 60;
 /** JOIN is the only window a seat enters cold (chain read, announcement fetch, no circuit),
  *  so it has its own floor above the generic one. */
 static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
+
+/** How far into its own slot a round must start. A seat cannot act on a slot until the
+ *  finalized chain has passed the slot's opening, and median time past and finality both lag,
+ *  so a round starting AT the opening is one honest seats reach late -- the same "only seats
+ *  told in advance" outcome as a short join window, by a different route. Half a slot leaves
+ *  the settle-and-fetch time on one side and the round's own start on the other. */
+static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 300;
 static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
 
 class CMixRoundAnnouncement

@@ -171,6 +171,13 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     // those the coordinator told in advance.
     if (nJoinSecs < MIX_JOIN_WINDOW_MIN_SECS)
         FAIL("the join window is shorter than a seat can reach it from a standing start");
+    // A seat cannot act on a slot until the finalized chain has passed its opening, and both
+    // median time past and finality lag. A round starting at the opening is one honest seats
+    // reach late, which is the short-join-window outcome by another route.
+    if (nTime > 0 &&
+        nTime - MixRendezvousSlot(nTime) * MIX_RENDEZVOUS_SLOT_SECONDS <
+            MIX_RENDEZVOUS_MIN_START_SLACK)
+        FAIL("the round starts too early in its slot for a seat to have settled it");
     // The anonymous window is the one a seat cannot be asked to hurry: it has to build a
     // bundle, then pick an instant inside the window to submit at.
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
@@ -3236,9 +3243,15 @@ bool SelectMixRendezvous(const std::vector<CMixRendezvousRecord>& vRecords,
     rendezvousOut = CMixRendezvous();
     if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed() || nSlot <= 0)
         return false;
+    // Once, not once per record: a window may hold thousands and the key is the same for
+    // every one of them.
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
+    if (idSlot == 0)
+        return false;
     for (size_t i = 0; i < vRecords.size(); ++i)
     {
-        if (!CheckMixRendezvousRecord(vRecords[i], pubkeyCoordinator, nSlot))
+        if (vRecords[i].idSlot != idSlot ||
+            !CheckMixRendezvousRecord(vRecords[i], pubkeyCoordinator, nSlot))
             continue;
         rendezvousOut.pubkeyCoordinator = pubkeyCoordinator;
         rendezvousOut.nSlot = nSlot;

@@ -65,7 +65,9 @@ CMixRoundAnnouncement Announce(CKey& keyOut, const std::vector<unsigned char>& v
     announce.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
     announce.nPort = 8443;
     announce.nParticipants = 4;
-    announce.nTime = GetTime();
+    const int64_t nNow = GetTime();
+    announce.nTime = nNow - (nNow % MIX_RENDEZVOUS_SLOT_SECONDS) +
+                     MIX_RENDEZVOUS_MIN_START_SLACK;
     FillTranscript(announce);
     BOOST_REQUIRE(announce.Sign(keyOut));
     return announce;
@@ -206,7 +208,9 @@ BOOST_AUTO_TEST_CASE(an_announcement_without_a_commitment_is_refused)
     announce.strEndpoint = "coordinator.onion";
     announce.nPort = 8443;
     announce.nParticipants = 4;
-    announce.nTime = GetTime();
+    const int64_t nNow = GetTime();
+    announce.nTime = nNow - (nNow % MIX_RENDEZVOUS_SLOT_SECONDS) +
+                     MIX_RENDEZVOUS_MIN_START_SLACK;
     FillTranscript(announce);
     BOOST_REQUIRE(announce.Sign(key));
 
