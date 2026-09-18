@@ -3761,6 +3761,17 @@ bool AcceptedFrame(CMixCoordinator& coord, MixFrameType nType,
     return ReadMixAckBody(vchReply, fAccepted) && fAccepted;
 }
 
+// The fixture's own ladder: the shipped one is 1 and 10 INN, which a test chain has no
+// notes at. What matters is that a seat checks the announcement against a policy of its
+// own rather than taking the coordinator's word for the amount and the share.
+CMixPolicy TestPolicy()
+{
+    CMixPolicy policy;
+    policy.vDenominations.push_back(MIX_DENOM);
+    policy.nFeeSharePerSeat = MIX_FEE_SHARE;
+    return policy;
+}
+
 // The reply a seat gets, unpacked.
 bool AskSeat(CMixCoordinator& coord, MixFrameType nType,
              const std::vector<unsigned char>& vchFrame, int64_t nNow,
@@ -3804,9 +3815,9 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     // will publish about it.
     CMixSeat seatA, seatB;
     Seat idA = MakeSeat(1), idB = MakeSeat(2);
-    BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), &strError),
+    BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), TestPolicy(), &strError),
                           strError);
-    BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), &strError),
+    BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), TestPolicy(), &strError),
                           strError);
     idA.keyImage = seatA.KeyImage();
     idB.keyImage = seatB.KeyImage();
@@ -4071,6 +4082,54 @@ BOOST_AUTO_TEST_CASE(a_seat_and_the_public_surface_each_have_a_ceiling)
     BOOST_REQUIRE(BuildAuthedMixFrame(stranger.key, hashRound, MIX_FRAME_NONCE, vchNonceBody,
                                       vchNonceFrame));
     BOOST_CHECK(Ask(coord, MIX_FRAME_NONCE, vchNonceFrame, T1 + 1, vchReply) == MIX_FRAME_NONE);
+}
+
+// The denomination and the share are the wallet's choice. A round announcing an amount
+// nobody else mixes at has no anonymity to offer whatever its seat count says, and a share
+// the coordinator picked for itself could make one seat pay a distinctive amount.
+BOOST_AUTO_TEST_CASE(a_seat_mixes_at_its_own_denominations_and_its_own_share)
+{
+    const CMixPolicy standard = CMixPolicy::Standard();
+    std::string strError;
+
+    // The shipped ladder: two decimal tiers, one shielded transaction fee per seat.
+    BOOST_CHECK(standard.Allows(100000000ULL));
+    BOOST_CHECK(standard.Allows(1000000000ULL));
+    BOOST_CHECK_MESSAGE(!standard.Allows(500000000ULL),
+                        "a tier nobody else mixes at was accepted");
+    BOOST_CHECK_EQUAL(standard.nFeeSharePerSeat, (uint64_t)MIN_TX_FEE_SHIELDED);
+    // The share is 0.1% of the base tier: a tier small enough for the fee to matter is one
+    // nobody should be mixing at.
+    BOOST_CHECK_EQUAL(standard.vDenominations[0] / standard.nFeeSharePerSeat, 1000u);
+
+    // The fee a round announces is the share times its seats, whatever its size, so a
+    // wallet prepares one amount per tier without knowing how big its round will be.
+    for (int nSeats = NULLSEND_MIN_PARTICIPANTS; nSeats <= (int)iv5::MAX_NULLSEND_INPUTS; nSeats++)
+        BOOST_CHECK_MESSAGE(standard.AllowsRound(100000000ULL,
+                                                 (uint64_t)nSeats * MIN_TX_FEE_SHIELDED,
+                                                 nSeats, &strError), strError);
+
+    BOOST_CHECK_MESSAGE(!standard.AllowsRound(100000000ULL, 2 * MIN_TX_FEE_SHIELDED + 1, 2,
+                                              &strError),
+                        "a fee that is not the share per seat was accepted");
+    BOOST_CHECK_MESSAGE(!standard.AllowsRound(100000000ULL, 4 * MIN_TX_FEE_SHIELDED, 2,
+                                              &strError),
+                        "a doubled share was accepted because it still divided evenly");
+    BOOST_CHECK(!standard.AllowsRound(12345, 2 * MIN_TX_FEE_SHIELDED, 2, &strError));
+    BOOST_CHECK(!standard.AllowsRound(100000000ULL, MIN_TX_FEE_SHIELDED, 1, &strError));
+
+    // And the seat refuses the round before it proves anything: the announcement is
+    // checked against the wallet's own policy, not taken on the coordinator's word.
+    const int64_t T0 = 26000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4301);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    CMixSeat seat;
+    const Seat id = MakeSeat(12);
+    BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xB1), standard,
+                                    &strError),
+                        "a seat joined a round at a denomination it does not mix at");
+    BOOST_CHECK(strError.find("denomination") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

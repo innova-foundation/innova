@@ -1001,6 +1001,28 @@ bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint
 // The seat: signs one view and one prefix per attempt, uses fresh entropy for every proof and
 // nonce, rebuilds the challenge from what it approved, and checks its token and the prefix.
 
+/** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
+ *  refuses a round whose fee or denomination differs from its own choice, so a coordinator
+ *  cannot tag a seat by amount. */
+struct CMixPolicy
+{
+    std::vector<uint64_t> vDenominations;
+    uint64_t nFeeSharePerSeat;
+
+    CMixPolicy() : nFeeSharePerSeat(0) {}
+
+    /** The shipped ladder: one and ten INN, each seat paying one shielded transaction fee.
+     *  That share is 0.1% of the base tier, which is the fraction the tier was chosen to
+     *  hold: a tier small enough for the fee to matter is a tier nobody should mix at. */
+    static CMixPolicy Standard();
+
+    bool Allows(uint64_t nDenomination) const;
+    /** Whether a round announcing this denomination, fee and seat count is one this client
+     *  takes part in. */
+    bool AllowsRound(uint64_t nDenomination, uint64_t nFee, int nSeats,
+                     std::string* pstrError = NULL) const;
+};
+
 /** What a seat brings to one attempt. Every scalar here is drawn fresh for the attempt: a
  *  membership proof repeated under a second statement, or a balance nonce reused under a
  *  second challenge, hands over the secret each was protecting. */
@@ -1026,7 +1048,8 @@ public:
     /** Take the announcement, check what can be checked without the coordinator, and do
      *  the proving pass that fixes this attempt's pseudo-output and key image. */
     bool Begin(const CMixRoundAnnouncement& announce, const CKey& keySession,
-               const CMixSeatMaterial& material, std::string* pstrError = NULL);
+               const CMixSeatMaterial& material, const CMixPolicy& policy,
+               std::string* pstrError = NULL);
 
     const uint256& KeyImage() const { return keyImage; }
     const PrivacyVNextDigest& PseudoOut() const { return pseudoOut; }
@@ -1088,6 +1111,7 @@ private:
     CKey keySession;
     CPubKey pubkeySession;
     CMixSeatMaterial material;
+    CMixPolicy policy;
     bool fBegun;
 
     uint256 keyImage;

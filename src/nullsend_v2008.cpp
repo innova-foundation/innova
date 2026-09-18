@@ -6,6 +6,7 @@
 #include "ed25519_zk.h"
 #include "netbase.h"
 #include "nullsend.h"
+#include "shielded.h"
 #include "privacy_vnext/iv5_protocol.h"
 
 uint256 MixRoundKeyCommitment(const std::vector<unsigned char>& vchRSA_N,
@@ -3088,6 +3089,38 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
 // The seat
 // ---------------------------------------------------------------------------
 
+CMixPolicy CMixPolicy::Standard()
+{
+    CMixPolicy out;
+    out.vDenominations.push_back(100000000ULL);        // 1 INN
+    out.vDenominations.push_back(1000000000ULL);       // 10 INN
+    out.nFeeSharePerSeat = MIN_TX_FEE_SHIELDED;        // 0.001 INN, one shielded fee per seat
+    return out;
+}
+
+bool CMixPolicy::Allows(uint64_t nDenomination) const
+{
+    for (size_t i = 0; i < vDenominations.size(); i++)
+        if (vDenominations[i] == nDenomination)
+            return true;
+    return false;
+}
+
+bool CMixPolicy::AllowsRound(uint64_t nDenomination, uint64_t nFee, int nSeats,
+                             std::string* pstrError) const
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (nSeats < NULLSEND_MIN_PARTICIPANTS || nSeats > (int)iv5::MAX_NULLSEND_INPUTS)
+        FAIL("that seat count is outside the range a round can carry");
+    if (!Allows(nDenomination))
+        FAIL("that denomination is not one this wallet mixes at");
+    if (nFeeSharePerSeat == 0 || nFee / (uint64_t)nSeats != nFeeSharePerSeat ||
+        nFee % (uint64_t)nSeats != 0)
+        FAIL("that round's fee is not the share per seat this wallet pays");
+    return true;
+    #undef FAIL
+}
+
 CMixSeat::CMixSeat() : fBegun(false), keyImage(0), hashViewSigned(0), nMyPosition(-1)
 {
     pseudoOut.fill(0);
@@ -3096,7 +3129,8 @@ CMixSeat::CMixSeat() : fBegun(false), keyImage(0), hashViewSigned(0), nMyPositio
 }
 
 bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessionIn,
-                     const CMixSeatMaterial& materialIn, std::string* pstrError)
+                     const CMixSeatMaterial& materialIn, const CMixPolicy& policyIn,
+                     std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (fBegun)
@@ -3109,6 +3143,12 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
         FAIL("the session key is not usable");
     if ((int)materialIn.vEphemerals.size() != announce.nParticipants)
         FAIL("a bundle needs one variant per announced seat");
+    // The denomination and the share are this wallet's choice, not the coordinator's: a
+    // round at an amount nobody else mixes at has no anonymity to offer, and a share the
+    // coordinator picked could make one seat pay a distinctive amount.
+    if (!policyIn.AllowsRound(announce.nDenomination, announce.nFee, announce.nParticipants,
+                              pstrError))
+        return false;
     PrivacyVNextDigest zero;
     zero.fill(0);
     // Fresh per attempt, and the caller has to have drawn them: reusing either is how a
@@ -3120,6 +3160,7 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
     keySession = keySessionIn;
     pubkeySession = keySessionIn.GetPubKey();
     material = materialIn;
+    policy = policyIn;
 
     // The proving pass that fixes what this seat will publish about its input. The
     // signable hash does not enter it, which is why the pseudo-output and key image can be
