@@ -3772,6 +3772,17 @@ CMixPolicy TestPolicy()
     return policy;
 }
 
+// What the chain says about this round, for a seat that read it.
+CMixRendezvous TestRendezvous(const CMixRoundAnnouncement& announce)
+{
+    CMixRendezvous rendezvous;
+    rendezvous.pubkeyCoordinator = announce.pubkeyCoordinator;
+    rendezvous.nSlot = MixRendezvousSlot(announce.nTime);
+    rendezvous.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator,
+                                                        rendezvous.nSlot, announce.hashRound);
+    return rendezvous;
+}
+
 // The reply a seat gets, unpacked.
 bool AskSeat(CMixCoordinator& coord, MixFrameType nType,
              const std::vector<unsigned char>& vchFrame, int64_t nNow,
@@ -3815,9 +3826,11 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     // will publish about it.
     CMixSeat seatA, seatB;
     Seat idA = MakeSeat(1), idB = MakeSeat(2);
-    BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), TestPolicy(), &strError),
+    BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), TestPolicy(),
+                                        TestRendezvous(announce), &strError),
                           strError);
-    BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), TestPolicy(), &strError),
+    BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), TestPolicy(),
+                                        TestRendezvous(announce), &strError),
                           strError);
     idA.keyImage = seatA.KeyImage();
     idB.keyImage = seatB.KeyImage();
@@ -4127,9 +4140,123 @@ BOOST_AUTO_TEST_CASE(a_seat_mixes_at_its_own_denominations_and_its_own_share)
     CMixSeat seat;
     const Seat id = MakeSeat(12);
     BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xB1), standard,
-                                    &strError),
+                                    TestRendezvous(announce), &strError),
                         "a seat joined a round at a denomination it does not mix at");
     BOOST_CHECK(strError.find("denomination") != std::string::npos);
+}
+
+// A seat checks the announcement against the record the chain holds for this coordinator
+// and slot before it reveals a key image.
+BOOST_AUTO_TEST_CASE(a_seat_joins_only_the_round_its_slot_published)
+{
+    const int64_t T0 = 27000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4401);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    const CMixRendezvous rendezvous = TestRendezvous(announce);
+    std::string strError;
+
+    BOOST_CHECK_MESSAGE(MixAnnouncementMatchesRendezvous(announce, rendezvous, &strError),
+                        strError);
+
+    // A slot that published nothing is a slot to skip. Taking whatever a server offers is
+    // precisely the case the commitment exists to refuse.
+    BOOST_CHECK(!MixAnnouncementMatchesRendezvous(announce, CMixRendezvous(), &strError));
+
+    // A second announcement from the same coordinator for the same slot: well formed, signed,
+    // and not the one the slot authorises.
+    CMixRoundAnnouncement other = announce;
+    other.nPort = 8444;
+    other.hashRound = other.DerivedRoundId();
+    BOOST_REQUIRE(other.hashRound != announce.hashRound);
+    BOOST_CHECK_MESSAGE(!MixAnnouncementMatchesRendezvous(other, rendezvous, &strError),
+                        "a seat took a second announcement for one slot");
+
+    // Another coordinator's round, however valid, is not this slot's.
+    CKey keyOther;
+    const CMixRoundAnnouncement elsewhere = ProvenAnnouncement(keyOther, FreshRoundKey(4403), T0);
+    BOOST_CHECK(!MixAnnouncementMatchesRendezvous(elsewhere, rendezvous, &strError));
+
+    // Publish once, run later: the slot is the announcement's own start time, so the
+    // commitment cannot be reused for a round at a time of the coordinator's choosing.
+    CMixRoundAnnouncement late = announce;
+    late.nTime = T0 + MIX_RENDEZVOUS_SLOT_SECONDS;
+    late.hashRound = late.DerivedRoundId();
+    BOOST_CHECK(!MixAnnouncementMatchesRendezvous(late, rendezvous, &strError));
+    BOOST_CHECK(strError.find("slot") != std::string::npos);
+
+    // And the seat itself refuses, before it proves an input or reveals a key image.
+    CMixSeat seat;
+    const Seat id = MakeSeat(13);
+    BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC1), TestPolicy(),
+                                    CMixRendezvous(), &strError),
+                        "a seat joined a round no slot published");
+    BOOST_CHECK(seat.KeyImage() == 0);
+}
+
+// The record the chain carries, and the rule that picks one of them.
+BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
+{
+    CKey keyCoordinator;
+    keyCoordinator.MakeNewKey(true);
+    const CPubKey pubkey = keyCoordinator.GetPubKey();
+    CKey keyOther;
+    keyOther.MakeNewKey(true);
+    const int64_t nSlot = 45001;
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkey, nSlot);
+    BOOST_REQUIRE(idSlot != 0);
+    BOOST_CHECK(MixRendezvousIdentitySlot(pubkey, nSlot + 1) != idSlot);
+    BOOST_CHECK(MixRendezvousIdentitySlot(keyOther.GetPubKey(), nSlot) != idSlot);
+
+    uint256 hashFirst, hashSecond;
+    hashFirst.SetHex("1111111111111111111111111111111111111111111111111111111111111111");
+    hashSecond.SetHex("2222222222222222222222222222222222222222222222222222222222222222");
+
+    const CScript script = BuildMixRendezvousScript(idSlot, hashFirst);
+    BOOST_CHECK_EQUAL(script.size(), 2u + MIX_RENDEZVOUS_PAYLOAD_SIZE);
+    uint256 idRead, hashRead;
+    BOOST_REQUIRE(DecodeMixRendezvousScript(script, idRead, hashRead));
+    BOOST_CHECK(idRead == idSlot);
+    BOOST_CHECK(hashRead == hashFirst);
+
+    // Another feature's OP_RETURN is not a malformed record, it is not a record.
+    CScript untagged;
+    std::vector<unsigned char> vchOther(MIX_RENDEZVOUS_PAYLOAD_SIZE, 0x7a);
+    untagged << OP_RETURN << vchOther;
+    BOOST_CHECK(!DecodeMixRendezvousScript(untagged, idRead, hashRead));
+
+    // A second encoding of one record would let a coordinator publish a commitment that a
+    // stricter reader sees and a looser one does not, so only the canonical form decodes.
+    CScript wide;
+    wide.push_back(OP_RETURN);
+    wide.push_back(OP_PUSHDATA1);
+    wide.push_back((unsigned char)MIX_RENDEZVOUS_PAYLOAD_SIZE);
+    wide.insert(wide.end(), script.begin() + 2, script.end());
+    BOOST_CHECK_MESSAGE(!DecodeMixRendezvousScript(wide, idRead, hashRead),
+                        "a non-minimal push decoded as a rendezvous record");
+    CScript trailing = script;
+    trailing << OP_TRUE;
+    BOOST_CHECK(!DecodeMixRendezvousScript(trailing, idRead, hashRead));
+
+    // First in chain order wins. A coordinator that published twice has not offered a choice.
+    std::vector<std::pair<uint256, uint256> > vRecords;
+    vRecords.push_back(std::make_pair(MixRendezvousIdentitySlot(keyOther.GetPubKey(), nSlot),
+                                      hashSecond));
+    vRecords.push_back(std::make_pair(idSlot, hashFirst));
+    vRecords.push_back(std::make_pair(idSlot, hashSecond));
+    CMixRendezvous rendezvous;
+    BOOST_REQUIRE(SelectMixRendezvous(vRecords, pubkey, nSlot, rendezvous));
+    BOOST_CHECK(rendezvous.hashCommitment == hashFirst);
+    BOOST_CHECK_EQUAL(rendezvous.nSlot, nSlot);
+    BOOST_CHECK(!SelectMixRendezvous(vRecords, pubkey, nSlot + 1, rendezvous));
+    BOOST_CHECK(rendezvous.IsNull());
+
+    // Published for a slot means published before it begins, so every seat has the whole slot
+    // to read the record and fetch what it commits to.
+    const int64_t nSlotStart = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    BOOST_CHECK(MixRendezvousPublishedInTime(nSlotStart - 1, nSlot));
+    BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart, nSlot));
+    BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart + 60, nSlot));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

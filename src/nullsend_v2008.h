@@ -1001,6 +1001,73 @@ bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint
 // The seat: signs one view and one prefix per attempt, uses fresh entropy for every proof and
 // nonce, rebuilds the challenge from what it approved, and checks its token and the prefix.
 
+// Rendezvous: an on-chain commitment per coordinator identity per slot tells seats which
+// announcement to hold, checked before a key image is revealed. It does not stop a
+// coordinator running many identities or not publishing.
+
+/** How long one rendezvous slot lasts. Slots are numbered from the epoch so every client
+ *  computes the same one without asking anybody. */
+static const int64_t MIX_RENDEZVOUS_SLOT_SECONDS = 600;
+
+int64_t MixRendezvousSlot(int64_t nTime);
+
+/** The commitment a coordinator publishes for a slot: the announcement's derived identifier,
+ *  which already binds every announcement field. */
+uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                                const uint256& hashRound);
+
+/** The record a coordinator publishes. Tag "INRV", then the identity-and-slot key a reader
+ *  computes for itself, then the commitment. The key is a hash rather than the coordinator's
+ *  key and the slot in the clear, so the chain does not enumerate who is running rounds when
+ *  for a reader that was not told which round to look for. */
+static const unsigned char MIX_RENDEZVOUS_TAG[4] = { 0x49, 0x4E, 0x52, 0x56 }; // "INRV"
+static const size_t MIX_RENDEZVOUS_PAYLOAD_SIZE = 4 + 32 + 32;
+
+/** The key a reader computes from the identity and slot it is looking for. */
+uint256 MixRendezvousIdentitySlot(const CPubKey& pubkeyCoordinator, int64_t nSlot);
+
+CScript BuildMixRendezvousScript(const uint256& idSlot, const uint256& hashCommitment);
+
+/** Strict: minimal push, whole script consumed, exact length. An OP_RETURN without the tag
+ *  is not a rendezvous record rather than a malformed one, so records of other features in
+ *  the same transaction are invisible here. */
+bool DecodeMixRendezvousScript(const CScript& script, uint256& idSlotOut,
+                               uint256& hashCommitmentOut);
+
+/** A record is publishable for a slot only from BEFORE that slot begins, so every seat has
+ *  the whole slot to read it and fetch what it commits to. */
+inline bool MixRendezvousPublishedInTime(int64_t nBlockTime, int64_t nSlot)
+{
+    return nSlot > 0 && nBlockTime < nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+}
+
+/** What a seat holds after reading the chain: the commitment it found for this coordinator
+ *  and slot, and nothing else. Empty means the slot has none, which is a slot to skip
+ *  rather than a reason to take whatever a server offers. */
+struct CMixRendezvous
+{
+    CPubKey pubkeyCoordinator;
+    int64_t nSlot;
+    uint256 hashCommitment;
+
+    CMixRendezvous() : nSlot(0), hashCommitment(0) {}
+    bool IsNull() const { return hashCommitment == 0; }
+};
+
+/** The one record that counts: the first for this identity and slot in the order given, which
+ *  callers supply in chain order. A second is ignored -- a coordinator that publishes twice
+ *  has not offered an alternative, and treating it as one is the equivocation this exists to
+ *  refuse. */
+bool SelectMixRendezvous(const std::vector<std::pair<uint256, uint256> >& vRecords,
+                         const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                         CMixRendezvous& rendezvousOut);
+
+/** Whether the rendezvous authorises this announcement: same coordinator, slot matching its
+ *  start time, and the commitment over its derived identifier. A seat joins only on yes. */
+bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
+                                      const CMixRendezvous& rendezvous,
+                                      std::string* pstrError = NULL);
+
 /** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
  *  refuses a round whose fee or denomination differs from its own choice, so a coordinator
  *  cannot tag a seat by amount. */
@@ -1049,7 +1116,7 @@ public:
      *  the proving pass that fixes this attempt's pseudo-output and key image. */
     bool Begin(const CMixRoundAnnouncement& announce, const CKey& keySession,
                const CMixSeatMaterial& material, const CMixPolicy& policy,
-               std::string* pstrError = NULL);
+               const CMixRendezvous& rendezvous, std::string* pstrError = NULL);
 
     const uint256& KeyImage() const { return keyImage; }
     const PrivacyVNextDigest& PseudoOut() const { return pseudoOut; }

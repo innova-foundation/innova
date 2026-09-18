@@ -3089,6 +3089,120 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
 // The seat
 // ---------------------------------------------------------------------------
 
+int64_t MixRendezvousSlot(int64_t nTime)
+{
+    if (nTime < 0)
+        return 0;
+    return nTime / MIX_RENDEZVOUS_SLOT_SECONDS;
+}
+
+uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                                const uint256& hashRound)
+{
+    if (!pubkeyCoordinator.IsValid() || hashRound == 0 || nSlot < 0)
+        return 0;
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/rendezvous/v1");
+    ss << pubkeyCoordinator;
+    ss << nSlot;
+    ss << hashRound;
+    return ss.GetHash();
+}
+
+uint256 MixRendezvousIdentitySlot(const CPubKey& pubkeyCoordinator, int64_t nSlot)
+{
+    if (!pubkeyCoordinator.IsValid() || nSlot < 0)
+        return 0;
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/rendezvous/slot/v1");
+    ss << pubkeyCoordinator;
+    ss << nSlot;
+    return ss.GetHash();
+}
+
+CScript BuildMixRendezvousScript(const uint256& idSlot, const uint256& hashCommitment)
+{
+    std::vector<unsigned char> vchData(MIX_RENDEZVOUS_TAG, MIX_RENDEZVOUS_TAG + 4);
+    vchData.insert(vchData.end(), idSlot.begin(), idSlot.end());
+    vchData.insert(vchData.end(), hashCommitment.begin(), hashCommitment.end());
+    CScript script;
+    script << OP_RETURN << vchData;
+    return script;
+}
+
+bool DecodeMixRendezvousScript(const CScript& script, uint256& idSlotOut,
+                               uint256& hashCommitmentOut)
+{
+    idSlotOut = 0;
+    hashCommitmentOut = 0;
+    if (script.size() < 2 || script[0] != OP_RETURN)
+        return false;
+    // Read the one push directly rather than through CScript::GetOp, so a non-minimal
+    // encoding of a tagged payload is refused instead of reading as an unrelated OP_RETURN.
+    size_t nOffset = 1;
+    const unsigned char opcode = script[nOffset++];
+    size_t nDataSize = 0;
+    if (opcode <= 75)
+        nDataSize = opcode;
+    else if (opcode == OP_PUSHDATA1)
+    {
+        if (nOffset + 1 > script.size())
+            return false;
+        nDataSize = script[nOffset++];
+    }
+    else
+        return false;
+    if (nDataSize != MIX_RENDEZVOUS_PAYLOAD_SIZE || nOffset + nDataSize != script.size())
+        return false;
+    if (std::memcmp(&script[nOffset], MIX_RENDEZVOUS_TAG, 4) != 0)
+        return false;
+    std::memcpy(idSlotOut.begin(), &script[nOffset + 4], 32);
+    std::memcpy(hashCommitmentOut.begin(), &script[nOffset + 36], 32);
+    // The canonical form is the only one that counts: two encodings of one record would let a
+    // coordinator publish a second that a stricter reader sees and a looser one does not.
+    return BuildMixRendezvousScript(idSlotOut, hashCommitmentOut) == script;
+}
+
+bool SelectMixRendezvous(const std::vector<std::pair<uint256, uint256> >& vRecords,
+                         const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                         CMixRendezvous& rendezvousOut)
+{
+    rendezvousOut = CMixRendezvous();
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
+    if (idSlot == 0)
+        return false;
+    for (size_t i = 0; i < vRecords.size(); ++i)
+    {
+        if (vRecords[i].first != idSlot || vRecords[i].second == 0)
+            continue;
+        rendezvousOut.pubkeyCoordinator = pubkeyCoordinator;
+        rendezvousOut.nSlot = nSlot;
+        rendezvousOut.hashCommitment = vRecords[i].second;
+        return true;
+    }
+    return false;
+}
+
+bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
+                                      const CMixRendezvous& rendezvous,
+                                      std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (rendezvous.IsNull())
+        FAIL("this slot has no published round; skip it rather than take an unpublished one");
+    if (!(announce.pubkeyCoordinator == rendezvous.pubkeyCoordinator))
+        FAIL("the announcement is not from the coordinator this slot authorises");
+    // The slot the announcement belongs to is its own start time's, so a coordinator cannot
+    // publish once and then run the round at a time of its choosing.
+    if (MixRendezvousSlot(announce.nTime) != rendezvous.nSlot)
+        FAIL("the announcement does not start in the slot it was published for");
+    if (MixRendezvousCommitment(announce.pubkeyCoordinator, rendezvous.nSlot,
+                                announce.hashRound) != rendezvous.hashCommitment)
+        FAIL("the announcement is not the one this slot authorises");
+    return true;
+    #undef FAIL
+}
+
 CMixPolicy CMixPolicy::Standard()
 {
     CMixPolicy out;
@@ -3130,7 +3244,7 @@ CMixSeat::CMixSeat() : fBegun(false), keyImage(0), hashViewSigned(0), nMyPositio
 
 bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessionIn,
                      const CMixSeatMaterial& materialIn, const CMixPolicy& policyIn,
-                     std::string* pstrError)
+                     const CMixRendezvous& rendezvousIn, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (fBegun)
@@ -3148,6 +3262,10 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
     // coordinator picked could make one seat pay a distinctive amount.
     if (!policyIn.AllowsRound(announce.nDenomination, announce.nFee, announce.nParticipants,
                               pstrError))
+        return false;
+    // Before anything is revealed: an announcement that is not the one its slot authorises
+    // is one a coordinator could have minted per seat, and this seat would be alone in it.
+    if (!MixAnnouncementMatchesRendezvous(announce, rendezvousIn, pstrError))
         return false;
     PrivacyVNextDigest zero;
     zero.fill(0);
