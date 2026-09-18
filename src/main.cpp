@@ -17,6 +17,7 @@
 #include "ui_interface.h"
 #include "kernel.h"
 #include "collateral.h"
+#include "nullsend_v2008.h"
 #include "collateralnode.h"
 #include "nullsend.h"
 #include "spork.h"
@@ -1418,6 +1419,16 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
             continue;
         };
 
+         // A mix rendezvous record exceeds the data-push bound; it is admitted only at its exact
+         // canonical shape, so every other OP_RETURN keeps its limit.
+         {
+             CMixRendezvousRecord rendezvousRecord;
+             if (DecodeMixRendezvousScript(txout.scriptPubKey, rendezvousRecord))
+             {
+                 nDataOut++;
+                 continue;
+             }
+         }
          if (!::IsStandard(txout.scriptPubKey, whichType)) {
              reason = "scriptpubkey";
              return false;

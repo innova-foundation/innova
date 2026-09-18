@@ -4221,51 +4221,103 @@ BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
     hashFirst.SetHex("1111111111111111111111111111111111111111111111111111111111111111");
     hashSecond.SetHex("2222222222222222222222222222222222222222222222222222222222222222");
 
-    const CScript script = BuildMixRendezvousScript(idSlot, hashFirst);
-    BOOST_CHECK_EQUAL(script.size(), 2u + MIX_RENDEZVOUS_PAYLOAD_SIZE);
-    uint256 idRead, hashRead;
-    BOOST_REQUIRE(DecodeMixRendezvousScript(script, idRead, hashRead));
-    BOOST_CHECK(idRead == idSlot);
-    BOOST_CHECK(hashRead == hashFirst);
+    // Compressed only: one key with two encodings would be two identity-and-slot keys, and
+    // the first-wins rule would never see a coordinator's two publications together.
+    CKey keyWide;
+    keyWide.MakeNewKey(false);
+    BOOST_REQUIRE(!keyWide.GetPubKey().IsCompressed());
+    BOOST_CHECK(MixRendezvousIdentitySlot(keyWide.GetPubKey(), nSlot) == 0);
+    BOOST_CHECK(MixRendezvousCommitment(keyWide.GetPubKey(), nSlot, hashFirst) == 0);
+
+    CMixRendezvousRecord recFirst, recSecond;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(SignMixRendezvous(keyCoordinator, nSlot, hashFirst, recFirst,
+                                            &strError), strError);
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, hashSecond, recSecond, &strError));
+    BOOST_CHECK(recFirst.idSlot == idSlot);
+    BOOST_CHECK(recFirst.hashCommitment == MixRendezvousCommitment(pubkey, nSlot, hashFirst));
+    BOOST_CHECK(CheckMixRendezvousRecord(recFirst, pubkey, nSlot));
+    BOOST_CHECK(!CheckMixRendezvousRecord(recFirst, pubkey, nSlot + 1));
+    BOOST_CHECK(!CheckMixRendezvousRecord(recFirst, keyOther.GetPubKey(), nSlot));
+
+    const CScript script = BuildMixRendezvousScript(recFirst);
+    BOOST_CHECK_EQUAL(script.size(), 3u + MIX_RENDEZVOUS_PAYLOAD_SIZE);
+    CMixRendezvousRecord read;
+    BOOST_REQUIRE(DecodeMixRendezvousScript(script, read));
+    BOOST_CHECK(read.idSlot == recFirst.idSlot);
+    BOOST_CHECK(read.hashCommitment == recFirst.hashCommitment);
+    BOOST_CHECK(read.vchSig == recFirst.vchSig);
+
+    // The signature is what makes the record the coordinator's. Without it anyone who knew
+    // the key and the slot could publish a commitment to nothing first and, under first-wins,
+    // end that coordinator's slot for good.
+    CMixRendezvousRecord squatter;
+    squatter.idSlot = idSlot;
+    squatter.hashCommitment = hashSecond;
+    CKey keyAttacker;
+    keyAttacker.MakeNewKey(true);
+    BOOST_REQUIRE(keyAttacker.SignCompact(MixRendezvousAuthHash(squatter.idSlot,
+                                                                squatter.hashCommitment),
+                                          squatter.vchSig));
+    BOOST_CHECK_MESSAGE(!CheckMixRendezvousRecord(squatter, pubkey, nSlot),
+                        "anyone could publish a record for this coordinator's slot");
 
     // Another feature's OP_RETURN is not a malformed record, it is not a record.
     CScript untagged;
     std::vector<unsigned char> vchOther(MIX_RENDEZVOUS_PAYLOAD_SIZE, 0x7a);
     untagged << OP_RETURN << vchOther;
-    BOOST_CHECK(!DecodeMixRendezvousScript(untagged, idRead, hashRead));
+    BOOST_CHECK(!DecodeMixRendezvousScript(untagged, read));
 
-    // A second encoding of one record would let a coordinator publish a commitment that a
-    // stricter reader sees and a looser one does not, so only the canonical form decodes.
+    // One length, one encoding, nothing after it: a payload this size has exactly one minimal
+    // push, and a second encoding of one record would let a coordinator publish a commitment
+    // a stricter reader sees and a looser one does not.
     CScript wide;
     wide.push_back(OP_RETURN);
-    wide.push_back(OP_PUSHDATA1);
+    wide.push_back(OP_PUSHDATA2);
     wide.push_back((unsigned char)MIX_RENDEZVOUS_PAYLOAD_SIZE);
-    wide.insert(wide.end(), script.begin() + 2, script.end());
-    BOOST_CHECK_MESSAGE(!DecodeMixRendezvousScript(wide, idRead, hashRead),
+    wide.push_back(0x00);
+    wide.insert(wide.end(), script.begin() + 3, script.end());
+    BOOST_CHECK_MESSAGE(!DecodeMixRendezvousScript(wide, read),
                         "a non-minimal push decoded as a rendezvous record");
     CScript trailing = script;
     trailing << OP_TRUE;
-    BOOST_CHECK(!DecodeMixRendezvousScript(trailing, idRead, hashRead));
+    BOOST_CHECK_MESSAGE(!DecodeMixRendezvousScript(trailing, read),
+                        "a record with script after it decoded");
+    CScript truncated(script.begin(), script.end() - 1);
+    truncated[2] = (unsigned char)(MIX_RENDEZVOUS_PAYLOAD_SIZE - 1);
+    BOOST_CHECK_MESSAGE(!DecodeMixRendezvousScript(truncated, read),
+                        "a record one byte short decoded");
 
-    // First in chain order wins. A coordinator that published twice has not offered a choice.
-    std::vector<std::pair<uint256, uint256> > vRecords;
-    vRecords.push_back(std::make_pair(MixRendezvousIdentitySlot(keyOther.GetPubKey(), nSlot),
-                                      hashSecond));
-    vRecords.push_back(std::make_pair(idSlot, hashFirst));
-    vRecords.push_back(std::make_pair(idSlot, hashSecond));
+    // First AUTHORISED record in chain order wins. A squatter takes no part, a coordinator
+    // that published twice has not offered a choice, and a later record does not cancel a
+    // round participants have already prepared for.
+    std::vector<CMixRendezvousRecord> vRecords;
+    vRecords.push_back(squatter);
+    vRecords.push_back(recFirst);
+    vRecords.push_back(recSecond);
     CMixRendezvous rendezvous;
     BOOST_REQUIRE(SelectMixRendezvous(vRecords, pubkey, nSlot, rendezvous));
-    BOOST_CHECK(rendezvous.hashCommitment == hashFirst);
+    BOOST_CHECK(rendezvous.hashCommitment == recFirst.hashCommitment);
     BOOST_CHECK_EQUAL(rendezvous.nSlot, nSlot);
     BOOST_CHECK(!SelectMixRendezvous(vRecords, pubkey, nSlot + 1, rendezvous));
     BOOST_CHECK(rendezvous.IsNull());
+    // A slot holding nothing but a squatter's record is a slot with no round, not a slot
+    // whose round is the squatter's.
+    std::vector<CMixRendezvousRecord> vSquatOnly(1, squatter);
+    BOOST_CHECK(!SelectMixRendezvous(vSquatOnly, pubkey, nSlot, rendezvous));
 
-    // Published for a slot means published before it begins, so every seat has the whole slot
-    // to read the record and fetch what it commits to.
-    const int64_t nSlotStart = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
-    BOOST_CHECK(MixRendezvousPublishedInTime(nSlotStart - 1, nSlot));
-    BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart, nSlot));
-    BOOST_CHECK(!MixRendezvousPublishedInTime(nSlotStart + 60, nSlot));
+    // The window is in median time past, which only moves forward: a block carrying an early
+    // timestamp cannot be published late into a settled window.
+    const int64_t nSlotOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    BOOST_CHECK(MixRendezvousInWindow(nSlotOpens - 1, nSlot));
+    BOOST_CHECK(!MixRendezvousInWindow(nSlotOpens, nSlot));
+    BOOST_CHECK(!MixRendezvousInWindow(nSlotOpens + 60, nSlot));
+    // And a record older than the earliest publishable point is not for this slot at all,
+    // so a bounded scan cannot miss one that came first.
+    BOOST_CHECK(MixRendezvousInWindow(nSlotOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
+                                                   MIX_RENDEZVOUS_SLOT_SECONDS, nSlot));
+    BOOST_CHECK(!MixRendezvousInWindow(nSlotOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
+                                                    MIX_RENDEZVOUS_SLOT_SECONDS - 1, nSlot));
 }
 
 // What a block yields, in output order, with everything else in it invisible.
@@ -4274,34 +4326,94 @@ BOOST_AUTO_TEST_CASE(a_block_yields_its_rendezvous_records_in_output_order)
     CKey keyCoordinator;
     keyCoordinator.MakeNewKey(true);
     const int64_t nSlot = 45002;
-    const uint256 idSlot = MixRendezvousIdentitySlot(keyCoordinator.GetPubKey(), nSlot);
     uint256 hashA, hashB;
     hashA.SetHex("0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a");
     hashB.SetHex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
+    CMixRendezvousRecord recA, recB;
+    std::string strError;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, hashA, recA, &strError));
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, hashB, recB, &strError));
 
     CBlock block;
     CTransaction txFirst;
     txFirst.vout.resize(3);
     txFirst.vout[0].scriptPubKey = CScript() << OP_TRUE;          // an ordinary payment
-    txFirst.vout[1].scriptPubKey = BuildMixRendezvousScript(idSlot, hashA);
+    txFirst.vout[1].scriptPubKey = BuildMixRendezvousScript(recA);
     std::vector<unsigned char> vchElse(8, 0x11);
     txFirst.vout[2].scriptPubKey = CScript() << OP_RETURN << vchElse;  // another feature's
     CTransaction txSecond;
     txSecond.vout.resize(1);
-    txSecond.vout[0].scriptPubKey = BuildMixRendezvousScript(idSlot, hashB);
+    txSecond.vout[0].scriptPubKey = BuildMixRendezvousScript(recB);
     block.vtx.push_back(txFirst);
     block.vtx.push_back(txSecond);
 
-    std::vector<std::pair<uint256, uint256> > vRecords;
+    std::vector<CMixRendezvousRecord> vRecords;
     CollectMixRendezvousRecords(block, vRecords);
     BOOST_REQUIRE_EQUAL(vRecords.size(), 2u);
-    BOOST_CHECK(vRecords[0].second == hashA);
-    BOOST_CHECK(vRecords[1].second == hashB);
+    BOOST_CHECK(vRecords[0].hashCommitment == recA.hashCommitment);
+    BOOST_CHECK(vRecords[1].hashCommitment == recB.hashCommitment);
 
     // And within one block the earlier output is the one that counts.
     CMixRendezvous rendezvous;
     BOOST_REQUIRE(SelectMixRendezvous(vRecords, keyCoordinator.GetPubKey(), nSlot, rendezvous));
-    BOOST_CHECK(rendezvous.hashCommitment == hashA);
+    BOOST_CHECK(rendezvous.hashCommitment == recA.hashCommitment);
+}
+
+// A record nothing will relay is not a carrier. The ordinary data-push bound here is 48
+// bytes, well under a record, so the record is admitted by its exact shape instead -- and
+// nothing else gains room.
+BOOST_AUTO_TEST_CASE(a_rendezvous_record_relays_and_nothing_else_grows)
+{
+    LOCK(cs_main);
+    CKey keyCoordinator;
+    keyCoordinator.MakeNewKey(true);
+    uint256 hashRound;
+    hashRound.SetHex("3333333333333333333333333333333333333333333333333333333333333333");
+    CMixRendezvousRecord record;
+    std::string strError;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, 45003, hashRound, record, &strError));
+    const CScript scriptRecord = BuildMixRendezvousScript(record);
+    BOOST_REQUIRE(scriptRecord.size() > 2 + MAX_OP_RETURN_RELAY);
+    BOOST_CHECK_MESSAGE(scriptRecord.HasCanonicalPushes(),
+                        "the record's own push is not the minimal encoding");
+
+    CScript scriptP2PKH;
+    scriptP2PKH << OP_DUP << OP_HASH160 << std::vector<unsigned char>(20, 1)
+                << OP_EQUALVERIFY << OP_CHECKSIG;
+
+    CTransaction txPublish;
+    txPublish.nTime = GetAdjustedTime();
+    txPublish.vin.push_back(CTxIn());
+    txPublish.vout.push_back(CTxOut(CENT, scriptP2PKH));
+    txPublish.vout.push_back(CTxOut(0, scriptRecord));
+    std::string reason;
+    BOOST_CHECK_MESSAGE(IsStandardTx(txPublish, reason),
+                        "a coordinator cannot publish a rendezvous record: " << reason);
+
+    // A data push of the same size that is not a record stays non-standard: the exemption is
+    // the shape, not the length.
+    std::vector<unsigned char> vchSameSize(MIX_RENDEZVOUS_PAYLOAD_SIZE, 0x5a);
+    CScript scriptBig;
+    scriptBig << OP_RETURN << vchSameSize;
+    CTransaction txBig;
+    txBig.nTime = GetAdjustedTime();
+    txBig.vin.push_back(CTxIn());
+    txBig.vout.push_back(CTxOut(CENT, scriptP2PKH));
+    txBig.vout.push_back(CTxOut(0, scriptBig));
+    reason.clear();
+    BOOST_CHECK_MESSAGE(!IsStandardTx(txBig, reason),
+                        "an ordinary data push of a record's size became standard");
+
+    // And one byte off the record is not the record.
+    CScript scriptOff = scriptRecord;
+    scriptOff[3] = (unsigned char)(scriptOff[3] ^ 0xff);   // break the tag
+    CTransaction txOff;
+    txOff.nTime = GetAdjustedTime();
+    txOff.vin.push_back(CTxIn());
+    txOff.vout.push_back(CTxOut(CENT, scriptP2PKH));
+    txOff.vout.push_back(CTxOut(0, scriptOff));
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(txOff, reason));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

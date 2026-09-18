@@ -166,6 +166,11 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     // the view window comes out of the same proving pass its membership proof does.
     if (nApproveSecs < MIX_PROOF_WINDOW_MIN_SECS || nViewSecs < MIX_PROOF_WINDOW_MIN_SECS)
         FAIL("a window that carries a membership proof is shorter than the proof takes");
+    // JOIN is the one window a seat enters cold, having just read the chain for this slot's
+    // record and fetched the announcement with no circuit open yet. A shorter one seats only
+    // those the coordinator told in advance.
+    if (nJoinSecs < MIX_JOIN_WINDOW_MIN_SECS)
+        FAIL("the join window is shorter than a seat can reach it from a standing start");
     // The anonymous window is the one a seat cannot be asked to hurry: it has to build a
     // bundle, then pick an instant inside the window to submit at.
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
@@ -3099,7 +3104,8 @@ int64_t MixRendezvousSlot(int64_t nTime)
 uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
                                 const uint256& hashRound)
 {
-    if (!pubkeyCoordinator.IsValid() || hashRound == 0 || nSlot < 0)
+    if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed() ||
+        hashRound == 0 || nSlot <= 0)
         return 0;
     CHashWriter ss(SER_GETHASH, 0);
     ss << std::string("innova/iv5/mix/rendezvous/v1");
@@ -3111,7 +3117,10 @@ uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
 
 uint256 MixRendezvousIdentitySlot(const CPubKey& pubkeyCoordinator, int64_t nSlot)
 {
-    if (!pubkeyCoordinator.IsValid() || nSlot < 0)
+    // Compressed only. One key with two encodings is two identity-and-slot keys, so an
+    // uncompressed form would give one coordinator a second slot to publish a different
+    // announcement in and the first-wins rule would never see the two together.
+    if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed() || nSlot <= 0)
         return 0;
     CHashWriter ss(SER_GETHASH, 0);
     ss << std::string("innova/iv5/mix/rendezvous/slot/v1");
@@ -3120,21 +3129,75 @@ uint256 MixRendezvousIdentitySlot(const CPubKey& pubkeyCoordinator, int64_t nSlo
     return ss.GetHash();
 }
 
-CScript BuildMixRendezvousScript(const uint256& idSlot, const uint256& hashCommitment)
+uint256 MixRendezvousAuthHash(const uint256& idSlot, const uint256& hashCommitment)
 {
+    if (idSlot == 0 || hashCommitment == 0)
+        return 0;
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("innova/iv5/mix/rendezvous/auth/v1");
+    ss << idSlot;
+    ss << hashCommitment;
+    return ss.GetHash();
+}
+
+bool SignMixRendezvous(const CKey& keyCoordinator, int64_t nSlot, const uint256& hashRound,
+                       CMixRendezvousRecord& recordOut, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    recordOut = CMixRendezvousRecord();
+    const CPubKey pubkey = keyCoordinator.GetPubKey();
+    if (!pubkey.IsValid())
+        FAIL("a rendezvous record needs the coordinator's own key");
+    recordOut.idSlot = MixRendezvousIdentitySlot(pubkey, nSlot);
+    recordOut.hashCommitment = MixRendezvousCommitment(pubkey, nSlot, hashRound);
+    if (recordOut.idSlot == 0 || recordOut.hashCommitment == 0)
+        FAIL("a rendezvous record needs a slot and a round to commit to");
+    const uint256 hashAuth = MixRendezvousAuthHash(recordOut.idSlot, recordOut.hashCommitment);
+    if (!keyCoordinator.SignCompact(hashAuth, recordOut.vchSig) ||
+        recordOut.vchSig.size() != MIX_RENDEZVOUS_SIG_SIZE)
+    {
+        recordOut = CMixRendezvousRecord();
+        FAIL("the coordinator key could not sign this rendezvous record");
+    }
+    return true;
+    #undef FAIL
+}
+
+bool CheckMixRendezvousRecord(const CMixRendezvousRecord& record,
+                              const CPubKey& pubkeyCoordinator, int64_t nSlot)
+{
+    // Cheap first: the key a reader already computed, then the shape, and only then the
+    // recovery. A flood of records costs a comparison each, not a verification each.
+    if (record.hashCommitment == 0 || record.vchSig.size() != MIX_RENDEZVOUS_SIG_SIZE)
+        return false;
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
+    if (idSlot == 0 || record.idSlot != idSlot)
+        return false;
+    const uint256 hashAuth = MixRendezvousAuthHash(record.idSlot, record.hashCommitment);
+    if (hashAuth == 0)
+        return false;
+    CPubKey recovered;
+    if (!recovered.RecoverCompact(hashAuth, record.vchSig))
+        return false;
+    return recovered == pubkeyCoordinator;
+}
+
+CScript BuildMixRendezvousScript(const CMixRendezvousRecord& record)
+{
+    if (record.vchSig.size() != MIX_RENDEZVOUS_SIG_SIZE)
+        return CScript();
     std::vector<unsigned char> vchData(MIX_RENDEZVOUS_TAG, MIX_RENDEZVOUS_TAG + 4);
-    vchData.insert(vchData.end(), idSlot.begin(), idSlot.end());
-    vchData.insert(vchData.end(), hashCommitment.begin(), hashCommitment.end());
+    vchData.insert(vchData.end(), record.idSlot.begin(), record.idSlot.end());
+    vchData.insert(vchData.end(), record.hashCommitment.begin(), record.hashCommitment.end());
+    vchData.insert(vchData.end(), record.vchSig.begin(), record.vchSig.end());
     CScript script;
     script << OP_RETURN << vchData;
     return script;
 }
 
-bool DecodeMixRendezvousScript(const CScript& script, uint256& idSlotOut,
-                               uint256& hashCommitmentOut)
+bool DecodeMixRendezvousScript(const CScript& script, CMixRendezvousRecord& recordOut)
 {
-    idSlotOut = 0;
-    hashCommitmentOut = 0;
+    recordOut = CMixRendezvousRecord();
     if (script.size() < 2 || script[0] != OP_RETURN)
         return false;
     // Read the one push directly rather than through CScript::GetOp, so a non-minimal
@@ -3152,80 +3215,97 @@ bool DecodeMixRendezvousScript(const CScript& script, uint256& idSlotOut,
     }
     else
         return false;
+    // One length, one encoding, nothing after it. A payload this size has exactly one
+    // minimal push, so this is the canonical form: two encodings of one record would let a
+    // coordinator publish a commitment a stricter reader sees and a looser one does not.
     if (nDataSize != MIX_RENDEZVOUS_PAYLOAD_SIZE || nOffset + nDataSize != script.size())
         return false;
     if (std::memcmp(&script[nOffset], MIX_RENDEZVOUS_TAG, 4) != 0)
         return false;
-    std::memcpy(idSlotOut.begin(), &script[nOffset + 4], 32);
-    std::memcpy(hashCommitmentOut.begin(), &script[nOffset + 36], 32);
-    // The canonical form is the only one that counts: two encodings of one record would let a
-    // coordinator publish a second that a stricter reader sees and a looser one does not.
-    return BuildMixRendezvousScript(idSlotOut, hashCommitmentOut) == script;
+    std::memcpy(recordOut.idSlot.begin(), &script[nOffset + 4], 32);
+    std::memcpy(recordOut.hashCommitment.begin(), &script[nOffset + 36], 32);
+    recordOut.vchSig.assign(script.begin() + nOffset + 68,
+                            script.begin() + nOffset + MIX_RENDEZVOUS_PAYLOAD_SIZE);
+    return true;
 }
 
-bool SelectMixRendezvous(const std::vector<std::pair<uint256, uint256> >& vRecords,
+bool SelectMixRendezvous(const std::vector<CMixRendezvousRecord>& vRecords,
                          const CPubKey& pubkeyCoordinator, int64_t nSlot,
                          CMixRendezvous& rendezvousOut)
 {
     rendezvousOut = CMixRendezvous();
-    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
-    if (idSlot == 0)
+    if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed() || nSlot <= 0)
         return false;
     for (size_t i = 0; i < vRecords.size(); ++i)
     {
-        if (vRecords[i].first != idSlot || vRecords[i].second == 0)
+        if (!CheckMixRendezvousRecord(vRecords[i], pubkeyCoordinator, nSlot))
             continue;
         rendezvousOut.pubkeyCoordinator = pubkeyCoordinator;
         rendezvousOut.nSlot = nSlot;
-        rendezvousOut.hashCommitment = vRecords[i].second;
+        rendezvousOut.hashCommitment = vRecords[i].hashCommitment;
         return true;
     }
     return false;
 }
 
 void CollectMixRendezvousRecords(const CBlock& block,
-                                 std::vector<std::pair<uint256, uint256> >& vRecordsOut)
+                                 std::vector<CMixRendezvousRecord>& vRecordsOut)
 {
     for (size_t i = 0; i < block.vtx.size(); ++i)
         for (size_t j = 0; j < block.vtx[i].vout.size(); ++j)
         {
-            uint256 idSlot, hashCommitment;
-            if (DecodeMixRendezvousScript(block.vtx[i].vout[j].scriptPubKey, idSlot,
-                                          hashCommitment))
-                vRecordsOut.push_back(std::make_pair(idSlot, hashCommitment));
+            CMixRendezvousRecord record;
+            if (DecodeMixRendezvousScript(block.vtx[i].vout[j].scriptPubKey, record))
+                vRecordsOut.push_back(record);
         }
 }
 
-bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int64_t nSlot,
-                              std::vector<std::pair<uint256, uint256> >& vRecordsOut,
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
+                              int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
                               std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vRecordsOut.clear();
     if (!pindexTip || nSlot <= 0)
         FAIL("a rendezvous read needs a chain and a slot");
-    const int64_t nSlotOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
-    const int64_t nEarliest = nSlotOpens -
-        (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS * MIX_RENDEZVOUS_SLOT_SECONDS;
+    if (nFinalizedHeight < 0 || nFinalizedHeight > pindexTip->nHeight)
+        FAIL("a rendezvous read needs a finalized height this chain reaches");
 
-    // A settled view, not the tip: two seats reading at the tip can select different records
-    // across a reorg, which is the disagreement the commitment exists to remove.
-    const CBlockIndex* pindex = pindexTip->GetAncestor(pindexTip->nHeight -
-                                                       MIX_RENDEZVOUS_MIN_DEPTH);
-    if (!pindex)
-        FAIL("the chain is not deep enough to select a rendezvous from a settled view");
+    const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    const CBlockIndex* pindexFinal = pindexTip->GetAncestor(nFinalizedHeight);
+    if (!pindexFinal)
+        FAIL("the finalized block this rendezvous would be read from is not on this chain");
+
+    // Finality must have passed the slot's opening, or seats reading at different moments
+    // could select different records. MTP only moves forward, so the window is then fixed.
+    if (pindexFinal->GetMedianTimePast() < nOpens)
+        FAIL("this slot is not settled yet: the finalized chain has not passed its opening");
 
     std::vector<const CBlockIndex*> vScan;
-    for (int nScanned = 0; pindex && nScanned < MIX_RENDEZVOUS_MAX_BLOCKS;
-         pindex = pindex->pprev, ++nScanned)
+    const CBlockIndex* pindex = pindexFinal;
+    int nScanned = 0;
+    bool fReachedStart = false;
+    for (; pindex; pindex = pindex->pprev, ++nScanned)
     {
-        const int64_t nBlockTime = pindex->GetBlockTime();
-        if (nBlockTime < nEarliest)
+        if (nScanned >= MIX_RENDEZVOUS_MAX_BLOCKS)
             break;
-        if (MixRendezvousPublishedInTime(nBlockTime, nSlot))
+        const int64_t nMedian = pindex->GetMedianTimePast();
+        if (nMedian < nOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
+                               MIX_RENDEZVOUS_SLOT_SECONDS)
+        {
+            fReachedStart = true;
+            break;
+        }
+        if (MixRendezvousInWindow(nMedian, nSlot))
             vScan.push_back(pindex);
     }
-    // Chain order, which is what first-wins is defined over.
+    // Walking off the genesis end of the chain is a complete view of a window that reaches
+    // further back than the chain does; stopping at the cap is not.
+    if (!fReachedStart && pindex)
+        FAIL("this rendezvous window is longer than a seat will scan; the view is incomplete");
+
+    // Oldest first, which is what first-wins is defined over: blocks in chain order, then
+    // transactions in block order, then outputs in transaction order.
     for (size_t i = vScan.size(); i-- > 0; )
     {
         CBlock block;
@@ -3233,19 +3313,23 @@ bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int64_t nSlot,
             FAIL("a block this rendezvous window covers could not be read");
         CollectMixRendezvousRecords(block, vRecordsOut);
         if (vRecordsOut.size() > MIX_RENDEZVOUS_MAX_RECORDS)
-            FAIL("this rendezvous window carries more records than a seat will read");
+        {
+            vRecordsOut.clear();
+            FAIL("this rendezvous window carries more records than a seat will read; the "
+                 "view is incomplete");
+        }
     }
     return true;
     #undef FAIL
 }
 
-bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CPubKey& pubkeyCoordinator,
-                         int64_t nSlot, CMixRendezvous& rendezvousOut,
-                         std::string* pstrError)
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, int nFinalizedHeight,
+                         const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                         CMixRendezvous& rendezvousOut, std::string* pstrError)
 {
     rendezvousOut = CMixRendezvous();
-    std::vector<std::pair<uint256, uint256> > vRecords;
-    if (!ReadMixRendezvousRecords(pindexTip, nSlot, vRecords, pstrError))
+    std::vector<CMixRendezvousRecord> vRecords;
+    if (!ReadMixRendezvousRecords(pindexTip, nFinalizedHeight, nSlot, vRecords, pstrError))
         return false;
     if (!SelectMixRendezvous(vRecords, pubkeyCoordinator, nSlot, rendezvousOut))
     {

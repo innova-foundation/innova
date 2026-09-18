@@ -173,6 +173,14 @@ BOOST_AUTO_TEST_CASE(the_signature_covers_the_commitment)
     BOOST_REQUIRE(hurried.Sign(key));
     BOOST_CHECK_MESSAGE(!hurried.IsValidBasic(&strError),
                         "an approval window shorter than a proof takes was accepted");
+    // JOIN is the one window a seat enters cold, having just read the chain for the slot's
+    // record and fetched the announcement. A round that gives less than the generic floor
+    // asks for seats only the coordinator told in advance.
+    CMixRoundAnnouncement snap = announce;
+    snap.nJoinSecs = MIX_JOIN_WINDOW_MIN_SECS - 1;
+    BOOST_REQUIRE(snap.Sign(key));
+    BOOST_CHECK_MESSAGE(!snap.IsValidBasic(&strError),
+                        "a join window too short to reach from a standing start was accepted");
     CMixRoundAnnouncement endless = announce;
     endless.nJoinSecs = MIX_WINDOW_MAX_SECS + 1;
     BOOST_REQUIRE(endless.Sign(key));

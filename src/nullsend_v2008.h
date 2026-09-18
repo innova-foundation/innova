@@ -48,6 +48,10 @@ static const int MIX_WINDOW_MAX_SECS = 900;
  *  ~2.5 s on a 48-core host and proving is single-threaded, so a slow wallet is minutes:
  *  this floor is a floor, not a target. */
 static const int MIX_PROOF_WINDOW_MIN_SECS = 60;
+
+/** JOIN is the only window a seat enters cold (chain read, announcement fetch, no circuit),
+ *  so it has its own floor above the generic one. */
+static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
 static const int MIX_SCHEDULE_MAX_TOTAL_SECS = 3600;
 
 class CMixRoundAnnouncement
@@ -1016,30 +1020,41 @@ int64_t MixRendezvousSlot(int64_t nTime);
 uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
                                 const uint256& hashRound);
 
-/** The record a coordinator publishes. Tag "INRV", then the identity-and-slot key a reader
- *  computes for itself, then the commitment. The key is a hash rather than the coordinator's
- *  key and the slot in the clear, so the chain does not enumerate who is running rounds when
- *  for a reader that was not told which round to look for. */
+/** Rendezvous record: tag "INRV", the identity-and-slot key, the commitment, and a coordinator
+ *  signature over both. The key is hashed for cheap filtering, not secrecy. */
 static const unsigned char MIX_RENDEZVOUS_TAG[4] = { 0x49, 0x4E, 0x52, 0x56 }; // "INRV"
-static const size_t MIX_RENDEZVOUS_PAYLOAD_SIZE = 4 + 32 + 32;
+static const size_t MIX_RENDEZVOUS_SIG_SIZE = 65;
+static const size_t MIX_RENDEZVOUS_PAYLOAD_SIZE = 4 + 32 + 32 + MIX_RENDEZVOUS_SIG_SIZE;
+
+struct CMixRendezvousRecord
+{
+    uint256 idSlot;
+    uint256 hashCommitment;
+    std::vector<unsigned char> vchSig;
+
+    CMixRendezvousRecord() : idSlot(0), hashCommitment(0) {}
+};
 
 /** The key a reader computes from the identity and slot it is looking for. */
 uint256 MixRendezvousIdentitySlot(const CPubKey& pubkeyCoordinator, int64_t nSlot);
 
-CScript BuildMixRendezvousScript(const uint256& idSlot, const uint256& hashCommitment);
+/** What the coordinator signs. */
+uint256 MixRendezvousAuthHash(const uint256& idSlot, const uint256& hashCommitment);
+
+/** The whole record for one round, ready to publish. */
+bool SignMixRendezvous(const CKey& keyCoordinator, int64_t nSlot, const uint256& hashRound,
+                       CMixRendezvousRecord& recordOut, std::string* pstrError = NULL);
+
+/** Whether this record is this coordinator's, for this slot. Cheap checks first. */
+bool CheckMixRendezvousRecord(const CMixRendezvousRecord& record,
+                              const CPubKey& pubkeyCoordinator, int64_t nSlot);
+
+CScript BuildMixRendezvousScript(const CMixRendezvousRecord& record);
 
 /** Strict: minimal push, whole script consumed, exact length. An OP_RETURN without the tag
  *  is not a rendezvous record rather than a malformed one, so records of other features in
  *  the same transaction are invisible here. */
-bool DecodeMixRendezvousScript(const CScript& script, uint256& idSlotOut,
-                               uint256& hashCommitmentOut);
-
-/** A record is publishable for a slot only from BEFORE that slot begins, so every seat has
- *  the whole slot to read it and fetch what it commits to. */
-inline bool MixRendezvousPublishedInTime(int64_t nBlockTime, int64_t nSlot)
-{
-    return nSlot > 0 && nBlockTime < nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
-}
+bool DecodeMixRendezvousScript(const CScript& script, CMixRendezvousRecord& recordOut);
 
 /** What a seat holds after reading the chain: the commitment it found for this coordinator
  *  and slot, and nothing else. Empty means the slot has none, which is a slot to skip
@@ -1054,40 +1069,47 @@ struct CMixRendezvous
     bool IsNull() const { return hashCommitment == 0; }
 };
 
-/** How far back a record may be published for a slot. A coordinator whose transaction is
- *  slow to confirm still gets its round, and the window a seat has to read stays bounded. */
+/** How far back a record may be published for a slot. Without an earliest point a scan
+ *  window could miss the record that actually came first, so this is a rule of the protocol
+ *  and not a reader's convenience: a record outside the window is not for this slot. */
 static const int MIX_RENDEZVOUS_PUBLISH_SLOTS = 3;
 
-/** How deep the chain view a seat selects from has to be. Reading at the tip would let two
- *  seats select different records across a reorg, which is the disagreement the commitment
- *  exists to remove. */
-static const int MIX_RENDEZVOUS_MIN_DEPTH = 12;
+/** The window, in median-time-past, which only moves forward, so once the finalized chain
+ *  passes a slot's opening the blocks in its window are fixed. */
+inline bool MixRendezvousInWindow(int64_t nMedianTimePast, int64_t nSlot)
+{
+    if (nSlot <= 0)
+        return false;
+    const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    return nMedianTimePast < nOpens &&
+           nMedianTimePast >= nOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
+                                       MIX_RENDEZVOUS_SLOT_SECONDS;
+}
 
-/** Never scan more than this many blocks, or hold more than this many records, whichever
- *  comes first: records are one cheap output each and the key they carry is opaque, so they
- *  cannot be filtered before they are read. */
-static const int MIX_RENDEZVOUS_MAX_BLOCKS = 4096;
+/** Never scan more than this many blocks, or hold more than this many records. Reaching
+ *  either is an INCOMPLETE VIEW and refuses the slot: a cap that silently shortened the
+ *  window would let a flood of records decide which publication a seat sees first. */
+static const int MIX_RENDEZVOUS_MAX_BLOCKS = 8192;
 static const size_t MIX_RENDEZVOUS_MAX_RECORDS = 8192;
 
-/** Every record in one block, in output order. */
+/** Every record in one block, in transaction order then output order. */
 void CollectMixRendezvousRecords(const CBlock& block,
-                                 std::vector<std::pair<uint256, uint256> >& vRecordsOut);
+                                 std::vector<CMixRendezvousRecord>& vRecordsOut);
 
-/** The records a slot may select from, in chain order, from a settled view. */
-bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int64_t nSlot,
-                              std::vector<std::pair<uint256, uint256> >& vRecordsOut,
+/** The records a slot may select from, oldest first, from the finalized chain only. A slot
+ *  whose window is not yet finalized is refused. */
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
+                              int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
                               std::string* pstrError = NULL);
 
 /** What the chain says about this coordinator and slot. */
-bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CPubKey& pubkeyCoordinator,
-                         int64_t nSlot, CMixRendezvous& rendezvousOut,
-                         std::string* pstrError = NULL);
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, int nFinalizedHeight,
+                         const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                         CMixRendezvous& rendezvousOut, std::string* pstrError = NULL);
 
-/** The one record that counts: the first for this identity and slot in the order given, which
- *  callers supply in chain order. A second is ignored -- a coordinator that publishes twice
- *  has not offered an alternative, and treating it as one is the equivocation this exists to
- *  refuse. */
-bool SelectMixRendezvous(const std::vector<std::pair<uint256, uint256> >& vRecords,
+/** The first authorised record for this identity and slot, in the given (oldest first) order.
+ *  Other coordinators' records take no part; a later authorised one is ignored, not voiding. */
+bool SelectMixRendezvous(const std::vector<CMixRendezvousRecord>& vRecords,
                          const CPubKey& pubkeyCoordinator, int64_t nSlot,
                          CMixRendezvous& rendezvousOut);
 
