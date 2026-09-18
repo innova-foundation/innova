@@ -12370,6 +12370,65 @@ bool CWallet::DerivePrivacyVNextMixRecipient(const std::vector<uint256>& vRoster
                                         strErrorOut);
 }
 
+size_t CWallet::CountPrivacyVNextMixNotes(CTxDB& txdb, uint64_t nRequired,
+                                          int nSpendHeight) const
+{
+    if (nRequired == 0)
+        return 0;
+    LOCK(cs_shielded);
+    size_t nCount = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (!PrivacyVNextNoteIsSpendable(note, nSpendHeight) || note.nAmount != nRequired)
+            continue;
+        uint256 keyImage;
+        if (!PrivacyVNextNoteKeyImage(note, keyImage))
+            continue;
+        if (setPrivacyVNextInFlight.count(keyImage) || IsPrivacyVNextNoteHeld(note) ||
+            mapPrivacyVNextCollateral.count(keyImage))
+            continue;
+        CPrivacyVNextNullifierSpent spent;
+        if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
+            continue;
+        nCount++;
+    }
+    return nCount;
+}
+
+bool CWallet::PreparePrivacyVNextMixNote(const CMixPolicy& policy, uint64_t nDenomination,
+                                         bool fCommit, CWalletTx& wtxNew, int64_t& nFeeOut,
+                                         std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    nFeeOut = 0;
+    strErrorOut.clear();
+    if (!policy.Allows(nDenomination) || policy.nFeeSharePerSeat == 0)
+    {
+        strErrorOut = "that denomination is not one this wallet mixes at";
+        return false;
+    }
+    const uint64_t nNoteValue = nDenomination + policy.nFeeSharePerSeat;
+    if (nNoteValue > (uint64_t)MAX_MONEY)
+    {
+        strErrorOut = "a mix note of that size is out of range";
+        return false;
+    }
+    // Paid to an address of this wallet's own, through the ordinary transfer path, and held
+    // the moment it exists: a note prepared for a round and then spent by something else is
+    // a round this wallet cannot join.
+    std::string strAddress;
+    uint32_t nIndex = 0;
+    if (!GenerateNewPrivacyVNextAddress(0, strAddress, nIndex, strErrorOut))
+        return false;
+    size_t nNotesUsed = 0;
+    int nRecipientOutput = -1;
+    return CreatePrivacyVNextTransfer(strAddress, (int64_t)nNoteValue,
+                                      iv5::WALLET_DEFAULT_DISCLOSURE_MASK, fCommit, wtxNew,
+                                      nFeeOut, nNotesUsed, strErrorOut, true,
+                                      &nRecipientOutput);
+}
+
 bool CWallet::SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
                                         uint64_t nAnchorTreeSize,
                                         CPrivacyVNextWalletNote& noteOut,

@@ -885,7 +885,13 @@ BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
     BOOST_CHECK(!wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 63, chosen,
                                                   strError));
 
+    // Ready notes at a tier, which a driver tops up on its own schedule so preparing and
+    // joining are not adjacent events.
+    BOOST_CHECK_EQUAL(wallet.CountPrivacyVNextMixNotes(txdb, nRequired, nDeep + 100), 1u);
     BOOST_REQUIRE(wallet.SetPrivacyVNextHold(uint256(64), 64, false, strError));
+    BOOST_CHECK_MESSAGE(wallet.CountPrivacyVNextMixNotes(txdb, nRequired, nDeep + 100) == 2u,
+                        "a released note did not come back into the stock");
+    BOOST_CHECK_EQUAL(wallet.CountPrivacyVNextMixNotes(txdb, nRequired + 7, nDeep + 100), 0u);
     {
         CWalletDB walletdb(walletFile);
         walletdb.ErasePrivacyVNextHold(uint256(64), 64);

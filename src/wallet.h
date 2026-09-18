@@ -46,6 +46,7 @@ uint32_t PrivacyVNextChangeIndexFor(
     const std::vector<PrivacyVNextDigest>& vKeyImages);
 
 struct CMixSeatMaterial;
+struct CMixPolicy;
 
 // Keys every self-pay output is sent to: a spend's change, and the receiver a shield
 // pays into. One function, so no self-pay site can be left on a user-facing index
@@ -496,15 +497,15 @@ public:
     // an epoch build. The rest of unconfirmed is placed and waiting on depth or the anchor.
     int64_t GetPrivacyVNextUnplacedBalance() const;
 
-    /** What a seat brings to one mix attempt: a note worth exactly what a round of this
-     *  shape requires, its witness against the spend anchor, and entropy drawn for this
-     *  attempt alone. The note is held while the attempt runs, so nothing else spends it
-     *  under the round -- an ordinary spend or a note vote taking it mid-round costs the
-     *  seat the round and leaves its co-seats short. */
-    /** The one note a round of this shape can take: worth exactly what it requires, deep
-     *  enough and placed under the anchor, not held, not in flight, not collateral, and not
-     *  spent on chain or in the mempool. Oldest first, so a wallet that denominated once
-     *  works through its notes instead of returning to the newest each time. */
+    /** Spendable, unheld notes this wallet holds at exactly this amount. */
+    size_t CountPrivacyVNextMixNotes(CTxDB& txdb, uint64_t nRequired, int nSpendHeight) const;
+
+    /** Prepare one note for a tier: an ordinary shielded self-transfer for denomination +
+     *  share, held on arrival. Intentionally not a distinct operation type. */
+    bool PreparePrivacyVNextMixNote(const CMixPolicy& policy, uint64_t nDenomination,
+                                    bool fCommit, CWalletTx& wtxNew, int64_t& nFeeOut,
+                                    std::string& strErrorOut);
+
     bool SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
                                    uint64_t nAnchorTreeSize, CPrivacyVNextWalletNote& noteOut,
                                    std::string& strErrorOut) const;
