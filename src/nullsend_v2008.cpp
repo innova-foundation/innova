@@ -3273,20 +3273,26 @@ void CollectMixRendezvousRecords(const CBlock& block,
         }
 }
 
-bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, int nFinalizedHeight, int64_t nSlot,
-                               std::vector<const CBlockIndex*>& vScanOut, std::string* pstrError)
+bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
+                               int64_t nSlot, std::vector<const CBlockIndex*>& vScanOut,
+                               std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vScanOut.clear();
     if (!pindexTip || nSlot <= 0)
         FAIL("a rendezvous read needs a chain and a slot");
-    if (nFinalizedHeight < 0 || nFinalizedHeight > pindexTip->nHeight)
-        FAIL("a rendezvous read needs a finalized height this chain reaches");
+    if (settled.IsNull() || settled.nHeight <= 0 || settled.nHeight > pindexTip->nHeight)
+        FAIL("a rendezvous read needs a settled point this chain reaches");
 
     const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
-    const CBlockIndex* pindexFinal = pindexTip->GetAncestor(nFinalizedHeight);
+    const CBlockIndex* pindexFinal = pindexTip->GetAncestor(settled.nHeight);
     if (!pindexFinal)
-        FAIL("the finalized block this rendezvous would be read from is not on this chain");
+        FAIL("the settled block this rendezvous would be read from is not on this chain");
+    // The attested block, not merely the height: a height alone can be had from the node-local
+    // live streak, which differs between nodes, and this read must be one every node makes
+    // alike. Only the deterministic latch hands back a hash to match.
+    if (pindexFinal->GetBlockHash() != settled.hashBlock)
+        FAIL("the settled point names a block this chain does not carry at that height");
 
     // Finality must have passed the slot's opening, or seats reading at different moments
     // could select different records. MTP only moves forward, so the window is then fixed.
@@ -3322,14 +3328,14 @@ bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, int nFinalizedHeigh
     #undef FAIL
 }
 
-bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
                               int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
                               std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vRecordsOut.clear();
     std::vector<const CBlockIndex*> vScan;
-    if (!SelectMixRendezvousBlocks(pindexTip, nFinalizedHeight, nSlot, vScan, pstrError))
+    if (!SelectMixRendezvousBlocks(pindexTip, settled, nSlot, vScan, pstrError))
         return false;
 
     // Oldest first, which is what first-wins is defined over: blocks in chain order, then
@@ -3351,13 +3357,13 @@ bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight
     #undef FAIL
 }
 
-bool LookupMixRendezvous(const CBlockIndex* pindexTip, int nFinalizedHeight,
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
                          const CPubKey& pubkeyCoordinator, int64_t nSlot,
                          CMixRendezvous& rendezvousOut, std::string* pstrError)
 {
     rendezvousOut = CMixRendezvous();
     std::vector<CMixRendezvousRecord> vRecords;
-    if (!ReadMixRendezvousRecords(pindexTip, nFinalizedHeight, nSlot, vRecords, pstrError))
+    if (!ReadMixRendezvousRecords(pindexTip, settled, nSlot, vRecords, pstrError))
         return false;
     if (!SelectMixRendezvous(vRecords, pubkeyCoordinator, nSlot, rendezvousOut))
     {

@@ -1103,20 +1103,41 @@ static const size_t MIX_RENDEZVOUS_MAX_RECORDS = 8192;
 void CollectMixRendezvousRecords(const CBlock& block,
                                  std::vector<CMixRendezvousRecord>& vRecordsOut);
 
+/** The settled point a slot is read from: a height AND the block attested at it.
+ *
+ *  Both, and not a bare height, because there are two finalized heights in this node and only
+ *  one of them is safe here. The node-local live streak (CFinalityTracker::GetFinalizedHeight)
+ *  stalls and resumes with vote arrival order and DIFFERS BETWEEN NODES -- the reorg guard in
+ *  main.cpp says so in as many words -- and two seats reading a slot from two different views
+ *  is the disagreement this whole mechanism exists to remove. The deterministic latch
+ *  (CDagManager::TryGetDeterministicFinalizedAnchor) is the one every node computes alike, and
+ *  it is the one that hands back a hash. Carrying the hash makes the safe source the only one
+ *  a caller can satisfy. */
+struct CMixSettledPoint
+{
+    int nHeight;
+    uint256 hashBlock;
+
+    CMixSettledPoint() : nHeight(0), hashBlock(0) {}
+    CMixSettledPoint(int nHeightIn, const uint256& hashIn)
+        : nHeight(nHeightIn), hashBlock(hashIn) {}
+    bool IsNull() const { return hashBlock == 0; }
+};
+
 /** Which blocks a slot's records may come from, newest first, from a settled view. Split out
  *  from the read so the window and settlement rules can be checked without a chain on disk. */
-bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, int nFinalizedHeight, int64_t nSlot,
-                               std::vector<const CBlockIndex*>& vScanOut,
+bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
+                               int64_t nSlot, std::vector<const CBlockIndex*>& vScanOut,
                                std::string* pstrError = NULL);
 
 /** The records a slot may select from, oldest first, from the finalized chain only. A slot
  *  whose window is not yet finalized is refused. */
-bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
                               int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
                               std::string* pstrError = NULL);
 
 /** What the chain says about this coordinator and slot. */
-bool LookupMixRendezvous(const CBlockIndex* pindexTip, int nFinalizedHeight,
+bool LookupMixRendezvous(const CBlockIndex* pindexTip, const CMixSettledPoint& settled,
                          const CPubKey& pubkeyCoordinator, int64_t nSlot,
                          CMixRendezvous& rendezvousOut, std::string* pstrError = NULL);
 

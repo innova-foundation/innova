@@ -4412,8 +4412,11 @@ BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
     const int nBlocks = 260;
     const int64_t nStep = 60;
     std::vector<CBlockIndex> vChain((size_t)nBlocks);
+    std::vector<uint256> vHashes((size_t)nBlocks);
     for (int i = 0; i < nBlocks; i++)
     {
+        vHashes[i] = uint256(i + 1);
+        vChain[i].phashBlock = &vHashes[i];
         vChain[i].nHeight = i;
         // The chain has to run well past the slot's opening, or nothing is settled yet.
         vChain[i].nTime = (unsigned int)(nOpens - (int64_t)(nBlocks - 1 - i) * nStep +
@@ -4431,12 +4434,23 @@ BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
         if (vChain[i].GetMedianTimePast() < nOpens)
             nBehind = i;
     BOOST_REQUIRE(nBehind > 0);
-    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexTip, nBehind, nSlot, vScan, &strError),
+    const CMixSettledPoint behind(nBehind, vChain[nBehind].GetBlockHash());
+    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexTip, behind, nSlot, vScan, &strError),
                         "a slot was read before the finalized chain passed its opening");
     BOOST_CHECK(strError.find("settled") != std::string::npos);
 
+    // A height alone is not a settled point. The node-local live streak can hand one over and
+    // it differs between nodes; only the deterministic latch also hands back the block, and
+    // without a matching block there is nothing to read from.
+    const CMixSettledPoint bare(nBehind + 1, uint256(1));
+    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexTip, bare, nSlot, vScan, &strError),
+                        "a settled point naming the wrong block was read from");
+    BOOST_CHECK(!SelectMixRendezvousBlocks(pindexTip, CMixSettledPoint(), nSlot, vScan,
+                                           &strError));
+
     // Finalized past it: the window is fixed, and holds exactly the blocks inside it.
-    BOOST_REQUIRE_MESSAGE(SelectMixRendezvousBlocks(pindexTip, nBehind + 1, nSlot, vScan,
+    const CMixSettledPoint settled(nBehind + 1, vChain[nBehind + 1].GetBlockHash());
+    BOOST_REQUIRE_MESSAGE(SelectMixRendezvousBlocks(pindexTip, settled, nSlot, vScan,
                                                     &strError), strError);
     BOOST_REQUIRE(!vScan.empty());
     for (size_t i = 0; i < vScan.size(); i++)
@@ -4453,14 +4467,18 @@ BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
     // A chain that does not reach back to the window's start is still a complete view of it.
     std::vector<CBlockIndex> vShort(vChain.begin() + nBehind - 20, vChain.begin() + nBehind + 2);
     for (size_t i = 0; i < vShort.size(); i++)
-        vShort[i].pprev = (i == 0) ? NULL : &vShort[i - 1];
-    BOOST_CHECK_MESSAGE(SelectMixRendezvousBlocks(&vShort[vShort.size() - 1],
-                                                  vShort[vShort.size() - 1].nHeight, nSlot,
-                                                  vScan, &strError),
+        vShort[i].pprev = (i == 0) ? NULL : &vShort[i - 1];   // hashes still point at vHashes
+    const CBlockIndex* pindexShort = &vShort[vShort.size() - 1];
+    BOOST_CHECK_MESSAGE(SelectMixRendezvousBlocks(pindexShort,
+                                                  CMixSettledPoint(pindexShort->nHeight,
+                                                                   pindexShort->GetBlockHash()),
+                                                  nSlot, vScan, &strError),
                         strError);
 
-    // And a finalized height this chain does not reach is not a view at all.
-    BOOST_CHECK(!SelectMixRendezvousBlocks(pindexTip, nBlocks + 5, nSlot, vScan, &strError));
+    // And a settled height this chain does not reach is not a view at all.
+    BOOST_CHECK(!SelectMixRendezvousBlocks(pindexTip,
+                                           CMixSettledPoint(nBlocks + 5, uint256(1)),
+                                           nSlot, vScan, &strError));
 
     // More blocks inside one window than a seat will scan. Shortening the window silently
     // would let whoever filled it decide which publication a seat sees first, so the answer
@@ -4468,16 +4486,21 @@ BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
     const int nPacked = MIX_RENDEZVOUS_MAX_BLOCKS + 32;
     const int nAfter = 16;
     std::vector<CBlockIndex> vDense((size_t)(nPacked + nAfter));
+    std::vector<uint256> vDenseHashes((size_t)(nPacked + nAfter));
     for (int i = 0; i < nPacked + nAfter; i++)
     {
+        vDenseHashes[i] = uint256(i + 1);
+        vDense[i].phashBlock = &vDenseHashes[i];
         vDense[i].nHeight = i;
         vDense[i].nTime = (unsigned int)(i < nPacked ? nOpens - 10 : nOpens + 10);
         vDense[i].pprev = (i == 0) ? NULL : &vDense[i - 1];
     }
     const CBlockIndex* pindexDense = &vDense[nPacked + nAfter - 1];
     BOOST_REQUIRE(pindexDense->GetMedianTimePast() >= nOpens);
-    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexDense, pindexDense->nHeight, nSlot,
-                                                   vScan, &strError),
+    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexDense,
+                                                   CMixSettledPoint(pindexDense->nHeight,
+                                                                    pindexDense->GetBlockHash()),
+                                                   nSlot, vScan, &strError),
                         "a window longer than the scan cap was answered anyway");
     BOOST_CHECK(strError.find("incomplete") != std::string::npos);
     BOOST_CHECK(vScan.empty());
