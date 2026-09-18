@@ -426,17 +426,8 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
 // record before it reached the depth anchor, so nothing in the IV5 pool was spendable
 // until finality first advanced -- the window the depth anchor is for. With nothing
 // finalized, an epoch deep enough below the tip anchors on its own.
-// Which anchors consensus will accept at one height, enumerated.
-//
-// ConnectBlock takes the newest resolved anchor and then five more, and the two halves do
-// not agree on what they are counting from: the newest comes from the depth rule, which
-// past the finalized epoch takes the newest epoch already deep enough to stand on its own,
-// while the other five are the FINALIZED epoch minus one through five. While finality keeps
-// up those are one ladder and the set is contiguous. When finality falls far enough behind
-// that an unfinalized epoch is deep enough, they are two ladders with a gap between them.
-//
-// This enumerates the set rather than asserting a remembered shape, because the shape is
-// what the mix's anchor budget is built on and it was never written down.
+// The anchors ConnectBlock accepts at one height: the newest resolved anchor and five
+// more from the same head, as one contiguous run.
 std::vector<int> AcceptedAnchorEpochs(CTxDB& txdb, int nBlockHeight)
 {
     std::vector<int> vEpochs;
@@ -479,7 +470,7 @@ void SetFinalizedAsOf(CTxDB& txdb, const ScopedEpochRecords& records, int nAsOf,
         BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, it->first));
 }
 
-BOOST_AUTO_TEST_CASE(the_accepted_anchor_set_is_two_ladders_when_finality_falls_behind)
+BOOST_AUTO_TEST_CASE(the_accepted_anchor_set_is_one_run_from_the_head_it_resolves)
 {
     BOOST_REQUIRE(fRegTest);
     const int nTip = BestIndex()->nHeight;
@@ -525,26 +516,98 @@ BOOST_AUTO_TEST_CASE(the_accepted_anchor_set_is_two_ladders_when_finality_falls_
         const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, nTip);
         BOOST_REQUIRE(!vSet.empty());
         const int nNewest = vSet.front();
-        BOOST_CHECK_MESSAGE(nNewest > nFinEpoch,
-                            "the depth rule did not reach past the finalized epoch, so this "
-                            "case does not exercise the two ladders");
-        // The gap, stated as the thing it is: epochs a wallet may legitimately hold an
-        // anchor from, that consensus will not accept.
-        bool fContiguous = true;
+        BOOST_REQUIRE_MESSAGE(nNewest > nFinEpoch,
+                              "the depth rule did not reach past the finalized epoch, so this "
+                              "case does not exercise the fallback at all");
+        // One run from the head the height resolves, which is the depth pick here. Two
+        // pieces with a gap is the shape this replaced: an anchor taken from the head then
+        // expired at the next head change rather than five epochs later.
         for (size_t i = 1; i < vSet.size(); i++)
-            if (vSet[i] != vSet[i - 1] - 1)
-                fContiguous = false;
-        BOOST_CHECK_MESSAGE(!fContiguous,
-                            "expected a gap between the depth pick and the finalized ladder");
-        BOOST_CHECK_MESSAGE(std::find(vSet.begin(), vSet.end(), nFinEpoch) == vSet.end(),
-                            "the finalized epoch is accepted; the depth pick did not "
-                            "displace it after all");
-        // And the consequence the mix's budget rests on: the newest anchor is NOT good for
-        // five more epochs. It is the depth pick, and the depth pick moves with the tip.
-        const int nLaterTip = nTip;   // same tip: the shape, not the passage of time
-        const std::vector<int> vAgain = AcceptedAnchorEpochs(txdb, nLaterTip);
-        BOOST_CHECK(vAgain == vSet);
+            BOOST_CHECK_MESSAGE(vSet[i] == vSet[i - 1] - 1,
+                                "the accepted anchors came apart at " << vSet[i - 1]
+                                << " then " << vSet[i] << "; the older entries are counting "
+                                "from somewhere other than the head");
+        BOOST_CHECK_MESSAGE(vSet.size() ==
+                                (size_t)EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS ||
+                            vSet.back() == 0,
+                            "the run is shorter than the window and did not stop at epoch 0");
     }
+}
+
+// Anchor lifetime: acceptance is membership of the set the connecting height resolves,
+// so an anchor lives until the head has moved past it by the window's width.
+BOOST_AUTO_TEST_CASE(an_anchor_lasts_until_the_head_moves_a_window_past_it)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nTip = BestIndex()->nHeight;
+    const int nAsOf = GetEpochForHeight(nTip) - 1;
+    BOOST_REQUIRE(nAsOf >= 4);
+    ScopedEpochRecords records(0);
+    CTxDB txdb;
+
+    const int nFinEpoch = nAsOf - 1;
+    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
+    CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
+    BOOST_REQUIRE(pAttested);
+    SetFinalizedAsOf(txdb, records, nAsOf, nFinalized, pAttested->GetBlockHash());
+
+    // Walk the heights this chain can be asked about and record, for each, the head it
+    // resolves and the oldest anchor it still accepts.
+    int nFirstHead = -1;
+    int nLastAccepting = -1;
+    for (int h = GetEpochBoundaryHeight(2, nTip); h <= nTip; h += 50)
+    {
+        const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, h);
+        if (vSet.empty())
+            continue;
+        if (nFirstHead < 0)
+            nFirstHead = vSet.front();
+        if (std::find(vSet.begin(), vSet.end(), nFirstHead) != vSet.end())
+            nLastAccepting = h;
+        else
+            BOOST_CHECK_MESSAGE(vSet.front() > nFirstHead + 
+                                    EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS - 1,
+                                "an anchor stopped being accepted while the head was still "
+                                "within the window of it: head " << vSet.front()
+                                << " anchor " << nFirstHead);
+    }
+    BOOST_REQUIRE(nFirstHead >= 0);
+    BOOST_CHECK_MESSAGE(nLastAccepting >= GetEpochBoundaryHeight(2, nTip),
+                        "the first head resolved was not accepted at any height");
+}
+
+// Acceptance is on the root and tree size, not the epoch number. Epochs that share a pair
+// are one anchor as far as a transaction is concerned, so the pair outlives any single
+// epoch's place in the window -- which is why a wallet cannot reason about expiry from
+// epoch arithmetic alone.
+BOOST_AUTO_TEST_CASE(anchors_are_accepted_by_their_pair_not_their_epoch_number)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nTip = BestIndex()->nHeight;
+    const int nAsOf = GetEpochForHeight(nTip) - 1;
+    BOOST_REQUIRE(nAsOf >= 4);
+    ScopedEpochRecords records(0);
+    CTxDB txdb;
+
+    const int nFinEpoch = nAsOf - 1;
+    const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
+    CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
+    BOOST_REQUIRE(pAttested);
+    SetFinalizedAsOf(txdb, records, nAsOf, nFinalized, pAttested->GetBlockHash());
+
+    const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, nTip);
+    BOOST_REQUIRE(vSet.size() >= 2);
+    CEpochState head, older;
+    BOOST_REQUIRE(txdb.ReadEpochState(vSet[0], head));
+    BOOST_REQUIRE(txdb.ReadEpochState(vSet[1], older));
+    // Two epochs in the window that carry the same root and tree size are indistinguishable
+    // to the rule that judges a payload's anchor.
+    BOOST_CHECK_MESSAGE(head.vchVNextRoot.size() == EPOCHSTATE_VNEXT_DIGEST_SIZE,
+                        "the head epoch carries no IV5 root to anchor against");
+    const bool fSamePair = (head.vchVNextRoot == older.vchVNextRoot &&
+                            head.nVNextTreeSize == older.nVNextTreeSize);
+    BOOST_TEST_MESSAGE("window head " << vSet[0] << " and next " << vSet[1]
+                       << (fSamePair ? " share a root/tree pair" : " carry distinct pairs"));
 }
 
 BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)

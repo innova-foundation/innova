@@ -3868,24 +3868,25 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         *pfLocalFailure = false;
     if (nEpochsBack < 0)
         return false;
-    const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
-    int nFinHeight = 0;
-    if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
+
+    // Count back from the head this height resolves, not from the finalized epoch; they
+    // differ once the depth fallback fires, and the accepted set must be one contiguous run.
+    CEpochState head;
+    bool fHeadLocalFailure = false;
+    if (!GetFinalizedEpochStateAsOf(txdb, nBlockHeight, head, fHeadLocalFailure))
     {
         if (pfLocalFailure)
-            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch);
+            *pfLocalFailure = fHeadLocalFailure;
         return false;
     }
-
-    const int nFinEpoch =
-        ((nFinHeight > 0) ? GetFinalizedEpochForHeight(nFinHeight) : 0) - nEpochsBack;
-    if (nFinEpoch < 0)
+    const int nEpoch = head.nEpoch - nEpochsBack;
+    if (nEpoch < 0)
         return false;
     CEpochState state;
-    if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+    if (!txdb.ReadEpochState(nEpoch, state) || state.nEpoch != nEpoch)
     {
         if (pfLocalFailure)
-            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
+            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nEpoch);
         return false;
     }
     stateOut = state;
