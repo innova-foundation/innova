@@ -6,6 +6,7 @@
 #include "privacy_vnext_ffi.h"
 #include "wallet.h"
 #include "walletdb.h"
+#include "txdb.h"
 
 // how many times to run all the tests to have a chance to catch errors that only show up with particular random shuffles
 #define RUN_TESTS 100
@@ -843,6 +844,52 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_collateral_candidates_rank_by_provenance_then
     // Last whatever its age, and never the default pick.
     BOOST_CHECK_EQUAL(v[4].nProvenance, (int)IV5_NOTE_SHIELD_FUNDED);
     BOOST_CHECK_EQUAL(v[4].note.nHeight, 10);
+}
+
+// A round has no change, so only a note worth exactly the round amount is a candidate;
+// larger, smaller, held, or unplaced notes are not.
+BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
+{
+    const std::string walletFile("iv5-mix-select-test.dat");
+    CWallet wallet(walletFile);
+    CTxDB txdb("r+");
+    const int nDeep = 100;
+    BestHeightOverride height(nDeep + 200);
+    const uint64_t nRequired = 1000;
+
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(nRequired - 1, nDeep, true, 61));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(nRequired + 1, nDeep, true, 62));
+    CPrivacyVNextWalletNote chosen;
+    std::string strError;
+    BOOST_CHECK_MESSAGE(!wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096,
+                                                          chosen, strError),
+                        "a note that is not the round's amount was offered to it");
+    BOOST_CHECK(strError.find("exactly") != std::string::npos);
+
+    // The exact one, and the older of two exact ones: a wallet that denominated once works
+    // through its notes rather than returning to the newest each time.
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(nRequired, nDeep + 5, true, 63));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(nRequired, nDeep, true, 64));
+    BOOST_REQUIRE_MESSAGE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096,
+                                                           chosen, strError), strError);
+    BOOST_CHECK_EQUAL(chosen.nOutputIndex, 64u);
+
+    // A held note is value the operator set aside, and a round is not allowed to take it.
+    BOOST_REQUIRE(wallet.SetPrivacyVNextHold(uint256(64), 64, true, strError));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_MESSAGE(chosen.nOutputIndex == 63u, "a held note was offered to a round");
+
+    // And a note the anchor cannot prove against is not a candidate either: its leaf is
+    // past the tree every seat in the round anchors to.
+    BOOST_CHECK(!wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 63, chosen,
+                                                  strError));
+
+    BOOST_REQUIRE(wallet.SetPrivacyVNextHold(uint256(64), 64, false, strError));
+    {
+        CWalletDB walletdb(walletFile);
+        walletdb.ErasePrivacyVNextHold(uint256(64), 64);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

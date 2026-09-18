@@ -12,6 +12,7 @@
 #include "bip39.h"
 #include "hdroot.h"
 #include "wallet.h"
+#include "nullsend_v2008.h"
 #include "subsidy.h"
 #include "privacy_vnext_builder.h"
 #include "privacy_vnext_store.h"
@@ -12316,6 +12317,189 @@ static bool PreparePrivacyVNextSpend(
         return false;
 
     nFeeOut = nFee;
+    return true;
+}
+
+// A 32-byte wallet field as the digest the prover takes. Anything shorter is a note the
+// wallet should never have kept: IsComplete refuses it at load.
+static PrivacyVNextDigest PrivacyVNextDigestFromBytes(const std::vector<unsigned char>& vch)
+{
+    PrivacyVNextDigest out;
+    out.fill(0);
+    if (vch.size() == out.size())
+        std::memcpy(out.data(), &vch[0], out.size());
+    return out;
+}
+
+bool CWallet::DerivePrivacyVNextMixRecipient(const std::vector<uint256>& vRosterKeyImages,
+                                             PrivacyVNextDerivedKeys& keysOut,
+                                             std::string& strErrorOut) const
+{
+    keysOut.Clear();
+    strErrorOut.clear();
+    if (vRosterKeyImages.empty() || vRosterKeyImages.size() > iv5::MAX_NULLSEND_INPUTS)
+    {
+        strErrorOut = "a mix roster carries between one and sixteen key images";
+        return false;
+    }
+    if (vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "this wallet has no IV5 seed to pay itself with";
+        return false;
+    }
+    PrivacyVNextDigest seedDigest;
+    std::memcpy(seedDigest.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
+
+    // The same index the round's own input set derives, over the mix's transparent binding:
+    // a seat that took its recipient from anywhere else would be paid to a key its scanner
+    // never reconstructs, and the value would be gone as surely as if it had been burnt.
+    std::vector<PrivacyVNextDigest> vImages;
+    for (size_t i = 0; i < vRosterKeyImages.size(); ++i)
+    {
+        PrivacyVNextDigest image;
+        std::memcpy(image.data(), vRosterKeyImages[i].begin(), 32);
+        vImages.push_back(image);
+    }
+    const uint32_t nIndex = PrivacyVNextChangeIndexFor(genesis, nNetwork,
+                                                       MixTransparentBinding(), vImages);
+    return DerivePrivacyVNextChangeKeys(seedDigest, genesis, nNetwork, nIndex, keysOut,
+                                        strErrorOut);
+}
+
+bool CWallet::SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
+                                        uint64_t nAnchorTreeSize,
+                                        CPrivacyVNextWalletNote& noteOut,
+                                        std::string& strErrorOut) const
+{
+    noteOut = CPrivacyVNextWalletNote();
+    strErrorOut.clear();
+    if (nRequired == 0 || nAnchorTreeSize == 0)
+    {
+        strErrorOut = "a mix note needs a positive amount and an anchor to prove against";
+        return false;
+    }
+    LOCK(cs_shielded);
+    const CPrivacyVNextWalletNote* pChosen = NULL;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        // Exactly the amount, because a round has no change: a note worth more cannot be
+        // spent into it and a note worth less cannot make up the difference.
+        if (!PrivacyVNextNoteIsSpendable(note, nSpendHeight) ||
+            note.nLeafIndex >= nAnchorTreeSize || note.nAmount != nRequired)
+            continue;
+        uint256 keyImage;
+        if (!PrivacyVNextNoteKeyImage(note, keyImage))
+            continue;
+        if (setPrivacyVNextInFlight.count(keyImage) || IsPrivacyVNextNoteHeld(note) ||
+            mapPrivacyVNextCollateral.count(keyImage))
+            continue;
+        CPrivacyVNextNullifierSpent spent;
+        if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
+            continue;
+        {
+            LOCK(mempool.cs);
+            if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
+                mempool.mapPrivacyVNextAttestation.count(keyImage))
+                continue;
+        }
+        if (!pChosen || note.nHeight < pChosen->nHeight ||
+            (note.nHeight == pChosen->nHeight &&
+             (note.txhash < pChosen->txhash ||
+              (note.txhash == pChosen->txhash &&
+               note.nOutputIndex < pChosen->nOutputIndex))))
+            pChosen = &note;
+    }
+    if (!pChosen)
+    {
+        strErrorOut = strprintf("no spendable IV5 note is worth exactly %" PRIu64
+                                " under this anchor", nRequired);
+        return false;
+    }
+    noteOut = *pChosen;
+    return true;
+}
+
+bool CWallet::BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size_t nSeats,
+                                           CMixSeatMaterial& materialOut, uint256& txhashOut,
+                                           uint32_t& nOutputIndexOut, std::string& strErrorOut)
+{
+    materialOut = CMixSeatMaterial();
+    txhashOut = 0;
+    nOutputIndexOut = 0;
+    strErrorOut.clear();
+    if (nRequired == 0 || nSeats < (size_t)NULLSEND_MIN_PARTICIPANTS ||
+        nSeats > iv5::MAX_NULLSEND_INPUTS)
+    {
+        strErrorOut = "a mix attempt needs a positive amount and a seat count a round can carry";
+        return false;
+    }
+
+    std::vector<unsigned char> vchAnchorState, vchAnchorRoot, vchParameterDigest;
+    uint64_t nAnchorTreeSize = 0;
+    if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot, nAnchorTreeSize,
+                                     vchParameterDigest, strErrorOut))
+        return false;
+    const int nSpendHeight = nBestHeight + 1;
+
+    CPrivacyVNextWalletNote note;
+    if (!SelectPrivacyVNextMixNote(txdb, nRequired, nSpendHeight, nAnchorTreeSize, note,
+                                   strErrorOut))
+        return false;
+    materialOut.input.leaf.owner = PrivacyVNextDigestFromBytes(note.vchOwner);
+    materialOut.input.leaf.nullifierBase = PrivacyVNextDigestFromBytes(note.vchNullifierBase);
+    materialOut.input.leaf.commitment = PrivacyVNextDigestFromBytes(note.vchCommitment);
+    materialOut.input.spendScalar = PrivacyVNextDigestFromBytes(note.vchSpendSecret);
+    materialOut.input.commitmentScalar = PrivacyVNextDigestFromBytes(note.vchY);
+    materialOut.noteMask = PrivacyVNextDigestFromBytes(note.vchMask);
+    txhashOut = note.txhash;
+    nOutputIndexOut = note.nOutputIndex;
+
+    // Held for the attempt. A round runs for minutes, and an ordinary spend or a note vote
+    // taking this note halfway through costs the seat the round and leaves its co-seats
+    // short of an input they have already proved against.
+    if (!SetPrivacyVNextHold(txhashOut, nOutputIndexOut, true, strErrorOut))
+        return false;
+
+    const std::vector<uint64_t> vLeafIndexes(1, note.nLeafIndex);
+    std::vector<unsigned char> vchPaths;
+    if (!ReadPrivacyVNextTreePaths(txdb, nAnchorTreeSize, vchAnchorState, vLeafIndexes,
+                                   vchPaths, strErrorOut))
+        return false;
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    if (!BuildPrivacyVNextWitnessesFromPaths(vchAnchorState, vLeafIndexes, vchPaths, vWitnesses,
+                                             treeRoot, strErrorOut))
+        return false;
+    if (vWitnesses.size() != 1 ||
+        !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin()))
+    {
+        strErrorOut = "the IV5 witness does not fold onto the finalized anchor root. If this "
+                      "persists, a note may remain from a chain this wallet no longer "
+                      "follows: run z_rescaniv5 to drop it.";
+        return false;
+    }
+    materialOut.input.vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    // Drawn here, for this attempt and no other. Derived entropy would repeat across a
+    // restart, and a membership proof repeated under a second statement or a balance nonce
+    // reused under a second challenge gives up the secret each was protecting.
+    if (!RandomScalar(materialOut.membershipEntropy, strErrorOut) ||
+        !RandomScalar(materialOut.balanceEntropy, strErrorOut) ||
+        !RandomScalar(materialOut.outputY, strErrorOut) ||
+        !RandomScalar(materialOut.outputMask, strErrorOut))
+        return false;
+    for (size_t i = 0; i < nSeats; ++i)
+    {
+        PrivacyVNextDigest noteEphemeral, tweakEphemeral;
+        if (!RandomScalar(noteEphemeral, strErrorOut) || !RandomScalar(tweakEphemeral, strErrorOut))
+            return false;
+        materialOut.vEphemerals.push_back(std::make_pair(noteEphemeral, tweakEphemeral));
+    }
     return true;
 }
 

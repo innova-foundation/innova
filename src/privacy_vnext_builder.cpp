@@ -67,31 +67,6 @@ void PutVector(std::vector<unsigned char>& out,
     out.insert(out.end(), v.begin(), v.end());
 }
 
-// A uniformly random canonical scalar.
-bool RandomScalar(PrivacyVNextDigest& out, std::string& strErrorOut)
-{
-    std::vector<unsigned char> wide(64, 0);
-    // Every IV5 secret is drawn here -- prover entropy, ephemerals, output y and
-    // the output masks. A failed draw leaves the buffer zeroed, and a zero mask is
-    // not rejected anywhere downstream, so it has to fail here.
-    if (RAND_bytes(&wide[0], 64) != 1)
-    {
-        OPENSSL_cleanse(&wide[0], wide.size());
-        strErrorOut = "the system random source failed while drawing an IV5 scalar";
-        return false;
-    }
-    std::vector<unsigned char> reduced;
-    if (!Ed25519ScalarReduce(wide, reduced) || reduced.size() != 32)
-    {
-        OPENSSL_cleanse(&wide[0], wide.size());
-        strErrorOut = "could not draw a canonical IV5 scalar";
-        return false;
-    }
-    std::memcpy(out.data(), &reduced[0], 32);
-    OPENSSL_cleanse(&wide[0], wide.size());
-    OPENSSL_cleanse(&reduced[0], reduced.size());
-    return true;
-}
 
 std::vector<unsigned char> AsVector(const PrivacyVNextDigest& d)
 {
@@ -123,6 +98,32 @@ struct RetainedBytes
 };
 
 } // namespace
+
+// A uniformly random canonical scalar.
+bool RandomScalar(PrivacyVNextDigest& out, std::string& strErrorOut)
+{
+    std::vector<unsigned char> wide(64, 0);
+    // Every IV5 secret is drawn here -- prover entropy, ephemerals, output y and
+    // the output masks. A failed draw leaves the buffer zeroed, and a zero mask is
+    // not rejected anywhere downstream, so it has to fail here.
+    if (RAND_bytes(&wide[0], 64) != 1)
+    {
+        OPENSSL_cleanse(&wide[0], wide.size());
+        strErrorOut = "the system random source failed while drawing an IV5 scalar";
+        return false;
+    }
+    std::vector<unsigned char> reduced;
+    if (!Ed25519ScalarReduce(wide, reduced) || reduced.size() != 32)
+    {
+        OPENSSL_cleanse(&wide[0], wide.size());
+        strErrorOut = "could not draw a canonical IV5 scalar";
+        return false;
+    }
+    std::memcpy(out.data(), &reduced[0], 32);
+    OPENSSL_cleanse(&wide[0], wide.size());
+    OPENSSL_cleanse(&reduced[0], reduced.size());
+    return true;
+}
 
 void PrivacyVNextSpendNote::Clear()
 {

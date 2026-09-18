@@ -45,6 +45,8 @@ uint32_t PrivacyVNextChangeIndexFor(
     const PrivacyVNextDigest& transparentBinding,
     const std::vector<PrivacyVNextDigest>& vKeyImages);
 
+struct CMixSeatMaterial;
+
 // Keys every self-pay output is sent to: a spend's change, and the receiver a shield
 // pays into. One function, so no self-pay site can be left on a user-facing index
 // while the others move. Refuses any index the allocator could issue.
@@ -493,6 +495,30 @@ public:
     // The part of unconfirmed with no tree position at all yet: detected, but not placed by
     // an epoch build. The rest of unconfirmed is placed and waiting on depth or the anchor.
     int64_t GetPrivacyVNextUnplacedBalance() const;
+
+    /** What a seat brings to one mix attempt: a note worth exactly what a round of this
+     *  shape requires, its witness against the spend anchor, and entropy drawn for this
+     *  attempt alone. The note is held while the attempt runs, so nothing else spends it
+     *  under the round -- an ordinary spend or a note vote taking it mid-round costs the
+     *  seat the round and leaves its co-seats short. */
+    /** The one note a round of this shape can take: worth exactly what it requires, deep
+     *  enough and placed under the anchor, not held, not in flight, not collateral, and not
+     *  spent on chain or in the mempool. Oldest first, so a wallet that denominated once
+     *  works through its notes instead of returning to the newest each time. */
+    bool SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
+                                   uint64_t nAnchorTreeSize, CPrivacyVNextWalletNote& noteOut,
+                                   std::string& strErrorOut) const;
+
+    bool BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size_t nSeats,
+                                      CMixSeatMaterial& materialOut, uint256& txhashOut,
+                                      uint32_t& nOutputIndexOut, std::string& strErrorOut);
+
+    /** The output this wallet pays itself in a round with this roster. The index is derived
+     *  from the frozen key images, which is what makes it the one this wallet's own scanner
+     *  reconstructs; a seat that derived it any other way could not see its own note. */
+    bool DerivePrivacyVNextMixRecipient(const std::vector<uint256>& vRosterKeyImages,
+                                        PrivacyVNextDerivedKeys& keysOut,
+                                        std::string& strErrorOut) const;
 
     // Notes held by the operator, by outpoint, so a hold can precede scanning. Every selector
     // skips them except a registration that names one. Persisted across restarts.

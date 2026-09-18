@@ -100,9 +100,9 @@ struct PrivacyVNextPrefixOutput
     PrivacyVNextPrefixOutput() : nAmount(0) {}
 };
 
-// The one byte layout of a spend-shaped payload prefix -- everything the signing hash
-// covers, in the order the decoder reads it. The builder and a mix coordinator both write
-// through this, so a mix prefix cannot drift from the layout a payload is decoded with.
+/** A uniformly random canonical scalar; the single source for every IV5 secret. */
+bool RandomScalar(PrivacyVNextDigest& out, std::string& strErrorOut);
+
 bool AssemblePrivacyVNextPayloadPrefix(const PrivacyVNextPrefixHeader& header,
                                        const std::vector<PrivacyVNextPrefixInput>& vInputs,
                                        const std::vector<PrivacyVNextPrefixOutput>& vOutputs,
