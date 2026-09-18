@@ -4008,26 +4008,26 @@ BOOST_AUTO_TEST_CASE(a_seat_and_the_public_surface_each_have_a_ceiling)
     coord.Tick(T1);
     const uint256 hashView = coord.Round().ViewDigest(announce.hashRound);
     std::vector<unsigned char> vchReply;
-    int nTaken = 0;
-    for (int i = 0; i < MIX_SEAT_REQUEST_BUDGET + 4; i++)
-        if (Accepted(coord, MIX_FRAME_VIEW_SIG,
-                     ViewSigFrame(vSeats[0], hashRound, announce.hashRound, hashView), T1))
-            nTaken++;
-    BOOST_CHECK_MESSAGE(nTaken <= 1, "a seat signed more than one view");
-    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_VIEW_SIG,
-                            ViewSigFrame(vSeats[0], hashRound, announce.hashRound, hashView),
-                            T1, vchReply) == MIX_FRAME_ACK,
-                        "a seat past its budget got something other than a refusal");
-    // Its allowance for another kind of frame is untouched: the budget is per type, so a
-    // seat that spends one does not lose the rest.
-    std::vector<unsigned char> vchAuthBody, vchAuthFrame;
-    BOOST_REQUIRE(BuildMixStateAuthBody(vSeats[0].pubkey, announce.hashRound, vchAuthBody));
+    // Reads are stopped by the budget alone. Proofs share the allowance, but the round
+    // refuses a second proof on its own.
+    std::vector<unsigned char> vchReadBody, vchReadFrame;
+    BOOST_REQUIRE(BuildMixStateAuthBody(vSeats[0].pubkey, announce.hashRound, vchReadBody));
     BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[0].key, hashRound, MIX_FRAME_STATE_AUTH,
-                                      vchAuthBody, vchAuthFrame));
-    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_STATE_AUTH, vchAuthFrame, T1, vchReply) ==
-                        MIX_FRAME_SNAPSHOT,
-                        "one exhausted allowance took the seat's others with it");
+                                      vchReadBody, vchReadFrame));
+    int nAnsweredReads = 0;
+    for (int i = 0; i < MIX_SEAT_REQUEST_BUDGET + 4; i++)
+        if (Ask(coord, MIX_FRAME_STATE_AUTH, vchReadFrame, T1, vchReply) == MIX_FRAME_SNAPSHOT)
+            nAnsweredReads++;
+    BOOST_CHECK_EQUAL(nAnsweredReads, MIX_SEAT_REQUEST_BUDGET);
+    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_STATE_AUTH, vchReadFrame, T1, vchReply) ==
+                        MIX_FRAME_ACK,
+                        "a seat past its budget got something other than a refusal");
 
+    // Its view signature is still its own to spend.
+    BOOST_CHECK_MESSAGE(Accepted(coord, MIX_FRAME_VIEW_SIG,
+                                 ViewSigFrame(vSeats[0], hashRound, announce.hashRound, hashView),
+                                 T1),
+                        "one exhausted allowance took the seat's others with it");
     // The public surface, which nothing identifies: the round stops answering once its
     // second's allowance is gone, and answers again in the next one.
     int nAnswered = 0;
@@ -4054,6 +4054,23 @@ BOOST_AUTO_TEST_CASE(a_seat_and_the_public_surface_each_have_a_ceiling)
                                  ViewSigFrame(vSeats[1], hashRound, announce.hashRound, hashView),
                                  T1 + 1),
                         "forged frames spent the allowance of the seat they named");
+
+    // And a key that holds no seat is turned away in front of the work, not by the round
+    // behind it: a properly signed frame from a stranger gets no reply at all, where one
+    // the round refused would come back as a refusal.
+    std::vector<unsigned char> vchOwnBody, vchOwnFrame;
+    BOOST_REQUIRE(BuildMixStateAuthBody(stranger.pubkey, announce.hashRound, vchOwnBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(stranger.key, hashRound, MIX_FRAME_STATE_AUTH,
+                                      vchOwnBody, vchOwnFrame));
+    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_STATE_AUTH, vchOwnFrame, T1 + 1, vchReply) ==
+                        MIX_FRAME_NONE,
+                        "a key holding no seat was carried into the round's own refusals");
+    std::vector<unsigned char> vchNonceBody, vchNonceFrame;
+    BOOST_REQUIRE(BuildMixScalarBody(stranger.pubkey, std::vector<unsigned char>(32, 0x11),
+                                     vchNonceBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(stranger.key, hashRound, MIX_FRAME_NONCE, vchNonceBody,
+                                      vchNonceFrame));
+    BOOST_CHECK(Ask(coord, MIX_FRAME_NONCE, vchNonceFrame, T1 + 1, vchReply) == MIX_FRAME_NONE);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
