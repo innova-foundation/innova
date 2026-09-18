@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <map>
+#include <vector>
 #include <memory>
 #include <string>
 
@@ -425,6 +426,127 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
 // record before it reached the depth anchor, so nothing in the IV5 pool was spendable
 // until finality first advanced -- the window the depth anchor is for. With nothing
 // finalized, an epoch deep enough below the tip anchors on its own.
+// Which anchors consensus will accept at one height, enumerated.
+//
+// ConnectBlock takes the newest resolved anchor and then five more, and the two halves do
+// not agree on what they are counting from: the newest comes from the depth rule, which
+// past the finalized epoch takes the newest epoch already deep enough to stand on its own,
+// while the other five are the FINALIZED epoch minus one through five. While finality keeps
+// up those are one ladder and the set is contiguous. When finality falls far enough behind
+// that an unfinalized epoch is deep enough, they are two ladders with a gap between them.
+//
+// This enumerates the set rather than asserting a remembered shape, because the shape is
+// what the mix's anchor budget is built on and it was never written down.
+std::vector<int> AcceptedAnchorEpochs(CTxDB& txdb, int nBlockHeight)
+{
+    std::vector<int> vEpochs;
+    CEpochState state;
+    bool fLocal = false;
+    if (g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBlockHeight, state, fLocal))
+        vEpochs.push_back(state.nEpoch);
+    for (int nBack = 1; nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
+    {
+        CEpochState older;
+        bool fOlderLocal = false;
+        if (g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBlockHeight, nBack, older,
+                                                    &fOlderLocal))
+            vEpochs.push_back(older.nEpoch);
+    }
+    return vEpochs;
+}
+
+// Write every record the chain has at or below nAsOf with one finalized height, so the
+// whole ladder resolves from a finality position this test chose.
+void SetFinalizedAsOf(CTxDB& txdb, const ScopedEpochRecords& records, int nAsOf,
+                      int nFinalizedHeight, const uint256& hashAttested)
+{
+    std::map<int, CEpochState> states;
+    std::map<int, CCurveTree> trees;
+    for (std::map<int, CEpochState>::const_iterator it = records.states.begin();
+         it != records.states.end() && it->first <= nAsOf; ++it)
+    {
+        CEpochState state = it->second;
+        state.hashCurveRoot = 0;
+        state.nFinalizedHeightAsOf = nFinalizedHeight;
+        state.hashVNextFinalizedAnchor = hashAttested;
+        state.fFinalized = (state.nHeightEnd > 0 && nFinalizedHeight >= state.nHeightEnd);
+        states[it->first] = state;
+        trees[it->first] = CCurveTree();
+    }
+    BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(records.nFirst, states, trees));
+    for (std::map<int, CEpochState>::const_iterator it = states.begin();
+         it != states.end(); ++it)
+        BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, it->first));
+}
+
+BOOST_AUTO_TEST_CASE(the_accepted_anchor_set_is_two_ladders_when_finality_falls_behind)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nTip = BestIndex()->nHeight;
+    const int nAsOf = GetEpochForHeight(nTip) - 1;
+    // The gap needs room for an unfinalized epoch deep enough to stand on its own above a
+    // far-behind finalized one, which is a few epochs plus the depth rule's reach.
+    BOOST_REQUIRE_MESSAGE(nAsOf >= 4, "chain too short to exercise the ladder: as-of epoch "
+                          << nAsOf);
+    BOOST_TEST_MESSAGE("anchor ladder: tip " << nTip << " as-of epoch " << nAsOf);
+    ScopedEpochRecords records(0);
+    CTxDB txdb;
+
+    // Finality keeping up: the finalized epoch is the newest thing there is, the depth
+    // rule finds nothing above it, and both halves count from the same place.
+    {
+        const int nFinEpoch = nAsOf - 1;
+        const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
+        BOOST_REQUIRE_EQUAL(GetFinalizedEpochForHeight(nFinalized), nFinEpoch);
+        CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
+        BOOST_REQUIRE(pAttested);
+        SetFinalizedAsOf(txdb, records, nAsOf, nFinalized, pAttested->GetBlockHash());
+
+        const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, nTip);
+        BOOST_REQUIRE(!vSet.empty());
+        for (size_t i = 1; i < vSet.size(); i++)
+            BOOST_CHECK_MESSAGE(vSet[i] == vSet[i - 1] - 1,
+                                "with finality current the accepted anchors are not one "
+                                "contiguous run: " << vSet[i - 1] << " then " << vSet[i]);
+        BOOST_CHECK_MESSAGE(vSet.front() == nFinEpoch,
+                            "the newest accepted anchor is not the finalized epoch");
+    }
+
+    // Finality far behind: the newest entry comes from the depth rule. The set must stay
+    // one run from that head, including the finalized epoch.
+    {
+        const int nFinEpoch = 1;
+        const int nFinalized = GetEpochBoundaryHeight(nFinEpoch + 1, nTip);
+        BOOST_REQUIRE_EQUAL(GetFinalizedEpochForHeight(nFinalized), nFinEpoch);
+        CBlockIndex* pAttested = AncestorAt(BestIndex(), nFinalized);
+        BOOST_REQUIRE(pAttested);
+        SetFinalizedAsOf(txdb, records, nAsOf, nFinalized, pAttested->GetBlockHash());
+
+        const std::vector<int> vSet = AcceptedAnchorEpochs(txdb, nTip);
+        BOOST_REQUIRE(!vSet.empty());
+        const int nNewest = vSet.front();
+        BOOST_CHECK_MESSAGE(nNewest > nFinEpoch,
+                            "the depth rule did not reach past the finalized epoch, so this "
+                            "case does not exercise the two ladders");
+        // The gap, stated as the thing it is: epochs a wallet may legitimately hold an
+        // anchor from, that consensus will not accept.
+        bool fContiguous = true;
+        for (size_t i = 1; i < vSet.size(); i++)
+            if (vSet[i] != vSet[i - 1] - 1)
+                fContiguous = false;
+        BOOST_CHECK_MESSAGE(!fContiguous,
+                            "expected a gap between the depth pick and the finalized ladder");
+        BOOST_CHECK_MESSAGE(std::find(vSet.begin(), vSet.end(), nFinEpoch) == vSet.end(),
+                            "the finalized epoch is accepted; the depth pick did not "
+                            "displace it after all");
+        // And the consequence the mix's budget rests on: the newest anchor is NOT good for
+        // five more epochs. It is the depth pick, and the depth pick moves with the tip.
+        const int nLaterTip = nTip;   // same tip: the shape, not the passage of time
+        const std::vector<int> vAgain = AcceptedAnchorEpochs(txdb, nLaterTip);
+        BOOST_CHECK(vAgain == vSet);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
 {
     BOOST_REQUIRE(fRegTest);
