@@ -1096,6 +1096,12 @@ static const size_t MIX_RENDEZVOUS_MAX_RECORDS = 8192;
 void CollectMixRendezvousRecords(const CBlock& block,
                                  std::vector<CMixRendezvousRecord>& vRecordsOut);
 
+/** Which blocks a slot's records may come from, newest first, from a settled view. Split out
+ *  from the read so the window and settlement rules can be checked without a chain on disk. */
+bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, int nFinalizedHeight, int64_t nSlot,
+                               std::vector<const CBlockIndex*>& vScanOut,
+                               std::string* pstrError = NULL);
+
 /** The records a slot may select from, oldest first, from the finalized chain only. A slot
  *  whose window is not yet finalized is refused. */
 bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,

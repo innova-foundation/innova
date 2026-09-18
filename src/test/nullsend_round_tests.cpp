@@ -4359,6 +4359,87 @@ BOOST_AUTO_TEST_CASE(a_block_yields_its_rendezvous_records_in_output_order)
     BOOST_CHECK(rendezvous.hashCommitment == recA.hashCommitment);
 }
 
+// Which blocks a slot may be read from. The rule is the whole agreement: two seats that
+// disagree about the window disagree about which record came first.
+BOOST_AUTO_TEST_CASE(a_slot_is_read_only_once_the_finalized_chain_has_passed_it)
+{
+    // A chain of one-minute blocks, so median time past moves in steps a test can name.
+    const int64_t nSlot = 45010;
+    const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    const int nBlocks = 260;
+    const int64_t nStep = 60;
+    std::vector<CBlockIndex> vChain((size_t)nBlocks);
+    for (int i = 0; i < nBlocks; i++)
+    {
+        vChain[i].nHeight = i;
+        // The chain has to run well past the slot's opening, or nothing is settled yet.
+        vChain[i].nTime = (unsigned int)(nOpens - (int64_t)(nBlocks - 1 - i) * nStep +
+                                         30 * nStep);
+        vChain[i].pprev = (i == 0) ? NULL : &vChain[i - 1];
+    }
+    const CBlockIndex* pindexTip = &vChain[nBlocks - 1];
+    std::string strError;
+    std::vector<const CBlockIndex*> vScan;
+
+    // Finalized short of the slot's opening: a block that still belongs in the window can be
+    // finalized later, so there is no answer yet -- and a refusal is the answer.
+    int nBehind = -1;
+    for (int i = 0; i < nBlocks; i++)
+        if (vChain[i].GetMedianTimePast() < nOpens)
+            nBehind = i;
+    BOOST_REQUIRE(nBehind > 0);
+    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexTip, nBehind, nSlot, vScan, &strError),
+                        "a slot was read before the finalized chain passed its opening");
+    BOOST_CHECK(strError.find("settled") != std::string::npos);
+
+    // Finalized past it: the window is fixed, and holds exactly the blocks inside it.
+    BOOST_REQUIRE_MESSAGE(SelectMixRendezvousBlocks(pindexTip, nBehind + 1, nSlot, vScan,
+                                                    &strError), strError);
+    BOOST_REQUIRE(!vScan.empty());
+    for (size_t i = 0; i < vScan.size(); i++)
+        BOOST_CHECK(MixRendezvousInWindow(vScan[i]->GetMedianTimePast(), nSlot));
+    size_t nExpected = 0;
+    for (int i = 0; i <= nBehind + 1; i++)
+        if (MixRendezvousInWindow(vChain[i].GetMedianTimePast(), nSlot))
+            nExpected++;
+    BOOST_CHECK_EQUAL(vScan.size(), nExpected);
+    // Newest first, so the read can reverse it into the order first-wins is defined over.
+    for (size_t i = 1; i < vScan.size(); i++)
+        BOOST_CHECK(vScan[i]->nHeight < vScan[i - 1]->nHeight);
+
+    // A chain that does not reach back to the window's start is still a complete view of it.
+    std::vector<CBlockIndex> vShort(vChain.begin() + nBehind - 20, vChain.begin() + nBehind + 2);
+    for (size_t i = 0; i < vShort.size(); i++)
+        vShort[i].pprev = (i == 0) ? NULL : &vShort[i - 1];
+    BOOST_CHECK_MESSAGE(SelectMixRendezvousBlocks(&vShort[vShort.size() - 1],
+                                                  vShort[vShort.size() - 1].nHeight, nSlot,
+                                                  vScan, &strError),
+                        strError);
+
+    // And a finalized height this chain does not reach is not a view at all.
+    BOOST_CHECK(!SelectMixRendezvousBlocks(pindexTip, nBlocks + 5, nSlot, vScan, &strError));
+
+    // More blocks inside one window than a seat will scan. Shortening the window silently
+    // would let whoever filled it decide which publication a seat sees first, so the answer
+    // is that there is no answer.
+    const int nPacked = MIX_RENDEZVOUS_MAX_BLOCKS + 32;
+    const int nAfter = 16;
+    std::vector<CBlockIndex> vDense((size_t)(nPacked + nAfter));
+    for (int i = 0; i < nPacked + nAfter; i++)
+    {
+        vDense[i].nHeight = i;
+        vDense[i].nTime = (unsigned int)(i < nPacked ? nOpens - 10 : nOpens + 10);
+        vDense[i].pprev = (i == 0) ? NULL : &vDense[i - 1];
+    }
+    const CBlockIndex* pindexDense = &vDense[nPacked + nAfter - 1];
+    BOOST_REQUIRE(pindexDense->GetMedianTimePast() >= nOpens);
+    BOOST_CHECK_MESSAGE(!SelectMixRendezvousBlocks(pindexDense, pindexDense->nHeight, nSlot,
+                                                   vScan, &strError),
+                        "a window longer than the scan cap was answered anyway");
+    BOOST_CHECK(strError.find("incomplete") != std::string::npos);
+    BOOST_CHECK(vScan.empty());
+}
+
 // A record nothing will relay is not a carrier. The ordinary data-push bound here is 48
 // bytes, well under a record, so the record is admitted by its exact shape instead -- and
 // nothing else gains room.

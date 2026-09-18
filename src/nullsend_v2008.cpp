@@ -3260,12 +3260,11 @@ void CollectMixRendezvousRecords(const CBlock& block,
         }
 }
 
-bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
-                              int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
-                              std::string* pstrError)
+bool SelectMixRendezvousBlocks(const CBlockIndex* pindexTip, int nFinalizedHeight, int64_t nSlot,
+                               std::vector<const CBlockIndex*>& vScanOut, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
-    vRecordsOut.clear();
+    vScanOut.clear();
     if (!pindexTip || nSlot <= 0)
         FAIL("a rendezvous read needs a chain and a slot");
     if (nFinalizedHeight < 0 || nFinalizedHeight > pindexTip->nHeight)
@@ -3281,7 +3280,8 @@ bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight
     if (pindexFinal->GetMedianTimePast() < nOpens)
         FAIL("this slot is not settled yet: the finalized chain has not passed its opening");
 
-    std::vector<const CBlockIndex*> vScan;
+    const int64_t nEarliest = nOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
+                                       MIX_RENDEZVOUS_SLOT_SECONDS;
     const CBlockIndex* pindex = pindexFinal;
     int nScanned = 0;
     bool fReachedStart = false;
@@ -3290,19 +3290,34 @@ bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight
         if (nScanned >= MIX_RENDEZVOUS_MAX_BLOCKS)
             break;
         const int64_t nMedian = pindex->GetMedianTimePast();
-        if (nMedian < nOpens - (int64_t)MIX_RENDEZVOUS_PUBLISH_SLOTS *
-                               MIX_RENDEZVOUS_SLOT_SECONDS)
+        if (nMedian < nEarliest)
         {
             fReachedStart = true;
             break;
         }
         if (MixRendezvousInWindow(nMedian, nSlot))
-            vScan.push_back(pindex);
+            vScanOut.push_back(pindex);
     }
     // Walking off the genesis end of the chain is a complete view of a window that reaches
     // further back than the chain does; stopping at the cap is not.
     if (!fReachedStart && pindex)
+    {
+        vScanOut.clear();
         FAIL("this rendezvous window is longer than a seat will scan; the view is incomplete");
+    }
+    return true;
+    #undef FAIL
+}
+
+bool ReadMixRendezvousRecords(const CBlockIndex* pindexTip, int nFinalizedHeight,
+                              int64_t nSlot, std::vector<CMixRendezvousRecord>& vRecordsOut,
+                              std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    vRecordsOut.clear();
+    std::vector<const CBlockIndex*> vScan;
+    if (!SelectMixRendezvousBlocks(pindexTip, nFinalizedHeight, nSlot, vScan, pstrError))
+        return false;
 
     // Oldest first, which is what first-wins is defined over: blocks in chain order, then
     // transactions in block order, then outputs in transaction order.
