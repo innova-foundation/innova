@@ -3874,6 +3874,26 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
         BOOST_CHECK(fAccepted);
     }
 
+    // What a seat refuses on its own. A key the announcement did not commit to is a
+    // per-seat key, and a token minted under one is a tag; a signature that does not open
+    // is a round this seat cannot register in, and it must learn that here rather than on
+    // the anonymous connection.
+    {
+        CMixSnapshot forged = snapshot;
+        const CNullSendSession otherKey = FreshRoundKey(4102);
+        forged.vchRsaN = otherKey.vchRSA_N;
+        forged.vchRsaE = otherKey.vchRSA_E;
+        CMixSeat spare;
+        Seat idSpare = MakeSeat(3);
+        BOOST_REQUIRE(spare.Begin(announce, idSpare.key, SeatMaterial(0, 2, 0x71), &strError));
+        std::vector<unsigned char> vchIgnored;
+        BOOST_CHECK_MESSAGE(!spare.BuildTokenRequest(forged, vchIgnored, &strError),
+                            "a seat blinded its credential to a key the announcement never named");
+        std::vector<unsigned char> vchMangled(300, 0x5a);
+        BOOST_CHECK_MESSAGE(!seatA.AcceptToken(vchMangled, &strError),
+                            "a seat accepted a token that does not verify under the round key");
+    }
+
     // The prefix: each seat checks the whole thing itself before approving it.
     const int64_t T4 = announce.OutputCloses() + 1;
     coord.Tick(T4);
@@ -3885,6 +3905,35 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     }
     BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, vchFrame, &strError),
                         "a seat approved a second prefix in one attempt");
+
+    // And a prefix that differs from what the announcement said is refused by the seat
+    // before it approves anything, not by the round afterwards.
+    {
+        CMixPrefixView view;
+        BOOST_REQUIRE(ParseMixPrefix(snapshot.vchPrefix, view, strError));
+        std::vector<std::pair<uint256, PrivacyVNextDigest> > vInputs;
+        for (size_t i = 0; i < view.vKeyImages.size(); i++)
+            vInputs.push_back(std::make_pair(view.vKeyImages[i], view.vPseudoOuts[i]));
+        PrivacyVNextPrefixHeader header;
+        header.nOperation = iv5::NOTE_NULLSEND;
+        header.nDisclosureMask = iv5::NULLSEND_DISCLOSURE_MASK;
+        header.nNetwork = announce.nNetwork;
+        header.genesis = announce.genesis;
+        header.parameterDigest = announce.parameterDigest;
+        header.finalizedRoot = announce.finalizedRoot;
+        header.nFinalizedTreeSize = announce.nFinalizedTreeSize;
+        header.nFee = announce.nFee + announce.nParticipants;   // a fee nobody announced
+        header.transparentBinding = MixTransparentBinding();
+        CMixSnapshot raised = snapshot;
+        raised.vchPrefix = MixPrefixOver(header, vInputs, view.vOutputs,
+                                         std::vector<uint64_t>(view.vOutputs.size(), MIX_DENOM));
+        CMixSeat spare;
+        Seat idSpare = MakeSeat(4);
+        BOOST_REQUIRE(spare.Begin(announce, idSpare.key, SeatMaterial(1, 2, 0x91), &strError));
+        std::vector<unsigned char> vchIgnored;
+        BOOST_CHECK_MESSAGE(!spare.AcceptPrefix(raised, vchIgnored, &strError),
+                            "a seat approved a prefix carrying a fee its announcement never named");
+    }
 
     // The proofs, under the prefix each seat approved and nothing else.
     for (size_t i = 0; i < 2; i++)
