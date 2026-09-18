@@ -2673,8 +2673,63 @@ bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint
 }
 
 CMixCoordinator::CMixCoordinator()
-    : fOpen(false), fPublished(false), nLastStage(MIX_STAGE_JOIN)
+    : fOpen(false), fPublished(false), nLastStage(MIX_STAGE_JOIN), nPublicSecond(0),
+      nPublicReads(0)
 {
+}
+
+bool IsAuthenticatedMixFrame(MixFrameType nType)
+{
+    switch (nType)
+    {
+    case MIX_FRAME_JOIN:
+    case MIX_FRAME_VIEW_SIG:
+    case MIX_FRAME_INPUT_CONSTRUCTION:
+    case MIX_FRAME_BLIND_REQUEST:
+    case MIX_FRAME_PREFIX_SIG:
+    case MIX_FRAME_MEMBERSHIP_PROOF:
+    case MIX_FRAME_NONCE:
+    case MIX_FRAME_RESPONSE:
+    case MIX_FRAME_STATE_AUTH:
+        return true;
+    default:
+        // OUTPUT is deliberately not here: it names no seat, and it is bounded by the
+        // token it carries rather than by any budget.
+        return false;
+    }
+}
+
+bool CMixCoordinator::SpendSeatBudget(const CPubKey& pubkeySession, MixFrameType nType)
+{
+    if (!pubkeySession.IsValid())
+        return false;
+    const std::vector<unsigned char> vchKey = pubkeySession.Raw();
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << vchKey;
+    const std::pair<uint256, int> key(ss.GetHash(), (int)nType);
+    std::map<std::pair<uint256, int>, int>::iterator it = mapSeatRequests.find(key);
+    if (it == mapSeatRequests.end())
+    {
+        mapSeatRequests[key] = 1;
+        return true;
+    }
+    if (it->second >= MIX_SEAT_REQUEST_BUDGET)
+        return false;
+    it->second++;
+    return true;
+}
+
+bool CMixCoordinator::SpendPublicBudget(int64_t nNow)
+{
+    if (nNow != nPublicSecond)
+    {
+        nPublicSecond = nNow;
+        nPublicReads = 0;
+    }
+    if (nPublicReads >= MIX_PUBLIC_READS_PER_SECOND)
+        return false;
+    nPublicReads++;
+    return true;
 }
 
 bool CMixCoordinator::Open(const CMixRoundAnnouncement& announce,
@@ -2952,6 +3007,10 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
     {
         if (!vchPayload.empty())
             return false;
+        // Nothing identifies an unauthenticated caller, and every read costs a snapshot
+        // build, so the ceiling is the round's rather than any one caller's.
+        if (!SpendPublicBudget(nNow))
+            return false;
         CMixSnapshot snapshot;
         if (!BuildMixSnapshot(round, MIX_SNAPSHOT_PUBLIC, snapshot) ||
             !BuildMixSnapshotBody(snapshot, vchReplyOut))
@@ -2959,11 +3018,32 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
         nReplyTypeOut = MIX_FRAME_SNAPSHOT;
         return true;
     }
+    // Authenticated frames charge the seat's budget BEFORE the work (proof verification is
+    // tens of ms). The cheap signature check comes first so forged frames cost nothing.
+    if (IsAuthenticatedMixFrame(nType))
+    {
+        std::vector<unsigned char> vchBody, vchSig;
+        size_t nAt = 0;
+        CPubKey pubkeySession;
+        if (!SplitAuthedMixFrame(vchPayload, vchBody, vchSig) ||
+            !TakeSessionKey(vchBody, nAt, pubkeySession) ||
+            !CheckMixSessionFrame(pubkeySession, round.RoundId(), nType, vchBody, vchSig))
+            return false;
+        if (nType != MIX_FRAME_JOIN && round.SeatFor(pubkeySession) < 0)
+            return false;
+        if (!SpendSeatBudget(pubkeySession, nType))
+        {
+            nReplyTypeOut = MIX_FRAME_ACK;
+            return BuildMixAckBody(false, vchReplyOut);
+        }
+    }
     if (nType == MIX_FRAME_STATE_AUTH)
         return ServeSeatRead(vchPayload, nReplyTypeOut, vchReplyOut);
     if (nType == MIX_FRAME_RESULT)
     {
         if (!vchPayload.empty())
+            return false;
+        if (!SpendPublicBudget(nNow))
             return false;
         if (fPublished)
         {

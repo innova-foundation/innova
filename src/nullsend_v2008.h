@@ -4,6 +4,7 @@
 #ifndef INNOVA_NULLSEND_V2008_H
 #define INNOVA_NULLSEND_V2008_H
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -916,6 +917,18 @@ enum MixServiceStage
     MIX_STAGE_TERMINAL,    // published or aborted; reads only
 };
 
+/** Whether a frame carries a session key and a signature over it. */
+bool IsAuthenticatedMixFrame(MixFrameType nType);
+
+/** What one seat may spend on one kind of frame in one round. A membership proof is verified
+ *  on arrival and stored only when it verifies, so a seated key can otherwise pay for an
+ *  unbounded number of ~50 ms verifications with one join. */
+static const int MIX_SEAT_REQUEST_BUDGET = 8;
+/** What the unauthenticated surface may spend per second across all callers. A read costs a
+ *  snapshot build; nothing identifies the caller, so the bound is on the round rather than on
+ *  whoever is asking. */
+static const int MIX_PUBLIC_READS_PER_SECOND = 32;
+
 class CMixCoordinator
 {
 public:
@@ -954,6 +967,11 @@ private:
                        MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
     bool StageAccepts(MixServiceStage nStage, MixFrameType nType) const;
     void Assemble(int64_t nNow);
+    /** Whether this frame is within its seat's budget, and spend one if so. Counted per
+     *  frame type, so a seat that floods one kind does not spend another's allowance. */
+    bool SpendSeatBudget(const CPubKey& pubkeySession, MixFrameType nType);
+    /** Whether the unauthenticated surface has anything left this second. */
+    bool SpendPublicBudget(int64_t nNow);
 
     CMixRoundAnnouncement announcement;
     CMixRound round;
@@ -967,6 +985,11 @@ private:
     // under the same seat is not a retry and gets nothing.
     std::vector<std::vector<unsigned char> > vBlinded;
     std::vector<std::vector<unsigned char> > vBlindSignatures;
+    // Per seat, per frame type. A seat is named on every frame that has a budget, so this
+    // costs the anonymous side nothing.
+    std::map<std::pair<uint256, int>, int> mapSeatRequests;
+    int64_t nPublicSecond;
+    int nPublicReads;
 };
 
 /** Whether this blind-signature modulus has run a round on this node before. Round keys

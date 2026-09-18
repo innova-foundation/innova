@@ -3983,4 +3983,77 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     BOOST_CHECK_EQUAL(effects.outputLeaves.size(), 2u);
 }
 
+// A seated key has a budget, since every join proof is verified on arrival; public reads
+// have a round-wide ceiling, since they carry no caller identity.
+BOOST_AUTO_TEST_CASE(a_seat_and_the_public_surface_each_have_a_ceiling)
+{
+    const int64_t T0 = 25000000;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4201);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    const uint256 hashRound = announce.hashRound;
+    CMixCoordinator coord;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(coord.Open(announce, roundKey, T0, &strError), strError);
+
+    std::vector<Seat> vSeats;
+    vSeats.push_back(ProvenSeat(0));
+    vSeats.push_back(ProvenSeat(1));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(Accepted(coord, MIX_FRAME_JOIN, JoinFrame(vSeats[i], hashRound), T0));
+
+    // One seat, one frame type, repeated. The budget is per type, so a seat that spends
+    // its allowance on one kind still has its others.
+    const int64_t T1 = announce.JoinCloses();
+    coord.Tick(T1);
+    const uint256 hashView = coord.Round().ViewDigest(announce.hashRound);
+    std::vector<unsigned char> vchReply;
+    int nTaken = 0;
+    for (int i = 0; i < MIX_SEAT_REQUEST_BUDGET + 4; i++)
+        if (Accepted(coord, MIX_FRAME_VIEW_SIG,
+                     ViewSigFrame(vSeats[0], hashRound, announce.hashRound, hashView), T1))
+            nTaken++;
+    BOOST_CHECK_MESSAGE(nTaken <= 1, "a seat signed more than one view");
+    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_VIEW_SIG,
+                            ViewSigFrame(vSeats[0], hashRound, announce.hashRound, hashView),
+                            T1, vchReply) == MIX_FRAME_ACK,
+                        "a seat past its budget got something other than a refusal");
+    // Its allowance for another kind of frame is untouched: the budget is per type, so a
+    // seat that spends one does not lose the rest.
+    std::vector<unsigned char> vchAuthBody, vchAuthFrame;
+    BOOST_REQUIRE(BuildMixStateAuthBody(vSeats[0].pubkey, announce.hashRound, vchAuthBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(vSeats[0].key, hashRound, MIX_FRAME_STATE_AUTH,
+                                      vchAuthBody, vchAuthFrame));
+    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_STATE_AUTH, vchAuthFrame, T1, vchReply) ==
+                        MIX_FRAME_SNAPSHOT,
+                        "one exhausted allowance took the seat's others with it");
+
+    // The public surface, which nothing identifies: the round stops answering once its
+    // second's allowance is gone, and answers again in the next one.
+    int nAnswered = 0;
+    for (int i = 0; i < MIX_PUBLIC_READS_PER_SECOND + 8; i++)
+        if (Ask(coord, MIX_FRAME_STATE, std::vector<unsigned char>(), T1, vchReply) ==
+            MIX_FRAME_SNAPSHOT)
+            nAnswered++;
+    BOOST_CHECK_EQUAL(nAnswered, MIX_PUBLIC_READS_PER_SECOND);
+    BOOST_CHECK_MESSAGE(Ask(coord, MIX_FRAME_STATE, std::vector<unsigned char>(), T1 + 1,
+                            vchReply) == MIX_FRAME_SNAPSHOT,
+                        "the public surface stayed shut after its second was over");
+
+    // A forged frame cannot spend a seat's allowance: the signature is checked first.
+    const Seat stranger = MakeSeat(11);
+    std::vector<unsigned char> vchBody, vchForged;
+    BOOST_REQUIRE(BuildMixViewSigBody(vSeats[1].pubkey, announce.hashRound,
+                                      std::vector<unsigned char>(64, 0x5a), vchBody));
+    BOOST_REQUIRE(BuildAuthedMixFrame(stranger.key, hashRound, MIX_FRAME_VIEW_SIG, vchBody,
+                                      vchForged));
+    for (int i = 0; i < MIX_SEAT_REQUEST_BUDGET + 2; i++)
+        BOOST_CHECK(Ask(coord, MIX_FRAME_VIEW_SIG, vchForged, T1 + 1, vchReply) ==
+                    MIX_FRAME_NONE);
+    BOOST_CHECK_MESSAGE(Accepted(coord, MIX_FRAME_VIEW_SIG,
+                                 ViewSigFrame(vSeats[1], hashRound, announce.hashRound, hashView),
+                                 T1 + 1),
+                        "forged frames spent the allowance of the seat they named");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
