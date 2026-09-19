@@ -338,10 +338,9 @@ BOOST_AUTO_TEST_CASE(an_incomplete_sibling_set_is_a_transient_refusal)
     BOOST_CHECK(!fIncomplete);
 }
 
-// An epoch-state record that reads back damaged is this node's failure; an absent one is
-// the chain's answer. The record is rewritten under its own key with the wrong epoch
-// number -- what a corrupt decode looks like to the reader -- and restored afterwards.
-BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one_is_not)
+// A damaged epoch-state record, or one absent between the floor and a present as-of
+// record, is this node's failure; an absent as-of record is the chain's answer.
+BOOST_AUTO_TEST_CASE(a_lost_or_damaged_epoch_record_is_local_and_an_absent_as_of_is_not)
 {
     BOOST_REQUIRE(fRegTest);
     // Finalized heights a few epochs back, so both the anchor record and the deeper
@@ -408,24 +407,28 @@ BOOST_AUTO_TEST_CASE(a_damaged_epoch_record_is_a_local_failure_and_an_absent_one
     BOOST_CHECK_MESSAGE(fPrimaryLocal, "a damaged deeper record was skipped instead of reported");
     BOOST_REQUIRE(txdb.WriteEpochState(nAsOf - 1, savedDeeper));
 
-    // Absent: the finalized epoch's own record erased is the chain's answer (NOT_FOUND
-    // stays a chain property by design; see EpochStateReadIsLocalFailure).
+    // Absent above the floor with the as-of record present: records are dense there on
+    // every node, so this one was lost here.
     BOOST_REQUIRE(txdb.EraseEpochState(nFinEpoch));
+    fLocal = false;
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
+    BOOST_CHECK_MESSAGE(fLocal, "a lost finalized record was reported as the chain's answer");
+    BOOST_REQUIRE(txdb.WriteEpochState(nFinEpoch, saved));
+
+    // Absent as-of record: the chain's answer.
+    CEpochState savedAsOf;
+    BOOST_REQUIRE(txdb.ReadEpochState(nAsOf, savedAsOf));
+    BOOST_REQUIRE(txdb.EraseEpochState(nAsOf));
     fLocal = true;
     BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
-    BOOST_CHECK_MESSAGE(!fLocal, "an absent record was classed as a local failure");
-    BOOST_REQUIRE(txdb.WriteEpochState(nFinEpoch, saved));
+    BOOST_CHECK_MESSAGE(!fLocal, "an absent as-of record was classed as a local failure");
+    BOOST_REQUIRE(txdb.WriteEpochState(nAsOf, savedAsOf));
 
     fLocal = true;
     BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTip, 0, state, &fLocal));
     BOOST_CHECK(!fLocal);
 }
 
-// Before the first finalization the finalized epoch is epoch 0, and a chain whose
-// epochs begin at the DAG fork has no record for it. The reader used to require that
-// record before it reached the depth anchor, so nothing in the IV5 pool was spendable
-// until finality first advanced -- the window the depth anchor is for. With nothing
-// finalized, an epoch deep enough below the tip anchors on its own.
 // The anchors ConnectBlock accepts at one height: the newest resolved anchor and five
 // more from the same head, as one contiguous run.
 std::vector<int> AcceptedAnchorEpochs(CTxDB& txdb, int nBlockHeight)
@@ -576,6 +579,8 @@ BOOST_AUTO_TEST_CASE(an_anchor_lasts_until_the_head_moves_a_window_past_it)
                         "the first head resolved was not accepted at any height");
 }
 
+// With nothing finalized, an epoch deep enough below the tip anchors on its own, so the
+// IV5 pool is spendable before finality first advances.
 BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
 {
     BOOST_REQUIRE(fRegTest);
@@ -599,14 +604,14 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
             states[it->first] = state;
             trees[it->first] = CCurveTree();
         }
+        // Epoch 0 is the record floor on regtest: the truncated pre-DAG epoch the
+        // migration base is built from, present on every node that holds epoch 1.
+        BOOST_REQUIRE(states.count(0) != 0);
         BOOST_REQUIRE(states.count(1) != 0);
         BOOST_REQUIRE(g_dagManager.InstallEpochStateBatch(records.nFirst, states, trees));
         for (std::map<int, CEpochState>::const_iterator it = states.begin(); it != states.end(); ++it)
             BOOST_REQUIRE(g_dagManager.WriteEpochState(txdb, it->first));
     }
-    // And no record at all for epoch 0, as on a chain whose epochs start at the fork.
-    txdb.EraseEpochState(0);
-    txdb.EraseCurveTreeAtEpoch(0);
 
     CEpochState anchor;
     bool fLocal = true;
@@ -618,20 +623,28 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
     BOOST_CHECK(nTip - anchor.nHeightEnd >= EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH);
     BOOST_CHECK(!anchor.fFinalized);
 
-    // A height whose as-of epoch has a record but is not yet deep enough: the oldest
-    // record there is (epoch 1 here, epoch 0 having been erased), which the validator's
-    // depth rule refuses as a spend anchor while shields, which need only a context, keep
-    // working -- the pre-fix behaviour on chains that carry an epoch-0 record.
+    // A height whose as-of epoch has a record but nothing is deep enough: the floor,
+    // which the validator's depth rule refuses as a spend anchor while shields, which
+    // need only a context, keep working.
+    const int nShallow = GetEpochBoundaryHeight(2, nTip) + 5;
     fLocal = true;
     CEpochState shallow;
-    BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(
-        txdb, GetEpochBoundaryHeight(2, nTip) + 5, shallow, fLocal));
+    BOOST_CHECK(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nShallow, shallow, fLocal));
     BOOST_CHECK(!fLocal);
-    BOOST_CHECK_EQUAL(shallow.nEpoch, 1);
+    BOOST_CHECK_EQUAL(shallow.nEpoch, 0);
     BOOST_CHECK(!shallow.fFinalized);
 
-    // A height whose as-of epoch has no record at all (epoch 0, erased): no state -- the
-    // chain's answer, not a local failure.
+    // The floor erased while the as-of record is present: a record this node lost, not
+    // the chain's answer. Skipping it would pick epoch 1 here and epoch 0 on every node
+    // that still holds it.
+    txdb.EraseEpochState(0);
+    txdb.EraseCurveTreeAtEpoch(0);
+    fLocal = false;
+    BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nShallow, shallow, fLocal));
+    BOOST_CHECK_MESSAGE(fLocal, "a lost floor record was skipped instead of reported");
+
+    // A height whose as-of epoch has no record (epoch 0, erased): the as-of miss is the
+    // chain's answer, as a context height past the connected chain is.
     fLocal = true;
     BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(
         txdb, GetEpochBoundaryHeight(1, nTip) + 5, shallow, fLocal));

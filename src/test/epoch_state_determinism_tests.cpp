@@ -1173,6 +1173,70 @@ BOOST_AUTO_TEST_CASE(finalized_epoch_state_walks_back_a_bounded_number_of_epochs
     txdb.TxnAbort();
 }
 
+// The record floor is derived from the fork height, never from the lowest record on disk.
+// Regtest's floor is epoch 0, where the two are indistinguishable, so this runs on mainnet
+// numbering with one stray record below the floor that no real node holds.
+BOOST_AUTO_TEST_CASE(the_anchor_floor_is_the_last_pre_dag_epoch_on_mainnet)
+{
+    CDAGManager manager;
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+
+    struct NetworkGuard
+    {
+        bool fReg, fTest;
+        NetworkGuard() : fReg(fRegTest), fTest(fTestNet) { fRegTest = false; fTestNet = false; }
+        ~NetworkGuard() { fRegTest = fReg; fTestNet = fTest; }
+    } network;
+
+    const int nMigration = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    const int nLegacy = nMigration - 1;
+    BOOST_REQUIRE_EQUAL(nLegacy, GetEpochForHeight(FORK_HEIGHT_DAG) - 1);
+    BOOST_REQUIRE(nLegacy > 1);
+
+    std::map<int, CEpochState> written;
+    for (int e = nLegacy - 1; e <= nMigration; ++e)
+    {
+        CEpochState state;
+        state.nEpoch = e;
+        state.hashBoundaryBlock = uint256(0x90000000 + e - nLegacy + 1);
+        state.nHeightEnd = (int)(GetEpochBoundaryHeight64(e + 1) - 1);
+        state.nFinalizedHeightAsOf = 0;
+        state.nBlockCount = 0;
+        BOOST_REQUIRE(manager.WriteEpochState(txdb, state, CCurveTree()));
+        written[e] = state;
+    }
+
+    // Shallow window after V3, nothing finalized: nothing is 600 deep, so the head is the
+    // floor, not the stray record below it.
+    const int nHeight = FORK_HEIGHT_EPOCH_STATE_V3 + 5;
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nHeight) - 1, nMigration);
+    CEpochState resolved;
+    bool fLocal = true;
+    BOOST_REQUIRE(manager.GetFinalizedEpochStateAsOf(txdb, nHeight, resolved, fLocal));
+    BOOST_CHECK(!fLocal);
+    BOOST_CHECK_EQUAL(resolved.nEpoch, nLegacy);
+
+    // The floor lost with the as-of record present: local, not a skip to the stray.
+    BOOST_REQUIRE(txdb.EraseEpochState(nLegacy));
+    fLocal = false;
+    BOOST_CHECK(!manager.GetFinalizedEpochStateAsOf(txdb, nHeight, resolved, fLocal));
+    BOOST_CHECK_MESSAGE(fLocal, "a lost floor record was skipped on mainnet numbering");
+    BOOST_REQUIRE(manager.WriteEpochState(txdb, written[nLegacy], CCurveTree()));
+
+    // A finalized height naming a pre-DAG boundary below the floor: its missing record is
+    // the chain's answer on every node.
+    CEpochState asOf = written[nMigration];
+    asOf.nFinalizedHeightAsOf = (int)(GetEpochBoundaryHeight64(nLegacy - 1) - 1);
+    BOOST_REQUIRE_EQUAL(GetFinalizedEpochForHeight(asOf.nFinalizedHeightAsOf), nLegacy - 2);
+    BOOST_REQUIRE(manager.WriteEpochState(txdb, asOf, CCurveTree()));
+    fLocal = true;
+    BOOST_CHECK(!manager.GetFinalizedEpochStateAsOf(txdb, nHeight, resolved, fLocal));
+    BOOST_CHECK(!fLocal);
+
+    txdb.TxnAbort();
+}
+
 BOOST_AUTO_TEST_CASE(v3_startup_requires_exact_highest_completed_epoch)
 {
     DAGHarness h;

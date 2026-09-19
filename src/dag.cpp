@@ -3737,14 +3737,21 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                       fLocalFailure);
 }
 
-// A miss is the chain's answer and reads the same on every node; anything else -- an
-// I/O error, or bytes that will not decode -- is this node's own problem. A record the
-// staging invariant says should exist but is absent is deliberately still the chain's
-// answer: no code path deletes a record at runtime, and classing it local would turn the
-// mainnet pre-first-finalization miss into a transient loop.
-static bool EpochStateReadIsLocalFailure(CTxDB& txdb, int nEpoch)
+// Records are dense over [floor, last complete epoch]; the floor is the last pre-DAG epoch,
+// derived from the fork height alone.
+static int EpochStateRecordFloor()
 {
-    return txdb.ProbeEpochState(nEpoch) != TXDB_READ_NOT_FOUND;
+    return std::max(0, GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3) - 2);
+}
+
+// Given a present record at nAsOfEpoch, a miss at or above the floor and below it is a
+// record this node lost, not the chain's answer. A miss below the floor is the chain's
+// answer; so is an I/O error or undecodable bytes anywhere, classed as local.
+static bool EpochStateReadIsLocalFailure(CTxDB& txdb, int nEpoch, int nAsOfEpoch)
+{
+    if (txdb.ProbeEpochState(nEpoch) != TXDB_READ_NOT_FOUND)
+        return true;
+    return nEpoch >= EpochStateRecordFloor() && nEpoch < nAsOfEpoch;
 }
 
 bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
@@ -3757,11 +3764,14 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         *pnFinalizedHeightOut = 0;
     const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
     int nFinHeight = 0;
+    // The as-of record's own miss stays the chain's answer: a context height past the
+    // connected chain reads the same way on every node.
     if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
     {
-        fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch);
+        fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch, nAsOfEpoch);
         return false;
     }
+    const int nFloorEpoch = EpochStateRecordFloor();
     if (pnFinalizedHeightOut)
         *pnFinalizedHeightOut = nFinHeight;
 
@@ -3774,7 +3784,7 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     {
         if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
         {
-            fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
+            fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch, nAsOfEpoch);
             return false;
         }
         fHaveAnchor = true;
@@ -3783,11 +3793,9 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     // Past the finalized epoch, take the newest epoch already deep enough to anchor on
     // its own, so notes stay spendable when finality stalls. Validator and wallet both use
     // this function; it depends only on the height and the recorded epoch states.
-    for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch && nEpoch >= 0; --nEpoch)
+    for (int nEpoch = nAsOfEpoch; nEpoch > nFinEpoch && nEpoch >= nFloorEpoch; --nEpoch)
     {
         CEpochState deeper;
-        if (txdb.ProbeEpochState(nEpoch) == TXDB_READ_NOT_FOUND)
-            continue;
         if (!txdb.ReadEpochState(nEpoch, deeper) || deeper.nEpoch != nEpoch)
         {
             fLocalFailureOut = true;
@@ -3802,29 +3810,18 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
         break;
     }
 
-    // Nothing finalized and nothing deep enough: the oldest record there is. On a chain
-    // with records from genesis that is epoch 0, as it always was; on one whose records
-    // start at the fork it is the first post-fork epoch, which the validator's depth rule
-    // still refuses as a spend anchor while it is shallow, so shields keep working and
-    // spends wait for depth rather than for the first finalization.
+    // Nothing finalized and nothing deep enough: use the floor record. The depth rule still refuses
+    // it as a spend anchor while shallow.
     if (!fHaveAnchor)
     {
-        for (int nEpoch = 0; nEpoch <= nAsOfEpoch && !fHaveAnchor; ++nEpoch)
+        if (nFloorEpoch > nAsOfEpoch)
+            return false; // no record at all yet: the chain's answer
+        if (!txdb.ReadEpochState(nFloorEpoch, state) || state.nEpoch != nFloorEpoch)
         {
-            if (txdb.ProbeEpochState(nEpoch) == TXDB_READ_NOT_FOUND)
-                continue;
-            CEpochState oldest;
-            if (!txdb.ReadEpochState(nEpoch, oldest) || oldest.nEpoch != nEpoch)
-            {
-                fLocalFailureOut = true;
-                return false;
-            }
-            state = oldest;
-            fHaveAnchor = true;
+            fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFloorEpoch, nAsOfEpoch);
+            return false;
         }
     }
-    if (!fHaveAnchor)
-        return false; // no record at all yet: the chain's answer
     stateOut = state;
     return true;
 }
@@ -3886,7 +3883,8 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     if (!txdb.ReadEpochState(nEpoch, state) || state.nEpoch != nEpoch)
     {
         if (pfLocalFailure)
-            *pfLocalFailure = EpochStateReadIsLocalFailure(txdb, nEpoch);
+            *pfLocalFailure = EpochStateReadIsLocalFailure(
+                txdb, nEpoch, GetEpochForHeight(nBlockHeight) - 1);
         return false;
     }
     stateOut = state;
