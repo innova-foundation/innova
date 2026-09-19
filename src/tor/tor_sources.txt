@@ -12,8 +12,9 @@ src/core/crypto/onion_crypto.c
 src/core/crypto/onion_fast.c
 src/core/crypto/onion_ntor.c
 src/core/crypto/onion_ntor_v3.c
-src/core/crypto/onion_tap.c
 src/core/crypto/relay_crypto.c
+src/core/crypto/relay_crypto_cgo.c
+src/core/crypto/relay_crypto_tor1.c
 src/core/mainloop/connection.c
 src/core/mainloop/cpuworker.c
 src/core/mainloop/mainloop.c
@@ -59,6 +60,7 @@ src/core/or/policies.c
 src/core/or/protover.c
 src/core/or/reasons.c
 src/core/or/relay.c
+src/core/or/relay_msg.c
 src/core/or/scheduler.c
 src/core/or/scheduler_kist.c
 src/core/or/scheduler_vanilla.c
@@ -115,6 +117,7 @@ src/ext/ed25519/ref10/sc_muladd.c
 src/ext/ed25519/ref10/sc_reduce.c
 src/ext/ed25519/ref10/sign.c
 src/ext/keccak-tiny/keccak-tiny-unrolled.c
+src/ext/polyval/polyval.c
 src/ext/readpassphrase.c
 src/ext/trunnel/trunnel.c
 src/feature/api/tor_api.c
@@ -367,3 +370,4 @@ src/trunnel/netinfo.c
 src/trunnel/pwbox.c
 src/trunnel/sendme_cell.c
 src/trunnel/socks5.c
+src/trunnel/subproto_request.c

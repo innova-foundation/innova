@@ -32,6 +32,7 @@
 #include "feature/control/control_events.h"
 #include "feature/control/control_getinfo.h"
 #include "feature/control/control_proto.h"
+#include "feature/hs/hs_config.h"
 #include "feature/hs/hs_control.h"
 #include "feature/hs/hs_service.h"
 #include "feature/nodelist/nodelist.h"
@@ -1464,7 +1465,8 @@ handle_control_hsfetch(control_connection_t *conn,
       const char *server = line->value;
 
       const node_t *node = node_get_by_hex_id(server, 0);
-      if (!node) {
+      /* As with HSPOST, we need a routerstatus to use this as an HSDir. */
+      if (!node || !node->rs) {
         control_printf_endreply(conn, 552, "Server \"%s\" not found", server);
         goto done;
       }
@@ -1578,6 +1580,9 @@ add_onion_helper_add_service(int hs_version,
                              add_onion_secret_key_t *pk,
                              smartlist_t *port_cfgs, int max_streams,
                              int max_streams_close_circuit,
+                             int pow_defenses_enabled,
+                             uint32_t pow_queue_rate,
+                             uint32_t pow_queue_burst,
                              smartlist_t *auth_clients_v3, char **address_out)
 {
   hs_service_add_ephemeral_status_t ret;
@@ -1590,6 +1595,9 @@ add_onion_helper_add_service(int hs_version,
   case HS_VERSION_THREE:
     ret = hs_service_add_ephemeral(pk->v3, port_cfgs, max_streams,
                                    max_streams_close_circuit,
+                                   pow_defenses_enabled,
+                                   pow_queue_rate,
+                                   pow_queue_burst,
                                    auth_clients_v3, address_out);
     break;
   default:
@@ -1614,7 +1622,15 @@ get_detached_onion_services(void)
 }
 
 static const char *add_onion_keywords[] = {
-   "Port", "Flags", "MaxStreams", "ClientAuth", "ClientAuthV3", NULL
+   "Port",
+   "Flags",
+   "MaxStreams",
+   "PoWDefensesEnabled",
+   "PoWQueueRate",
+   "PoWQueueBurst",
+   "ClientAuth",
+   "ClientAuthV3",
+   NULL
 };
 static const control_cmd_syntax_t add_onion_syntax = {
   .min_args = 1, .max_args = 1,
@@ -1641,6 +1657,9 @@ handle_control_add_onion(control_connection_t *conn,
   int max_streams = 0;
   int max_streams_close_circuit = 0;
   int non_anonymous = 0;
+  int pow_defenses_enabled = HS_CONFIG_V3_POW_DEFENSES_DEFAULT;
+  uint32_t pow_queue_rate = HS_CONFIG_V3_POW_QUEUE_RATE;
+  uint32_t pow_queue_burst = HS_CONFIG_V3_POW_QUEUE_BURST;
   const config_line_t *arg;
 
   for (arg = args->kwargs; arg; arg = arg->next) {
@@ -1658,6 +1677,30 @@ handle_control_add_onion(control_connection_t *conn,
       max_streams = (int)tor_parse_long(arg->value, 10, 0, 65535, &ok, NULL);
       if (!ok) {
         control_write_endreply(conn, 512, "Invalid MaxStreams");
+        goto out;
+      }
+    } else if (!strcasecmp(arg->key, "PoWDefensesEnabled")) {
+      int ok = 0;
+      pow_defenses_enabled = (int)tor_parse_long(arg->value, 10,
+                                                 0, 1, &ok, NULL);
+      if (!ok) {
+        control_write_endreply(conn, 512, "Invalid PoWDefensesEnabled");
+        goto out;
+      }
+    } else if (!strcasecmp(arg->key, "PoWQueueRate")) {
+      int ok = 0;
+      pow_queue_rate = (uint32_t)tor_parse_ulong(arg->value, 10,
+                                                 0, UINT32_MAX, &ok, NULL);
+      if (!ok) {
+        control_write_endreply(conn, 512, "Invalid PoWQueueRate");
+        goto out;
+      }
+    } else if (!strcasecmp(arg->key, "PoWQueueBurst")) {
+      int ok = 0;
+      pow_queue_burst = (uint32_t)tor_parse_ulong(arg->value, 10,
+                                                  0, UINT32_MAX, &ok, NULL);
+      if (!ok) {
+        control_write_endreply(conn, 512, "Invalid PoWQueueBurst");
         goto out;
       }
     } else if (!strcasecmp(arg->key, "Flags")) {
@@ -1775,6 +1818,9 @@ handle_control_add_onion(control_connection_t *conn,
   int ret = add_onion_helper_add_service(hs_version, &pk, port_cfgs,
                                          max_streams,
                                          max_streams_close_circuit,
+                                         pow_defenses_enabled,
+                                         pow_queue_rate,
+                                         pow_queue_burst,
                                          auth_clients_v3, &service_id);
   port_cfgs = NULL; /* port_cfgs is now owned by the hs_service code. */
   auth_clients_v3 = NULL; /* so is auth_clients_v3 */

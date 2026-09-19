@@ -61,6 +61,7 @@
 #include "feature/relay/routermode.h"
 #include "feature/relay/selftest.h"
 #include "feature/stats/predict_ports.h"
+#include "lib/crypt_ops/crypto_util.h"
 #include "lib/math/fp.h"
 #include "lib/time/tvdiff.h"
 #include "lib/trace/events.h"
@@ -79,6 +80,8 @@
 
 STATIC void circuit_expire_old_circuits_clientside(void);
 static void circuit_increment_failure_count(void);
+static bool connection_ap_socks_iso_keepalive_enabled(
+    const entry_connection_t *);
 
 /** Check whether the hidden service destination of the stream at
  *  <b>edge_conn</b> is the same as the destination of the circuit at
@@ -331,7 +334,7 @@ circuit_is_better(const origin_circuit_t *oa, const origin_circuit_t *ob,
  * If it's INTRODUCE_ACK_WAIT and must_be_open==0, then return the
  * closest introduce-purposed circuit that you can find.
  */
-static origin_circuit_t *
+STATIC origin_circuit_t *
 circuit_get_best(const entry_connection_t *conn,
                  int must_be_open, uint8_t purpose,
                  int need_uptime, int need_internal)
@@ -1020,7 +1023,7 @@ circuit_stream_is_being_handled(entry_connection_t *conn,
     if (CIRCUIT_IS_ORIGIN(circ) &&
         !circ->marked_for_close &&
         (circ->purpose == CIRCUIT_PURPOSE_C_GENERAL ||
-        circ->purpose == CIRCUIT_PURPOSE_CONFLUX_LINKED) &&
+         circ->purpose == CIRCUIT_PURPOSE_CONFLUX_LINKED) &&
         (!circ->timestamp_dirty ||
          circ->timestamp_dirty + get_options()->MaxCircuitDirtiness > now)) {
       origin_circuit_t *origin_circ = TO_ORIGIN_CIRCUIT(circ);
@@ -1357,6 +1360,7 @@ void
 circuit_detach_stream(circuit_t *circ, edge_connection_t *conn)
 {
   edge_connection_t *prevconn;
+  bool update_dirty = false;
 
   tor_assert(circ);
   tor_assert(conn);
@@ -1364,6 +1368,9 @@ circuit_detach_stream(circuit_t *circ, edge_connection_t *conn)
   if (conn->base_.type == CONN_TYPE_AP) {
     entry_connection_t *entry_conn = EDGE_TO_ENTRY_CONN(conn);
     entry_conn->may_use_optimistic_data = 0;
+    // When KeepAliveIsolateSOCKSAuth is in effect, we update the dirty
+    // time on close as well as on open.
+    update_dirty = connection_ap_socks_iso_keepalive_enabled(entry_conn);
   }
   conn->cpath_layer = NULL; /* don't keep a stale pointer */
   conn->on_circuit = NULL;
@@ -1388,6 +1395,10 @@ circuit_detach_stream(circuit_t *circ, edge_connection_t *conn)
     if (removed) {
       log_debug(LD_APP, "Removing stream %d from circ %u",
                 conn->stream_id, (unsigned)circ->n_circ_id);
+
+      if (update_dirty) {
+        circ->timestamp_dirty = approx_time();
+      }
 
       /* If the stream was removed, and it was a rend stream, decrement the
        * number of streams on the circuit associated with the rend service.
@@ -1713,6 +1724,94 @@ circuit_has_opened(origin_circuit_t *circ)
     /* default:
      * This won't happen in normal operation, but might happen if the
      * controller did it. Just let it slide. */
+  }
+}
+
+/**
+ * Reset the isolation state of the given circ to its default values.
+ *
+ * Note that isolation_any_streams_attached is deliberately left alone as it
+ * records whether a stream was ever attached, which resetting the isolation
+ * values does not undo.
+ */
+void
+circuit_reset_isolation(origin_circuit_t *circ)
+{
+  circ->isolation_values_set = 0;
+  circ->isolation_flags_mixed = 0;
+  circ->associated_isolated_stream_global_id = 0;
+  circ->client_proto_type = 0;
+  circ->client_proto_socksver = 0;
+  circ->dest_port = 0;
+  tor_addr_make_unspec(&circ->client_addr);
+  tor_free(circ->dest_address);
+  circ->session_group = -1;
+  circ->nym_epoch = 0;
+  if (circ->socks_username) {
+    memwipe(circ->socks_username, 0x11, circ->socks_username_len);
+    tor_free(circ->socks_username);
+  }
+  if (circ->socks_password) {
+    memwipe(circ->socks_password, 0x05, circ->socks_password_len);
+    tor_free(circ->socks_password);
+  }
+  circ->socks_username_len = circ->socks_password_len = 0;
+}
+
+/**
+ * If circ is a leg of a conflux set, propagate its isolation state to
+ * the other legs.
+ *
+ * Every function that changes the isolation state of a circuit has to call
+ * this, so that the whole set keeps agreeing on it: streams are attached to
+ * one leg, but any leg may later be the one offered to a new stream.
+ */
+void
+circuit_sync_isolation(origin_circuit_t *circ)
+{
+  if (TO_CIRCUIT(circ)->conflux) {
+    conflux_sync_circ_fields(TO_CIRCUIT(circ)->conflux, circ);
+  }
+}
+
+/**
+ * Make the stream-isolation state of dst an exact copy of the one of
+ * src, replacing whatever dst had. */
+void
+circuit_copy_isolation(origin_circuit_t *dst, const origin_circuit_t *src)
+{
+  if (dst == src) {
+    return;
+  }
+
+  /* Drop whatever dst has, we are about to overwrite it all with src. */
+  circuit_reset_isolation(dst);
+
+  dst->isolation_values_set = src->isolation_values_set;
+  /* Not reset above: a leg that ever carried a stream stays dirty, and this
+   * has to propagate to the whole set so that no leg can be cleared. */
+  dst->isolation_any_streams_attached |= src->isolation_any_streams_attached;
+  dst->isolation_flags_mixed = src->isolation_flags_mixed;
+  dst->associated_isolated_stream_global_id =
+    src->associated_isolated_stream_global_id;
+  dst->client_proto_type = src->client_proto_type;
+  dst->client_proto_socksver = src->client_proto_socksver;
+  dst->dest_port = src->dest_port;
+  tor_addr_copy(&dst->client_addr, &src->client_addr);
+  if (src->dest_address) {
+    dst->dest_address = tor_strdup(src->dest_address);
+  }
+  dst->session_group = src->session_group;
+  dst->nym_epoch = src->nym_epoch;
+  if (src->socks_username) {
+    dst->socks_username = tor_memdup(src->socks_username,
+                                     src->socks_username_len);
+    dst->socks_username_len = src->socks_username_len;
+  }
+  if (src->socks_password) {
+    dst->socks_password = tor_memdup(src->socks_password,
+                                     src->socks_password_len);
+    dst->socks_password_len = src->socks_password_len;
   }
 }
 
@@ -2478,7 +2577,7 @@ circuit_get_open_circ_or_launch(entry_connection_t *conn,
             extend_info = extend_info_new(conn->chosen_exit_name+1,
                                           digest,
                                           NULL, /* Ed25519 ID */
-                                          NULL, NULL, /* onion keys */
+                                          NULL, /* onion keys */
                                           &addr, conn->socks_request->port,
                                           NULL,
                                           false);
@@ -2745,6 +2844,20 @@ consider_recording_trackhost(const entry_connection_t *conn,
                       ADDRMAPSRC_TRACKEXIT, 0, 0, stream_id);
 }
 
+/**
+ * Return true if <b>conn</b> is configured with KeepaliveIsolateSOCKSAuth,
+ * and it has its socks isolation set.
+ */
+static bool
+connection_ap_socks_iso_keepalive_enabled(const entry_connection_t *conn)
+{
+  return conn &&
+    conn->socks_request &&
+    (conn->entry_cfg.isolation_flags & ISO_SOCKSAUTH) &&
+    (conn->entry_cfg.socks_iso_keep_alive) &&
+    (conn->socks_request->usernamelen || conn->socks_request->passwordlen);
+}
+
 /** Attempt to attach the connection <b>conn</b> to <b>circ</b>, and send a
  * begin or resolve cell as appropriate.  Return values are as for
  * connection_ap_handshake_attach_circuit.  The stream will exit from the hop
@@ -2766,10 +2879,7 @@ connection_ap_handshake_attach_chosen_circuit(entry_connection_t *conn,
   base_conn->state = AP_CONN_STATE_CIRCUIT_WAIT;
 
   if (!circ->base_.timestamp_dirty ||
-      ((conn->entry_cfg.isolation_flags & ISO_SOCKSAUTH) &&
-       (conn->entry_cfg.socks_iso_keep_alive) &&
-       (conn->socks_request->usernamelen ||
-        conn->socks_request->passwordlen))) {
+      connection_ap_socks_iso_keepalive_enabled(conn)) {
     /* When stream isolation is in use and controlled by an application
      * we are willing to keep using the stream. */
     circ->base_.timestamp_dirty = approx_time();
@@ -3181,15 +3291,16 @@ circuit_sent_valid_data(origin_circuit_t *circ, uint16_t relay_body_len)
 {
   if (!circ) return;
 
-  tor_assertf_nonfatal(relay_body_len <= RELAY_PAYLOAD_SIZE,
+  tor_assertf_nonfatal(relay_body_len <= RELAY_PAYLOAD_SIZE_MAX,
                        "Wrong relay_body_len: %d (should be at most %d)",
-                       relay_body_len, RELAY_PAYLOAD_SIZE);
+                       relay_body_len, RELAY_PAYLOAD_SIZE_MAX);
 
   circ->n_delivered_written_circ_bw =
       tor_add_u32_nowrap(circ->n_delivered_written_circ_bw, relay_body_len);
+  // TODO CGO: I think this may now be somewhat incorrect.
   circ->n_overhead_written_circ_bw =
       tor_add_u32_nowrap(circ->n_overhead_written_circ_bw,
-                         RELAY_PAYLOAD_SIZE-relay_body_len);
+                         RELAY_PAYLOAD_SIZE_MAX-relay_body_len);
 }
 
 /**
@@ -3202,11 +3313,12 @@ circuit_read_valid_data(origin_circuit_t *circ, uint16_t relay_body_len)
 {
   if (!circ) return;
 
-  tor_assert_nonfatal(relay_body_len <= RELAY_PAYLOAD_SIZE);
+  tor_assert_nonfatal(relay_body_len <= RELAY_PAYLOAD_SIZE_MAX);
 
   circ->n_delivered_read_circ_bw =
       tor_add_u32_nowrap(circ->n_delivered_read_circ_bw, relay_body_len);
+  // TODO CGO: I think this may now be somewhat incorrect.
   circ->n_overhead_read_circ_bw =
       tor_add_u32_nowrap(circ->n_overhead_read_circ_bw,
-                         RELAY_PAYLOAD_SIZE-relay_body_len);
+                         RELAY_PAYLOAD_SIZE_MAX-relay_body_len);
 }
