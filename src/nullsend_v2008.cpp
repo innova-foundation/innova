@@ -3405,6 +3405,9 @@ int MixAnchorSafeThroughHeight(int nAnchorEpoch)
 {
     if (nAnchorEpoch < 0)
         return -1;
+    if (nAnchorEpoch > std::numeric_limits<int>::max() - EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS -
+                           EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS)
+        return std::numeric_limits<int>::max();
     const int64_t nEnd = GetEpochBoundaryHeight64(nAnchorEpoch +
                                                   EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS +
                                                   EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS) - 1;
@@ -3417,7 +3420,9 @@ int MixAnchorSafeThroughHeight(int nAnchorEpoch)
 // shorter still finds it deep.
 static bool MixAnchorIsDeep(int nTipHeight, int nEpoch)
 {
-    const int64_t nEnd = GetEpochBoundaryHeight64((int64_t)nEpoch + 1) - 1;
+    if (nEpoch < 0 || nEpoch >= std::numeric_limits<int>::max())
+        return false;
+    const int64_t nEnd = GetEpochBoundaryHeight64(nEpoch + 1) - 1;
     return (int64_t)nTipHeight - nEnd >= EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH;
 }
 

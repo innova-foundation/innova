@@ -1193,7 +1193,7 @@ struct CMixAnchorView
     uint64_t nFinalizedTreeSize;
     int nTipHeight;
     int64_t nReadTime;
-    int nAnchorEpoch;        // the newest accepted epoch carrying the anchor, or -1
+    int nAnchorEpoch;        // the newest deep epoch carrying the anchor, else the newest; -1 none
     int nSafeThroughHeight;  // MixAnchorSafeThroughHeight(nAnchorEpoch), or -1
 
     CMixAnchorView()
@@ -1204,12 +1204,9 @@ struct CMixAnchorView
     }
 };
 
-/** Read the view of this announcement's anchor for the block after nTipHeight, judged by the
- *  code a connecting transaction is. The epoch is the newest in the window carrying the anchor
- *  that is 600 blocks deep at the tip, or the newest carrying it if none is. A refused anchor
- *  is a view with no epoch; false only when this node cannot read its own state. Read nTipHeight and the view under one cs_main lock,
- *  or a commit between them tears the view. A node whose tip lags the network under-counts the
- *  blocks still to come by its lag. */
+/** Read the view of the announcement's anchor for the block after nTipHeight, as a connecting
+ *  transaction is judged. False only when local state is unreadable. Read nTipHeight and the
+ *  view under one cs_main lock. */
 bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
                        const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
                        std::string* pstrError = NULL);
