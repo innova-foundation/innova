@@ -75,6 +75,12 @@ std::string BlockProfileReport();
 // Height range covered by the current accumulation window.
 void BlockProfileNoteHeight(int nHeight);
 
+// The message handler's idle sleeps and its lost cs_vRecvMsg races. Counted on every pass,
+// but reported only for the stretch between the first and last connect, so the time a sync
+// spends parked in the handler can be read directly against the time it spends connecting.
+void BlockProfileNoteHandlerWait(int64_t nMicros);
+void BlockProfileNoteDispatchMiss();
+
 class CBlockPhaseTimer
 {
 public:

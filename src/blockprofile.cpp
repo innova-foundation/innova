@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <chrono>
+#include <atomic>
 #include <mutex>
 
 bool fBlockProfile = false;
@@ -24,6 +25,16 @@ int g_nFirstHeight = -1;
 int g_nLastHeight = -1;
 int64_t g_nBlocks = 0;
 int64_t g_nWallStartUs = 0;
+int64_t g_nWallLastUs = 0;
+std::atomic<int64_t> g_nHandlerSleeps(0);
+std::atomic<int64_t> g_nHandlerWaitUs(0);
+std::atomic<int64_t> g_nDispatchMisses(0);
+int64_t g_nSleepsAtFirst = 0;
+int64_t g_nSleepsAtLast = 0;
+int64_t g_nWaitUsAtFirst = 0;
+int64_t g_nWaitUsAtLast = 0;
+int64_t g_nMissesAtFirst = 0;
+int64_t g_nMissesAtLast = 0;
 
 // Time already charged to nested profiled phases on this thread.
 thread_local int64_t tlChildMicros = 0;
@@ -133,11 +144,19 @@ void BlockProfileNoteHeight(int nHeight)
     if (!fBlockProfile)
         return;
     std::lock_guard<std::mutex> lock(g_phaseMutex);
+    const int64_t nNow = NowMicros();
     if (g_nFirstHeight < 0)
     {
         g_nFirstHeight = nHeight;
-        g_nWallStartUs = NowMicros();
+        g_nWallStartUs = nNow;
+        g_nSleepsAtFirst = g_nHandlerSleeps.load();
+        g_nWaitUsAtFirst = g_nHandlerWaitUs.load();
+        g_nMissesAtFirst = g_nDispatchMisses.load();
     }
+    g_nWallLastUs = nNow;
+    g_nSleepsAtLast = g_nHandlerSleeps.load();
+    g_nWaitUsAtLast = g_nHandlerWaitUs.load();
+    g_nMissesAtLast = g_nDispatchMisses.load();
     g_nLastHeight = nHeight;
     g_nBlocks++;
 }
@@ -151,6 +170,25 @@ void BlockProfileReset()
     g_nLastHeight = -1;
     g_nBlocks = 0;
     g_nWallStartUs = 0;
+    g_nWallLastUs = 0;
+    g_nSleepsAtFirst = g_nSleepsAtLast = 0;
+    g_nWaitUsAtFirst = g_nWaitUsAtLast = 0;
+    g_nMissesAtFirst = g_nMissesAtLast = 0;
+}
+
+void BlockProfileNoteHandlerWait(int64_t nMicros)
+{
+    if (!fBlockProfile)
+        return;
+    g_nHandlerSleeps.fetch_add(1);
+    g_nHandlerWaitUs.fetch_add(nMicros);
+}
+
+void BlockProfileNoteDispatchMiss()
+{
+    if (!fBlockProfile)
+        return;
+    g_nDispatchMisses.fetch_add(1);
 }
 
 std::string BlockProfileReport()
@@ -165,6 +203,18 @@ std::string BlockProfileReport()
              " wall_us_per_block=%.1f\n",
              g_nBlocks, g_nFirstHeight, g_nLastHeight, nWallUs,
              (double)nWallUs / dBlocks);
+    s += buf;
+    // The same window measured without the time until this report was asked for, which on
+    // a harness that polls is not part of the sync. Handler figures are for this window only.
+    const int64_t nWallToLastUs =
+        (g_nWallStartUs && g_nWallLastUs) ? (g_nWallLastUs - g_nWallStartUs) : 0;
+    const int64_t nSleeps = g_nSleepsAtLast - g_nSleepsAtFirst;
+    const int64_t nWaitUs = g_nWaitUsAtLast - g_nWaitUsAtFirst;
+    const int64_t nMisses = g_nMissesAtLast - g_nMissesAtFirst;
+    snprintf(buf, sizeof(buf),
+             "window first_to_last_connect_us=%" PRId64 " handler_waits=%" PRId64
+             " handler_wait_us=%" PRId64 " dispatch_misses=%" PRId64 "\n",
+             nWallToLastUs, nSleeps, nWaitUs, nMisses);
     s += buf;
     snprintf(buf, sizeof(buf), "%-18s %12s %12s %12s %12s\n", "phase", "calls",
              "excl_us", "incl_us", "excl_us/blk");

@@ -5,6 +5,7 @@
 
 #include "db.h"
 #include "net.h"
+#include "blockprofile.h"
 #include "init.h"
 #include "strlcpy.h"
 #include "addrman.h"
@@ -18,6 +19,9 @@
 #include "tor/anonymize.h"
 #endif
 #include <sys/stat.h>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <algorithm>
 
 #ifdef WIN32
@@ -1056,7 +1060,22 @@ uint64_t CNode::GetTotalBytesSent()
 }
 
 // requires LOCK(cs_vRecvMsg)
-bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
+// Wakes the message handler when a message completes; the flag persists until consumed.
+// Signalled under cs_vRecvMsg; the handler waits with no per-node lock held.
+static std::mutex g_mutexMsgHandlerWake;
+static std::condition_variable g_condMsgHandlerWake;
+static bool g_fMsgHandlerWake = false;
+
+static void WakeMessageHandler()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_mutexMsgHandlerWake);
+        g_fMsgHandlerWake = true;
+    }
+    g_condMsgHandlerWake.notify_one();
+}
+
+bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool* pfCompleted)
 {
     const unsigned int nArrived = nBytes;
     while (nBytes > 0) {
@@ -1093,7 +1112,13 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
         nBytes -= handled;
 
         if (msg.complete())
+        {
             msg.nTime = GetTimeMicros();
+            // Reported rather than signalled here: the caller holds cs_vRecvMsg, and a handler
+            // woken now would reach this peer while the lock is still held and lose the race.
+            if (pfCompleted)
+                *pfCompleted = true;
+        }
         else if (fDebugNet)
             printf("recvmsg: incomplete peer=%s cmd=%s hdrpos=%u datapos=%u of %u "
                    "(arrived=%u, queued=%u)\n",
@@ -1557,6 +1582,7 @@ void ThreadSocketHandler2(void* parg)
             //
             if (pnode->hSocket == INVALID_SOCKET)
                 continue;
+            bool fCompletedMsg = false;
             if (FD_ISSET(pnode->hSocket, &fdsetRecv) || FD_ISSET(pnode->hSocket, &fdsetError))
             {
                 TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
@@ -1598,7 +1624,7 @@ void ThreadSocketHandler2(void* parg)
                         int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
                         if (nBytes > 0)
                         {
-                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes)) {
+                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes, &fCompletedMsg)) {
                                 printf("DEBUG-DISCONNECT ReceiveMsgBytes failed peer=%s\n", pnode->addr.ToString().c_str());
                                 pnode->CloseSocketDisconnect("recv-parse-failed");
                             }
@@ -1638,6 +1664,9 @@ void ThreadSocketHandler2(void* parg)
                     }
                 }
             }
+            // After cs_vRecvMsg is released, so the handler this wakes can take it at once.
+            if (fCompletedMsg)
+                WakeMessageHandler();
 
             //
             // Send
@@ -2593,6 +2622,7 @@ void ThreadMessageHandler2(void* parg)
                 if (!lockRecv)
                 {
                     pnode->nRecvDispatchMisses++;
+                    BlockProfileNoteDispatchMiss();
                     if (fDebugNet && (pnode->nRecvDispatchMisses % 500) == 0)
                         printf("dispatch: cs_vRecvMsg missed %" PRId64" consecutive times peer=%s "
                                "version=%d queued=%u\n",
@@ -2640,12 +2670,23 @@ void ThreadMessageHandler2(void* parg)
                 pnode->Release();
         }
 
-        // Wait and allow messages to bunch up.
+        // Wait until a message completes, for at most 100 ms.
         // Reduce vnThreadsRunning so StopNode has permission to exit while
-        // we're sleeping, but we must always check fShutdown after doing this.
+        // we're waiting, but we must always check fShutdown after doing this.
         vnThreadsRunning[THREAD_MESSAGEHANDLER]--;
         if (fSleep)
-            MilliSleep(100);
+        {
+            const std::chrono::steady_clock::time_point tWaitStart =
+                std::chrono::steady_clock::now();
+            {
+                std::unique_lock<std::mutex> lock(g_mutexMsgHandlerWake);
+                g_condMsgHandlerWake.wait_for(lock, std::chrono::milliseconds(100),
+                                              [] { return g_fMsgHandlerWake; });
+                g_fMsgHandlerWake = false;
+            }
+            BlockProfileNoteHandlerWait(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - tWaitStart).count());
+        }
         if (fRequestShutdown)
             StartShutdown();
         vnThreadsRunning[THREAD_MESSAGEHANDLER]++;
@@ -3019,6 +3060,9 @@ bool StopNode()
 {
     printf("StopNode()\n");
     fShutdown = true;
+    // Out of its wait now rather than at the 100 ms cap: the wait's mutex is a static, and a
+    // handler still inside it when statics are destroyed at exit would touch a dead mutex.
+    WakeMessageHandler();
     mempool.AddTransactionsUpdated(1);
     int64_t nStart = GetTime();
     if (semOutbound)
