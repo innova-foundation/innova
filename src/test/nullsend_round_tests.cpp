@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -3783,10 +3784,8 @@ CMixRendezvous TestRendezvous(const CMixRoundAnnouncement& announce)
     return rendezvous;
 }
 
-// A fresh anchor as the chain would report it: the head two epochs behind the tip at the
-// round's start, read at nReadTime with the tip one block a second further on. What the chain
-// reports for a real anchor is tested against the consensus check in
-// connect_verdict_locality_tests.
+// A test anchor: newest epoch 600 blocks deep at round start, three behind the tip's
+// epoch, read at nReadTime with one block per second after.
 CMixAnchorView TestAnchor(const CMixRoundAnnouncement& announce, int64_t nReadTime = 0)
 {
     if (nReadTime == 0)
@@ -3794,7 +3793,7 @@ CMixAnchorView TestAnchor(const CMixRoundAnnouncement& announce, int64_t nReadTi
     CMixAnchorView view;
     view.finalizedRoot = announce.finalizedRoot;
     view.nFinalizedTreeSize = announce.nFinalizedTreeSize;
-    view.nAnchorEpoch = 10;
+    view.nAnchorEpoch = 9;
     view.nTipHeight = (int)(GetEpochBoundaryHeight64(12) + (nReadTime - announce.nTime));
     view.nReadTime = nReadTime;
     view.nSafeThroughHeight = MixAnchorSafeThroughHeight(view.nAnchorEpoch);
@@ -3861,7 +3860,8 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     MixFrameType nReply = MIX_FRAME_NONE;
     for (size_t i = 0; i < 2; i++)
     {
-        BOOST_REQUIRE(vSeatsPtr[i]->BuildJoin(vchFrame, &strError));
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildJoin(TestAnchor(announce), vchFrame, &strError),
+                              strError);
         BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_JOIN, vchFrame, T0, nReply, vchReply));
         BOOST_CHECK_EQUAL((int)nReply, (int)MIX_FRAME_ACK);
     }
@@ -3880,13 +3880,22 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
             if (without.vRoster[i].keyImage == seatB.KeyImage())
                 without.vRoster[i].keyImage = uint256(0xDEAD);
         std::vector<unsigned char> vchIgnored;
-        BOOST_CHECK_MESSAGE(!seatB.AcceptRoster(without, vchIgnored, &strError),
+        BOOST_CHECK_MESSAGE(!seatB.AcceptRoster(without, TestAnchor(announce, T1), vchIgnored, &strError),
                             "a seat signed a view over a roster it is not in");
     }
     for (size_t i = 0; i < 2; i++)
     {
         BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T1, snapshot));
-        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptRoster(snapshot, vchFrame, &strError), strError);
+        BOOST_CHECK_MESSAGE(!vSeatsPtr[i]->AcceptRoster(snapshot, TestAnchor(announce), vchFrame,
+                                                        &strError),
+                            "a seat signed the view on the anchor view it joined with");
+        BOOST_CHECK(strError.find("read it again") != std::string::npos);
+        CMixAnchorView lapsed = TestAnchor(announce, T1);
+        lapsed.nSafeThroughHeight = lapsed.nTipHeight;
+        BOOST_CHECK_MESSAGE(!vSeatsPtr[i]->AcceptRoster(snapshot, lapsed, vchFrame, &strError),
+                            "a seat signed the view after its anchor stopped lasting the round");
+        BOOST_CHECK(strError.find("safe through") != std::string::npos);
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptRoster(snapshot, TestAnchor(announce, T1), vchFrame, &strError), strError);
         BOOST_REQUIRE_MESSAGE(AcceptedFrame(coord, MIX_FRAME_VIEW_SIG, vchFrame, T1),
                               "the coordinator refused a seat's view signature");
     }
@@ -3900,7 +3909,7 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     }
     // A second view, however well formed, is refused by the seat itself: signing two is how
     // one input ends up in two rounds.
-    BOOST_CHECK_MESSAGE(!seatA.AcceptRoster(snapshot, vchFrame, &strError),
+    BOOST_CHECK_MESSAGE(!seatA.AcceptRoster(snapshot, TestAnchor(announce, T1), vchFrame, &strError),
                         "a seat signed a second view in one attempt");
 
     // The token, checked against the announcement's commitment before anything is blinded,
@@ -4286,6 +4295,35 @@ BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
     other.nFinalizedTreeSize += 1;
     BOOST_CHECK(!CheckMixAnchorBudget(announce, other, nConnectBy, &strError));
 
+    // Accepted through finality alone is not enough: the anchor must already be 600 blocks
+    // deep at the tip, exactly.
+    const int nAnchorEnd = (int)GetEpochBoundaryHeight64(fresh.nAnchorEpoch + 1) - 1;
+    CMixAnchorView shallow = fresh;
+    shallow.nTipHeight = nAnchorEnd + EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH - 1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, shallow, nConnectBy, &strError));
+    BOOST_CHECK(strError.find("deep") != std::string::npos);
+    shallow.nTipHeight += 1;
+    BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, shallow, nConnectBy, &strError), strError);
+
+    // A deadline already past still needs the next block, and a far one refuses rather than
+    // overflowing.
+    CMixAnchorView past = fresh;
+    past.nSafeThroughHeight = past.nTipHeight + 1;
+    BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, past, past.nReadTime - 10, &strError),
+                        strError);
+    past.nSafeThroughHeight = past.nTipHeight;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, past, past.nReadTime - 10, &strError));
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, fresh, std::numeric_limits<int64_t>::max(),
+                                      &strError));
+    BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, fresh,
+                                             std::numeric_limits<int64_t>::min(), &strError),
+                        strError);
+    // A view with no read time, against a deadline it would otherwise clear by one block.
+    CMixAnchorView unread = fresh;
+    unread.nReadTime = -1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, unread, 0, &strError));
+    BOOST_CHECK(strError.find("read time") != std::string::npos);
+
     // The seat refuses before it proves an input or has a key image to reveal.
     CMixAnchorView expiring = fresh;
     expiring.nSafeThroughHeight = expiring.nTipHeight + 1;
@@ -4299,6 +4337,17 @@ BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
     BOOST_CHECK_MESSAGE(seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC5), TestPolicy(),
                                    TestRendezvous(announce), fresh, &strError),
                         strError);
+
+    // And again as the key image leaves: proving took time, and the tip did not wait.
+    std::vector<unsigned char> vchFrame;
+    BOOST_CHECK(!seat.BuildJoin(expiring, vchFrame, &strError));
+    BOOST_CHECK(vchFrame.empty());
+    CMixAnchorView early = fresh;
+    early.nReadTime = T0 - 1;
+    BOOST_CHECK(!seat.BuildJoin(early, vchFrame, &strError));
+    BOOST_CHECK(strError.find("read it again") != std::string::npos);
+    BOOST_CHECK_MESSAGE(seat.BuildJoin(fresh, vchFrame, &strError), strError);
+    BOOST_CHECK(!vchFrame.empty());
 }
 
 // The record the chain carries, and the rule that picks one of them.

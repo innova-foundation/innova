@@ -652,14 +652,9 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
     BOOST_CHECK(!fLocal);
 }
 
-// How long an anchor accepted now stays accepted, judged by the consensus check itself at
-// every height, under three ways finality can move: every epoch finalized as soon as it can
-// be, nothing finalized at all, and finality stalled far behind and then catching up at once.
-// The head never passes two epochs behind the connecting height's epoch, so an anchor from
-// epoch a lasts through the end of epoch a + 7 whatever finality does; a mix round's seat
-// budgets against exactly that height. Epoch records are written in a transaction that is
-// never committed, each with a root and tree size of its own so no pair repeats.
-BOOST_AUTO_TEST_CASE(an_accepted_anchor_lasts_through_its_safe_height_however_finality_moves)
+// Anchor lifetime at every height with finality eager, absent, and stalled: an anchor
+// from epoch a lasts through the end of epoch a + 7.
+BOOST_AUTO_TEST_CASE(an_accepted_anchor_lasts_through_its_safe_height_on_one_chain)
 {
     BOOST_REQUIRE(fRegTest);
     const int nLastEpoch = 17;
@@ -791,6 +786,120 @@ BOOST_AUTO_TEST_CASE(an_accepted_anchor_lasts_through_its_safe_height_however_fi
             if (vRegimes[r] == NOTHING_FINALIZED)
                 BOOST_CHECK_EQUAL(nLastAccepted,
                                   (int)GetEpochBoundaryHeight64(a + 9) - 1 - 1);
+        }
+        txdb.TxnAbort();
+    }
+}
+
+// A reorg can lower the next record's finalized height, dropping an anchor accepted only
+// as finalized; a 600-deep anchor survives on both branches, so a mix seat takes only those.
+BOOST_AUTO_TEST_CASE(a_reorg_that_drops_a_certificate_refuses_only_a_shallow_anchor)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nLastEpoch = 11;
+    PrivacyVNextDigest digest;
+    digest.fill(0x5B);
+    std::vector<PrivacyVNextDigest> vRoots(nLastEpoch + 1);
+    for (int e = 0; e <= nLastEpoch; ++e)
+    {
+        vRoots[e].fill(0);
+        vRoots[e][0] = 0xC0;
+        vRoots[e][1] = (unsigned char)e;
+    }
+    // Epochs 6 and 7 carry one pair, as when no note is added across a boundary.
+    vRoots[7] = vRoots[6];
+    const uint64_t nRepeatSize = 106;
+
+    const int nH = (int)GetEpochBoundaryHeight64(11) + 5;
+    const int nFinEpoch = 9, nDeepEpoch = 8;
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nH) - 1, 10);
+    BOOST_REQUIRE(nH - ((int)GetEpochBoundaryHeight64(nFinEpoch + 1) - 1) <
+                  EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH);
+    BOOST_REQUIRE(nH - ((int)GetEpochBoundaryHeight64(nDeepEpoch + 1) - 1) >=
+                  EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH);
+
+    // A finalizes every epoch early; B omits the certificate completing epoch 10's streak;
+    // C adds no note in epoch 9, so the head is a shallow copy.
+    for (int nBranch = 0; nBranch < 3; ++nBranch)
+    {
+        CTxDB txdb("rw");
+        BOOST_REQUIRE(txdb.TxnBegin());
+        for (int e = 0; e <= nLastEpoch; ++e)
+        {
+            CEpochState state;
+            state.nEpoch = e;
+            state.nHeightStart = (int)GetEpochBoundaryHeight64(e);
+            state.nHeightEnd = (int)GetEpochBoundaryHeight64(e + 1) - 1;
+            state.hashBoundaryBlock = uint256(0xC1000000 + e);
+            state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+            const int nPairEpoch = (nBranch == 2 && e == nFinEpoch) ? nDeepEpoch : e;
+            state.vchVNextRoot.assign(vRoots[nPairEpoch].begin(), vRoots[nPairEpoch].end());
+            state.nVNextTreeSize = (e == 7) ? nRepeatSize : 100 + nPairEpoch;
+            state.vchVNextParameterDigest.assign(digest.begin(), digest.end());
+            int nFinalized = e >= 1 ? state.nHeightStart : 0;
+            if (nBranch == 1 && e == 10)
+                nFinalized = (int)GetEpochBoundaryHeight64(9);
+            state.nFinalizedHeightAsOf = nFinalized;
+            BOOST_REQUIRE(txdb.WriteEpochState(e, state));
+        }
+
+        CEpochState head;
+        bool fLocal = false;
+        BOOST_REQUIRE(g_dagManager.GetFinalizedEpochStateAsOf(txdb, nH, head, fLocal));
+        BOOST_CHECK_EQUAL(head.nEpoch, nBranch == 1 ? nDeepEpoch : nFinEpoch);
+
+        int nEpoch = -1;
+        std::string strError;
+        if (nBranch == 2)
+        {
+            // Consensus names the shallow copy; the seat finds the deep one and can proceed.
+            BOOST_REQUIRE(CheckPrivacyVNextSpendAnchor(txdb, nH, vRoots[nDeepEpoch],
+                                                       100 + nDeepEpoch, digest, nEpoch, fLocal,
+                                                       strError));
+            BOOST_CHECK_EQUAL(nEpoch, nFinEpoch);
+            CMixRoundAnnouncement announce;
+            announce.parameterDigest = digest;
+            announce.finalizedRoot = vRoots[nDeepEpoch];
+            announce.nFinalizedTreeSize = 100 + nDeepEpoch;
+            CMixAnchorView view;
+            BOOST_REQUIRE(ReadMixAnchorView(txdb, nH - 1, 1000, announce, view, &strError));
+            BOOST_CHECK_EQUAL(view.nAnchorEpoch, nDeepEpoch);
+            BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, view, 1600, &strError), strError);
+            txdb.TxnAbort();
+            continue;
+        }
+        const bool fFinAccepted = CheckPrivacyVNextSpendAnchor(
+            txdb, nH, vRoots[nFinEpoch], 100 + nFinEpoch, digest, nEpoch, fLocal, strError);
+        BOOST_CHECK_MESSAGE(fFinAccepted == (nBranch == 0),
+                            "branch " << nBranch << ": finality-only anchor accepted="
+                            << fFinAccepted << " " << strError);
+        BOOST_CHECK_MESSAGE(CheckPrivacyVNextSpendAnchor(txdb, nH, vRoots[nDeepEpoch],
+                                                         100 + nDeepEpoch, digest, nEpoch,
+                                                         fLocal, strError),
+                            "branch " << nBranch << ": deep anchor refused: " << strError);
+        BOOST_CHECK_EQUAL(nEpoch, nDeepEpoch);
+        BOOST_CHECK_MESSAGE(CheckPrivacyVNextSpendAnchor(txdb, nH, vRoots[7], nRepeatSize, digest,
+                                                         nEpoch, fLocal, strError),
+                            strError);
+        BOOST_CHECK_EQUAL(nEpoch, 7);
+
+        // The seat's reading of the same two anchors, one block past a tip at nH - 1.
+        CMixRoundAnnouncement announce;
+        announce.parameterDigest = digest;
+        CMixAnchorView view;
+        announce.finalizedRoot = vRoots[nDeepEpoch];
+        announce.nFinalizedTreeSize = 100 + nDeepEpoch;
+        BOOST_REQUIRE(ReadMixAnchorView(txdb, nH - 1, 1000, announce, view));
+        BOOST_CHECK_EQUAL(view.nAnchorEpoch, nDeepEpoch);
+        BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, view, 1600, &strError), strError);
+        if (nBranch == 0)
+        {
+            announce.finalizedRoot = vRoots[nFinEpoch];
+            announce.nFinalizedTreeSize = 100 + nFinEpoch;
+            BOOST_REQUIRE(ReadMixAnchorView(txdb, nH - 1, 1000, announce, view));
+            BOOST_CHECK_EQUAL(view.nAnchorEpoch, nFinEpoch);
+            BOOST_CHECK(!CheckMixAnchorBudget(announce, view, 1600, &strError));
+            BOOST_CHECK(strError.find("deep") != std::string::npos);
         }
         txdb.TxnAbort();
     }

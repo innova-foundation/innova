@@ -186,12 +186,9 @@ static const int EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS = 6;
 // key-image index, so depth alone keeps a built spend valid across a reorg.
 static const int EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH = 600;
 
-// The head a height resolves is at least this many epochs behind that height's own epoch.
-// The finalized epoch ends at or below a boundary inside the as-of epoch, which is one
-// behind; an unfinalized head must be MIN_UNFINALIZED_ANCHOR_DEPTH deep, which is more
-// than one post-DAG epoch. Since the head never moves backward on one chain, an anchor
-// accepted now from epoch a is accepted at every later height whose epoch is at most
-// a + MAX_ANCHOR_AGE_EPOCHS - 1 + MIN_HEAD_LAG_EPOCHS, however finality moves.
+// Minimum lag, in epochs, between a height's epoch and the head it resolves. An anchor
+// accepted from epoch a stays accepted up to epoch a + MAX_ANCHOR_AGE_EPOCHS - 1 +
+// MIN_HEAD_LAG_EPOCHS; a reorg that drops a certificate can lower the head.
 static const int EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS = 2;
 
 // Apply one IV5 tx's pool delta to a running balance. Returns false, leaving `nBalance`

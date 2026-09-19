@@ -95,8 +95,9 @@ static const int64_t MIX_INCLUSION_ALLOWANCE_SECS = 120;
 static const int64_t MIX_ANCHOR_BLOCKS_PER_SEC_NUM = 3;
 static const int64_t MIX_ANCHOR_BLOCKS_PER_SEC_DEN = 2;
 
-/** The last height at which consensus is certain to accept an anchor from nAnchorEpoch that
- *  it accepts now, however finality moves (EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS). */
+/** The last height at which consensus accepts, on this chain, an anchor from nAnchorEpoch
+ *  that it accepts now (EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS). A seat relies on it only for an
+ *  anchor already 600 blocks deep, whose acceptance no finality certificate carries. */
 int MixAnchorSafeThroughHeight(int nAnchorEpoch);
 
 class CMixRoundAnnouncement
@@ -1183,12 +1184,9 @@ bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
                                       const CMixRendezvous& rendezvous,
                                       std::string* pstrError = NULL);
 
-/** What this node's chain says about a round's anchor, read at one tip.
- *
- *  The schedule cap in the announcement is the static half of the anchor budget. This is the
- *  half only the chain can answer: whether consensus accepts the anchor at all, and from which
- *  epoch, which fixes how long it stays accepted. A seat checks it before it reveals a key
- *  image and again before it approves a prefix and before it signs its final response. */
+/** What this node's chain says about a round's anchor, read at one tip: whether consensus
+ *  accepts it, from which epoch, and whether that epoch is 600 blocks deep. A seat checks it
+ *  before each committing step. An operating check, not a guarantee of inclusion. */
 struct CMixAnchorView
 {
     PrivacyVNextDigest finalizedRoot;
@@ -1207,18 +1205,17 @@ struct CMixAnchorView
 };
 
 /** Read the view of this announcement's anchor for the block after nTipHeight, judged by the
- *  code a connecting transaction is. A refused anchor is a view with no epoch; false only when
- *  this node cannot read its own state. Read nTipHeight and the view under one cs_main lock,
+ *  code a connecting transaction is. The epoch is the newest in the window carrying the anchor
+ *  that is 600 blocks deep at the tip, or the newest carrying it if none is. A refused anchor
+ *  is a view with no epoch; false only when this node cannot read its own state. Read nTipHeight and the view under one cs_main lock,
  *  or a commit between them tears the view. A node whose tip lags the network under-counts the
  *  blocks still to come by its lag. */
 bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
                        const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
                        std::string* pstrError = NULL);
 
-/** Whether the announcement's anchor, as the view saw it, is still accepted when a
- *  transaction finished by nConnectBy is mined: the tip projected forward from the view's
- *  read time at the margin rate must not pass the anchor's safe-through height. The seat's
- *  later checks refuse a view read before their own window, so each is a fresh read. */
+/** Whether the anchor is 600 blocks deep at the tip and still accepted when a transaction
+ *  finished by nConnectBy is mined, projecting the tip forward at the margin rate. */
 bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
                           int64_t nConnectBy, std::string* pstrError = NULL);
 
@@ -1261,6 +1258,9 @@ struct CMixSeatMaterial
     PrivacyVNextDigest balanceEntropy;
 };
 
+/** One seat's attempt at one round; a refusal ends it for good. The driver then keeps the
+ *  record, never reuses its entropy, treats the key image as known to the coordinator, and
+ *  keeps the note reserved once a final share went out, until mined or unminable. */
 class CMixSeat
 {
 public:
@@ -1280,12 +1280,13 @@ public:
      *  after a lost reply rather than blinding a second message. */
     const std::vector<unsigned char>& Blinded() const { return vchBlinded; }
 
-    bool BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL) const;
+    bool BuildJoin(const CMixAnchorView& anchor, std::vector<unsigned char>& vchFrameOut,
+                   std::string* pstrError = NULL) const;
 
     /** Accept the frozen roster from a snapshot and sign its view. Refused if this seat's pair is
      *  missing, the roster is not the announced size, or a view was already signed. */
-    bool AcceptRoster(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                      std::string* pstrError = NULL);
+    bool AcceptRoster(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                      std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL);
 
     bool BuildConstruction(std::vector<unsigned char>& vchFrameOut,
                            std::string* pstrError = NULL) const;

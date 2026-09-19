@@ -3413,6 +3413,14 @@ int MixAnchorSafeThroughHeight(int nAnchorEpoch)
     return (int)nEnd;
 }
 
+// Deep at the tip itself rather than at the next block, so a reorg to a branch one block
+// shorter still finds it deep.
+static bool MixAnchorIsDeep(int nTipHeight, int nEpoch)
+{
+    const int64_t nEnd = GetEpochBoundaryHeight64((int64_t)nEpoch + 1) - 1;
+    return (int64_t)nTipHeight - nEnd >= EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH;
+}
+
 bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
                        const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
                        std::string* pstrError)
@@ -3440,6 +3448,48 @@ bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
             *pstrError = strError;
         return !fLocalFailure;
     }
+    // Consensus names the newest epoch carrying the pair; if an older epoch in the window
+    // carries it too and is deep, use that one (a reorg cannot shorten it).
+    if (!MixAnchorIsDeep(nTipHeight, nEpoch))
+    {
+        CEpochState head;
+        bool fHeadLocal = false;
+        if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTipHeight + 1, head, fHeadLocal))
+        {
+            if (pstrError)
+                *pstrError = "the anchor head cannot be read";
+            return !fHeadLocal;
+        }
+        for (int nBack = head.nEpoch - nEpoch + 1;
+             nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
+        {
+            CEpochState older;
+            bool fOlderLocal = false;
+            if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTipHeight + 1, nBack, older,
+                                                         &fOlderLocal))
+            {
+                if (fOlderLocal)
+                {
+                    if (pstrError)
+                        *pstrError = "an epoch record in the anchor window cannot be read";
+                    return false;
+                }
+                break;
+            }
+            if (!MixAnchorIsDeep(nTipHeight, older.nEpoch) ||
+                older.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+                older.nVNextTreeSize != announce.nFinalizedTreeSize ||
+                older.vchVNextRoot.size() != announce.finalizedRoot.size() ||
+                older.vchVNextParameterDigest.size() != announce.parameterDigest.size() ||
+                !std::equal(announce.finalizedRoot.begin(), announce.finalizedRoot.end(),
+                            older.vchVNextRoot.begin()) ||
+                !std::equal(announce.parameterDigest.begin(), announce.parameterDigest.end(),
+                            older.vchVNextParameterDigest.begin()))
+                continue;
+            nEpoch = older.nEpoch;
+            break;
+        }
+    }
     viewOut.nAnchorEpoch = nEpoch;
     viewOut.nSafeThroughHeight = MixAnchorSafeThroughHeight(nEpoch);
     return true;
@@ -3454,9 +3504,21 @@ bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAncho
         FAIL("the anchor view was read for a different anchor");
     if (view.nTipHeight < 0 || view.nAnchorEpoch < 0 || view.nSafeThroughHeight < 0)
         FAIL("consensus does not accept this round's anchor at the tip");
+    // Accepted only through finality is not enough: a branch that omits the certificate behind
+    // a finalized head lowers the head, and an anchor that was not yet deep drops out of the
+    // window. A deep anchor is carried by depth alone.
+    if (!MixAnchorIsDeep(view.nTipHeight, view.nAnchorEpoch))
+        FAIL(strprintf("the round's anchor is not yet %d blocks deep, so a reorg that drops a "
+                       "finality certificate can refuse it",
+                       EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH));
     // Projected from when the view was read, not from now, so a stale view only counts more
-    // blocks than have been mined.
-    const int64_t nSecs = std::max<int64_t>(0, nConnectBy - view.nReadTime);
+    // blocks than have been mined. Clamped so a far deadline refuses rather than overflows.
+    if (view.nReadTime < 0)
+        FAIL("the anchor view carries no read time");
+    const int64_t nSecs = nConnectBy <= view.nReadTime
+                              ? 0
+                              : std::min<int64_t>(nConnectBy - view.nReadTime,
+                                                  std::numeric_limits<int>::max());
     // At least the next block, which is the first height the view was read for.
     const int64_t nBlocks = std::max<int64_t>(1, (nSecs * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
                                                   MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
@@ -3577,12 +3639,20 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
     #undef FAIL
 }
 
-bool CMixSeat::BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* pstrError) const
+bool CMixSeat::BuildJoin(const CMixAnchorView& anchor, std::vector<unsigned char>& vchFrameOut,
+                         std::string* pstrError) const
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vchFrameOut.clear();
     if (!fBegun)
         FAIL("this seat has not started an attempt");
+    // The key image leaves here, and proving since Begin took time the tip did not wait for.
+    if (anchor.nReadTime < announcement.nTime)
+        FAIL("the anchor view was read before the join window; read it again");
+    if (!CheckMixAnchorBudget(announcement, anchor,
+                              announcement.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                              pstrError))
+        return false;
     std::vector<unsigned char> vchBody;
     if (!BuildMixJoinBody(pubkeySession, keyImage, vchBody) ||
         !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_JOIN, vchBody,
@@ -3592,13 +3662,20 @@ bool CMixSeat::BuildJoin(std::vector<unsigned char>& vchFrameOut, std::string* p
     #undef FAIL
 }
 
-bool CMixSeat::AcceptRoster(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                            std::string* pstrError)
+bool CMixSeat::AcceptRoster(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                            std::vector<unsigned char>& vchFrameOut, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vchFrameOut.clear();
     if (!fBegun)
         FAIL("this seat has not started an attempt");
+    // Signing the view commits this seat to the round's input set and to proving under it.
+    if (anchor.nReadTime < announcement.JoinCloses())
+        FAIL("the anchor view was read before the view window; read it again");
+    if (!CheckMixAnchorBudget(announcement, anchor,
+                              announcement.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                              pstrError))
+        return false;
     // One view per attempt. A seat that signs a second has signed two rosters, and a
     // coordinator holding both can run two rounds against one input.
     if (hashViewSigned != 0)
