@@ -12715,6 +12715,7 @@ public:
                                 return FailClosed(entry, strWalletError.c_str());
                         }
                     }
+                    NoteMixRendezvousBlock(entry.block, entry.setDAGSkippedTxs, true);
 
                     // Shielded outputs are found by trial-decrypting the block's payloads, which the
                     // per-transaction sync above does not do. Mirrors the disconnect side.
@@ -12777,6 +12778,7 @@ public:
                                                     false, strWalletError))
                             return FailClosed(entry, strWalletError.c_str());
                     }
+                    NoteMixRendezvousBlock(entry.block, entry.setDAGSkippedTxs, false);
                 }
             }
             catch (const std::exception& e)

@@ -4350,6 +4350,230 @@ BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
     BOOST_CHECK(!vchFrame.empty());
 }
 
+// The directory is untrusted; it must hold one canonical encoding, only chain-paid rounds,
+// a few per identity and slot, nothing expired or far ahead, and strictly parseable replies.
+BOOST_AUTO_TEST_CASE(a_directory_holds_only_rounds_the_chain_published)
+{
+    const int64_t T0 = 28000500;
+    const int64_t nSlot = MixRendezvousSlot(T0);
+    const int64_t nNow = T0 - MIX_RENDEZVOUS_SLOT_SECONDS;
+    CKey keyCoordinator;
+    const CMixRoundAnnouncement announce =
+        ProvenAnnouncement(keyCoordinator, FreshRoundKey(4501), T0);
+    std::vector<unsigned char> vchAnnounce;
+    BOOST_REQUIRE(EncodeMixAnnouncement(announce, vchAnnounce));
+    CMixRoundAnnouncement decoded;
+    BOOST_REQUIRE(DecodeMixAnnouncement(vchAnnounce, decoded));
+    BOOST_CHECK(decoded.hashRound == announce.hashRound);
+    std::vector<unsigned char> vchLonger = vchAnnounce;
+    vchLonger.push_back(0);
+    BOOST_CHECK(!DecodeMixAnnouncement(vchLonger, decoded));
+    BOOST_CHECK(!DecodeMixAnnouncement(std::vector<unsigned char>(MIX_ANNOUNCEMENT_MAX_BYTES + 1, 1),
+                                       decoded));
+
+    // Nothing on the chain yet: refused, however valid the announcement.
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    std::string strError;
+    BOOST_CHECK(!directory.Put(vchAnnounce, nNow, &strError));
+    BOOST_CHECK(strError.find("record") != std::string::npos);
+
+    // A record signed by another key for this identity's slot does not count either.
+    CKey keyOther;
+    keyOther.MakeNewKey(true);
+    CMixRendezvousRecord forged;
+    BOOST_REQUIRE(SignMixRendezvous(keyOther, nSlot, announce.hashRound, forged));
+    forged.idSlot = MixRendezvousIdentitySlot(announce.pubkeyCoordinator, nSlot);
+    forged.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator, nSlot,
+                                                    announce.hashRound);
+    index.Connect(forged, nNow);
+    BOOST_CHECK(!directory.Put(vchAnnounce, nNow, &strError));
+
+    CMixRendezvousRecord record;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, announce.hashRound, record));
+    index.Connect(record, nNow);
+    BOOST_CHECK_MESSAGE(directory.Put(vchAnnounce, nNow, &strError), strError);
+    BOOST_CHECK(directory.Put(vchAnnounce, nNow, &strError));
+    BOOST_CHECK_EQUAL(directory.Size(), 1u);
+
+    // A later reorg that drops the record does not unstore it, but a new upload needs one.
+    CMixRoundAnnouncement second = announce;
+    second.nPort = 8444;
+    BOOST_REQUIRE(second.Sign(keyCoordinator));
+    std::vector<unsigned char> vchSecond;
+    BOOST_REQUIRE(EncodeMixAnnouncement(second, vchSecond));
+    CMixRendezvousRecord recordSecond;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, second.hashRound, recordSecond));
+    index.Connect(recordSecond, nNow);
+    index.Disconnect(recordSecond);
+    BOOST_CHECK(!directory.Put(vchSecond, nNow, &strError));
+    index.Connect(recordSecond, nNow);
+    BOOST_CHECK_MESSAGE(directory.Put(vchSecond, nNow, &strError), strError);
+
+    // A few rounds per identity and slot, then no more.
+    for (int nPort = 8445; directory.Size() < MIX_DIRECTORY_MAX_PER_SLOT; nPort++)
+    {
+        CMixRoundAnnouncement more = announce;
+        more.nPort = nPort;
+        BOOST_REQUIRE(more.Sign(keyCoordinator));
+        std::vector<unsigned char> vchMore;
+        BOOST_REQUIRE(EncodeMixAnnouncement(more, vchMore));
+        CMixRendezvousRecord recordMore;
+        BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, more.hashRound, recordMore));
+        index.Connect(recordMore, nNow);
+        BOOST_REQUIRE_MESSAGE(directory.Put(vchMore, nNow, &strError), strError);
+    }
+    CMixRoundAnnouncement extra = announce;
+    extra.nPort = 9000;
+    BOOST_REQUIRE(extra.Sign(keyCoordinator));
+    std::vector<unsigned char> vchExtra;
+    BOOST_REQUIRE(EncodeMixAnnouncement(extra, vchExtra));
+    CMixRendezvousRecord recordExtra;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, extra.hashRound, recordExtra));
+    index.Connect(recordExtra, nNow);
+    BOOST_CHECK(!directory.Put(vchExtra, nNow, &strError));
+
+    // Too far ahead, and already over -- checked before a round already held is accepted again.
+    BOOST_CHECK(!directory.Put(vchAnnounce, T0 - (MIX_DIRECTORY_AHEAD_SLOTS + 1) *
+                                                  MIX_RENDEZVOUS_SLOT_SECONDS,
+                               &strError));
+    BOOST_CHECK(!directory.Put(vchAnnounce, announce.Ends() + 1, &strError));
+
+    // A read over the frames, parsed strictly, and the one the slot authorises picked out of
+    // everything the directory holds for it.
+    std::vector<unsigned char> vchGet, vchReply;
+    BOOST_REQUIRE(BuildMixAnnounceGetBody(announce.pubkeyCoordinator, nSlot, vchGet));
+    MixFrameType nReply = MIX_FRAME_NONE;
+    BOOST_REQUIRE(directory.Serve(MIX_FRAME_ANNOUNCE_GET, vchGet, nNow, nReply, vchReply));
+    BOOST_CHECK_EQUAL((int)nReply, (int)MIX_FRAME_ANNOUNCE_LIST);
+    std::vector<std::vector<unsigned char> > vHeld;
+    BOOST_REQUIRE(ReadMixAnnounceListBody(vchReply, vHeld));
+    BOOST_CHECK_EQUAL(vHeld.size(), MIX_DIRECTORY_MAX_PER_SLOT);
+    BOOST_CHECK(vHeld[0] == vchAnnounce);
+    CMixRendezvous rendezvous;
+    rendezvous.pubkeyCoordinator = second.pubkeyCoordinator;
+    rendezvous.nSlot = nSlot;
+    rendezvous.hashCommitment = MixRendezvousCommitment(second.pubkeyCoordinator, nSlot,
+                                                        second.hashRound);
+    CMixRoundAnnouncement picked;
+    BOOST_REQUIRE_MESSAGE(PickMixAnnouncement(vHeld, rendezvous, picked, &strError), strError);
+    BOOST_CHECK(picked.hashRound == second.hashRound);
+    rendezvous.hashCommitment = MixRendezvousCommitment(extra.pubkeyCoordinator, nSlot,
+                                                        extra.hashRound);
+    BOOST_CHECK(!PickMixAnnouncement(vHeld, rendezvous, picked, &strError));
+
+    // An upload over the frames answers accepted-or-not.
+    BOOST_REQUIRE(directory.Serve(MIX_FRAME_ANNOUNCE_PUT, vchAnnounce, nNow, nReply, vchReply));
+    bool fAccepted = false;
+    BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+    BOOST_CHECK(fAccepted);
+    BOOST_REQUIRE(directory.Serve(MIX_FRAME_ANNOUNCE_PUT, vchExtra, nNow, nReply, vchReply));
+    BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
+    BOOST_CHECK(!fAccepted);
+    BOOST_CHECK(!directory.Serve(MIX_FRAME_STATE, std::vector<unsigned char>(), nNow, nReply,
+                                 vchReply));
+    BOOST_CHECK(!directory.Serve(MIX_FRAME_ANNOUNCE_GET, std::vector<unsigned char>(40, 2), nNow,
+                                 nReply, vchReply));
+
+    // A second's requests are bounded, whoever sends them.
+    const int64_t nBusy = nNow + 5;
+    int nServed = 0;
+    for (int i = 0; i < 2 * MIX_DIRECTORY_REQUESTS_PER_SECOND; i++)
+        if (directory.Serve(MIX_FRAME_ANNOUNCE_GET, vchGet, nBusy, nReply, vchReply))
+            nServed++;
+    BOOST_CHECK_EQUAL(nServed, MIX_DIRECTORY_REQUESTS_PER_SECOND);
+    BOOST_CHECK(directory.Serve(MIX_FRAME_ANNOUNCE_GET, vchGet, nBusy + 1, nReply, vchReply));
+
+    // Rounds leave when they end; records leave when they age out.
+    directory.Expire(announce.Ends() + 1);
+    BOOST_CHECK_EQUAL(directory.Size(), 0u);
+    BOOST_CHECK(index.Authorises(announce.pubkeyCoordinator, nSlot, announce.hashRound));
+    index.Expire(nNow + CMixRendezvousIndex::KEEP_SECS + 1);
+    BOOST_CHECK(!index.Authorises(announce.pubkeyCoordinator, nSlot, announce.hashRound));
+    BOOST_CHECK_EQUAL(index.Size(), 0u);
+}
+
+// A directory's index is fed from blocks joining and leaving the chain: a record in a block
+// authorises its round, and the same block disconnected takes it back. Records in skipped
+// transactions are not the chain's and do not count.
+BOOST_AUTO_TEST_CASE(the_rendezvous_index_follows_the_blocks)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const int64_t nSlot = 46701;
+    const uint256 hashRound(0x5151);
+    CMixRendezvousRecord record;
+    BOOST_REQUIRE(SignMixRendezvous(key, nSlot, hashRound, record));
+    CTransaction tx;
+    tx.vout.push_back(CTxOut(0, BuildMixRendezvousScript(record)));
+    CBlock block;
+    block.nTime = 28020000;
+    block.vtx.push_back(tx);
+
+    CMixRendezvousIndex index;
+    CMixRendezvousIndex* pSaved = g_pmixRendezvousIndex;
+    g_pmixRendezvousIndex = &index;
+    std::set<uint256> skipped;
+    skipped.insert(tx.GetHash());
+    NoteMixRendezvousBlock(block, skipped, true);
+    BOOST_CHECK(!index.Authorises(key.GetPubKey(), nSlot, hashRound));
+    skipped.clear();
+    NoteMixRendezvousBlock(block, skipped, true);
+    BOOST_CHECK(index.Authorises(key.GetPubKey(), nSlot, hashRound));
+    BOOST_CHECK(!index.Authorises(key.GetPubKey(), nSlot + 1, hashRound));
+    BOOST_CHECK(!index.Authorises(key.GetPubKey(), nSlot, uint256(0x5152)));
+    NoteMixRendezvousBlock(block, skipped, false);
+    BOOST_CHECK(!index.Authorises(key.GetPubKey(), nSlot, hashRound));
+    BOOST_CHECK_EQUAL(index.Size(), 0u);
+
+    // A record from a block long past ages out at the next expiry.
+    NoteMixRendezvousBlock(block, skipped, true);
+    index.Expire(block.GetBlockTime() + CMixRendezvousIndex::KEEP_SECS + 1);
+    BOOST_CHECK(!index.Authorises(key.GetPubKey(), nSlot, hashRound));
+    g_pmixRendezvousIndex = pSaved;
+}
+
+// The bodies a directory speaks, parsed strictly.
+BOOST_AUTO_TEST_CASE(directory_bodies_parse_strictly)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    std::vector<unsigned char> vch;
+    BOOST_REQUIRE(BuildMixAnnounceGetBody(key.GetPubKey(), 46667, vch));
+    BOOST_CHECK_EQUAL(vch.size(), 41u);
+    CPubKey pubkey;
+    int64_t nSlot = 0;
+    BOOST_REQUIRE(ReadMixAnnounceGetBody(vch, pubkey, nSlot));
+    BOOST_CHECK(pubkey == key.GetPubKey());
+    BOOST_CHECK_EQUAL(nSlot, 46667);
+    vch.push_back(0);
+    BOOST_CHECK(!ReadMixAnnounceGetBody(vch, pubkey, nSlot));
+    CKey keyLong;
+    keyLong.MakeNewKey(false);
+    BOOST_CHECK(!BuildMixAnnounceGetBody(keyLong.GetPubKey(), 46667, vch));
+    BOOST_CHECK(!BuildMixAnnounceGetBody(key.GetPubKey(), 0, vch));
+
+    std::vector<std::vector<unsigned char> > vIn, vOut;
+    vIn.push_back(std::vector<unsigned char>(3, 7));
+    vIn.push_back(std::vector<unsigned char>(300, 8));
+    BOOST_REQUIRE(BuildMixAnnounceListBody(vIn, vch));
+    BOOST_REQUIRE(ReadMixAnnounceListBody(vch, vOut));
+    BOOST_CHECK(vOut == vIn);
+    std::vector<unsigned char> vchShort(vch.begin(), vch.end() - 1);
+    BOOST_CHECK(!ReadMixAnnounceListBody(vchShort, vOut));
+    std::vector<unsigned char> vchLong = vch;
+    vchLong.push_back(0);
+    BOOST_CHECK(!ReadMixAnnounceListBody(vchLong, vOut));
+    std::vector<unsigned char> vchMany = vch;
+    vchMany[0] = (unsigned char)(MIX_DIRECTORY_MAX_PER_SLOT + 1);
+    BOOST_CHECK(!ReadMixAnnounceListBody(vchMany, vOut));
+    vIn.assign(MIX_DIRECTORY_MAX_PER_SLOT + 1, std::vector<unsigned char>(1, 1));
+    BOOST_CHECK(!BuildMixAnnounceListBody(vIn, vch));
+    BOOST_CHECK(BuildMixAnnounceListBody(std::vector<std::vector<unsigned char> >(), vch));
+    BOOST_REQUIRE(ReadMixAnnounceListBody(vch, vOut));
+    BOOST_CHECK(vOut.empty());
+}
+
 // The record the chain carries, and the rule that picks one of them.
 BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
 {

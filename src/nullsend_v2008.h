@@ -269,7 +269,10 @@ enum MixFrameType
     MIX_FRAME_SNAPSHOT        = 17,  // the reply to either
     MIX_FRAME_ACK             = 18,  // the reply to anything that changes the round
     MIX_FRAME_RESULT          = 19,  // anyone -> coordinator: the finished transaction
-    MIX_FRAME_TYPE_MAX        = 19,
+    MIX_FRAME_ANNOUNCE_PUT    = 20,  // coordinator -> directory: a signed announcement
+    MIX_FRAME_ANNOUNCE_GET    = 21,  // anyone -> directory: an identity and a slot
+    MIX_FRAME_ANNOUNCE_LIST   = 22,  // directory -> anyone: what it holds for them
+    MIX_FRAME_TYPE_MAX        = 22,
 };
 
 enum MixFrameDecode
@@ -1215,6 +1218,139 @@ bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
  *  finished by nConnectBy is mined, projecting the tip forward at the margin rate. */
 bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
                           int64_t nConnectBy, std::string* pstrError = NULL);
+
+// ---------------------------------------------------------------------------
+// Announcement directory
+// ---------------------------------------------------------------------------
+
+/** Directories serve announcement bytes and are untrusted: a substituted announcement fails
+ *  the commitment check before JOIN. A seat asks two or three; a request carries only the
+ *  identity and slot. */
+
+/** An announcement serialises to about 390 bytes; anything past this is not one. */
+static const size_t MIX_ANNOUNCEMENT_MAX_BYTES = 1024;
+/** Distinct rounds held for one identity and slot. A seat picks the one the chain authorises,
+ *  so a few is enough, and a cap keeps one identity from filling the store. */
+static const size_t MIX_DIRECTORY_MAX_PER_SLOT = 4;
+static const size_t MIX_DIRECTORY_MAX_ENTRIES = 16384;
+/** How far ahead of the current slot an upload may be for. A coordinator uploads in the slot
+ *  before its round, once its record is in the chain. */
+static const int64_t MIX_DIRECTORY_AHEAD_SLOTS = 2;
+/** Requests a directory answers in one second, whoever sends them: over Tor nothing tells two
+ *  callers apart, so the ceiling is the directory's. An upload costs a key recovery. */
+static const int MIX_DIRECTORY_REQUESTS_PER_SECOND = 64;
+
+bool EncodeMixAnnouncement(const CMixRoundAnnouncement& announce,
+                           std::vector<unsigned char>& vchOut);
+/** Strict: within the size bound, every byte consumed, and re-encoding gives the same bytes,
+ *  so one announcement has one encoding a directory stores and a seat hashes. */
+bool DecodeMixAnnouncement(const std::vector<unsigned char>& vchIn,
+                           CMixRoundAnnouncement& announceOut);
+
+/** GET: a compressed identity key and a slot, 41 bytes, nothing else. */
+bool BuildMixAnnounceGetBody(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                             std::vector<unsigned char>& vchOut);
+bool ReadMixAnnounceGetBody(const std::vector<unsigned char>& vchIn,
+                            CPubKey& pubkeyOut, int64_t& nSlotOut);
+/** LIST: a count, then each encoded announcement with a two-byte length. */
+bool BuildMixAnnounceListBody(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                              std::vector<unsigned char>& vchOut);
+bool ReadMixAnnounceListBody(const std::vector<unsigned char>& vchIn,
+                             std::vector<std::vector<unsigned char> >& vAnnouncementsOut);
+
+/** The one announcement in a directory's answer that this slot's record authorises, or
+ *  false. Every candidate is decoded strictly and checked in full; a directory that answers
+ *  with anything else has answered with nothing. */
+bool PickMixAnnouncement(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                         const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
+                         std::string* pstrError = NULL);
+
+/** Rendezvous records the best chain carried recently, so a directory stores only
+ *  announcements a paid record commits to. Fed from connected and disconnected blocks;
+ *  entries age out by wall time. */
+class CMixRendezvousIndex
+{
+public:
+    CMixRendezvousIndex() : nRecords(0) {}
+
+    void Connect(const CMixRendezvousRecord& record, int64_t nNow);
+    void Disconnect(const CMixRendezvousRecord& record);
+    /** Whether a record on the best chain, signed by this identity for this slot, commits to
+     *  this round. */
+    bool Authorises(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                    const uint256& hashRound) const;
+    void Expire(int64_t nNow);
+    size_t Size() const;
+
+    /** Records kept per identity and slot, and in total. Past either, new ones are dropped:
+     *  the first record is the one a seat selects anyway. */
+    static const size_t MAX_PER_SLOT = 8;
+    static const size_t MAX_RECORDS = 65536;
+    /** Long enough to cover the publication slot, the round's own slot and the one after. */
+    static const int64_t KEEP_SECS = 3 * 600;
+
+private:
+    struct Entry
+    {
+        uint256 hashCommitment;
+        std::vector<unsigned char> vchSig;
+        int64_t nSeen;
+    };
+    mutable CCriticalSection cs;
+    std::map<uint256, std::vector<Entry> > mapByIdSlot;
+    size_t nRecords;
+};
+
+/** The index a directory running in this process reads, or NULL when none runs. Set once at
+ *  startup before blocks connect. */
+extern CMixRendezvousIndex* g_pmixRendezvousIndex;
+
+/** Feed g_pmixRendezvousIndex from a block joining or leaving the best chain. A record's time
+ *  is its block's, so records met during initial sync age out at once. */
+void NoteMixRendezvousBlock(const CBlock& block, const std::set<uint256>& setSkippedTxs,
+                            bool fConnect);
+
+/** A directory: stores signed announcements the chain has a record for, and answers who asks.
+ *  One request per connection, one reply, nothing pushed. */
+class CMixDirectory
+{
+public:
+    explicit CMixDirectory(const CMixRendezvousIndex* pindexIn)
+        : pindex(pindexIn), nEntries(0), nRequestSecond(0), nRequests(0) {}
+
+    /** Store one encoded announcement. Idempotent for a round already held. */
+    bool Put(const std::vector<unsigned char>& vchAnnouncement, int64_t nNow,
+             std::string* pstrError = NULL);
+    /** Every announcement held for this identity and slot, in the order they arrived. */
+    void Get(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+             std::vector<std::vector<unsigned char> >& vOut) const;
+    void Expire(int64_t nNow);
+    size_t Size() const;
+
+    /** PUT answers ACK, GET answers LIST; anything else, or anything past the second's
+     *  request budget, gets no reply. */
+    bool Serve(MixFrameType nType, const std::vector<unsigned char>& vchPayload, int64_t nNow,
+               MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+
+private:
+    CMixDirectory(const CMixDirectory&);
+    CMixDirectory& operator=(const CMixDirectory&);
+
+    struct Entry
+    {
+        uint256 hashRound;
+        int64_t nEnds;
+        std::vector<unsigned char> vchAnnouncement;
+    };
+    bool SpendRequestBudget(int64_t nNow);
+
+    const CMixRendezvousIndex* pindex;
+    mutable CCriticalSection cs;
+    std::map<uint256, std::vector<Entry> > mapByIdSlot;
+    size_t nEntries;
+    int64_t nRequestSecond;
+    int nRequests;
+};
 
 /** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
  *  refuses a round whose fee or denomination differs from its own choice, so a coordinator

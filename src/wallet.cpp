@@ -12711,11 +12711,14 @@ bool CWallet::CreatePrivacyVNextStamp(
         strErrorOut = "the stamp script is empty";
         return false;
     }
-    // The one shape the standardness carve-out admits, checked here so a stamp that
-    // could not relay is refused before it spends anything.
+    // The shapes the standardness carve-outs admit -- a standard OP_RETURN, or a mix
+    // rendezvous record, which is longer than one -- checked here so a stamp that could
+    // not relay is refused before it spends anything.
     txnouttype whichType;
     std::vector<std::vector<unsigned char> > vSolutions;
-    if (!Solver(scriptStamp, whichType, vSolutions) || whichType != TX_NULL_DATA)
+    CMixRendezvousRecord rendezvous;
+    if ((!Solver(scriptStamp, whichType, vSolutions) || whichType != TX_NULL_DATA) &&
+        !DecodeMixRendezvousScript(scriptStamp, rendezvous))
     {
         strErrorOut = "an IV5 stamp output must be a standard OP_RETURN";
         return false;

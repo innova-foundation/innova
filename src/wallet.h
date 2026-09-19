@@ -905,10 +905,8 @@ public:
         uint256& keyImageOut,
         std::string& strErrorOut);
 
-    // Carry a data stamp on a spend funded from the pool. Nothing crosses the
-    // transparent boundary: the notes pay the fee, the remainder returns to this
-    // wallet, and the single zero-value OP_RETURN output rides inside the payload's
-    // transparent binding. `scriptStamp` must be a standard TX_NULL_DATA script.
+    // A data stamp on a pool-funded spend; nothing crosses the transparent boundary. The one
+    // zero-value output must be TX_NULL_DATA or a mix rendezvous record.
     bool CreatePrivacyVNextStamp(
         const CScript& scriptStamp,
         uint8_t nDisclosureMask,

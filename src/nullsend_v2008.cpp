@@ -3416,6 +3416,423 @@ int MixAnchorSafeThroughHeight(int nAnchorEpoch)
     return (int)nEnd;
 }
 
+bool EncodeMixAnnouncement(const CMixRoundAnnouncement& announce,
+                           std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    try
+    {
+        ss << announce;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+    if (ss.size() > MIX_ANNOUNCEMENT_MAX_BYTES)
+        return false;
+    vchOut.assign(ss.begin(), ss.end());
+    return true;
+}
+
+bool DecodeMixAnnouncement(const std::vector<unsigned char>& vchIn,
+                           CMixRoundAnnouncement& announceOut)
+{
+    announceOut.SetNull();
+    if (vchIn.empty() || vchIn.size() > MIX_ANNOUNCEMENT_MAX_BYTES)
+        return false;
+    CMixRoundAnnouncement announce;
+    try
+    {
+        CDataStream ss(vchIn, SER_NETWORK, PROTOCOL_VERSION);
+        ss >> announce;
+        if (!ss.empty())
+            return false;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+    std::vector<unsigned char> vchAgain;
+    if (!EncodeMixAnnouncement(announce, vchAgain) || vchAgain != vchIn)
+        return false;
+    announceOut = announce;
+    return true;
+}
+
+bool BuildMixAnnounceGetBody(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                             std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed() || nSlot <= 0)
+        return false;
+    const std::vector<unsigned char> vchKey(pubkeyCoordinator.begin(), pubkeyCoordinator.end());
+    vchOut = vchKey;
+    for (int i = 0; i < 8; i++)
+        vchOut.push_back((unsigned char)(((uint64_t)nSlot >> (8 * i)) & 0xFF));
+    return true;
+}
+
+bool ReadMixAnnounceGetBody(const std::vector<unsigned char>& vchIn,
+                            CPubKey& pubkeyOut, int64_t& nSlotOut)
+{
+    pubkeyOut = CPubKey();
+    nSlotOut = 0;
+    if (vchIn.size() != 33 + 8)
+        return false;
+    const CPubKey pubkey(std::vector<unsigned char>(vchIn.begin(), vchIn.begin() + 33));
+    if (!pubkey.IsValid() || !pubkey.IsCompressed())
+        return false;
+    uint64_t nSlot = 0;
+    for (int i = 0; i < 8; i++)
+        nSlot |= (uint64_t)vchIn[33 + i] << (8 * i);
+    if (nSlot == 0 || nSlot > (uint64_t)std::numeric_limits<int64_t>::max())
+        return false;
+    pubkeyOut = pubkey;
+    nSlotOut = (int64_t)nSlot;
+    return true;
+}
+
+bool BuildMixAnnounceListBody(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                              std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vAnnouncements.size() > MIX_DIRECTORY_MAX_PER_SLOT)
+        return false;
+    vchOut.push_back((unsigned char)vAnnouncements.size());
+    for (size_t i = 0; i < vAnnouncements.size(); i++)
+    {
+        const std::vector<unsigned char>& vch = vAnnouncements[i];
+        if (vch.empty() || vch.size() > MIX_ANNOUNCEMENT_MAX_BYTES)
+            return false;
+        vchOut.push_back((unsigned char)(vch.size() & 0xFF));
+        vchOut.push_back((unsigned char)((vch.size() >> 8) & 0xFF));
+        vchOut.insert(vchOut.end(), vch.begin(), vch.end());
+    }
+    return true;
+}
+
+bool ReadMixAnnounceListBody(const std::vector<unsigned char>& vchIn,
+                             std::vector<std::vector<unsigned char> >& vAnnouncementsOut)
+{
+    vAnnouncementsOut.clear();
+    if (vchIn.empty() || vchIn[0] > MIX_DIRECTORY_MAX_PER_SLOT)
+        return false;
+    const size_t nCount = vchIn[0];
+    size_t nAt = 1;
+    std::vector<std::vector<unsigned char> > vOut;
+    for (size_t i = 0; i < nCount; i++)
+    {
+        if (vchIn.size() - nAt < 2)
+            return false;
+        const size_t nLen = (size_t)vchIn[nAt] | ((size_t)vchIn[nAt + 1] << 8);
+        nAt += 2;
+        if (nLen == 0 || nLen > MIX_ANNOUNCEMENT_MAX_BYTES || vchIn.size() - nAt < nLen)
+            return false;
+        vOut.push_back(std::vector<unsigned char>(vchIn.begin() + nAt, vchIn.begin() + nAt + nLen));
+        nAt += nLen;
+    }
+    if (nAt != vchIn.size())
+        return false;
+    vAnnouncementsOut.swap(vOut);
+    return true;
+}
+
+bool PickMixAnnouncement(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                         const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
+                         std::string* pstrError)
+{
+    announceOut.SetNull();
+    for (size_t i = 0; i < vAnnouncements.size(); i++)
+    {
+        CMixRoundAnnouncement announce;
+        if (!DecodeMixAnnouncement(vAnnouncements[i], announce) ||
+            !announce.IsValidBasic() ||
+            !MixAnnouncementMatchesRendezvous(announce, rendezvous))
+            continue;
+        announceOut = announce;
+        return true;
+    }
+    if (pstrError)
+        *pstrError = "no announcement the directory returned is the one this slot authorises";
+    return false;
+}
+
+void CMixRendezvousIndex::Connect(const CMixRendezvousRecord& record, int64_t nNow)
+{
+    if (record.idSlot == 0 || record.hashCommitment == 0 ||
+        record.vchSig.size() != MIX_RENDEZVOUS_SIG_SIZE)
+        return;
+    LOCK(cs);
+    if (nRecords >= MAX_RECORDS)
+        return;
+    std::vector<Entry>& v = mapByIdSlot[record.idSlot];
+    for (size_t i = 0; i < v.size(); i++)
+        if (v[i].hashCommitment == record.hashCommitment && v[i].vchSig == record.vchSig)
+            return;
+    if (v.size() >= MAX_PER_SLOT)
+        return;
+    Entry entry;
+    entry.hashCommitment = record.hashCommitment;
+    entry.vchSig = record.vchSig;
+    entry.nSeen = nNow;
+    v.push_back(entry);
+    nRecords++;
+}
+
+void CMixRendezvousIndex::Disconnect(const CMixRendezvousRecord& record)
+{
+    LOCK(cs);
+    std::map<uint256, std::vector<Entry> >::iterator it = mapByIdSlot.find(record.idSlot);
+    if (it == mapByIdSlot.end())
+        return;
+    std::vector<Entry>& v = it->second;
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        if (v[i].hashCommitment == record.hashCommitment && v[i].vchSig == record.vchSig)
+        {
+            v.erase(v.begin() + i);
+            nRecords--;
+            break;
+        }
+    }
+    if (v.empty())
+        mapByIdSlot.erase(it);
+}
+
+bool CMixRendezvousIndex::Authorises(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                                     const uint256& hashRound) const
+{
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
+    const uint256 hashCommitment = MixRendezvousCommitment(pubkeyCoordinator, nSlot, hashRound);
+    if (idSlot == 0 || hashCommitment == 0)
+        return false;
+    std::vector<CMixRendezvousRecord> vCandidates;
+    {
+        LOCK(cs);
+        std::map<uint256, std::vector<Entry> >::const_iterator it = mapByIdSlot.find(idSlot);
+        if (it == mapByIdSlot.end())
+            return false;
+        for (size_t i = 0; i < it->second.size(); i++)
+        {
+            if (it->second[i].hashCommitment != hashCommitment)
+                continue;
+            CMixRendezvousRecord record;
+            record.idSlot = idSlot;
+            record.hashCommitment = hashCommitment;
+            record.vchSig = it->second[i].vchSig;
+            vCandidates.push_back(record);
+        }
+    }
+    // Recovery outside the lock, and only for records that already match the commitment.
+    for (size_t i = 0; i < vCandidates.size(); i++)
+        if (CheckMixRendezvousRecord(vCandidates[i], pubkeyCoordinator, nSlot))
+            return true;
+    return false;
+}
+
+void CMixRendezvousIndex::Expire(int64_t nNow)
+{
+    LOCK(cs);
+    for (std::map<uint256, std::vector<Entry> >::iterator it = mapByIdSlot.begin();
+         it != mapByIdSlot.end();)
+    {
+        std::vector<Entry>& v = it->second;
+        for (size_t i = 0; i < v.size();)
+        {
+            if (v[i].nSeen + KEEP_SECS < nNow)
+            {
+                v.erase(v.begin() + i);
+                nRecords--;
+            }
+            else
+                i++;
+        }
+        if (v.empty())
+            mapByIdSlot.erase(it++);
+        else
+            ++it;
+    }
+}
+
+size_t CMixRendezvousIndex::Size() const
+{
+    LOCK(cs);
+    return nRecords;
+}
+
+CMixRendezvousIndex* g_pmixRendezvousIndex = NULL;
+
+void NoteMixRendezvousBlock(const CBlock& block, const std::set<uint256>& setSkippedTxs,
+                            bool fConnect)
+{
+    CMixRendezvousIndex* pindex = g_pmixRendezvousIndex;
+    if (!pindex)
+        return;
+    std::vector<CMixRendezvousRecord> vRecords;
+    for (size_t i = 0; i < block.vtx.size(); i++)
+    {
+        if (setSkippedTxs.count(block.vtx[i].GetHash()))
+            continue;
+        for (size_t j = 0; j < block.vtx[i].vout.size(); j++)
+        {
+            CMixRendezvousRecord record;
+            if (DecodeMixRendezvousScript(block.vtx[i].vout[j].scriptPubKey, record))
+                vRecords.push_back(record);
+        }
+    }
+    for (size_t i = 0; i < vRecords.size(); i++)
+    {
+        if (fConnect)
+            pindex->Connect(vRecords[i], block.GetBlockTime());
+        else
+            pindex->Disconnect(vRecords[i]);
+    }
+}
+
+bool CMixDirectory::Put(const std::vector<unsigned char>& vchAnnouncement, int64_t nNow,
+                        std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    CMixRoundAnnouncement announce;
+    if (!DecodeMixAnnouncement(vchAnnouncement, announce))
+        FAIL("not one canonically encoded announcement");
+    if (!announce.IsValidBasic(pstrError))
+        return false;
+    const int64_t nSlot = MixRendezvousSlot(announce.nTime);
+    if (announce.Ends() < nNow)
+        FAIL("the round is already over");
+    if (nSlot > MixRendezvousSlot(nNow) + MIX_DIRECTORY_AHEAD_SLOTS)
+        FAIL("the round is too far ahead to hold");
+    const uint256 idSlot = MixRendezvousIdentitySlot(announce.pubkeyCoordinator, nSlot);
+    if (idSlot == 0)
+        FAIL("the announcement names no identity");
+    {
+        LOCK(cs);
+        std::map<uint256, std::vector<Entry> >::const_iterator it = mapByIdSlot.find(idSlot);
+        if (it != mapByIdSlot.end())
+        {
+            for (size_t i = 0; i < it->second.size(); i++)
+                if (it->second[i].hashRound == announce.hashRound)
+                    return true;
+            if (it->second.size() >= MIX_DIRECTORY_MAX_PER_SLOT)
+                FAIL("this identity already has as many rounds as a slot holds");
+        }
+    }
+    // Last, because it recovers a key: the chain has to carry a record for this round.
+    if (!pindex || !pindex->Authorises(announce.pubkeyCoordinator, nSlot, announce.hashRound))
+        FAIL("no rendezvous record on the chain commits to this round");
+    LOCK(cs);
+    Expire(nNow);
+    if (nEntries >= MIX_DIRECTORY_MAX_ENTRIES)
+        FAIL("the directory is full");
+    std::vector<Entry>& v = mapByIdSlot[idSlot];
+    for (size_t i = 0; i < v.size(); i++)
+        if (v[i].hashRound == announce.hashRound)
+            return true;
+    if (v.size() >= MIX_DIRECTORY_MAX_PER_SLOT)
+        FAIL("this identity already has as many rounds as a slot holds");
+    Entry entry;
+    entry.hashRound = announce.hashRound;
+    entry.nEnds = announce.Ends();
+    entry.vchAnnouncement = vchAnnouncement;
+    v.push_back(entry);
+    nEntries++;
+    return true;
+    #undef FAIL
+}
+
+void CMixDirectory::Get(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                        std::vector<std::vector<unsigned char> >& vOut) const
+{
+    vOut.clear();
+    const uint256 idSlot = MixRendezvousIdentitySlot(pubkeyCoordinator, nSlot);
+    LOCK(cs);
+    std::map<uint256, std::vector<Entry> >::const_iterator it = mapByIdSlot.find(idSlot);
+    if (it == mapByIdSlot.end())
+        return;
+    for (size_t i = 0; i < it->second.size(); i++)
+        vOut.push_back(it->second[i].vchAnnouncement);
+}
+
+void CMixDirectory::Expire(int64_t nNow)
+{
+    LOCK(cs);
+    for (std::map<uint256, std::vector<Entry> >::iterator it = mapByIdSlot.begin();
+         it != mapByIdSlot.end();)
+    {
+        std::vector<Entry>& v = it->second;
+        for (size_t i = 0; i < v.size();)
+        {
+            if (v[i].nEnds < nNow)
+            {
+                v.erase(v.begin() + i);
+                nEntries--;
+            }
+            else
+                i++;
+        }
+        if (v.empty())
+            mapByIdSlot.erase(it++);
+        else
+            ++it;
+    }
+}
+
+size_t CMixDirectory::Size() const
+{
+    LOCK(cs);
+    return nEntries;
+}
+
+bool CMixDirectory::SpendRequestBudget(int64_t nNow)
+{
+    LOCK(cs);
+    if (nNow != nRequestSecond)
+    {
+        nRequestSecond = nNow;
+        nRequests = 0;
+    }
+    if (nRequests >= MIX_DIRECTORY_REQUESTS_PER_SECOND)
+        return false;
+    nRequests++;
+    return true;
+}
+
+bool CMixDirectory::Serve(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
+                          int64_t nNow, MixFrameType& nReplyTypeOut,
+                          std::vector<unsigned char>& vchReplyOut)
+{
+    nReplyTypeOut = MIX_FRAME_NONE;
+    vchReplyOut.clear();
+    if (nType != MIX_FRAME_ANNOUNCE_PUT && nType != MIX_FRAME_ANNOUNCE_GET)
+        return false;
+    if (!SpendRequestBudget(nNow))
+        return false;
+    if (nType == MIX_FRAME_ANNOUNCE_PUT)
+    {
+        const bool fAccepted = Put(vchPayload, nNow);
+        if (!BuildMixAckBody(fAccepted, vchReplyOut))
+            return false;
+        nReplyTypeOut = MIX_FRAME_ACK;
+        return true;
+    }
+    if (nType == MIX_FRAME_ANNOUNCE_GET)
+    {
+        CPubKey pubkey;
+        int64_t nSlot = 0;
+        if (!ReadMixAnnounceGetBody(vchPayload, pubkey, nSlot))
+            return false;
+        std::vector<std::vector<unsigned char> > vHeld;
+        Get(pubkey, nSlot, vHeld);
+        if (!BuildMixAnnounceListBody(vHeld, vchReplyOut))
+            return false;
+        nReplyTypeOut = MIX_FRAME_ANNOUNCE_LIST;
+        return true;
+    }
+    return false;
+}
+
 // Deep at the tip itself rather than at the next block, so a reorg to a branch one block
 // shorter still finds it deep.
 static bool MixAnchorIsDeep(int nTipHeight, int nEpoch)
