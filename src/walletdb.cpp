@@ -1534,6 +1534,22 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             LOCK(pwallet->cs_shielded);
             pwallet->setPrivacyVNextHolds.insert(outpoint);
         }
+        else if (strType == "iv5mixprep")
+        {
+            std::pair<uint256, uint32_t> outpoint;
+            ssKey >> outpoint;
+            LOCK(pwallet->cs_shielded);
+            pwallet->setPrivacyVNextMixPrepared.insert(outpoint);
+        }
+        else if (strType == "iv5mixcommit")
+        {
+            std::pair<uint256, uint32_t> outpoint;
+            ssKey >> outpoint;
+            int64_t nUntil = 0;
+            ssValue >> nUntil;
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapPrivacyVNextMixCommitted[outpoint] = nUntil;
+        }
         else if (strType == "csdeleg")
         {
             uint256 hashOwner;

@@ -283,6 +283,10 @@ extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool f
 extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixprepare(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixcoordinate(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixjoin(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixstatus(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value podverify(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getfinalityinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp

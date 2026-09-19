@@ -169,13 +169,12 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
     // those the coordinator told in advance.
     if (nJoinSecs < MIX_JOIN_WINDOW_MIN_SECS)
         FAIL("the join window is shorter than a seat can reach it from a standing start");
-    // A seat cannot act on a slot until the finalized chain has passed its opening, and both
-    // median time past and finality lag. A round starting at the opening is one honest seats
-    // reach late, which is the short-join-window outcome by another route.
+    // Seats can act only once finality passes the record slot's opening (up to a slot
+    // behind the tip), so the round runs in the following slot, offset from its opening.
     if (nTime > 0 &&
         nTime - MixRendezvousSlot(nTime) * MIX_RENDEZVOUS_SLOT_SECONDS <
             MIX_RENDEZVOUS_MIN_START_SLACK)
-        FAIL("the round starts too early in its slot for a seat to have settled it");
+        FAIL("the round starts too early in its slot for a seat to have settled its record");
     // The anonymous window is the one a seat cannot be asked to hurry: it has to build a
     // bundle, then pick an instant inside the window to submit at.
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
@@ -915,6 +914,12 @@ bool CMixRound::Join(const CPubKey& pubkeySession, const uint256& keyImage,
         FAIL("session key is not valid");
     if (keyImage == 0)
         FAIL("input has no key image");
+    // The same seat asking again is a retry after a lost reply, and a refusal would strand
+    // it -- also once the round is full, which is when a retry is most likely.
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].pubkeySession == pubkeySession &&
+            vParticipants[i].keyImage == keyImage)
+            return true;
     if ((int)vParticipants.size() >= nTargetParticipants)
         FAIL("round is full");
     for (size_t i = 0; i < vParticipants.size(); i++)
@@ -1024,9 +1029,14 @@ bool CMixRound::SubmitViewSignature(const CPubKey& pubkeySession,
         if (!(vParticipants[i].pubkeySession == pubkeySession))
             continue;
         // One view per seat per attempt. Accepting a second, over any view, would let a
-        // coordinator that showed two seats two views still collect a full certificate.
+        // coordinator that showed two seats two views still collect a full certificate. The
+        // same signature again is a retry.
         if (!vParticipants[i].vchViewSig.empty())
+        {
+            if (vParticipants[i].vchViewSig == vchSig)
+                return true;
             FAIL("that seat has already signed a view");
+        }
         if (!pubkeySession.Verify(hashView, vchSig))
             FAIL("the signature does not verify over this round's view");
         vParticipants[i].vchViewSig = vchSig;
@@ -1052,8 +1062,15 @@ bool CMixRound::SubmitInputConstruction(const CPubKey& pubkeySession,
     if (pseudoOut == zero)
         FAIL("the construction carries no pseudo-output");
     for (size_t i = 0; i < vParticipants.size(); i++)
-        if (vParticipants[i].fHavePseudoOut && vParticipants[i].pseudoOut == pseudoOut)
-            FAIL("that pseudo-output is already submitted");
+    {
+        if (!vParticipants[i].fHavePseudoOut || !(vParticipants[i].pseudoOut == pseudoOut))
+            continue;
+        // This seat's own construction again is a retry; anyone else's is refused.
+        if (vParticipants[i].pubkeySession == pubkeySession &&
+            vParticipants[i].keyImage == keyImage)
+            return true;
+        FAIL("that pseudo-output is already submitted");
+    }
     for (size_t i = 0; i < vParticipants.size(); i++)
     {
         if (!(vParticipants[i].pubkeySession == pubkeySession))
@@ -1177,7 +1194,11 @@ bool CMixRound::SubmitPrefixSignature(const CPubKey& pubkeySession,
         if (!(vParticipants[i].pubkeySession == pubkeySession))
             continue;
         if (!vParticipants[i].vchPrefixSig.empty())
+        {
+            if (vParticipants[i].vchPrefixSig == vchSig)
+                return true;
             FAIL("that seat has already approved the prefix");
+        }
         if (!pubkeySession.Verify(hashPrefix, vchSig))
             FAIL("the signature does not verify over the frozen prefix");
         vParticipants[i].vchPrefixSig = vchSig;
@@ -1216,7 +1237,11 @@ bool CMixRound::SubmitMembershipProof(const CPubKey& pubkeySession,
         if (!(vParticipants[i].pubkeySession == pubkeySession))
             continue;
         if (!vParticipants[i].vchMembershipProof.empty())
+        {
+            if (vParticipants[i].vchMembershipProof == vchProof)
+                return true;
             FAIL("that seat has already proved its input");
+        }
         if (!vParticipants[i].fHavePseudoOut)
             FAIL("that seat has no construction to prove");
         PrivacyVNextDigest keyImage;
@@ -1579,6 +1604,12 @@ bool CMixRound::SubmitNonce(const CPubKey& pubkeySession,
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (!Require(MIX_PHASE_SIGN, pstrError))
         return false;
+    // The same nonce again is a retry after a lost reply, even once the aggregate is fixed:
+    // it moves nothing. A different one never is.
+    for (size_t i = 0; i < vParticipants.size(); i++)
+        if (vParticipants[i].pubkeySession == pubkeySession &&
+            !vParticipants[i].vchNonce.empty() && vParticipants[i].vchNonce == vchNonce)
+            return true;
     if (fNoncesFrozen)
         FAIL("the aggregate is fixed; a nonce cannot move under it");
     if (vchNonce.size() != 32)
@@ -1630,7 +1661,11 @@ bool CMixRound::SubmitResponse(const CPubKey& pubkeySession,
         if (!(vParticipants[i].pubkeySession == pubkeySession))
             continue;
         if (!vParticipants[i].vchResponse.empty())
+        {
+            if (vParticipants[i].vchResponse == vchResponse)
+                return true;
             FAIL("seat already responded");
+        }
         vParticipants[i].vchResponse = vchResponse;
         return true;
     }
@@ -1697,6 +1732,14 @@ void CMixStream::Adopt(SOCKET hSocketIn)
     Close();
     hSocket = hSocketIn;
     vchBuffer.clear();
+}
+
+SOCKET CMixStream::Release()
+{
+    const SOCKET hOut = hSocket;
+    hSocket = INVALID_SOCKET;
+    vchBuffer.clear();
+    return hOut;
 }
 
 void CMixStream::Close()
@@ -3085,7 +3128,10 @@ bool CMixCoordinator::Serve(MixFrameType nType, const std::vector<unsigned char>
     }
 
     const MixServiceStage nStage = Stage(nNow);
-    if (!StageAccepts(nStage, nType))
+    // Not before the announced start: seats told in advance would otherwise fill the round
+    // before an honest seat could have read its record.
+    if (!StageAccepts(nStage, nType) ||
+        (nType == MIX_FRAME_JOIN && nNow < announcement.nTime))
     {
         nReplyTypeOut = MIX_FRAME_ACK;
         return BuildMixAckBody(false, vchReplyOut);
@@ -3113,6 +3159,12 @@ int64_t MixRendezvousSlot(int64_t nTime)
     if (nTime < 0)
         return 0;
     return nTime / MIX_RENDEZVOUS_SLOT_SECONDS;
+}
+
+int64_t MixRendezvousRecordSlot(int64_t nRoundTime)
+{
+    const int64_t nSlot = MixRendezvousSlot(nRoundTime);
+    return nSlot > 0 ? nSlot - 1 : 0;
 }
 
 uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
@@ -3390,10 +3442,10 @@ bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
         FAIL("this slot has no published round; skip it rather than take an unpublished one");
     if (!(announce.pubkeyCoordinator == rendezvous.pubkeyCoordinator))
         FAIL("the announcement is not from the coordinator this slot authorises");
-    // The slot the announcement belongs to is its own start time's, so a coordinator cannot
+    // The record's slot is the one before the round's own start, so a coordinator cannot
     // publish once and then run the round at a time of its choosing.
-    if (MixRendezvousSlot(announce.nTime) != rendezvous.nSlot)
-        FAIL("the announcement does not start in the slot it was published for");
+    if (MixRendezvousRecordSlot(announce.nTime) != rendezvous.nSlot)
+        FAIL("the announcement does not start in the slot after the one it was published for");
     if (MixRendezvousCommitment(announce.pubkeyCoordinator, rendezvous.nSlot,
                                 announce.hashRound) != rendezvous.hashCommitment)
         FAIL("the announcement is not the one this slot authorises");
@@ -3661,6 +3713,165 @@ size_t CMixRendezvousIndex::Size() const
     return nRecords;
 }
 
+volatile bool g_fMixExchangesStopped = false;
+
+bool CMixTorDialer::Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                             const std::vector<unsigned char>& vchPayload,
+                             MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut,
+                             std::string* pstrError, int nTimeoutMs)
+{
+    nReplyTypeOut = MIX_FRAME_NONE;
+    vchReplyOut.clear();
+    if (g_fMixExchangesStopped)
+    {
+        if (pstrError)
+            *pstrError = "the mix service is stopping";
+        return false;
+    }
+    if (nTimeoutMs <= 0 || nTimeoutMs > MIX_EXCHANGE_TIMEOUT_MS)
+        nTimeoutMs = MIX_EXCHANGE_TIMEOUT_MS;
+    // One deadline for the whole exchange. The dial times its connect and its SOCKS handshake
+    // separately, so it gets a third and can spend at most two; the request and the reply
+    // share whatever is left.
+    const int64_t nDeadline = GetTimeMillis() + nTimeoutMs;
+    CMixStream stream;
+    if (!DialMixPhase(addrProxy, strEndpoint, nPort, true, std::max(1, nTimeoutMs / 3), stream,
+                      pstrError))
+        return false;
+    int64_t nLeft = nDeadline - GetTimeMillis();
+    if (nLeft <= 0 || !stream.Send(nType, vchPayload, pstrError, (int)nLeft))
+        return false;
+    nLeft = nDeadline - GetTimeMillis();
+    if (nLeft <= 0)
+    {
+        if (pstrError)
+            *pstrError = "the exchange ran out of time";
+        return false;
+    }
+    return stream.Receive(nReplyTypeOut, vchReplyOut, (int)nLeft, pstrError);
+}
+
+bool UploadMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEndpoint>& vDirectories,
+                           const CMixRoundAnnouncement& announce, int& nAcceptedOut,
+                           std::string* pstrError)
+{
+    nAcceptedOut = 0;
+    std::vector<unsigned char> vchAnnounce;
+    if (!EncodeMixAnnouncement(announce, vchAnnounce))
+    {
+        if (pstrError)
+            *pstrError = "the announcement cannot be encoded";
+        return false;
+    }
+    std::string strLast = "no directory is configured";
+    for (size_t i = 0; i < vDirectories.size(); i++)
+    {
+        MixFrameType nReply = MIX_FRAME_NONE;
+        std::vector<unsigned char> vchReply;
+        std::string strError;
+        bool fAccepted = false;
+        if (!dialer.Exchange(vDirectories[i].strHost, vDirectories[i].nPort,
+                             MIX_FRAME_ANNOUNCE_PUT, vchAnnounce, nReply, vchReply, &strError))
+        {
+            strLast = strError;
+            continue;
+        }
+        if (nReply != MIX_FRAME_ACK || !ReadMixAckBody(vchReply, fAccepted) || !fAccepted)
+        {
+            strLast = "a directory refused the announcement";
+            continue;
+        }
+        nAcceptedOut++;
+    }
+    if (nAcceptedOut == 0 && pstrError)
+        *pstrError = strLast;
+    return nAcceptedOut > 0;
+}
+
+bool FetchMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEndpoint>& vDirectories,
+                          const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
+                          std::string* pstrError)
+{
+    announceOut.SetNull();
+    std::vector<unsigned char> vchGet;
+    if (rendezvous.IsNull() ||
+        !BuildMixAnnounceGetBody(rendezvous.pubkeyCoordinator, rendezvous.nSlot, vchGet))
+    {
+        if (pstrError)
+            *pstrError = "this slot has no published round to fetch";
+        return false;
+    }
+    // A random order, so one directory is not every seat's first request.
+    std::vector<size_t> vOrder;
+    for (size_t i = 0; i < vDirectories.size(); i++)
+        vOrder.push_back(i);
+    for (size_t i = vOrder.size(); i > 1; i--)
+        std::swap(vOrder[i - 1], vOrder[GetRandInt((int)i)]);
+    std::string strLast = "no directory is configured";
+    for (size_t k = 0; k < vOrder.size(); k++)
+    {
+        const CMixDirectoryEndpoint& dir = vDirectories[vOrder[k]];
+        MixFrameType nReply = MIX_FRAME_NONE;
+        std::vector<unsigned char> vchReply;
+        std::string strError;
+        if (!dialer.Exchange(dir.strHost, dir.nPort, MIX_FRAME_ANNOUNCE_GET, vchGet, nReply,
+                             vchReply, &strError))
+        {
+            strLast = strError;
+            continue;
+        }
+        std::vector<std::vector<unsigned char> > vHeld;
+        if (nReply != MIX_FRAME_ANNOUNCE_LIST || !ReadMixAnnounceListBody(vchReply, vHeld))
+        {
+            strLast = "a directory answered with something other than a list";
+            continue;
+        }
+        if (PickMixAnnouncement(vHeld, rendezvous, announceOut, &strError))
+            return true;
+        strLast = strError;
+    }
+    if (pstrError)
+        *pstrError = strLast;
+    return false;
+}
+
+bool ServeMixConnection(CMixStream& stream, MixServeFn fnServe, void* pService, int64_t nNow,
+                        int nTimeoutMs)
+{
+    MixFrameType nType = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchPayload;
+    if (!stream.Receive(nType, vchPayload, nTimeoutMs))
+    {
+        stream.Close();
+        return false;
+    }
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchReply;
+    // Timed when the request has arrived, not when the connection did.
+    const bool fServed = fnServe(pService, nType, vchPayload, nNow > 0 ? nNow : GetTime(),
+                                 nReply, vchReply);
+    if (fServed && nReply != MIX_FRAME_NONE)
+        stream.Send(nReply, vchReply, NULL, nTimeoutMs);
+    stream.Close();
+    return fServed;
+}
+
+bool ServeMixDirectoryFrame(void* pDirectory, MixFrameType nType,
+                            const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                            MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut)
+{
+    return static_cast<CMixDirectory*>(pDirectory)->Serve(nType, vchPayload, nNow,
+                                                           nReplyTypeOut, vchReplyOut);
+}
+
+bool ServeMixCoordinatorFrame(void* pCoordinator, MixFrameType nType,
+                              const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                              MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut)
+{
+    return static_cast<CMixCoordinator*>(pCoordinator)->Serve(nType, vchPayload, nNow,
+                                                              nReplyTypeOut, vchReplyOut);
+}
+
 CMixRendezvousIndex* g_pmixRendezvousIndex = NULL;
 
 void NoteMixRendezvousBlock(const CBlock& block, const std::set<uint256>& setSkippedTxs,
@@ -3699,7 +3910,7 @@ bool CMixDirectory::Put(const std::vector<unsigned char>& vchAnnouncement, int64
         FAIL("not one canonically encoded announcement");
     if (!announce.IsValidBasic(pstrError))
         return false;
-    const int64_t nSlot = MixRendezvousSlot(announce.nTime);
+    const int64_t nSlot = MixRendezvousRecordSlot(announce.nTime);
     if (announce.Ends() < nNow)
         FAIL("the round is already over");
     if (nSlot > MixRendezvousSlot(nNow) + MIX_DIRECTORY_AHEAD_SLOTS)
@@ -3953,6 +4164,125 @@ bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAncho
     #undef FAIL
 }
 
+void CMixRoundPlan::ApplyTo(CMixRoundAnnouncement& announce) const
+{
+    announce.nTime = nTime;
+    announce.finalizedRoot = finalizedRoot;
+    announce.nFinalizedTreeSize = nFinalizedTreeSize;
+    announce.parameterDigest = parameterDigest;
+    announce.nJoinSecs = nJoinSecs;
+    announce.nViewSecs = nViewSecs;
+    announce.nTokenSecs = nTokenSecs;
+    announce.nOutputSecs = nOutputSecs;
+    announce.nApproveSecs = nApproveSecs;
+    announce.nNonceSecs = nNonceSecs;
+    announce.nResponseSecs = nResponseSecs;
+    announce.nTerminalSecs = nTerminalSecs;
+}
+
+bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& planOut,
+                  std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    planOut = CMixRoundPlan();
+    if (nTipHeight < 0 || nNow <= 0)
+        FAIL("no tip to plan a round at");
+    // The record is for the next slot and is published now, inside the slot before it; the
+    // round runs in the slot after the record's.
+    const int64_t nSlot = MixRendezvousSlot(nNow) + 1;
+    const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    const int64_t nLead = nOpens - nNow;
+    if (nLead > MIX_PUBLISH_EARLIEST_SECS || nLead < MIX_PUBLISH_LATEST_SECS)
+        FAIL(strprintf("outside the publishing window: the next opens %d seconds before %d",
+                       (int)MIX_PUBLISH_EARLIEST_SECS, (int)nOpens));
+    const int64_t nTime = nOpens + MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK;
+
+    // The longest schedule the budget allows, then the shortest the floors allow.
+    struct Schedule { uint16_t v[7]; };
+    const Schedule vSchedules[2] = {
+        { { 90, 90, 30, (uint16_t)MIX_OUTPUT_WINDOW, 90, 30, 30 } },
+        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS,
+            (uint16_t)MIX_WINDOW_MIN_SECS, (uint16_t)MIX_OUTPUT_WINDOW,
+            (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, (uint16_t)MIX_WINDOW_MIN_SECS,
+            (uint16_t)MIX_WINDOW_MIN_SECS } },
+    };
+
+    CEpochState head;
+    bool fLocal = false;
+    if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTipHeight + 1, head, fLocal))
+        FAIL(fLocal ? "the anchor head cannot be read" : "there is no anchor head yet");
+    // Where the seats' tips will be at JOIN: at the target rate for depth, which only has to
+    // be reached, and at the margin rate for the budget, which must not be passed.
+    const int64_t nJoinTipExpected = (int64_t)nTipHeight + (nTime - nNow);
+    for (int nBack = 0; nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
+    {
+        CEpochState state;
+        if (nBack == 0)
+            state = head;
+        else
+        {
+            bool fOlderLocal = false;
+            if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTipHeight + 1, nBack, state,
+                                                         &fOlderLocal))
+            {
+                if (fOlderLocal)
+                    FAIL("an epoch record in the anchor window cannot be read");
+                break;
+            }
+        }
+        if (state.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+            state.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            state.vchVNextParameterDigest.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            state.nVNextTreeSize == 0)
+            continue;
+        if (nJoinTipExpected > std::numeric_limits<int>::max() ||
+            !MixAnchorIsDeep((int)nJoinTipExpected, state.nEpoch))
+            continue;
+        PrivacyVNextDigest root, digest;
+        std::copy(state.vchVNextRoot.begin(), state.vchVNextRoot.end(), root.begin());
+        std::copy(state.vchVNextParameterDigest.begin(), state.vchVNextParameterDigest.end(),
+                  digest.begin());
+        int nMatched = -1;
+        bool fAnchorLocal = false;
+        std::string strAnchor;
+        if (!CheckPrivacyVNextSpendAnchor(txdb, nTipHeight + 1, root, state.nVNextTreeSize,
+                                          digest, nMatched, fAnchorLocal, strAnchor))
+            continue;
+        const int nSafeThrough = MixAnchorSafeThroughHeight(state.nEpoch);
+        for (size_t k = 0; k < 2; k++)
+        {
+            const Schedule& sch = vSchedules[k];
+            int64_t nToResponse = 0;
+            for (int w = 0; w < 7; w++)
+                nToResponse += sch.v[w];
+            // Exactly what a seat computes at JOIN, from the tip it will have then.
+            const int64_t nConnectBy = nTime + nToResponse + MIX_INCLUSION_ALLOWANCE_SECS;
+            const int64_t nBlocks = ((nConnectBy - nTime) * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
+                                     MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
+                                    MIX_ANCHOR_BLOCKS_PER_SEC_DEN;
+            if (nJoinTipExpected + nBlocks > (int64_t)nSafeThrough)
+                continue;
+            planOut.nSlot = nSlot;
+            planOut.nTime = nTime;
+            planOut.nAnchorEpoch = state.nEpoch;
+            planOut.finalizedRoot = root;
+            planOut.nFinalizedTreeSize = state.nVNextTreeSize;
+            planOut.parameterDigest = digest;
+            planOut.nJoinSecs = sch.v[0];
+            planOut.nViewSecs = sch.v[1];
+            planOut.nTokenSecs = sch.v[2];
+            planOut.nOutputSecs = sch.v[3];
+            planOut.nApproveSecs = sch.v[4];
+            planOut.nNonceSecs = sch.v[5];
+            planOut.nResponseSecs = sch.v[6];
+            planOut.nTerminalSecs = 300;
+            return true;
+        }
+    }
+    FAIL("no accepted anchor will be deep at JOIN and last the shortest schedule");
+    #undef FAIL
+}
+
 CMixPolicy CMixPolicy::Standard()
 {
     CMixPolicy out;
@@ -4144,6 +4474,50 @@ bool CMixSeat::BuildConstruction(std::vector<unsigned char>& vchFrameOut,
         !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_INPUT_CONSTRUCTION,
                              vchBody, vchFrameOut))
         FAIL("the construction frame could not be built");
+    return true;
+    #undef FAIL
+}
+
+bool CMixSeat::BuildStateRequest(std::vector<unsigned char>& vchFrameOut,
+                                 std::string* pstrError) const
+{
+    vchFrameOut.clear();
+    std::vector<unsigned char> vchBody;
+    if (!fBegun || !BuildMixStateAuthBody(pubkeySession, announcement.hashRound, vchBody) ||
+        !BuildAuthedMixFrame(keySession, announcement.hashRound, MIX_FRAME_STATE_AUTH, vchBody,
+                             vchFrameOut))
+    {
+        if (pstrError)
+            *pstrError = "the state request could not be built";
+        return false;
+    }
+    return true;
+}
+
+bool CMixSeat::CarriesApprovedPrefix(const CTransaction& tx) const
+{
+    const std::vector<unsigned char>& vchPayload = tx.privacyVNext.vchPayload;
+    return !vchApprovedPrefix.empty() && tx.vin.empty() && tx.vout.empty() && tx.nLockTime == 0 &&
+           vchPayload.size() > vchApprovedPrefix.size() &&
+           std::equal(vchApprovedPrefix.begin(), vchApprovedPrefix.end(), vchPayload.begin());
+}
+
+bool CMixSeat::SetRecipient(const PrivacyVNextDigest& recipientSpend,
+                            const PrivacyVNextDigest& recipientView,
+                            const PrivacyVNextDigest& outgoingSecret, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (hashViewSigned == 0)
+        FAIL("this seat has no roster to derive a recipient from yet");
+    if (!vBundle.empty())
+        FAIL("this seat's bundle is already built");
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    if (recipientSpend == zero || recipientView == zero || outgoingSecret == zero)
+        FAIL("the recipient is incomplete");
+    material.recipientSpend = recipientSpend;
+    material.recipientView = recipientView;
+    material.outgoingSecret = outgoingSecret;
     return true;
     #undef FAIL
 }

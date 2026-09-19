@@ -138,6 +138,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/nullsend_v2008.o \
+    obj/nullsend_driver.o \
     obj/shielded.o \
     obj/privacy_vnext_ffi.o \
     obj/privacy_vnext_store.o \

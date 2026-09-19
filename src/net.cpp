@@ -6,6 +6,7 @@
 #include "db.h"
 #include "net.h"
 #include "blockprofile.h"
+#include "nullsend_driver.h"
 #include "init.h"
 #include "strlcpy.h"
 #include "addrman.h"
@@ -2900,6 +2901,20 @@ static void run_tor() {
       args.push_back("--DataDirectory");     args.push_back(torDataDir);
       args.push_back("--HiddenServiceDir");  args.push_back(onionDir);
       args.push_back("--HiddenServicePort"); args.push_back(hsPort);
+
+      // Each mix role gets an onion service of its own, never the node's: a mix endpoint on
+      // the P2P onion would tie the coordinator or directory to this node.
+      const char* vMixRoles[2] = { "coordinator", "directory" };
+      const int vMixPorts[2] = { (int)GetArg("-mixcoordinatorport", 0),
+                                 (int)GetArg("-mixdirectoryport", 0) };
+      for (int i = 0; i < 2; ++i) {
+          if (vMixPorts[i] <= 0 || vMixPorts[i] > 65535)
+              continue;
+          args.push_back("--HiddenServiceDir");
+          args.push_back(GetMixOnionServiceDir(vMixRoles[i]).string());
+          args.push_back("--HiddenServicePort");
+          args.push_back(strprintf("%d 127.0.0.1:%d", vMixPorts[i], vMixPorts[i]));
+      }
 
       // Bridges are passthrough only; none are hardcoded.
       // find(), not operator[]: this runs on the onion thread and must not insert.

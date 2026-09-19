@@ -11752,6 +11752,76 @@ bool CWallet::IsPrivacyVNextNoteHeld(const CPrivacyVNextWalletNote& note) const
     return setPrivacyVNextHolds.count(std::make_pair(note.txhash, note.nOutputIndex)) > 0;
 }
 
+bool CWallet::MarkPrivacyVNextMixPrepared(const uint256& txhash, uint32_t nOutputIndex,
+                                          std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
+    LOCK(cs_shielded);
+    if (setPrivacyVNextMixPrepared.count(outpoint))
+        return true;
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        if (!walletdb.WritePrivacyVNextMixPrepared(txhash, nOutputIndex))
+        {
+            strErrorOut = "the prepared note could not be recorded in the wallet";
+            return false;
+        }
+    }
+    setPrivacyVNextMixPrepared.insert(outpoint);
+    return true;
+}
+
+void CWallet::EndPrivacyVNextMixAttempt(const uint256& txhash, uint32_t nOutputIndex)
+{
+    const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
+    bool fPrepared = false;
+    {
+        LOCK(cs_shielded);
+        setPrivacyVNextMixInUse.erase(outpoint);
+        fPrepared = setPrivacyVNextMixPrepared.count(outpoint) > 0;
+    }
+    std::string strError;
+    if (!fPrepared)
+        SetPrivacyVNextHold(txhash, nOutputIndex, false, strError);
+}
+
+bool CWallet::MarkPrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex,
+                                           int64_t nUntil, std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
+    LOCK(cs_shielded);
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        if (!walletdb.WritePrivacyVNextMixCommitted(txhash, nOutputIndex, nUntil))
+        {
+            strErrorOut = "the committed note could not be recorded in the wallet";
+            return false;
+        }
+    }
+    mapPrivacyVNextMixCommitted[outpoint] = nUntil;
+    return true;
+}
+
+// Whether a mix may take this note: not in another attempt, not committed to a round whose
+// transaction may still be mined, and not held unless the hold is the one preparing it.
+static bool PrivacyVNextMixMayTake(const CWallet& wallet, const CPrivacyVNextWalletNote& note)
+{
+    const std::pair<uint256, uint32_t> outpoint(note.txhash, note.nOutputIndex);
+    LOCK(wallet.cs_shielded);
+    if (wallet.setPrivacyVNextMixInUse.count(outpoint))
+        return false;
+    std::map<std::pair<uint256, uint32_t>, int64_t>::const_iterator it =
+        wallet.mapPrivacyVNextMixCommitted.find(outpoint);
+    if (it != wallet.mapPrivacyVNextMixCommitted.end() && it->second > GetTime())
+        return false;
+    return !wallet.IsPrivacyVNextNoteHeld(note) ||
+           wallet.setPrivacyVNextMixPrepared.count(outpoint) > 0;
+}
+
 void CWallet::ListPrivacyVNextHolds(std::vector<std::pair<uint256, uint32_t> >& vOut) const
 {
     LOCK(cs_shielded);
@@ -12385,7 +12455,7 @@ size_t CWallet::CountPrivacyVNextMixNotes(CTxDB& txdb, uint64_t nRequired,
         uint256 keyImage;
         if (!PrivacyVNextNoteKeyImage(note, keyImage))
             continue;
-        if (setPrivacyVNextInFlight.count(keyImage) || IsPrivacyVNextNoteHeld(note) ||
+        if (setPrivacyVNextInFlight.count(keyImage) || !PrivacyVNextMixMayTake(*this, note) ||
             mapPrivacyVNextCollateral.count(keyImage))
             continue;
         CPrivacyVNextNullifierSpent spent;
@@ -12423,10 +12493,19 @@ bool CWallet::PreparePrivacyVNextMixNote(const CMixPolicy& policy, uint64_t nDen
         return false;
     size_t nNotesUsed = 0;
     int nRecipientOutput = -1;
-    return CreatePrivacyVNextTransfer(strAddress, (int64_t)nNoteValue,
-                                      iv5::WALLET_DEFAULT_DISCLOSURE_MASK, fCommit, wtxNew,
-                                      nFeeOut, nNotesUsed, strErrorOut, true,
-                                      &nRecipientOutput);
+    if (!CreatePrivacyVNextTransfer(strAddress, (int64_t)nNoteValue,
+                                    iv5::WALLET_DEFAULT_DISCLOSURE_MASK, fCommit, wtxNew,
+                                    nFeeOut, nNotesUsed, strErrorOut, true, &nRecipientOutput))
+        return false;
+    // Held against everything but a round. The transfer has committed by now, so a failure
+    // here leaves an ordinary held note rather than failing the call.
+    if (fCommit && nRecipientOutput >= 0)
+    {
+        std::string strMark;
+        if (!MarkPrivacyVNextMixPrepared(wtxNew.GetHash(), (uint32_t)nRecipientOutput, strMark))
+            printf("PreparePrivacyVNextMixNote : %s\n", strMark.c_str());
+    }
+    return true;
 }
 
 bool CWallet::SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
@@ -12454,7 +12533,7 @@ bool CWallet::SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSp
         uint256 keyImage;
         if (!PrivacyVNextNoteKeyImage(note, keyImage))
             continue;
-        if (setPrivacyVNextInFlight.count(keyImage) || IsPrivacyVNextNoteHeld(note) ||
+        if (setPrivacyVNextInFlight.count(keyImage) || !PrivacyVNextMixMayTake(*this, note) ||
             mapPrivacyVNextCollateral.count(keyImage))
             continue;
         CPrivacyVNextNullifierSpent spent;
@@ -12483,14 +12562,16 @@ bool CWallet::SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSp
     return true;
 }
 
-bool CWallet::BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size_t nSeats,
-                                           CMixSeatMaterial& materialOut, uint256& txhashOut,
-                                           uint32_t& nOutputIndexOut, std::string& strErrorOut)
+bool CWallet::BuildPrivacyVNextMixMaterial(CTxDB& txdb, const CMixRoundAnnouncement& announce,
+                                           uint64_t nRequired, CMixSeatMaterial& materialOut,
+                                           uint256& txhashOut, uint32_t& nOutputIndexOut,
+                                           std::string& strErrorOut)
 {
     materialOut = CMixSeatMaterial();
     txhashOut = 0;
     nOutputIndexOut = 0;
     strErrorOut.clear();
+    const size_t nSeats = announce.nParticipants > 0 ? (size_t)announce.nParticipants : 0;
     if (nRequired == 0 || nSeats < (size_t)NULLSEND_MIN_PARTICIPANTS ||
         nSeats > iv5::MAX_NULLSEND_INPUTS)
     {
@@ -12498,11 +12579,32 @@ bool CWallet::BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size
         return false;
     }
 
-    std::vector<unsigned char> vchAnchorState, vchAnchorRoot, vchParameterDigest;
-    uint64_t nAnchorTreeSize = 0;
-    if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot, nAnchorTreeSize,
-                                     vchParameterDigest, strErrorOut))
+    // The round's anchor, as consensus resolves it here, and the tree state its record
+    // carries: every seat proves against the same root, so a witness to this wallet's own
+    // newer anchor would be a proof no co-seat's transaction can carry.
+    int nAnchorEpoch = -1;
+    bool fLocalFailure = false;
+    if (!CheckPrivacyVNextSpendAnchor(txdb, nBestHeight + 1, announce.finalizedRoot,
+                                      announce.nFinalizedTreeSize, announce.parameterDigest,
+                                      nAnchorEpoch, fLocalFailure, strErrorOut) ||
+        nAnchorEpoch < 0)
+    {
+        strErrorOut = "the round's anchor is not accepted here: " + strErrorOut;
         return false;
+    }
+    CEpochState anchor;
+    if (!txdb.ReadEpochState(nAnchorEpoch, anchor) || anchor.nEpoch != nAnchorEpoch ||
+        anchor.nVNextTreeSize != announce.nFinalizedTreeSize ||
+        anchor.vchVNextRoot.size() != announce.finalizedRoot.size() ||
+        !std::equal(announce.finalizedRoot.begin(), announce.finalizedRoot.end(),
+                    anchor.vchVNextRoot.begin()))
+    {
+        strErrorOut = "the round's anchor record cannot be read";
+        return false;
+    }
+    const std::vector<unsigned char>& vchAnchorState = anchor.vchVNextTreeState;
+    const std::vector<unsigned char>& vchAnchorRoot = anchor.vchVNextRoot;
+    const uint64_t nAnchorTreeSize = anchor.nVNextTreeSize;
     const int nSpendHeight = nBestHeight + 1;
 
     CPrivacyVNextWalletNote note;
@@ -12518,46 +12620,61 @@ bool CWallet::BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size
     txhashOut = note.txhash;
     nOutputIndexOut = note.nOutputIndex;
 
-    // Held for the attempt. A round runs for minutes, and an ordinary spend or a note vote
-    // taking this note halfway through costs the seat the round and leaves its co-seats
-    // short of an input they have already proved against.
-    if (!SetPrivacyVNextHold(txhashOut, nOutputIndexOut, true, strErrorOut))
-        return false;
-
-    const std::vector<uint64_t> vLeafIndexes(1, note.nLeafIndex);
-    std::vector<unsigned char> vchPaths;
-    if (!ReadPrivacyVNextTreePaths(txdb, nAnchorTreeSize, vchAnchorState, vLeafIndexes,
-                                   vchPaths, strErrorOut))
-        return false;
-    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
-    PrivacyVNextDigest treeRoot;
-    if (!BuildPrivacyVNextWitnessesFromPaths(vchAnchorState, vLeafIndexes, vchPaths, vWitnesses,
-                                             treeRoot, strErrorOut))
-        return false;
-    if (vWitnesses.size() != 1 ||
-        !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin()))
+    // Held for the attempt, and in use by it. A round runs for minutes, and an ordinary spend,
+    // a note vote or a second attempt taking this note halfway through costs the seat the
+    // round and leaves its co-seats short of an input they have already proved against.
     {
-        strErrorOut = "the IV5 witness does not fold onto the finalized anchor root. If this "
-                      "persists, a note may remain from a chain this wallet no longer "
-                      "follows: run z_rescaniv5 to drop it.";
+        LOCK(cs_shielded);
+        setPrivacyVNextMixInUse.insert(std::make_pair(txhashOut, nOutputIndexOut));
+    }
+    if (!SetPrivacyVNextHold(txhashOut, nOutputIndexOut, true, strErrorOut))
+    {
+        EndPrivacyVNextMixAttempt(txhashOut, nOutputIndexOut);
         return false;
     }
-    materialOut.input.vchWitnessRecord = vWitnesses[0].vchRecord;
 
-    // Drawn here, for this attempt and no other. Derived entropy would repeat across a
-    // restart, and a membership proof repeated under a second statement or a balance nonce
-    // reused under a second challenge gives up the secret each was protecting.
-    if (!RandomScalar(materialOut.membershipEntropy, strErrorOut) ||
-        !RandomScalar(materialOut.balanceEntropy, strErrorOut) ||
-        !RandomScalar(materialOut.outputY, strErrorOut) ||
-        !RandomScalar(materialOut.outputMask, strErrorOut))
-        return false;
-    for (size_t i = 0; i < nSeats; ++i)
+    std::string strError;
+    const std::vector<uint64_t> vLeafIndexes(1, note.nLeafIndex);
+    std::vector<unsigned char> vchPaths;
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    bool fBuilt = ReadPrivacyVNextTreePaths(txdb, nAnchorTreeSize, vchAnchorState, vLeafIndexes,
+                                            vchPaths, strError) &&
+                  BuildPrivacyVNextWitnessesFromPaths(vchAnchorState, vLeafIndexes, vchPaths,
+                                                      vWitnesses, treeRoot, strError);
+    if (fBuilt && (vWitnesses.size() != 1 ||
+                   !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin())))
     {
-        PrivacyVNextDigest noteEphemeral, tweakEphemeral;
-        if (!RandomScalar(noteEphemeral, strErrorOut) || !RandomScalar(tweakEphemeral, strErrorOut))
-            return false;
-        materialOut.vEphemerals.push_back(std::make_pair(noteEphemeral, tweakEphemeral));
+        strError = "the IV5 witness does not fold onto the round's anchor root. If this "
+                   "persists, a note may remain from a chain this wallet no longer "
+                   "follows: run z_rescaniv5 to drop it.";
+        fBuilt = false;
+    }
+    if (fBuilt)
+    {
+        materialOut.input.vchWitnessRecord = vWitnesses[0].vchRecord;
+        // Drawn here, for this attempt and no other. Derived entropy would repeat across a
+        // restart, and a membership proof repeated under a second statement or a balance
+        // nonce reused under a second challenge gives up the secret each was protecting.
+        fBuilt = RandomScalar(materialOut.membershipEntropy, strError) &&
+                 RandomScalar(materialOut.balanceEntropy, strError) &&
+                 RandomScalar(materialOut.outputY, strError) &&
+                 RandomScalar(materialOut.outputMask, strError);
+        for (size_t i = 0; fBuilt && i < nSeats; ++i)
+        {
+            PrivacyVNextDigest noteEphemeral, tweakEphemeral;
+            fBuilt = RandomScalar(noteEphemeral, strError) &&
+                     RandomScalar(tweakEphemeral, strError);
+            if (fBuilt)
+                materialOut.vEphemerals.push_back(std::make_pair(noteEphemeral, tweakEphemeral));
+        }
+    }
+    if (!fBuilt)
+    {
+        EndPrivacyVNextMixAttempt(txhashOut, nOutputIndexOut);
+        materialOut = CMixSeatMaterial();
+        strErrorOut = strError;
+        return false;
     }
     return true;
 }

@@ -905,6 +905,94 @@ BOOST_AUTO_TEST_CASE(a_reorg_that_drops_a_certificate_refuses_only_a_shallow_anc
     }
 }
 
+// A coordinator picks the newest anchor 600 deep by JOIN time and the longest schedule
+// inside its safe height; late in the epoch only the short schedule fits.
+BOOST_AUTO_TEST_CASE(a_coordinator_plans_a_round_every_seat_will_enter)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nLastEpoch = 16;
+    PrivacyVNextDigest digest;
+    digest.fill(0x5C);
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    for (int e = 0; e <= nLastEpoch; ++e)
+    {
+        CEpochState state;
+        state.nEpoch = e;
+        state.nHeightStart = (int)GetEpochBoundaryHeight64(e);
+        state.nHeightEnd = (int)GetEpochBoundaryHeight64(e + 1) - 1;
+        state.hashBoundaryBlock = uint256(0xC2000000 + e);
+        state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+        std::vector<unsigned char> vchRoot(32, 0);
+        vchRoot[0] = 0xD0;
+        vchRoot[1] = (unsigned char)e;
+        state.vchVNextRoot = vchRoot;
+        state.nVNextTreeSize = 100 + e;
+        state.vchVNextParameterDigest.assign(digest.begin(), digest.end());
+        state.nFinalizedHeightAsOf = e >= 1 ? state.nHeightStart : 0;
+        BOOST_REQUIRE(txdb.WriteEpochState(e, state));
+    }
+
+    // Tips inside epoch 11, whose finalized head is epoch 9.
+    const int nEpochStart = (int)GetEpochBoundaryHeight64(11);
+    const int64_t nOpens = 50000 * MIX_RENDEZVOUS_SLOT_SECONDS;
+    CMixRoundPlan plan;
+    std::string strError;
+
+    // Outside the publishing window, either side.
+    BOOST_CHECK(!PlanMixRound(txdb, nEpochStart + 120, nOpens - MIX_PUBLISH_EARLIEST_SECS - 1,
+                              plan, &strError));
+    BOOST_CHECK(!PlanMixRound(txdb, nEpochStart + 120, nOpens - MIX_PUBLISH_LATEST_SECS + 1,
+                              plan, &strError));
+
+    struct Case { int nOffset; int64_t nLead; int nEpoch; int nToResponse; };
+    const Case vCases[3] = {
+        { 20, 150, 9, 480 },    // the head is deep by JOIN and the long schedule fits
+        { 150, 150, 9, 345 },   // later in the epoch only the short one does
+        { 60, 100, 9, 480 },    // signing later leaves more of the anchor for the round
+    };
+    for (size_t i = 0; i < 3; i++)
+    {
+        const int nTip = nEpochStart + vCases[i].nOffset;
+        const int64_t nNow = nOpens - vCases[i].nLead;
+        BOOST_REQUIRE_MESSAGE(PlanMixRound(txdb, nTip, nNow, plan, &strError),
+                              "offset " << vCases[i].nOffset << ": " << strError);
+        BOOST_CHECK_EQUAL(plan.nSlot, 50000);
+        BOOST_CHECK_EQUAL(plan.nTime, nOpens + MIX_RENDEZVOUS_SLOT_SECONDS +
+                                          MIX_RENDEZVOUS_MIN_START_SLACK);
+        BOOST_CHECK_EQUAL(MixRendezvousRecordSlot(plan.nTime), plan.nSlot);
+        BOOST_CHECK_MESSAGE(plan.nAnchorEpoch == vCases[i].nEpoch,
+                            "offset " << vCases[i].nOffset << " took epoch " << plan.nAnchorEpoch);
+        const int nToResponse = plan.nJoinSecs + plan.nViewSecs + plan.nTokenSecs +
+                                plan.nOutputSecs + plan.nApproveSecs + plan.nNonceSecs +
+                                plan.nResponseSecs;
+        BOOST_CHECK_EQUAL(nToResponse, vCases[i].nToResponse);
+
+        // And a seat at JOIN, on a chain that kept the target rate, enters it.
+        CMixRoundAnnouncement announce;
+        plan.ApplyTo(announce);
+        CMixAnchorView view;
+        const int nJoinTip = nTip + (int)(plan.nTime - nNow);
+        BOOST_REQUIRE(ReadMixAnchorView(txdb, nJoinTip, plan.nTime, announce, view, &strError));
+        BOOST_CHECK_EQUAL(view.nAnchorEpoch, plan.nAnchorEpoch);
+        BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, view,
+                                                 announce.ResponseCloses() +
+                                                     MIX_INCLUSION_ALLOWANCE_SECS,
+                                                 &strError),
+                            "offset " << vCases[i].nOffset << ": " << strError);
+    }
+
+    // Late in the epoch and signing early, the head's window no longer covers even the short
+    // schedule and the one before it is shorter still; signing later in the window fits it.
+    BOOST_CHECK(!PlanMixRound(txdb, nEpochStart + 250, nOpens - 150, plan, &strError));
+    BOOST_CHECK(strError.find("no accepted anchor") != std::string::npos);
+    BOOST_REQUIRE_MESSAGE(PlanMixRound(txdb, nEpochStart + 250, nOpens - 100, plan, &strError),
+                          strError);
+    BOOST_CHECK_EQUAL(plan.nAnchorEpoch, 9);
+    BOOST_CHECK_EQUAL((int)plan.nJoinSecs, MIX_JOIN_WINDOW_MIN_SECS);
+    txdb.TxnAbort();
+}
+
 BOOST_AUTO_TEST_CASE(epoch_records_leave_as_the_chain_built_them)
 {
     BOOST_REQUIRE(fRegTest);

@@ -16,6 +16,7 @@
 #include "collateral.h"
 #include "ringsig.h"
 #include "txdb.h"
+#include "nullsend_driver.h"
 
 #include <openssl/crypto.h>
 
@@ -511,6 +512,125 @@ Value sendtoaddress(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     return wtx.GetHash().GetHex();
+}
+
+Value mixprepare(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw std::runtime_error(
+            "mixprepare denomination\n"
+            "\nPrepare one shielded note for a NullSend tier: an ordinary transfer to this wallet "
+            "of the denomination plus one seat's fee share, held so nothing else spends it.\n" +
+            HelpRequiringPassphrase() + "\n"
+            "\nArguments:\n"
+            "1. denomination   (numeric, required) the tier in INN\n"
+            "\nResult:\n"
+            "\"transactionid\"  (string) the preparing transfer\n");
+    EnsureWalletIsUnlocked();
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    const CAmount nDenomination = AmountFromValue(params[0]);
+    CWalletTx wtx;
+    int64_t nFee = 0;
+    std::string strError;
+    if (!pwalletMain->PreparePrivacyVNextMixNote(CMixPolicy::Standard(), (uint64_t)nDenomination,
+                                                 true, wtx, nFee, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    return wtx.GetHash().GetHex();
+}
+
+Value mixcoordinate(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 3)
+        throw std::runtime_error(
+            "mixcoordinate \"address\" denomination seats\n"
+            "\nRun one NullSend round as its coordinator, under the key of one of this wallet's "
+            "addresses: plan it in the next publishing window, publish its rendezvous record, "
+            "upload its announcement to the -mixdir directories and serve it on "
+            "-mixcoordinatorport. Seats find it by the returned key and the record slot "
+            "mixstatus shows once the round is planned.\n" +
+            HelpRequiringPassphrase() + "\n"
+            "\nArguments:\n"
+            "1. \"address\"    (string, required) the address whose key is the coordinator identity\n"
+            "2. denomination (numeric, required) the tier in INN\n"
+            "3. seats        (numeric, required) how many seats the round takes\n");
+    EnsureWalletIsUnlocked();
+    CBitcoinAddress address(params[0].get_str());
+    CKeyID keyID;
+    if (!address.IsValid() || !address.GetKeyID(keyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "not a key address of this wallet");
+    CKey key;
+    {
+        LOCK(pwalletMain->cs_wallet);
+        if (!pwalletMain->GetKey(keyID, key))
+            throw JSONRPCError(RPC_WALLET_ERROR, "this wallet does not hold that address's key");
+    }
+    if (!key.GetPubKey().IsCompressed())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "a coordinator key must be compressed");
+    const CAmount nDenomination = AmountFromValue(params[1]);
+    const int nSeats = params[2].get_int();
+    std::string strError;
+    if (!MixStartCoordinator(key, (uint64_t)nDenomination, nSeats, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    // The record slot is fixed when a plan succeeds in a publishing window; mixstatus shows it.
+    const CPubKey pubkey = key.GetPubKey();
+    Object result;
+    result.push_back(Pair("coordinator", HexStr(pubkey.begin(), pubkey.end())));
+    return result;
+}
+
+Value mixjoin(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw std::runtime_error(
+            "mixjoin \"coordinator\" recordslot\n"
+            "\nTake one seat in the round this coordinator's record authorises for recordslot, "
+            "which its mixstatus shows once the round is planned: wait for the slot to settle, "
+            "fetch the announcement from the -mixdir directories, check it against the chain and "
+            "take every step. The note is one prepared with mixprepare.\n" +
+            HelpRequiringPassphrase() + "\n"
+            "\nArguments:\n"
+            "1. \"coordinator\" (string, required) the coordinator's public key, hex\n"
+            "2. recordslot    (numeric, required) the slot the coordinator's record names\n");
+    EnsureWalletIsUnlocked();
+    const std::vector<unsigned char> vchKey = ParseHex(params[0].get_str());
+    const CPubKey pubkey(vchKey);
+    const int64_t nRecordSlot = params[1].get_int64();
+    std::string strError;
+    if (!MixStartSeat(pubkey, nRecordSlot, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    Object result;
+    result.push_back(Pair("recordslot", nRecordSlot));
+    result.push_back(Pair("runs", (int64_t)((nRecordSlot + 1) * MIX_RENDEZVOUS_SLOT_SECONDS +
+                                            MIX_RENDEZVOUS_MIN_START_SLACK)));
+    return result;
+}
+
+Value mixstatus(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw std::runtime_error(
+            "mixstatus\n"
+            "\nThe NullSend rounds this node is running or taking part in, and what its "
+            "directory holds.\n");
+    std::vector<CMixJobStatus> vJobs;
+    size_t nEntries = 0, nRecords = 0;
+    GetMixServiceStatus(vJobs, nEntries, nRecords);
+    Array jobs;
+    for (size_t i = 0; i < vJobs.size(); i++)
+    {
+        Object job;
+        job.push_back(Pair("role", vJobs[i].strRole));
+        job.push_back(Pair("state", vJobs[i].strState));
+        job.push_back(Pair("status", vJobs[i].strStatus));
+        job.push_back(Pair("round", vJobs[i].strRound));
+        job.push_back(Pair("recordslot", vJobs[i].nRecordSlot));
+        jobs.push_back(job);
+    }
+    Object result;
+    result.push_back(Pair("jobs", jobs));
+    result.push_back(Pair("directoryentries", (int64_t)nEntries));
+    result.push_back(Pair("records", (int64_t)nRecords));
+    return result;
 }
 
 Value burn(const Array& params, bool fHelp)

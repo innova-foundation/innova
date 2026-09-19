@@ -445,6 +445,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/shielded.h \
     src/nullsend.h \
     src/nullsend_v2008.h \
+    src/nullsend_driver.h \
     src/zkproof.h \
     src/verifycache.h \
     src/lelantus.h \
@@ -685,6 +686,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/privacy_vnext_ffi.cpp \
     src/nullsend.cpp \
     src/nullsend_v2008.cpp \
+    src/nullsend_driver.cpp \
     src/rpcshielded.cpp \
     src/zkproof.cpp \
     src/verifycache.cpp \

@@ -53,12 +53,10 @@ static const int MIX_PROOF_WINDOW_MIN_SECS = 60;
  *  so it has its own floor above the generic one. */
 static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
 
-/** How far into its own slot a round must start. A seat cannot act on a slot until the
- *  finalized chain has passed the slot's opening, and median time past and finality both lag,
- *  so a round starting AT the opening is one honest seats reach late -- the same "only seats
- *  told in advance" outcome as a short join window, by a different route. Half a slot leaves
- *  the settle-and-fetch time on one side and the round's own start on the other. */
-static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 300;
+/** A round runs in the slot AFTER the one its record names, at least this far into it, so
+ *  the start is past record settlement (finalized block lags the tip by up to a slot) in
+ *  every epoch/slot alignment at the target rate. */
+static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 120;
 /** How long the round may keep answering after it has published. Terminal is the only window
  *  after the broadcast, so it spends no anchor life. */
 static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
@@ -66,15 +64,15 @@ static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
 /** The round's anchor is frozen when the announcement is signed, so everything from signing
  *  to the transaction being connected spends that anchor's life:
  *
- *      (slot opening - signing)      <= 600   one slot of publication lead
- *    + start offset in the slot       300..599
- *    + the windows up to broadcast   <= 480   this bound
- *    + inclusion                      = 120   MIX_INCLUSION_ALLOWANCE_SECS
+ *      (record slot opening - signing)   90..360   MIX_PUBLISH_*_SECS
+ *    + the record slot                    = 600
+ *    + start offset in the run slot       120..599
+ *    + the windows up to broadcast       <= 480   this bound
+ *    + inclusion                          = 120   MIX_INCLUSION_ALLOWANCE_SECS
  *
  *  This cap is the static half, checked before anything else. The chain half is
- *  CheckMixAnchorBudget, which a seat runs before it reveals a key image: an anchor taken as the
- *  head at signing lasts 1500..1800 blocks with finality current, and a seat projecting at the
- *  margin rate refuses a long schedule under a late start or an early signature.
+ *  CheckMixAnchorBudget, which a seat runs before it reveals a key image, and PlanMixRound,
+ *  which keeps a coordinator from publishing a round no seat would pass it for.
  *
  *  A schedule that does not fit produces a transaction ConnectBlock refuses AFTER every seat
  *  has revealed a key image and proved its input. The loss is what they disclosed and the
@@ -304,6 +302,8 @@ public:
 
     /** Takes ownership of an already-connected socket. */
     void Adopt(SOCKET hSocketIn);
+    /** Gives the socket up without closing it, for a stream handed to another thread. */
+    SOCKET Release();
     void Close();
     bool IsOpen() const { return hSocket != INVALID_SOCKET; }
 
@@ -973,10 +973,9 @@ enum MixServiceStage
 /** Whether a frame carries a session key and a signature over it. */
 bool IsAuthenticatedMixFrame(MixFrameType nType);
 
-/** What one seat may spend on one kind of frame in one round. A membership proof is verified
- *  on arrival and stored only when it verifies, so a seated key can otherwise pay for an
- *  unbounded number of ~50 ms verifications with one join. */
-static const int MIX_SEAT_REQUEST_BUDGET = 8;
+/** Requests one seat may make per frame kind per round. Bounds membership-proof verification
+ *  cost; a byte-identical resend of a stored proof is accepted without verifying again. */
+static const int MIX_SEAT_REQUEST_BUDGET = 32;
 /** What the unauthenticated surface may spend per second across all callers. A read costs a
  *  snapshot build; nothing identifies the caller, so the bound is on the round rather than on
  *  whoever is asking. */
@@ -1063,6 +1062,9 @@ bool RecordMixRoundKeyUse(const std::vector<unsigned char>& vchRSA_N, const uint
 static const int64_t MIX_RENDEZVOUS_SLOT_SECONDS = 600;
 
 int64_t MixRendezvousSlot(int64_t nTime);
+
+/** The slot a round's record is published for: the one before the slot the round runs in. */
+int64_t MixRendezvousRecordSlot(int64_t nRoundTime);
 
 /** The commitment a coordinator publishes for a slot: the announcement's derived identifier,
  *  which already binds every announcement field. */
@@ -1301,6 +1303,78 @@ private:
     size_t nRecords;
 };
 
+/** One request and its one reply, each on a connection of its own. The node's dialer goes
+ *  through Tor with a fresh circuit per exchange; a test answers from a service in the same
+ *  process. Nothing about a caller travels except the frame. */
+class CMixDialer
+{
+public:
+    virtual ~CMixDialer() {}
+    /** nTimeoutMs bounds the whole exchange; zero takes MIX_EXCHANGE_TIMEOUT_MS. A caller
+     *  inside a window passes what is left of it. */
+    virtual bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                          const std::vector<unsigned char>& vchPayload,
+                          MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut,
+                          std::string* pstrError = NULL, int nTimeoutMs = 0) = 0;
+};
+
+/** The longest one exchange may take: a circuit, the request and the reply. Shorter than the
+ *  shortest window a step has to fit in twice. */
+static const int MIX_EXCHANGE_TIMEOUT_MS = 20000;
+
+/** Set when the node's mix service stops, so an exchange not yet dialed returns at once. */
+extern volatile bool g_fMixExchangesStopped;
+
+class CMixTorDialer : public CMixDialer
+{
+public:
+    explicit CMixTorDialer(const CService& addrProxyIn) : addrProxy(addrProxyIn) {}
+    bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError = NULL,
+                  int nTimeoutMs = 0);
+
+private:
+    CService addrProxy;
+};
+
+/** A directory, as a seat or coordinator names it. */
+struct CMixDirectoryEndpoint
+{
+    std::string strHost;
+    int nPort;
+    CMixDirectoryEndpoint() : nPort(0) {}
+    CMixDirectoryEndpoint(const std::string& strHostIn, int nPortIn)
+        : strHost(strHostIn), nPort(nPortIn) {}
+};
+
+/** Upload to every directory; true when at least one accepted. nAcceptedOut counts them. */
+bool UploadMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEndpoint>& vDirectories,
+                           const CMixRoundAnnouncement& announce, int& nAcceptedOut,
+                           std::string* pstrError = NULL);
+
+/** Ask the directories in turn for this slot's announcement and take the first one the record
+ *  authorises. A directory that withholds or lies costs one exchange; nothing a directory
+ *  says can change which round is taken. */
+bool FetchMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEndpoint>& vDirectories,
+                          const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
+                          std::string* pstrError = NULL);
+
+/** Answer one connection: read one frame within the deadline, hand it to the service, write
+ *  its reply if it has one, and drop the connection. nNow zero reads the clock once the
+ *  request has arrived. */
+typedef bool (*MixServeFn)(void* pService, MixFrameType nType,
+                           const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                           MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+bool ServeMixConnection(CMixStream& stream, MixServeFn fnServe, void* pService, int64_t nNow,
+                        int nTimeoutMs);
+bool ServeMixDirectoryFrame(void* pDirectory, MixFrameType nType,
+                            const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                            MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+bool ServeMixCoordinatorFrame(void* pCoordinator, MixFrameType nType,
+                              const std::vector<unsigned char>& vchPayload, int64_t nNow,
+                              MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
+
 /** The index a directory running in this process reads, or NULL when none runs. Set once at
  *  startup before blocks connect. */
 extern CMixRendezvousIndex* g_pmixRendezvousIndex;
@@ -1351,6 +1425,45 @@ private:
     int64_t nRequestSecond;
     int nRequests;
 };
+
+/** When a coordinator may sign, in seconds before its record's slot opens. Earlier, and the
+ *  blocks between signing and JOIN age the anchor past what a seat accepts; later, and the
+ *  record cannot be mined with a median time past below the opening, which is the only window
+ *  a seat reads it from. */
+static const int64_t MIX_PUBLISH_EARLIEST_SECS = 360;
+static const int64_t MIX_PUBLISH_LATEST_SECS = 90;
+
+/** A round as a coordinator plans it before signing: slot, start, anchor and schedule, chosen
+ *  so the seats' JOIN checks pass at their margin rate. */
+struct CMixRoundPlan
+{
+    int64_t nSlot;
+    int64_t nTime;
+    int nAnchorEpoch;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    PrivacyVNextDigest parameterDigest;
+    uint16_t nJoinSecs, nViewSecs, nTokenSecs, nOutputSecs, nApproveSecs, nNonceSecs,
+        nResponseSecs, nTerminalSecs;
+
+    CMixRoundPlan()
+        : nSlot(0), nTime(0), nAnchorEpoch(-1), nFinalizedTreeSize(0), nJoinSecs(0),
+          nViewSecs(0), nTokenSecs(0), nOutputSecs(0), nApproveSecs(0), nNonceSecs(0),
+          nResponseSecs(0), nTerminalSecs(0)
+    {
+        finalizedRoot.fill(0);
+        parameterDigest.fill(0);
+    }
+
+    /** Copy the plan into an announcement the coordinator then fills and signs. */
+    void ApplyTo(CMixRoundAnnouncement& announce) const;
+};
+
+/** Plan the next slot's round at this tip and time. Refused outside the publishing window or
+ *  with no anchor that fits; prefers the newest anchor, then the longer schedule. Read
+ *  nTipHeight and txdb under one cs_main lock. */
+bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& planOut,
+                  std::string* pstrError = NULL);
 
 /** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
  *  refuses a round whose fee or denomination differs from its own choice, so a coordinator
@@ -1423,6 +1536,19 @@ public:
 
     bool BuildConstruction(std::vector<unsigned char>& vchFrameOut,
                            std::string* pstrError = NULL) const;
+
+    /** Who this seat's output pays. A wallet derives its own recipient from the frozen roster,
+     *  so it is set after the view is signed and before the bundle is built, and only then. */
+    bool SetRecipient(const PrivacyVNextDigest& recipientSpend,
+                      const PrivacyVNextDigest& recipientView,
+                      const PrivacyVNextDigest& outgoingSecret, std::string* pstrError = NULL);
+    const std::vector<CMixRosterEntry>& Roster() const { return vRoster; }
+    /** The authenticated read of the round a seat makes before each step that needs it. */
+    bool BuildStateRequest(std::vector<unsigned char>& vchFrameOut,
+                           std::string* pstrError = NULL) const;
+    /** Whether a finished transaction is a mix payload built on exactly the prefix this seat
+     *  approved: the payload starts with those bytes and adds sections after them. */
+    bool CarriesApprovedPrefix(const CTransaction& tx) const;
 
     /** Check the round key against the announcement's commitment, then blind this attempt's
      *  bundle credential under it. A key the commitment does not open is refused before

@@ -46,6 +46,7 @@ uint32_t PrivacyVNextChangeIndexFor(
     const std::vector<PrivacyVNextDigest>& vKeyImages);
 
 struct CMixSeatMaterial;
+class CMixRoundAnnouncement;
 struct CMixPolicy;
 
 // Keys every self-pay output is sent to: a spend's change, and the receiver a shield
@@ -510,9 +511,12 @@ public:
                                    uint64_t nAnchorTreeSize, CPrivacyVNextWalletNote& noteOut,
                                    std::string& strErrorOut) const;
 
-    bool BuildPrivacyVNextMixMaterial(CTxDB& txdb, uint64_t nRequired, size_t nSeats,
-                                      CMixSeatMaterial& materialOut, uint256& txhashOut,
-                                      uint32_t& nOutputIndexOut, std::string& strErrorOut);
+    /** A note worth nRequired, witnessed against the announcement's shared anchor, plus fresh
+     *  entropy. The note is held for the attempt and released if the material cannot be built. */
+    bool BuildPrivacyVNextMixMaterial(CTxDB& txdb, const CMixRoundAnnouncement& announce,
+                                      uint64_t nRequired, CMixSeatMaterial& materialOut,
+                                      uint256& txhashOut, uint32_t& nOutputIndexOut,
+                                      std::string& strErrorOut);
 
     /** The output this wallet pays itself in a round with this roster. The index is derived
      *  from the frozen key images, which is what makes it the one this wallet's own scanner
@@ -527,6 +531,24 @@ public:
     bool SetPrivacyVNextHold(const uint256& txhash, uint32_t nOutputIndex, bool fHold,
                              std::string& strErrorOut);
     bool IsPrivacyVNextNoteHeld(const CPrivacyVNextWalletNote& note) const;
+
+    // Notes this wallet prepared for mixing, persisted. They are held so an ordinary spend or
+    // a note vote cannot take them, and a round is the one thing that may; a hold the
+    // operator placed on any other note keeps it out of rounds as well.
+    std::set<std::pair<uint256, uint32_t> > setPrivacyVNextMixPrepared;
+    bool MarkPrivacyVNextMixPrepared(const uint256& txhash, uint32_t nOutputIndex,
+                                     std::string& strErrorOut);
+    // Notes an attempt is using, so two attempts cannot take one note. Kept after a final
+    // share has left, because the coordinator may hold a transaction spending it.
+    mutable std::set<std::pair<uint256, uint32_t> > setPrivacyVNextMixInUse;
+    /** An attempt ended before its final share left: the note leaves use, and goes back to
+     *  held if it was prepared for mixing, or to spendable if it was not. */
+    void EndPrivacyVNextMixAttempt(const uint256& txhash, uint32_t nOutputIndex);
+    // Notes whose final share has left, persisted with the time until which a transaction
+    // spending them may still be mined, so a restart does not offer one to a second round.
+    std::map<std::pair<uint256, uint32_t>, int64_t> mapPrivacyVNextMixCommitted;
+    bool MarkPrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex,
+                                      int64_t nUntil, std::string& strErrorOut);
     void ListPrivacyVNextHolds(std::vector<std::pair<uint256, uint32_t> >& vOut) const;
 
     // Key images selected by a build in progress, claimed under cs_shielded during selection

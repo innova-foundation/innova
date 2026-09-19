@@ -880,6 +880,34 @@ BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
                                                    strError));
     BOOST_CHECK_MESSAGE(chosen.nOutputIndex == 63u, "a held note was offered to a round");
 
+    // Unless the hold is the one preparing it for mixing: that note is held against every
+    // other spend, and a round is what it was prepared for.
+    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixPrepared(uint256(64), 64, strError));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_MESSAGE(chosen.nOutputIndex == 64u, "a note prepared for mixing was refused");
+    // One attempt at a time: a note another attempt is using is not offered again, and when
+    // that attempt ends early a prepared note goes back to held rather than to spendable.
+    wallet.setPrivacyVNextMixInUse.insert(std::make_pair(uint256(64), (uint32_t)64));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_EQUAL(chosen.nOutputIndex, 63u);
+    wallet.EndPrivacyVNextMixAttempt(uint256(64), 64);
+    BOOST_CHECK(wallet.setPrivacyVNextMixInUse.empty());
+    BOOST_CHECK(wallet.IsPrivacyVNextNoteHeld(wallet.vPrivacyVNextNotes[3]));
+    // A note whose final share left is committed until its round's transaction can no longer
+    // be mined, restart or not, and only then offered again.
+    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixCommitted(uint256(64), 64, GetTime() + 600, strError));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_MESSAGE(chosen.nOutputIndex == 63u, "a committed note was offered to a round");
+    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixCommitted(uint256(64), 64, GetTime() - 1, strError));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_EQUAL(chosen.nOutputIndex, 64u);
+    wallet.setPrivacyVNextMixPrepared.clear();
+    wallet.mapPrivacyVNextMixCommitted.clear();
+
     // And a note the anchor cannot prove against is not a candidate either: its leaf is
     // past the tree every seat in the round anchors to.
     BOOST_CHECK(!wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 63, chosen,
@@ -895,6 +923,8 @@ BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
     {
         CWalletDB walletdb(walletFile);
         walletdb.ErasePrivacyVNextHold(uint256(64), 64);
+        walletdb.ErasePrivacyVNextMixPrepared(uint256(64), 64);
+        walletdb.ErasePrivacyVNextMixCommitted(uint256(64), 64);
     }
 }
 

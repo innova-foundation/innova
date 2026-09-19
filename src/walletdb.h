@@ -510,6 +510,41 @@ public:
                                     std::make_pair(txhash, nOutputIndex)));
     }
 
+    // A note this wallet prepared for mixing: held against ordinary spends, but not against
+    // a round.
+    bool WritePrivacyVNextMixPrepared(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5mixprep"),
+                                    std::make_pair(txhash, nOutputIndex)),
+                     (unsigned char)1, true);
+    }
+
+    bool ErasePrivacyVNextMixPrepared(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5mixprep"),
+                                    std::make_pair(txhash, nOutputIndex)));
+    }
+
+    // A note whose final share in a round has left, and until when a transaction spending
+    // it may still be mined.
+    bool WritePrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex,
+                                       int64_t nUntil)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5mixcommit"),
+                                    std::make_pair(txhash, nOutputIndex)),
+                     nUntil, true);
+    }
+
+    bool ErasePrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5mixcommit"),
+                                    std::make_pair(txhash, nOutputIndex)));
+    }
+
     bool WritePrivacyVNextNoteSpent(const uint256& txhash, uint32_t nOutputIndex,
                                     bool fSpent)
     {

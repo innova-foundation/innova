@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "../key.h"
 #include "../nullsend.h"
 #include "../nullsend_v2008.h"
+#include "../nullsend_driver.h"
 #include "../netbase.h"
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../ed25519_zk.h"
@@ -996,7 +998,13 @@ BOOST_AUTO_TEST_CASE(a_prefix_is_frozen_once_and_every_seat_approves_the_same_on
     BOOST_REQUIRE(vSeats[0].key.Sign(hashPrefix, vchSig0));
     BOOST_REQUIRE_MESSAGE(round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0, &strError),
                           strError);
-    BOOST_CHECK(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0, &strError));
+    // The same approval again is a retry after a lost reply and changes nothing; any other
+    // signature from that seat is refused.
+    BOOST_CHECK_MESSAGE(round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0, &strError),
+                        strError);
+    std::vector<unsigned char> vchOther;
+    BOOST_REQUIRE(vSeats[0].key.Sign(uint256(0x7070), vchOther));
+    BOOST_CHECK(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchOther, &strError));
     BOOST_CHECK_MESSAGE(!round.PrefixAgreed(), "one approval of two agreed the prefix");
     BOOST_REQUIRE(vSeats[1].key.Sign(hashPrefix, vchSig1));
     BOOST_REQUIRE_MESSAGE(round.SubmitPrefixSignature(vSeats[1].pubkey, vchSig1, &strError),
@@ -1802,14 +1810,20 @@ BOOST_AUTO_TEST_CASE(the_aggregate_is_fixed_before_any_response)
     BOOST_CHECK(!round.FreezeNonces(&strError));   // a seat has no nonce yet
 
     BOOST_REQUIRE(round.SubmitNonce(vSeats[0].pubkey, vchNonce, &strError));
-    BOOST_CHECK_MESSAGE(!round.SubmitNonce(vSeats[0].pubkey, vchNonce, &strError),
+    BOOST_CHECK_MESSAGE(round.SubmitNonce(vSeats[0].pubkey, vchNonce, &strError),
+                        "a seat's resent nonce was refused: " << strError);
+    BOOST_CHECK_MESSAGE(!round.SubmitNonce(vSeats[0].pubkey, std::vector<unsigned char>(32, 0x53),
+                                           &strError),
                         "a seat published two nonces");
     BOOST_CHECK(!round.SubmitNonce(vSeats[0].pubkey, std::vector<unsigned char>(31, 0x51), &strError));
     BOOST_REQUIRE(round.SubmitNonce(vSeats[1].pubkey, std::vector<unsigned char>(32, 0x52), &strError));
     BOOST_REQUIRE(round.FreezeNonces(&strError));
 
-    BOOST_CHECK_MESSAGE(!round.SubmitNonce(vSeats[0].pubkey, vchNonce, &strError),
+    BOOST_CHECK_MESSAGE(!round.SubmitNonce(vSeats[0].pubkey, std::vector<unsigned char>(32, 0x54),
+                                           &strError),
                         "a nonce moved after the aggregate was fixed");
+    BOOST_CHECK_MESSAGE(round.SubmitNonce(vSeats[0].pubkey, vchNonce, &strError),
+                        "a resent nonce was refused after the aggregate was fixed: " << strError);
     BOOST_CHECK(!round.SigningComplete());
     BOOST_REQUIRE(round.SubmitResponse(vSeats[0].pubkey, std::vector<unsigned char>(32, 0x61), &strError));
     BOOST_CHECK(!round.SubmitResponse(vSeats[0].pubkey, std::vector<unsigned char>(32, 0x62), &strError));
@@ -2830,7 +2844,9 @@ BOOST_AUTO_TEST_CASE(a_membership_proof_is_checked_against_its_seat_and_the_appr
                                               MembershipFrame(vSeats[0], hashRound, vchMine),
                                               nClosed, strError),
                         (int)MIX_DISPATCH_OK);
-    BOOST_CHECK_MESSAGE(!round.SubmitMembershipProof(vSeats[0].pubkey, vchMine, &strError),
+    BOOST_CHECK_MESSAGE(round.SubmitMembershipProof(vSeats[0].pubkey, vchMine, &strError),
+                        "a seat's resent proof was refused: " << strError);
+    BOOST_CHECK_MESSAGE(!round.SubmitMembershipProof(vSeats[0].pubkey, vchFlipped, &strError),
                         "a seat proved its input twice");
     BOOST_CHECK(!round.MembershipProofsComplete());
     BOOST_CHECK(round.MembershipSection().empty());
@@ -3778,7 +3794,7 @@ CMixRendezvous TestRendezvous(const CMixRoundAnnouncement& announce)
 {
     CMixRendezvous rendezvous;
     rendezvous.pubkeyCoordinator = announce.pubkeyCoordinator;
-    rendezvous.nSlot = MixRendezvousSlot(announce.nTime);
+    rendezvous.nSlot = MixRendezvousRecordSlot(announce.nTime);
     rendezvous.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator,
                                                         rendezvous.nSlot, announce.hashRound);
     return rendezvous;
@@ -4053,6 +4069,21 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     BOOST_REQUIRE_MESSAGE(validation.nResult == INNOVA_PRIVACY_VNEXT_VALID, validation.strError);
     BOOST_CHECK_EQUAL(effects.keyImages.size(), 2u);
     BOOST_CHECK_EQUAL(effects.outputLeaves.size(), 2u);
+
+    // Each seat takes the published transaction only if it is built on the prefix it approved.
+    const CTransaction& txDone = coord.Transaction();
+    BOOST_CHECK(seatA.CarriesApprovedPrefix(txDone));
+    BOOST_CHECK(seatB.CarriesApprovedPrefix(txDone));
+    CTransaction txEdited = txDone;
+    txEdited.privacyVNext.vchPayload[10] ^= 1;
+    BOOST_CHECK_MESSAGE(!seatA.CarriesApprovedPrefix(txEdited),
+                        "a seat took a transaction whose prefix differs from the one it approved");
+    CTransaction txWithInput = txDone;
+    txWithInput.vin.push_back(CTxIn());
+    BOOST_CHECK(!seatA.CarriesApprovedPrefix(txWithInput));
+    CTransaction txPrefixOnly = txDone;
+    txPrefixOnly.privacyVNext.vchPayload.resize(64);
+    BOOST_CHECK(!seatA.CarriesApprovedPrefix(txPrefixOnly));
 }
 
 // A seated key has a budget, since every join proof is verified on arrival; public reads
@@ -4355,7 +4386,7 @@ BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
 BOOST_AUTO_TEST_CASE(a_directory_holds_only_rounds_the_chain_published)
 {
     const int64_t T0 = 28000500;
-    const int64_t nSlot = MixRendezvousSlot(T0);
+    const int64_t nSlot = MixRendezvousRecordSlot(T0);
     const int64_t nNow = T0 - MIX_RENDEZVOUS_SLOT_SECONDS;
     CKey keyCoordinator;
     const CMixRoundAnnouncement announce =
@@ -4434,7 +4465,7 @@ BOOST_AUTO_TEST_CASE(a_directory_holds_only_rounds_the_chain_published)
     BOOST_CHECK(!directory.Put(vchExtra, nNow, &strError));
 
     // Too far ahead, and already over -- checked before a round already held is accepted again.
-    BOOST_CHECK(!directory.Put(vchAnnounce, T0 - (MIX_DIRECTORY_AHEAD_SLOTS + 1) *
+    BOOST_CHECK(!directory.Put(vchAnnounce, T0 - (MIX_DIRECTORY_AHEAD_SLOTS + 2) *
                                                   MIX_RENDEZVOUS_SLOT_SECONDS,
                                &strError));
     BOOST_CHECK(!directory.Put(vchAnnounce, announce.Ends() + 1, &strError));
@@ -4533,6 +4564,131 @@ BOOST_AUTO_TEST_CASE(the_rendezvous_index_follows_the_blocks)
     g_pmixRendezvousIndex = pSaved;
 }
 
+namespace {
+
+// Answers exchanges from directories in this process, by host, or with a canned list for a
+// host that lies. Any other host is unreachable.
+class InProcessDialer : public CMixDialer
+{
+public:
+    InProcessDialer() : nNow(0) {}
+    bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int)
+    {
+        vCalls.push_back(strEndpoint);
+        std::map<std::string, std::vector<std::vector<unsigned char> > >::const_iterator itLie =
+            mapLies.find(strEndpoint);
+        if (itLie != mapLies.end())
+        {
+            nReplyTypeOut = MIX_FRAME_ANNOUNCE_LIST;
+            return BuildMixAnnounceListBody(itLie->second, vchReplyOut);
+        }
+        std::map<std::string, CMixDirectory*>::const_iterator it = mapDirs.find(strEndpoint);
+        if (it == mapDirs.end())
+        {
+            if (pstrError)
+                *pstrError = "unreachable";
+            return false;
+        }
+        return it->second->Serve(nType, vchPayload, nNow, nReplyTypeOut, vchReplyOut);
+    }
+
+    int64_t nNow;
+    std::map<std::string, CMixDirectory*> mapDirs;
+    std::map<std::string, std::vector<std::vector<unsigned char> > > mapLies;
+    std::vector<std::string> vCalls;
+};
+
+} // namespace
+
+// A coordinator uploads to every directory and succeeds if any takes it; a seat asks them in
+// turn and takes the first answer the chain's record authorises. A directory that is down,
+// that refuses, or that answers with another round costs one exchange and changes nothing.
+BOOST_AUTO_TEST_CASE(announcements_travel_through_directories_that_may_fail_or_lie)
+{
+    const int64_t T0 = 28100700;
+    const int64_t nSlot = MixRendezvousRecordSlot(T0);
+    const int64_t nNow = T0 - MIX_RENDEZVOUS_SLOT_SECONDS;
+    CKey keyCoordinator;
+    const CMixRoundAnnouncement announce =
+        ProvenAnnouncement(keyCoordinator, FreshRoundKey(4601), T0);
+    CMixRendezvousRecord record;
+    BOOST_REQUIRE(SignMixRendezvous(keyCoordinator, nSlot, announce.hashRound, record));
+
+    CMixRendezvousIndex indexSynced, indexBehind;
+    indexSynced.Connect(record, nNow);
+    CMixDirectory dirA(&indexSynced), dirB(&indexSynced), dirBehind(&indexBehind);
+    InProcessDialer dialer;
+    dialer.nNow = nNow;
+    dialer.mapDirs["a.onion"] = &dirA;
+    dialer.mapDirs["b.onion"] = &dirB;
+    dialer.mapDirs["behind.onion"] = &dirBehind;
+
+    std::vector<CMixDirectoryEndpoint> vAll;
+    vAll.push_back(CMixDirectoryEndpoint("a.onion", 80));
+    vAll.push_back(CMixDirectoryEndpoint("behind.onion", 80));
+    vAll.push_back(CMixDirectoryEndpoint("down.onion", 80));
+    vAll.push_back(CMixDirectoryEndpoint("b.onion", 80));
+    int nAccepted = 0;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(UploadMixAnnouncement(dialer, vAll, announce, nAccepted, &strError),
+                          strError);
+    BOOST_CHECK_EQUAL(nAccepted, 2);
+    BOOST_CHECK_EQUAL(dirBehind.Size(), 0u);
+
+    // Another coordinator's round, valid in every way, is what the lying directory serves.
+    CKey keyOther;
+    const CMixRoundAnnouncement other = ProvenAnnouncement(keyOther, FreshRoundKey(4602), T0);
+    std::vector<unsigned char> vchOther;
+    BOOST_REQUIRE(EncodeMixAnnouncement(other, vchOther));
+    dialer.mapLies["liar.onion"] = std::vector<std::vector<unsigned char> >(1, vchOther);
+
+    CMixRendezvous rendezvous;
+    rendezvous.pubkeyCoordinator = announce.pubkeyCoordinator;
+    rendezvous.nSlot = nSlot;
+    rendezvous.hashCommitment = record.hashCommitment;
+    std::vector<CMixDirectoryEndpoint> vSeat;
+    vSeat.push_back(CMixDirectoryEndpoint("liar.onion", 80));
+    vSeat.push_back(CMixDirectoryEndpoint("down.onion", 80));
+    vSeat.push_back(CMixDirectoryEndpoint("behind.onion", 80));
+    vSeat.push_back(CMixDirectoryEndpoint("b.onion", 80));
+    for (int nTry = 0; nTry < 8; nTry++)
+    {
+        CMixRoundAnnouncement fetched;
+        BOOST_REQUIRE_MESSAGE(FetchMixAnnouncement(dialer, vSeat, rendezvous, fetched, &strError),
+                              strError);
+        BOOST_CHECK(fetched.hashRound == announce.hashRound);
+    }
+    vSeat.pop_back();
+    CMixRoundAnnouncement none;
+    BOOST_CHECK(!FetchMixAnnouncement(dialer, vSeat, rendezvous, none, &strError));
+    BOOST_CHECK(none.hashRound == 0);
+
+    // The request names the identity and slot and nothing else.
+    std::vector<unsigned char> vchGet;
+    BOOST_REQUIRE(BuildMixAnnounceGetBody(rendezvous.pubkeyCoordinator, nSlot, vchGet));
+    BOOST_CHECK_EQUAL(vchGet.size(), 41u);
+
+    // One connection answered over a real socket, then closed.
+    int hRaw[2] = { -1, -1 };
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, hRaw), 0);
+    CMixStream client, server;
+    client.Adopt(hRaw[0]);
+    server.Adopt(hRaw[1]);
+    BOOST_REQUIRE(client.Send(MIX_FRAME_ANNOUNCE_GET, vchGet, &strError));
+    BOOST_REQUIRE(ServeMixConnection(server, ServeMixDirectoryFrame, &dirA, nNow, 5000));
+    BOOST_CHECK(!server.IsOpen());
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchReply;
+    BOOST_REQUIRE_MESSAGE(client.Receive(nReply, vchReply, 5000, &strError), strError);
+    BOOST_CHECK_EQUAL((int)nReply, (int)MIX_FRAME_ANNOUNCE_LIST);
+    std::vector<std::vector<unsigned char> > vHeld;
+    BOOST_REQUIRE(ReadMixAnnounceListBody(vchReply, vHeld));
+    CMixRoundAnnouncement picked;
+    BOOST_CHECK(PickMixAnnouncement(vHeld, rendezvous, picked, &strError));
+}
+
 // The bodies a directory speaks, parsed strictly.
 BOOST_AUTO_TEST_CASE(directory_bodies_parse_strictly)
 {
@@ -4572,6 +4728,404 @@ BOOST_AUTO_TEST_CASE(directory_bodies_parse_strictly)
     BOOST_CHECK(BuildMixAnnounceListBody(std::vector<std::vector<unsigned char> >(), vch));
     BOOST_REQUIRE(ReadMixAnnounceListBody(vch, vOut));
     BOOST_CHECK(vOut.empty());
+}
+
+namespace {
+
+// The node, as a coordinator job sees it: the fixture's anchor at the next slot, a record
+// "mined" ten seconds after it is published, which is when the directory's index sees it.
+class FakeCoordinatorEnv : public CMixCoordinatorEnv
+{
+public:
+    FakeCoordinatorEnv(CMixRendezvousIndex& indexIn, const int64_t& nNowIn)
+        : index(indexIn), nNow(nNowIn), fPublished(false), nPublished(0), fBroadcast(false) {}
+
+    bool PlanRound(int64_t nNowPlan, CMixRoundPlan& planOut, std::string& strError)
+    {
+        const int64_t nSlot = MixRendezvousSlot(nNowPlan) + 1;
+        const int64_t nOpens = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+        if (nOpens - nNowPlan > MIX_PUBLISH_EARLIEST_SECS ||
+            nOpens - nNowPlan < MIX_PUBLISH_LATEST_SECS)
+        {
+            strError = "outside the publishing window";
+            return false;
+        }
+        const MixProofSet& proofs = MixProofs();
+        planOut = CMixRoundPlan();
+        planOut.nSlot = nSlot;
+        planOut.nTime = nOpens + MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK;
+        planOut.nAnchorEpoch = 9;
+        planOut.finalizedRoot = proofs.header.finalizedRoot;
+        planOut.nFinalizedTreeSize = proofs.header.nFinalizedTreeSize;
+        planOut.parameterDigest = proofs.header.parameterDigest;
+        planOut.nJoinSecs = MIX_JOIN_WINDOW_MIN_SECS;
+        planOut.nViewSecs = MIX_PROOF_WINDOW_MIN_SECS;
+        planOut.nTokenSecs = 30;
+        planOut.nOutputSecs = MIX_OUTPUT_WINDOW;
+        planOut.nApproveSecs = MIX_PROOF_WINDOW_MIN_SECS;
+        planOut.nNonceSecs = 30;
+        planOut.nResponseSecs = 30;
+        planOut.nTerminalSecs = 300;
+        return true;
+    }
+    void ChainIdentity(uint8_t& nNetworkOut, PrivacyVNextDigest& genesisOut)
+    {
+        nNetworkOut = MixProofs().header.nNetwork;
+        genesisOut = MixProofs().header.genesis;
+    }
+    bool PublishRecord(const CScript& scriptRecord, uint256& txidOut, std::string& strError)
+    {
+        if (!DecodeMixRendezvousScript(scriptRecord, record))
+        {
+            strError = "not a record";
+            return false;
+        }
+        fPublished = true;
+        nPublished = nNow;
+        txidOut = Hash(scriptRecord.begin(), scriptRecord.end());
+        return true;
+    }
+    bool RecordConfirmed(const uint256&)
+    {
+        if (!fPublished || nNow < nPublished + 10)
+            return false;
+        index.Connect(record, nNow);
+        return true;
+    }
+    bool Broadcast(const CTransaction& tx, std::string&)
+    {
+        txBroadcast = tx;
+        fBroadcast = true;
+        return true;
+    }
+
+    CMixRendezvousIndex& index;
+    const int64_t& nNow;
+    bool fPublished;
+    int64_t nPublished;
+    CMixRendezvousRecord record;
+    bool fBroadcast;
+    CTransaction txBroadcast;
+};
+
+// A wallet and chain for one seat: the fixture's note, a tip moving one block a second with
+// the anchor already deep, and a record slot that settles five minutes after it opens.
+class FakeSeatEnv : public CMixSeatEnv
+{
+public:
+    FakeSeatEnv(size_t nIndexIn, unsigned char chSeedIn, const FakeCoordinatorEnv& coordIn,
+                const int64_t& nNowIn)
+        : nIndex(nIndexIn), chSeed(chSeedIn), coord(coordIn), nNow(nNowIn), fHeld(false),
+          nReleased(0), nTipAtStart(3800), fRejectResult(false) {}
+
+    bool ReadRendezvous(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                        CMixRendezvous& rendezvousOut, bool& fPendingOut, std::string& strError)
+    {
+        fPendingOut = nNow < nSlot * MIX_RENDEZVOUS_SLOT_SECONDS + 300;
+        if (fPendingOut)
+            return false;
+        rendezvousOut = CMixRendezvous();
+        if (coord.fPublished && CheckMixRendezvousRecord(coord.record, pubkeyCoordinator, nSlot))
+        {
+            rendezvousOut.pubkeyCoordinator = pubkeyCoordinator;
+            rendezvousOut.nSlot = nSlot;
+            rendezvousOut.hashCommitment = coord.record.hashCommitment;
+        }
+        return true;
+    }
+    bool ReadAnchor(const CMixRoundAnnouncement& announce, int64_t nNowRead,
+                    CMixAnchorView& viewOut, std::string&)
+    {
+        viewOut = CMixAnchorView();
+        viewOut.finalizedRoot = announce.finalizedRoot;
+        viewOut.nFinalizedTreeSize = announce.nFinalizedTreeSize;
+        viewOut.nAnchorEpoch = 9;
+        viewOut.nTipHeight = (int)(nTipAtStart + (nNowRead - announce.nTime));
+        viewOut.nReadTime = nNowRead;
+        viewOut.nSafeThroughHeight = MixAnchorSafeThroughHeight(9);
+        return true;
+    }
+    bool BuildMaterial(const CMixRoundAnnouncement& announce, CMixSeatMaterial& materialOut,
+                       std::string&)
+    {
+        materialOut = SeatMaterial(nIndex, (size_t)announce.nParticipants, chSeed);
+        fHeld = true;
+        return true;
+    }
+    bool DeriveRecipient(const std::vector<uint256>&, PrivacyVNextDigest& spendOut,
+                         PrivacyVNextDigest& viewOut, PrivacyVNextDigest& outgoingOut,
+                         std::string& strError)
+    {
+        PrivacyVNextDigest seed;
+        seed.fill(chSeed);
+        PrivacyVNextDerivedKeys recipient;
+        PrivacyVNextDigest genesis;
+        PrivacyVNextLocalGenesis(genesis.data());
+        if (!DerivePrivacyVNextKeys(seed, genesis, 0, PrivacyVNextLocalNetworkId(), 0, recipient,
+                                    strError))
+            return false;
+        spendOut = recipient.spendPublic;
+        viewOut = recipient.viewPublic;
+        outgoingOut = recipient.outgoingViewSecret;
+        return true;
+    }
+    void ReleaseNote()
+    {
+        fHeld = false;
+        nReleased++;
+    }
+    bool VerifyResult(const CTransaction& tx, std::string& strError)
+    {
+        if (fRejectResult)
+        {
+            strError = "refused by the test";
+            return false;
+        }
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, tx.privacyVNext.vchPayload, effects);
+        if (validation.nResult != INNOVA_PRIVACY_VNEXT_VALID)
+        {
+            strError = validation.strError;
+            return false;
+        }
+        return effects.keyImages.size() == 2 && effects.outputLeaves.size() == 2;
+    }
+
+    size_t nIndex;
+    unsigned char chSeed;
+    const FakeCoordinatorEnv& coord;
+    const int64_t& nNow;
+    bool fHeld;
+    int nReleased;
+    int nTipAtStart;
+    bool fRejectResult;
+};
+
+// Routes a coordinator's endpoint to its job and a directory's name to the directory.
+class JobDialer : public CMixDialer
+{
+public:
+    JobDialer(CMixCoordinatorJob& jobIn, CMixDirectory& directoryIn, const int64_t& nNowIn)
+        : job(jobIn), directory(directoryIn), nNow(nNowIn), nExchanges(0) {}
+    bool Exchange(const std::string& strEndpoint, int, MixFrameType nType,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int)
+    {
+        nExchanges++;
+        if (strEndpoint == "dir.onion")
+            return directory.Serve(nType, vchPayload, nNow, nReplyTypeOut, vchReplyOut);
+        if (strEndpoint == job.Announcement().strEndpoint)
+            return job.Serve(nType, vchPayload, nNow, nReplyTypeOut, vchReplyOut);
+        if (pstrError)
+            *pstrError = "unreachable";
+        return false;
+    }
+    CMixCoordinatorJob& job;
+    CMixDirectory& directory;
+    const int64_t& nNow;
+    int nExchanges;
+};
+
+// Hands every exchange to another dialer, but loses the reply to the first request of each
+// kind listed that the coordinator took: the round has it, and the seat never heard.
+class LossyDialer : public CMixDialer
+{
+public:
+    explicit LossyDialer(CMixDialer& innerIn) : inner(innerIn), nLost(0) {}
+    bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int nTimeoutMs)
+    {
+        const bool fDone = inner.Exchange(strEndpoint, nPort, nType, vchPayload, nReplyTypeOut,
+                                          vchReplyOut, pstrError, nTimeoutMs);
+        // Only a reply that said the request was taken: losing a refusal tests nothing.
+        bool fAccepted = false;
+        if (fDone && nReplyTypeOut == MIX_FRAME_ACK && ReadMixAckBody(vchReplyOut, fAccepted) &&
+            fAccepted && setLose.count((int)nType) && !setLost.count((int)nType))
+        {
+            setLost.insert((int)nType);
+            nLost++;
+            nReplyTypeOut = MIX_FRAME_NONE;
+            vchReplyOut.clear();
+            if (pstrError)
+                *pstrError = "reply lost";
+            return false;
+        }
+        return fDone;
+    }
+    CMixDialer& inner;
+    std::set<int> setLose, setLost;
+    int nLost;
+};
+
+} // namespace
+
+// A whole round as the node drives it, on a clock: record, announcement upload, seat
+// fetch and check, each step inside its window. Seats verify the broadcast transaction.
+BOOST_AUTO_TEST_CASE(a_coordinator_job_and_two_seat_jobs_complete_a_round_on_a_clock)
+{
+    int64_t nNow = 29000000 - 150;   // inside the publishing window for the next slot
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    // The dialer needs the job and the job needs a dialer; the job only dials directories.
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer dialer(coordJob, directory, nNow);
+
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv envA(0, 0x31, coordEnv, nNow), envB(1, 0x51, coordEnv, nNow);
+    CMixSeatJob seatA(seatConfig, envA, dialer), seatB(seatConfig, envB, dialer);
+
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        seatA.Step(nNow);
+        seatB.Step(nNow);
+        const bool fSeatsSettled =
+            (seatA.State() == MIX_SEAT_DONE || seatA.State() == MIX_SEAT_FAILED) &&
+            (seatB.State() == MIX_SEAT_DONE || seatB.State() == MIX_SEAT_FAILED);
+        if (fSeatsSettled && coordJob.State() >= MIX_COORD_DONE)
+            break;
+    }
+    BOOST_CHECK_MESSAGE(coordJob.State() == MIX_COORD_DONE, "coordinator: " << coordJob.Status());
+    BOOST_REQUIRE_MESSAGE(coordJob.Broadcasted(), "coordinator: " << coordJob.Status());
+    BOOST_REQUIRE_MESSAGE(seatA.State() == MIX_SEAT_DONE, "seat A: " << seatA.Status());
+    BOOST_REQUIRE_MESSAGE(seatB.State() == MIX_SEAT_DONE, "seat B: " << seatB.Status());
+    BOOST_CHECK(seatA.Result().GetHash() == coordEnv.txBroadcast.GetHash());
+    BOOST_CHECK(seatB.Result().GetHash() == coordEnv.txBroadcast.GetHash());
+    BOOST_CHECK(envA.fHeld && envB.fHeld);
+    BOOST_CHECK_EQUAL(envA.nReleased + envB.nReleased, 0);
+    BOOST_CHECK_EQUAL(MixRendezvousRecordSlot(coordJob.Announcement().nTime), nRecordSlot);
+}
+
+// A seat resends every authenticated frame byte for byte after a lost reply, and the round
+// treats it as the request it already has. A seat that refuses the result keeps its note held.
+BOOST_AUTO_TEST_CASE(a_round_survives_lost_replies_and_a_refused_result_keeps_the_note)
+{
+    int64_t nNow = 29300000 - 150;
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer dialer(coordJob, directory, nNow);
+    LossyDialer lossy(dialer);
+    const int vLose[7] = { MIX_FRAME_JOIN, MIX_FRAME_VIEW_SIG, MIX_FRAME_INPUT_CONSTRUCTION,
+                           MIX_FRAME_PREFIX_SIG, MIX_FRAME_MEMBERSHIP_PROOF, MIX_FRAME_NONCE,
+                           MIX_FRAME_RESPONSE };
+    lossy.setLose.insert(vLose, vLose + 7);
+
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv envA(0, 0x31, coordEnv, nNow), envB(1, 0x51, coordEnv, nNow);
+    envB.fRejectResult = true;
+    CMixSeatJob seatA(seatConfig, envA, lossy), seatB(seatConfig, envB, dialer);
+
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        seatA.Step(nNow);
+        seatB.Step(nNow);
+        if ((seatA.State() == MIX_SEAT_DONE || seatA.State() == MIX_SEAT_FAILED) &&
+            (seatB.State() == MIX_SEAT_DONE || seatB.State() == MIX_SEAT_FAILED) &&
+            coordJob.State() >= MIX_COORD_DONE)
+            break;
+    }
+    BOOST_CHECK_EQUAL(lossy.nLost, 7);
+    BOOST_REQUIRE_MESSAGE(coordJob.Broadcasted(), "coordinator: " << coordJob.Status());
+    BOOST_CHECK_MESSAGE(seatA.State() == MIX_SEAT_DONE, "seat A: " << seatA.Status());
+    BOOST_CHECK(seatA.Result().GetHash() == coordEnv.txBroadcast.GetHash());
+    BOOST_CHECK_EQUAL((int)seatB.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK(seatB.FinalShareSent());
+    BOOST_CHECK(envB.fHeld);
+    BOOST_CHECK_EQUAL(envB.nReleased, 0);
+    BOOST_CHECK_MESSAGE(seatB.Status().find("stays held") != std::string::npos, seatB.Status());
+}
+
+// One seat alone in a two-seat round: the round cannot fill, the seat's key image went out
+// but its final share never did, so it gives its note back. A seat whose anchor is not yet
+// deep refuses before anything is disclosed, and gives its note back too.
+BOOST_AUTO_TEST_CASE(a_seat_job_gives_its_note_back_unless_its_final_share_left)
+{
+    int64_t nNow = 29600000 - 150;
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer dialer(coordJob, directory, nNow);
+
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv envAlone(0, 0x31, coordEnv, nNow), envShallow(1, 0x51, coordEnv, nNow);
+    envShallow.nTipAtStart = 2710 + EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH - 1000;
+    CMixSeatJob alone(seatConfig, envAlone, dialer), shallow(seatConfig, envShallow, dialer);
+
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop && coordJob.State() < MIX_COORD_DONE; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        alone.Step(nNow);
+        shallow.Step(nNow);
+    }
+    BOOST_CHECK_MESSAGE(!coordJob.Broadcasted(), "a round with one seat published");
+    BOOST_CHECK_EQUAL((int)alone.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK(alone.KeyImageRevealed());
+    BOOST_CHECK(!alone.FinalShareSent());
+    BOOST_CHECK(!envAlone.fHeld);
+    BOOST_CHECK_EQUAL(envAlone.nReleased, 1);
+    BOOST_CHECK_EQUAL((int)shallow.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK_MESSAGE(shallow.Status().find("deep") != std::string::npos, shallow.Status());
+    BOOST_CHECK(!shallow.KeyImageRevealed());
+    BOOST_CHECK(!envShallow.fHeld);
 }
 
 // The record the chain carries, and the rule that picks one of them.
@@ -4706,14 +5260,14 @@ BOOST_AUTO_TEST_CASE(one_record_per_identity_and_slot_is_the_one_that_counts)
                                                     MIX_RENDEZVOUS_SLOT_SECONDS - 1, nSlot));
 }
 
-// A round must start far enough into its slot that a seat can have settled it first. Median
-// time past and finality both lag, so a round starting at the opening is one honest seats
-// reach late -- the short-join-window outcome by another route.
+// A round runs in the slot after its record's, and far enough into it that a seat has
+// settled the record first. Median time past and finality both lag, so a round starting at
+// the opening is one honest seats reach late -- the short-join-window outcome by another route.
 BOOST_AUTO_TEST_CASE(a_round_starts_far_enough_into_its_slot_to_be_settled_first)
 {
     CKey key;
     const CNullSendSession roundKey = FreshRoundKey(4501);
-    const int64_t T0 = 28000200;                       // 200s into its slot
+    const int64_t T0 = 28000200;                       // at its slot's opening
     BOOST_REQUIRE(T0 % MIX_RENDEZVOUS_SLOT_SECONDS < MIX_RENDEZVOUS_MIN_START_SLACK);
     const CMixRoundAnnouncement early = ProvenAnnouncement(key, roundKey, T0);
     std::string strError;

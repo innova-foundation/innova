@@ -6,6 +6,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "init.h"
+#include "nullsend_driver.h"
 #include "blockprofile.h"
 #include "main.h"
 #include "txdb.h"
@@ -145,6 +146,7 @@ void Shutdown(void* parg)
 
         // Before any teardown: a waiter left on the static vote condition variable aborts the
         // process at exit. Not in Finalise(), so a pass holding cs_main can finish.
+        StopMixService();
         StopFinalityVoter();
 
         CZKContext::Shutdown();
@@ -2949,6 +2951,11 @@ bool AppInit2()
     NewThread(ThreadPrivacyVNextBackgroundVerify, NULL);
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
+    {
+        std::string strMixError;
+        if (!StartMixService(pwalletMain, strMixError))
+            return InitError("NullSend: " + strMixError);
+    }
 
     RandAddSeedPerfmon();
 
