@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <limits>
 
+#include "dag.h"
 #include "ed25519_zk.h"
+#include "finality.h"
 #include "netbase.h"
 #include "nullsend.h"
 #include "shielded.h"
@@ -3399,6 +3401,74 @@ bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
     #undef FAIL
 }
 
+int MixAnchorSafeThroughHeight(int nAnchorEpoch)
+{
+    if (nAnchorEpoch < 0)
+        return -1;
+    const int64_t nEnd = GetEpochBoundaryHeight64(nAnchorEpoch +
+                                                  EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS +
+                                                  EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS) - 1;
+    if (nEnd > std::numeric_limits<int>::max())
+        return std::numeric_limits<int>::max();
+    return (int)nEnd;
+}
+
+bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
+                       const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
+                       std::string* pstrError)
+{
+    viewOut = CMixAnchorView();
+    viewOut.finalizedRoot = announce.finalizedRoot;
+    viewOut.nFinalizedTreeSize = announce.nFinalizedTreeSize;
+    viewOut.nTipHeight = nTipHeight;
+    viewOut.nReadTime = nNow;
+    if (nTipHeight < 0)
+    {
+        if (pstrError)
+            *pstrError = "no tip to read the anchor at";
+        return true;
+    }
+    int nEpoch = -1;
+    bool fLocalFailure = false;
+    std::string strError;
+    if (!CheckPrivacyVNextSpendAnchor(txdb, nTipHeight + 1, announce.finalizedRoot,
+                                      announce.nFinalizedTreeSize, announce.parameterDigest,
+                                      nEpoch, fLocalFailure, strError) ||
+        nEpoch < 0)
+    {
+        if (pstrError)
+            *pstrError = strError;
+        return !fLocalFailure;
+    }
+    viewOut.nAnchorEpoch = nEpoch;
+    viewOut.nSafeThroughHeight = MixAnchorSafeThroughHeight(nEpoch);
+    return true;
+}
+
+bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
+                          int64_t nConnectBy, std::string* pstrError)
+{
+    #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
+    if (!(view.finalizedRoot == announce.finalizedRoot) ||
+        view.nFinalizedTreeSize != announce.nFinalizedTreeSize)
+        FAIL("the anchor view was read for a different anchor");
+    if (view.nTipHeight < 0 || view.nAnchorEpoch < 0 || view.nSafeThroughHeight < 0)
+        FAIL("consensus does not accept this round's anchor at the tip");
+    // Projected from when the view was read, not from now, so a stale view only counts more
+    // blocks than have been mined.
+    const int64_t nSecs = std::max<int64_t>(0, nConnectBy - view.nReadTime);
+    // At least the next block, which is the first height the view was read for.
+    const int64_t nBlocks = std::max<int64_t>(1, (nSecs * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
+                                                  MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
+                                                     MIX_ANCHOR_BLOCKS_PER_SEC_DEN);
+    if ((int64_t)view.nTipHeight + nBlocks > (int64_t)view.nSafeThroughHeight)
+        FAIL(strprintf("the round's anchor is safe through height %d, but the transaction may "
+                       "connect as late as %d",
+                       view.nSafeThroughHeight, (int)((int64_t)view.nTipHeight + nBlocks)));
+    return true;
+    #undef FAIL
+}
+
 CMixPolicy CMixPolicy::Standard()
 {
     CMixPolicy out;
@@ -3440,7 +3510,8 @@ CMixSeat::CMixSeat() : fBegun(false), keyImage(0), hashViewSigned(0), nMyPositio
 
 bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessionIn,
                      const CMixSeatMaterial& materialIn, const CMixPolicy& policyIn,
-                     const CMixRendezvous& rendezvousIn, std::string* pstrError)
+                     const CMixRendezvous& rendezvousIn, const CMixAnchorView& anchor,
+                     std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     if (fBegun)
@@ -3462,6 +3533,12 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
     // Before anything is revealed: an announcement that is not the one its slot authorises
     // is one a coordinator could have minted per seat, and this seat would be alone in it.
     if (!MixAnnouncementMatchesRendezvous(announce, rendezvousIn, pstrError))
+        return false;
+    // Also before anything is revealed: a round whose anchor consensus will have dropped by
+    // the time its transaction is mined costs every seat its key image for nothing.
+    if (!CheckMixAnchorBudget(announce, anchor,
+                              announce.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                              pstrError))
         return false;
     PrivacyVNextDigest zero;
     zero.fill(0);
@@ -3654,13 +3731,21 @@ bool CMixSeat::BuildRegistration(std::vector<unsigned char>& vchBodyOut,
     #undef FAIL
 }
 
-bool CMixSeat::AcceptPrefix(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                            std::string* pstrError)
+bool CMixSeat::AcceptPrefix(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                            std::vector<unsigned char>& vchFrameOut, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vchFrameOut.clear();
     if (hashViewSigned == 0 || vBundle.empty())
         FAIL("this seat has nothing to check a prefix against");
+    // Approving commits this seat to proving; the tip may have moved faster than planned,
+    // which only a view read in this window shows.
+    if (anchor.nReadTime < announcement.OutputCloses())
+        FAIL("the anchor view was read before the approval window; read it again");
+    if (!CheckMixAnchorBudget(announcement, anchor,
+                              announcement.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                              pstrError))
+        return false;
     // One prefix per attempt. Approving a second is how one input ends up proved under two
     // statements, and the coordinator refusing to offer one is not this seat's guarantee.
     if (!vchApprovedPrefix.empty())
@@ -3822,11 +3907,19 @@ bool CMixSeat::BuildNonce(std::vector<unsigned char>& vchFrameOut, std::string* 
     #undef FAIL
 }
 
-bool CMixSeat::BuildResponse(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                             std::string* pstrError)
+bool CMixSeat::BuildResponse(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                             std::vector<unsigned char>& vchFrameOut, std::string* pstrError)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     vchFrameOut.clear();
+    // The last share: without it the transaction cannot be finished, so a round whose anchor
+    // will not last stops here rather than on the network.
+    if (anchor.nReadTime < announcement.NonceCloses())
+        FAIL("the anchor view was read before the response window; read it again");
+    if (!CheckMixAnchorBudget(announcement, anchor,
+                              announcement.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                              pstrError))
+        return false;
     PrivacyVNextMixBalanceFacts facts;
     PrivacyVNextMixBalanceShare share;
     if (!BalanceFacts(facts, share, pstrError))

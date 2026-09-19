@@ -15,6 +15,7 @@
 #include "../init.h"
 #include "../main.h"
 #include "../miner.h"
+#include "../nullsend_v2008.h"
 #include "../txdb.h"
 #include "../uint256.h"
 #include "../util.h"
@@ -649,6 +650,150 @@ BOOST_AUTO_TEST_CASE(with_nothing_finalized_a_deep_epoch_anchors_on_its_own)
     BOOST_CHECK(!g_dagManager.GetFinalizedEpochStateAsOf(
         txdb, GetEpochBoundaryHeight(1, nTip) + 5, shallow, fLocal));
     BOOST_CHECK(!fLocal);
+}
+
+// How long an anchor accepted now stays accepted, judged by the consensus check itself at
+// every height, under three ways finality can move: every epoch finalized as soon as it can
+// be, nothing finalized at all, and finality stalled far behind and then catching up at once.
+// The head never passes two epochs behind the connecting height's epoch, so an anchor from
+// epoch a lasts through the end of epoch a + 7 whatever finality does; a mix round's seat
+// budgets against exactly that height. Epoch records are written in a transaction that is
+// never committed, each with a root and tree size of its own so no pair repeats.
+BOOST_AUTO_TEST_CASE(an_accepted_anchor_lasts_through_its_safe_height_however_finality_moves)
+{
+    BOOST_REQUIRE(fRegTest);
+    const int nLastEpoch = 17;
+    BOOST_REQUIRE_EQUAL(EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS, 6);
+    BOOST_REQUIRE(EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH > FINALITY_EPOCH_INTERVAL_POST_DAG);
+
+    PrivacyVNextDigest digest;
+    digest.fill(0x5A);
+    struct Anchor
+    {
+        PrivacyVNextDigest root;
+        uint64_t nTreeSize;
+    };
+    std::vector<Anchor> vAnchors(nLastEpoch + 1);
+    for (int e = 0; e <= nLastEpoch; ++e)
+    {
+        vAnchors[e].root.fill(0);
+        vAnchors[e].root[0] = 0xA0;
+        vAnchors[e].root[1] = (unsigned char)e;
+        vAnchors[e].nTreeSize = 100 + e;
+    }
+    const int nStallUntil = 9;
+
+    enum Regime { FINALIZED_EACH_EPOCH, NOTHING_FINALIZED, STALLED_THEN_CAUGHT_UP };
+    const Regime vRegimes[3] = { FINALIZED_EACH_EPOCH, NOTHING_FINALIZED, STALLED_THEN_CAUGHT_UP };
+    const char* vNames[3] = { "finalized each epoch", "nothing finalized",
+                              "stalled then caught up" };
+    for (int r = 0; r < 3; ++r)
+    {
+        CTxDB txdb("rw");
+        BOOST_REQUIRE(txdb.TxnBegin());
+        for (int e = 0; e <= nLastEpoch; ++e)
+        {
+            CEpochState state;
+            state.nEpoch = e;
+            state.nHeightStart = (int)GetEpochBoundaryHeight64(e);
+            state.nHeightEnd = (int)GetEpochBoundaryHeight64(e + 1) - 1;
+            state.hashBoundaryBlock = uint256(0xB0000000 + e);
+            state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+            state.vchVNextRoot.assign(vAnchors[e].root.begin(), vAnchors[e].root.end());
+            state.nVNextTreeSize = vAnchors[e].nTreeSize;
+            state.vchVNextParameterDigest.assign(digest.begin(), digest.end());
+            // Each record's finalized height is the one its as-of reader will see: the
+            // epoch's own opening when every epoch completes a streak, a far-behind boundary
+            // while stalled.
+            int nFinalized = 0;
+            if (vRegimes[r] == FINALIZED_EACH_EPOCH && e >= 1)
+                nFinalized = state.nHeightStart;
+            if (vRegimes[r] == STALLED_THEN_CAUGHT_UP && e >= 2)
+                nFinalized = e < nStallUntil ? (int)GetEpochBoundaryHeight64(2) : state.nHeightStart;
+            state.nFinalizedHeightAsOf = nFinalized;
+            BOOST_REQUIRE(txdb.WriteEpochState(e, state));
+        }
+
+        const int nFirstHeight = (int)GetEpochBoundaryHeight64(2);
+        const int nPastHeight = (int)GetEpochBoundaryHeight64(nLastEpoch + 1);
+        // The head the resolver names never passes two epochs behind the height's epoch,
+        // and never moves backward.
+        int nPrevHead = -1;
+        for (int h = nFirstHeight; h < nPastHeight; ++h)
+        {
+            CEpochState head;
+            bool fLocal = false;
+            if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, h, head, fLocal))
+                continue;
+            BOOST_CHECK_MESSAGE(head.nEpoch <= GetEpochForHeight(h) -
+                                                   EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS,
+                                vNames[r] << ": height " << h << " in epoch "
+                                << GetEpochForHeight(h) << " resolves head " << head.nEpoch);
+            BOOST_CHECK_MESSAGE(head.nEpoch >= nPrevHead,
+                                vNames[r] << ": head moved back from " << nPrevHead << " to "
+                                << head.nEpoch << " at height " << h);
+            nPrevHead = head.nEpoch;
+        }
+
+        for (int a = 3; a <= 8; a += 5)
+        {
+            const int nSafeThrough = MixAnchorSafeThroughHeight(a);
+            BOOST_REQUIRE_EQUAL(nSafeThrough, (int)GetEpochBoundaryHeight64(a + 8) - 1);
+            BOOST_REQUIRE(nSafeThrough + 600 < nPastHeight);
+            int nFirstAccepted = -1, nLastAccepted = -1;
+            for (int h = nFirstHeight; h < nPastHeight; ++h)
+            {
+                int nEpoch = -1;
+                bool fLocal = false;
+                std::string strError;
+                const bool fAccepted = CheckPrivacyVNextSpendAnchor(
+                    txdb, h, vAnchors[a].root, vAnchors[a].nTreeSize, digest, nEpoch, fLocal,
+                    strError);
+                BOOST_CHECK_MESSAGE(!fLocal, vNames[r] << ": local failure at " << h << ": "
+                                                       << strError);
+                if (!fAccepted)
+                {
+                    BOOST_CHECK_MESSAGE(nFirstAccepted < 0 || h > nSafeThrough,
+                                        vNames[r] << ": anchor " << a << " accepted from "
+                                        << nFirstAccepted << " was refused at " << h
+                                        << ", inside its safe height " << nSafeThrough
+                                        << ": " << strError);
+                    continue;
+                }
+                BOOST_CHECK_EQUAL(nEpoch, a);
+                if (nFirstAccepted < 0)
+                    nFirstAccepted = h;
+                BOOST_CHECK_MESSAGE(nLastAccepted < 0 || nLastAccepted == h - 1,
+                                    vNames[r] << ": anchor " << a << " refused at "
+                                    << nLastAccepted + 1 << " then accepted again at " << h);
+                nLastAccepted = h;
+            }
+            BOOST_REQUIRE_MESSAGE(nFirstAccepted >= 0,
+                                  vNames[r] << ": anchor " << a << " is never accepted");
+            // What a seat reads is the same check, one block past its tip.
+            CMixRoundAnnouncement announce;
+            announce.finalizedRoot = vAnchors[a].root;
+            announce.nFinalizedTreeSize = vAnchors[a].nTreeSize;
+            announce.parameterDigest = digest;
+            CMixAnchorView view;
+            BOOST_REQUIRE(ReadMixAnchorView(txdb, nFirstAccepted - 1, 0, announce, view));
+            BOOST_CHECK_EQUAL(view.nAnchorEpoch, a);
+            BOOST_CHECK_EQUAL(view.nSafeThroughHeight, nSafeThrough);
+            BOOST_REQUIRE(ReadMixAnchorView(txdb, nFirstAccepted - 2, 0, announce, view));
+            BOOST_CHECK_EQUAL(view.nAnchorEpoch, -1);
+            BOOST_CHECK_MESSAGE(nLastAccepted >= nSafeThrough,
+                                vNames[r] << ": anchor " << a << " last accepted at "
+                                << nLastAccepted << ", before its safe height " << nSafeThrough);
+            // Finalized as soon as it can be, the head is exactly two behind, so the bound is
+            // tight. With nothing finalized the depth rule holds the anchor one epoch longer.
+            if (vRegimes[r] == FINALIZED_EACH_EPOCH)
+                BOOST_CHECK_EQUAL(nLastAccepted, nSafeThrough);
+            if (vRegimes[r] == NOTHING_FINALIZED)
+                BOOST_CHECK_EQUAL(nLastAccepted,
+                                  (int)GetEpochBoundaryHeight64(a + 9) - 1 - 1);
+        }
+        txdb.TxnAbort();
+    }
 }
 
 BOOST_AUTO_TEST_CASE(epoch_records_leave_as_the_chain_built_them)

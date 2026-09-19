@@ -2606,11 +2606,14 @@ bool CheckPrivacyVNextParameterDigest(
 static bool ValidatePrivacyVNextFinalizedContext(
     CTxDB& txdb, const CBlockIndex* pindexAnchorTip, int nContextHeight,
     const PrivacyVNextStateEffects& effects,
-    bool& fLocalFailure, bool& fUnavailable, std::string& strError)
+    bool& fLocalFailure, bool& fUnavailable, std::string& strError,
+    int* pnAnchorEpochOut = NULL)
 {
     fLocalFailure = false;
     fUnavailable = false;
     strError.clear();
+    if (pnAnchorEpochOut)
+        *pnAnchorEpochOut = -1;
 
     // A note finality vote anchors one epoch back and must name the carrier chain's own
     // boundary block; neither is the spend path's rule, so it is judged on its own.
@@ -2686,6 +2689,10 @@ static bool ValidatePrivacyVNextFinalizedContext(
         std::equal(effects.finalizedRoot.begin(), effects.finalizedRoot.end(),
                    expectedRoot.begin()) &&
         effects.nFinalizedTreeSize == nExpectedTreeSize;
+    int nAnchorEpoch = (fAnchorMatches &&
+                        finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+                           ? finalizedState.nEpoch
+                           : -1;
     if (!fAnchorMatches &&
         finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
     {
@@ -2722,6 +2729,7 @@ static bool ValidatePrivacyVNextFinalizedContext(
                 effects.nFinalizedTreeSize == olderState.nVNextTreeSize)
             {
                 fAnchorMatches = true;
+                nAnchorEpoch = olderState.nEpoch;
                 expectedParameterDigest = olderState.vchVNextParameterDigest;
             }
         }
@@ -2733,8 +2741,30 @@ static bool ValidatePrivacyVNextFinalizedContext(
     }
     // Judged against the digest the anchor epoch carries, which is the same record on
     // every node at this height.
-    return CheckPrivacyVNextParameterDigest(effects, expectedParameterDigest,
-                                            strError);
+    if (!CheckPrivacyVNextParameterDigest(effects, expectedParameterDigest, strError))
+        return false;
+    if (pnAnchorEpochOut)
+        *pnAnchorEpochOut = nAnchorEpoch;
+    return true;
+}
+
+bool CheckPrivacyVNextSpendAnchor(CTxDB& txdb, int nContextHeight,
+                                  const PrivacyVNextDigest& finalizedRoot,
+                                  uint64_t nFinalizedTreeSize,
+                                  const PrivacyVNextDigest& parameterDigest,
+                                  int& nAnchorEpochOut, bool& fLocalFailure,
+                                  std::string& strError)
+{
+    PrivacyVNextStateEffects effects;
+    effects.finalizedRoot = finalizedRoot;
+    effects.nFinalizedTreeSize = nFinalizedTreeSize;
+    effects.parameterDigest = parameterDigest;
+    // A spend: the bootstrap seed anchors shields only.
+    effects.keyImages.resize(1);
+    bool fUnavailable = false;
+    return ValidatePrivacyVNextFinalizedContext(txdb, NULL, nContextHeight, effects,
+                                                fLocalFailure, fUnavailable, strError,
+                                                &nAnchorEpochOut);
 }
 
 // Whether an IV5 transaction's anchor is still inside the consensus window at a height;

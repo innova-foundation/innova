@@ -1563,6 +1563,16 @@ bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, const CBlockIndex* pindexAnch
                                       int nHeight, const CTransaction& tx,
                                       std::string& strError);
 
+/** Whether consensus accepts a spend anchored to this root and tree size at
+ *  nContextHeight, judged by the code a connecting transaction is. nAnchorEpochOut is the
+ *  newest accepted epoch carrying the pair, or -1. */
+bool CheckPrivacyVNextSpendAnchor(CTxDB& txdb, int nContextHeight,
+                                  const PrivacyVNextDigest& finalizedRoot,
+                                  uint64_t nFinalizedTreeSize,
+                                  const PrivacyVNextDigest& parameterDigest,
+                                  int& nAnchorEpochOut, bool& fLocalFailure,
+                                  std::string& strError);
+
 /** Connect-time rules of a note finality vote (operation 10), judged at nContextHeight
  *  on the chain pindexAnchorTip heads: the lane's fork gate; the boundary the vote
  *  names is a post-DAG epoch boundary and the carrier chain's own ancestor at that

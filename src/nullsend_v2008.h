@@ -63,28 +63,41 @@ static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 300;
  *  after the broadcast, so it spends no anchor life. */
 static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
 
-/** The round's anchor is frozen when the announcement is signed, and consensus accepts a
- *  shielded anchor only while it is within EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS (6) of the
- *  connecting block's own resolved epoch -- about 1500 s of chain time once the anchor's own
- *  epoch is already partway through. Everything from signing to the transaction being
- *  connected has to fit inside that:
+/** The round's anchor is frozen when the announcement is signed, so everything from signing
+ *  to the transaction being connected spends that anchor's life:
  *
  *      (slot opening - signing)      <= 600   one slot of publication lead
- *    + MIX_RENDEZVOUS_MIN_START_SLACK = 300
+ *    + start offset in the slot       300..599
  *    + the windows up to broadcast   <= 480   this bound
- *    + inclusion margin               = 120
- *                                     -----
- *                                      1500
+ *    + inclusion                      = 120   MIX_INCLUSION_ALLOWANCE_SECS
+ *
+ *  This cap is the static half, checked before anything else. The chain half is
+ *  CheckMixAnchorBudget, which a seat runs before it reveals a key image: an anchor taken as the
+ *  head at signing lasts 1500..1800 blocks with finality current, and a seat projecting at the
+ *  margin rate refuses a long schedule under a late start or an early signature.
  *
  *  A schedule that does not fit produces a transaction ConnectBlock refuses AFTER every seat
  *  has revealed a key image and proved its input. The loss is what they disclosed and the
  *  work they did, not the value of the notes -- a refused transaction spends nothing -- but
  *  the disclosure is the part that cannot be taken back, so the round is refused up front.
  *
- *  This is the interim shape. The long-term fix is an announcement that commits to an anchor
- *  RULE rather than an anchor value, resolved once and frozen into the view certificate
- *  before any proving; that removes publication-lead ageing entirely. */
+ *  The long-term fix is an announcement that commits to an anchor RULE rather than an anchor
+ *  value, resolved once and frozen into the view certificate before any proving; that removes
+ *  publication-lead ageing entirely. */
 static const int MIX_SCHEDULE_MAX_TO_BROADCAST_SECS = 480;
+
+/** How long a finished transaction is given to be mined after the last response. */
+static const int64_t MIX_INCLUSION_ALLOWANCE_SECS = 120;
+
+/** The rate at which a seat turns seconds into blocks when it projects its anchor forward:
+ *  three blocks every two seconds. The target is one a second; the margin covers a hash-rate
+ *  surge the retarget has not caught, which consensus does not bound below six a second. */
+static const int64_t MIX_ANCHOR_BLOCKS_PER_SEC_NUM = 3;
+static const int64_t MIX_ANCHOR_BLOCKS_PER_SEC_DEN = 2;
+
+/** The last height at which consensus is certain to accept an anchor from nAnchorEpoch that
+ *  it accepts now, however finality moves (EPOCHSTATE_VNEXT_MIN_HEAD_LAG_EPOCHS). */
+int MixAnchorSafeThroughHeight(int nAnchorEpoch);
 
 class CMixRoundAnnouncement
 {
@@ -1170,6 +1183,45 @@ bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
                                       const CMixRendezvous& rendezvous,
                                       std::string* pstrError = NULL);
 
+/** What this node's chain says about a round's anchor, read at one tip.
+ *
+ *  The schedule cap in the announcement is the static half of the anchor budget. This is the
+ *  half only the chain can answer: whether consensus accepts the anchor at all, and from which
+ *  epoch, which fixes how long it stays accepted. A seat checks it before it reveals a key
+ *  image and again before it approves a prefix and before it signs its final response. */
+struct CMixAnchorView
+{
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nFinalizedTreeSize;
+    int nTipHeight;
+    int64_t nReadTime;
+    int nAnchorEpoch;        // the newest accepted epoch carrying the anchor, or -1
+    int nSafeThroughHeight;  // MixAnchorSafeThroughHeight(nAnchorEpoch), or -1
+
+    CMixAnchorView()
+        : nFinalizedTreeSize(0), nTipHeight(-1), nReadTime(0), nAnchorEpoch(-1),
+          nSafeThroughHeight(-1)
+    {
+        finalizedRoot.fill(0);
+    }
+};
+
+/** Read the view of this announcement's anchor for the block after nTipHeight, judged by the
+ *  code a connecting transaction is. A refused anchor is a view with no epoch; false only when
+ *  this node cannot read its own state. Read nTipHeight and the view under one cs_main lock,
+ *  or a commit between them tears the view. A node whose tip lags the network under-counts the
+ *  blocks still to come by its lag. */
+bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
+                       const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
+                       std::string* pstrError = NULL);
+
+/** Whether the announcement's anchor, as the view saw it, is still accepted when a
+ *  transaction finished by nConnectBy is mined: the tip projected forward from the view's
+ *  read time at the margin rate must not pass the anchor's safe-through height. The seat's
+ *  later checks refuse a view read before their own window, so each is a fresh read. */
+bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
+                          int64_t nConnectBy, std::string* pstrError = NULL);
+
 /** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
  *  refuses a round whose fee or denomination differs from its own choice, so a coordinator
  *  cannot tag a seat by amount. */
@@ -1218,7 +1270,8 @@ public:
      *  the proving pass that fixes this attempt's pseudo-output and key image. */
     bool Begin(const CMixRoundAnnouncement& announce, const CKey& keySession,
                const CMixSeatMaterial& material, const CMixPolicy& policy,
-               const CMixRendezvous& rendezvous, std::string* pstrError = NULL);
+               const CMixRendezvous& rendezvous, const CMixAnchorView& anchor,
+               std::string* pstrError = NULL);
 
     const uint256& KeyImage() const { return keyImage; }
     const PrivacyVNextDigest& PseudoOut() const { return pseudoOut; }
@@ -1255,8 +1308,8 @@ public:
     /** Check the whole prefix and approve it. One prefix per attempt: a second, however
      *  well formed, is refused, because approving two is how a seat proves one input under
      *  two statements. */
-    bool AcceptPrefix(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                      std::string* pstrError = NULL);
+    bool AcceptPrefix(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                      std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL);
 
     /** Prove this seat's input under the approved prefix, with entropy drawn for this
      *  attempt. */
@@ -1266,8 +1319,8 @@ public:
     /** The balance share. The nonce answers one aggregate and the response is computed
      *  against the aggregate this seat read back, not one it was told. */
     bool BuildNonce(std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL);
-    bool BuildResponse(const CMixSnapshot& snapshot, std::vector<unsigned char>& vchFrameOut,
-                       std::string* pstrError = NULL);
+    bool BuildResponse(const CMixSnapshot& snapshot, const CMixAnchorView& anchor,
+                       std::vector<unsigned char>& vchFrameOut, std::string* pstrError = NULL);
 
 private:
     CMixSeat(const CMixSeat&);

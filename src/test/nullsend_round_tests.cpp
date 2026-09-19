@@ -3783,6 +3783,24 @@ CMixRendezvous TestRendezvous(const CMixRoundAnnouncement& announce)
     return rendezvous;
 }
 
+// A fresh anchor as the chain would report it: the head two epochs behind the tip at the
+// round's start, read at nReadTime with the tip one block a second further on. What the chain
+// reports for a real anchor is tested against the consensus check in
+// connect_verdict_locality_tests.
+CMixAnchorView TestAnchor(const CMixRoundAnnouncement& announce, int64_t nReadTime = 0)
+{
+    if (nReadTime == 0)
+        nReadTime = announce.nTime;
+    CMixAnchorView view;
+    view.finalizedRoot = announce.finalizedRoot;
+    view.nFinalizedTreeSize = announce.nFinalizedTreeSize;
+    view.nAnchorEpoch = 10;
+    view.nTipHeight = (int)(GetEpochBoundaryHeight64(12) + (nReadTime - announce.nTime));
+    view.nReadTime = nReadTime;
+    view.nSafeThroughHeight = MixAnchorSafeThroughHeight(view.nAnchorEpoch);
+    return view;
+}
+
 // The reply a seat gets, unpacked.
 bool AskSeat(CMixCoordinator& coord, MixFrameType nType,
              const std::vector<unsigned char>& vchFrame, int64_t nNow,
@@ -3827,10 +3845,10 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     CMixSeat seatA, seatB;
     Seat idA = MakeSeat(1), idB = MakeSeat(2);
     BOOST_REQUIRE_MESSAGE(seatA.Begin(announce, idA.key, SeatMaterial(0, 2, 0x31), TestPolicy(),
-                                        TestRendezvous(announce), &strError),
+                                        TestRendezvous(announce), TestAnchor(announce), &strError),
                           strError);
     BOOST_REQUIRE_MESSAGE(seatB.Begin(announce, idB.key, SeatMaterial(1, 2, 0x51), TestPolicy(),
-                                        TestRendezvous(announce), &strError),
+                                        TestRendezvous(announce), TestAnchor(announce), &strError),
                           strError);
     idA.keyImage = seatA.KeyImage();
     idB.keyImage = seatB.KeyImage();
@@ -3948,16 +3966,28 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
         raised.vchPrefix = MixPrefixOver(header, vInputs, view.vOutputs,
                                          std::vector<uint64_t>(view.vOutputs.size(), MIX_DENOM));
         std::vector<unsigned char> vchIgnored;
-        BOOST_CHECK_MESSAGE(!seatB.AcceptPrefix(raised, vchIgnored, &strError),
+        BOOST_CHECK_MESSAGE(!seatB.AcceptPrefix(raised, TestAnchor(announce, T4), vchIgnored, &strError),
                             "a seat approved a prefix carrying a fee its announcement never named");
     }
+    // The tip has run ahead of the anchor since the seat joined: it will not approve a prefix
+    // it could not see mined.
+    CMixAnchorView expiring = TestAnchor(announce, T4);
+    expiring.nSafeThroughHeight = expiring.nTipHeight;
+    BOOST_REQUIRE(ReadSnapshot(coord, vIds[0], hashRound, announce.hashRound, T4, snapshot));
+    BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, expiring, vchFrame, &strError),
+                        "a seat approved a prefix after its anchor stopped lasting the round");
+    BOOST_CHECK(strError.find("safe through") != std::string::npos);
+    // The view it joined on says nothing about how fast the tip has moved since.
+    BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, TestAnchor(announce), vchFrame, &strError),
+                        "a seat approved a prefix on the anchor view it joined with");
+    BOOST_CHECK(strError.find("read it again") != std::string::npos);
     for (size_t i = 0; i < 2; i++)
     {
         BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T4, snapshot));
-        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptPrefix(snapshot, vchFrame, &strError), strError);
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->AcceptPrefix(snapshot, TestAnchor(announce, T4), vchFrame, &strError), strError);
         BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_PREFIX_SIG, vchFrame, T4, nReply, vchReply));
     }
-    BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, vchFrame, &strError),
+    BOOST_CHECK_MESSAGE(!seatA.AcceptPrefix(snapshot, TestAnchor(announce, T4), vchFrame, &strError),
                         "a seat approved a second prefix in one attempt");
 
     // The proofs, under the prefix each seat approved and nothing else.
@@ -3988,7 +4018,16 @@ BOOST_AUTO_TEST_CASE(two_seats_and_a_coordinator_run_a_round_over_frames_alone)
     {
         BOOST_REQUIRE(ReadSnapshot(coord, vIds[i], hashRound, announce.hashRound, T6, snapshot));
         BOOST_REQUIRE_EQUAL(snapshot.vNonces.size(), 2u);
-        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildResponse(snapshot, vchFrame, &strError), strError);
+        CMixAnchorView late = TestAnchor(announce, T6);
+        late.nSafeThroughHeight = late.nTipHeight;
+        BOOST_CHECK_MESSAGE(!vSeatsPtr[i]->BuildResponse(snapshot, late, vchFrame, &strError),
+                            "a seat signed its last share after its anchor stopped lasting");
+        BOOST_CHECK(strError.find("safe through") != std::string::npos);
+        BOOST_CHECK_MESSAGE(!vSeatsPtr[i]->BuildResponse(snapshot, TestAnchor(announce, T4),
+                                                         vchFrame, &strError),
+                            "a seat signed its last share on a view read before the window");
+        BOOST_CHECK(strError.find("read it again") != std::string::npos);
+        BOOST_REQUIRE_MESSAGE(vSeatsPtr[i]->BuildResponse(snapshot, TestAnchor(announce, T6), vchFrame, &strError), strError);
         BOOST_REQUIRE(AskSeat(coord, MIX_FRAME_RESPONSE, vchFrame, T6, nReply, vchReply));
         bool fAccepted = false;
         BOOST_REQUIRE(ReadMixAckBody(vchReply, fAccepted));
@@ -4140,7 +4179,7 @@ BOOST_AUTO_TEST_CASE(a_seat_mixes_at_its_own_denominations_and_its_own_share)
     CMixSeat seat;
     const Seat id = MakeSeat(12);
     BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xB1), standard,
-                                    TestRendezvous(announce), &strError),
+                                    TestRendezvous(announce), TestAnchor(announce), &strError),
                         "a seat joined a round at a denomination it does not mix at");
     BOOST_CHECK(strError.find("denomination") != std::string::npos);
 }
@@ -4198,9 +4237,68 @@ BOOST_AUTO_TEST_CASE(a_seat_joins_only_the_round_its_slot_published)
     CMixSeat seat;
     const Seat id = MakeSeat(13);
     BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC1), TestPolicy(),
-                                    CMixRendezvous(), &strError),
+                                    CMixRendezvous(), TestAnchor(announce), &strError),
                         "a seat joined a round no slot published");
     BOOST_CHECK(seat.KeyImage() == 0);
+}
+
+// A round whose anchor consensus will have dropped by the time its transaction is mined
+// costs every seat its key image for nothing, so the seat refuses it before proving: the tip
+// projected forward at the margin rate must not pass the anchor's safe height.
+BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
+{
+    const int64_t T0 = 27500300;
+    CKey keyCoordinator;
+    const CNullSendSession roundKey = FreshRoundKey(4451);
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(keyCoordinator, roundKey, T0);
+    const int64_t nConnectBy = announce.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS;
+    const int64_t nBlocks = ((nConnectBy - T0) * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
+                             MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
+                            MIX_ANCHOR_BLOCKS_PER_SEC_DEN;
+    std::string strError;
+
+    // A fresh head lasts the round with room to spare.
+    const CMixAnchorView fresh = TestAnchor(announce);
+    BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, fresh, nConnectBy, &strError), strError);
+
+    // The edge, exactly: safe through the projected connecting height, and one short of it.
+    CMixAnchorView edge = fresh;
+    edge.nSafeThroughHeight = (int)(edge.nTipHeight + nBlocks);
+    BOOST_CHECK_MESSAGE(CheckMixAnchorBudget(announce, edge, nConnectBy, &strError), strError);
+    edge.nSafeThroughHeight -= 1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, edge, nConnectBy, &strError));
+
+    // A view read earlier counts the blocks mined since, so staleness only makes it stricter.
+    CMixAnchorView stale = fresh;
+    stale.nSafeThroughHeight = (int)(stale.nTipHeight + nBlocks);
+    stale.nReadTime -= 60;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, stale, nConnectBy, &strError));
+
+    // An anchor consensus does not accept at the tip, and a view read for another anchor.
+    CMixAnchorView refused = fresh;
+    refused.nAnchorEpoch = -1;
+    refused.nSafeThroughHeight = -1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, refused, nConnectBy, &strError));
+    CMixAnchorView other = fresh;
+    other.finalizedRoot[0] ^= 1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, other, nConnectBy, &strError));
+    other = fresh;
+    other.nFinalizedTreeSize += 1;
+    BOOST_CHECK(!CheckMixAnchorBudget(announce, other, nConnectBy, &strError));
+
+    // The seat refuses before it proves an input or has a key image to reveal.
+    CMixAnchorView expiring = fresh;
+    expiring.nSafeThroughHeight = expiring.nTipHeight + 1;
+    CMixSeat seat;
+    const Seat id = MakeSeat(14);
+    BOOST_CHECK_MESSAGE(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC5), TestPolicy(),
+                                    TestRendezvous(announce), expiring, &strError),
+                        "a seat joined a round whose anchor expires before it can be mined");
+    BOOST_CHECK(strError.find("anchor") != std::string::npos);
+    BOOST_CHECK(seat.KeyImage() == 0);
+    BOOST_CHECK_MESSAGE(seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC5), TestPolicy(),
+                                   TestRendezvous(announce), fresh, &strError),
+                        strError);
 }
 
 // The record the chain carries, and the rule that picks one of them.
