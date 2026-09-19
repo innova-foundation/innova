@@ -1224,8 +1224,9 @@ BOOST_AUTO_TEST_CASE(the_anchor_floor_is_the_last_pre_dag_epoch_on_mainnet)
     BOOST_CHECK_MESSAGE(fLocal, "a lost floor record was skipped on mainnet numbering");
     BOOST_REQUIRE(manager.WriteEpochState(txdb, written[nLegacy], CCurveTree()));
 
-    // A finalized height naming a pre-DAG boundary below the floor: its missing record is
-    // the chain's answer on every node.
+    // A finalized height below the floor. No record can carry one -- a record inherits its
+    // finalized height from its predecessor record, and the first nonzero value is V3 --
+    // but if one did, its missing record is the chain's answer, not a local failure.
     CEpochState asOf = written[nMigration];
     asOf.nFinalizedHeightAsOf = (int)(GetEpochBoundaryHeight64(nLegacy - 1) - 1);
     BOOST_REQUIRE_EQUAL(GetFinalizedEpochForHeight(asOf.nFinalizedHeightAsOf), nLegacy - 2);
