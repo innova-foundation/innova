@@ -1954,16 +1954,16 @@ bool CMixListener::Accept(CMixStream& streamOut, int nTimeoutMs, std::string* ps
 
 bool DialMixPhase(const CService& addrProxy, const std::string& strEndpoint, int nPort,
                   bool fIsolate, int nTimeoutMs, CMixStream& streamOut,
-                  std::string* pstrError)
+                  std::string* pstrError, const ProxyCredentials* pAuth)
 {
     streamOut.Close();
     SOCKET hSocket = INVALID_SOCKET;
     bool fDialed = false;
     if (fIsolate)
     {
-        // A fresh pair per phase. Reusing one would put every phase on one circuit,
-        // which is the same exit address, which is the mapping this is here to deny.
-        const ProxyCredentials auth = RandomProxyCredentials();
+        // A fresh pair unless the caller names one. Reusing a pair puts dials on one
+        // circuit, so only dials the far end can already link may share one.
+        const ProxyCredentials auth = pAuth ? *pAuth : RandomProxyCredentials();
         fDialed = ConnectSocks5ByName(addrProxy, strEndpoint, nPort, hSocket, nTimeoutMs, &auth);
     }
     else
@@ -3718,7 +3718,8 @@ volatile bool g_fMixExchangesStopped = false;
 bool CMixTorDialer::Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
                              const std::vector<unsigned char>& vchPayload,
                              MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut,
-                             std::string* pstrError, int nTimeoutMs)
+                             std::string* pstrError, int nTimeoutMs,
+                             const std::string& strCircuit)
 {
     nReplyTypeOut = MIX_FRAME_NONE;
     vchReplyOut.clear();
@@ -3728,15 +3729,24 @@ bool CMixTorDialer::Exchange(const std::string& strEndpoint, int nPort, MixFrame
             *pstrError = "the mix service is stopping";
         return false;
     }
+    if (!strCircuit.empty() && !IsAuthenticatedMixFrame(nType))
+    {
+        if (pstrError)
+            *pstrError = "an unauthenticated frame never shares a circuit";
+        return false;
+    }
     if (nTimeoutMs <= 0 || nTimeoutMs > MIX_EXCHANGE_TIMEOUT_MS)
         nTimeoutMs = MIX_EXCHANGE_TIMEOUT_MS;
-    // One deadline for the whole exchange. The dial times its connect and its SOCKS handshake
-    // separately, so it gets a third and can spend at most two; the request and the reply
-    // share whatever is left.
+    // One deadline for the whole exchange. Over Tor the dial is the circuit, 1.5-5.5 s fresh and
+    // under 1 s on one already built; there is no reply without it, so it may take all of the
+    // deadline, and the request and the reply share whatever it leaves.
     const int64_t nDeadline = GetTimeMillis() + nTimeoutMs;
+    ProxyCredentials auth;
+    auth.strUser = strCircuit;
+    auth.strPassword = strCircuit;
     CMixStream stream;
-    if (!DialMixPhase(addrProxy, strEndpoint, nPort, true, std::max(1, nTimeoutMs / 3), stream,
-                      pstrError))
+    if (!DialMixPhase(addrProxy, strEndpoint, nPort, true, nTimeoutMs, stream, pstrError,
+                      strCircuit.empty() ? NULL : &auth))
         return false;
     int64_t nLeft = nDeadline - GetTimeMillis();
     if (nLeft <= 0 || !stream.Send(nType, vchPayload, pstrError, (int)nLeft))
@@ -4197,10 +4207,17 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
                        (int)MIX_PUBLISH_EARLIEST_SECS, (int)nOpens));
     const int64_t nTime = nOpens + MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK;
 
-    // The longest schedule the budget allows, then the shortest the floors allow.
+    // The longest schedule the budget allows. The middle one keeps 30 s token, nonce and
+    // response windows, each a step of two exchanges over Tor that 15 s barely holds with a
+    // retry; the floors are the last resort. The anchor is two epochs behind the tip and the
+    // round starts a fixed time after the slot opens, so which fits depends on where the tip
+    // sits in its epoch when the publishing window opens: without the floors a 30-block band
+    // of that phase fits nothing, with them an 8-block band.
     struct Schedule { uint16_t v[7]; };
-    const Schedule vSchedules[2] = {
+    const Schedule vSchedules[3] = {
         { { 90, 90, 30, (uint16_t)MIX_OUTPUT_WINDOW, 90, 30, 30 } },
+        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30,
+            (uint16_t)MIX_OUTPUT_WINDOW, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30, 30 } },
         { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS,
             (uint16_t)MIX_WINDOW_MIN_SECS, (uint16_t)MIX_OUTPUT_WINDOW,
             (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, (uint16_t)MIX_WINDOW_MIN_SECS,
@@ -4249,7 +4266,7 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
                                           digest, nMatched, fAnchorLocal, strAnchor))
             continue;
         const int nSafeThrough = MixAnchorSafeThroughHeight(state.nEpoch);
-        for (size_t k = 0; k < 2; k++)
+        for (size_t k = 0; k < sizeof(vSchedules) / sizeof(vSchedules[0]); k++)
         {
             const Schedule& sch = vSchedules[k];
             int64_t nToResponse = 0;

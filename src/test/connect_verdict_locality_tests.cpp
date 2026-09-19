@@ -945,13 +945,17 @@ BOOST_AUTO_TEST_CASE(a_coordinator_plans_a_round_every_seat_will_enter)
     BOOST_CHECK(!PlanMixRound(txdb, nEpochStart + 120, nOpens - MIX_PUBLISH_LATEST_SECS + 1,
                               plan, &strError));
 
+    // The middle schedule's 765 blocks end exactly on the anchor's last safe height at offset
+    // 214 signing 100 s ahead; one block later only the floors' 698 do.
     struct Case { int nOffset; int64_t nLead; int nEpoch; int nToResponse; };
-    const Case vCases[3] = {
+    const Case vCases[5] = {
         { 20, 150, 9, 480 },    // the head is deep by JOIN and the long schedule fits
-        { 150, 150, 9, 345 },   // later in the epoch only the short one does
+        { 150, 150, 9, 390 },   // later in the epoch only a shorter one does
         { 60, 100, 9, 480 },    // signing later leaves more of the anchor for the round
+        { 214, 100, 9, 390 },
+        { 215, 100, 9, 345 },
     };
-    for (size_t i = 0; i < 3; i++)
+    for (size_t i = 0; i < sizeof(vCases) / sizeof(vCases[0]); i++)
     {
         const int nTip = nEpochStart + vCases[i].nOffset;
         const int64_t nNow = nOpens - vCases[i].nLead;

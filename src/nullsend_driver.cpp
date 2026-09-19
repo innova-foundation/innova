@@ -215,9 +215,17 @@ CMixSeatJob::CMixSeatJob(const CMixSeatConfig& configIn, CMixSeatEnv& envIn,
                          CMixDialer& dialerIn)
     : config(configIn), env(envIn), dialer(dialerIn), nState(MIX_SEAT_FINDING),
       strStatus("waiting for the record slot to settle"), nNextAction(0),
-      nExchangeTimeoutMs(MIX_EXCHANGE_TIMEOUT_MS), fKeyImageRevealed(false),
+      nExchangeTimeoutMs(MIX_EXCHANGE_TIMEOUT_MS), nWindowCloses(0), fKeyImageRevealed(false),
       fFinalShareSent(false)
 {
+    NewCircuit();
+}
+
+void CMixSeatJob::NewCircuit()
+{
+    unsigned char vch[16];
+    GetRandBytes(vch, sizeof(vch));
+    strCircuit = HexStr(vch, vch + sizeof(vch));
 }
 
 MixSeatJobState CMixSeatJob::State() const { return nState; }
@@ -240,9 +248,25 @@ void CMixSeatJob::Fail(const std::string& strWhy)
 
 void CMixSeatJob::Window(int64_t nNow, int64_t nCloses)
 {
+    nWindowCloses = nCloses;
     const int64_t nLeftMs = (nCloses - nNow) * 1000;
     nExchangeTimeoutMs = (int)std::max<int64_t>(
         3000, std::min<int64_t>(nLeftMs, MIX_EXCHANGE_TIMEOUT_MS));
+}
+
+const int64_t CMixSeatJob::RETRY_SECS;
+
+int64_t MixSeatRetryDelay(int64_t nNow, int64_t nWindowCloses)
+{
+    if (nWindowCloses <= 0)
+        return CMixSeatJob::RETRY_SECS;
+    const int64_t nLeft = nWindowCloses - nNow;
+    return std::min<int64_t>(CMixSeatJob::RETRY_SECS, std::max<int64_t>(1, nLeft / 3));
+}
+
+void CMixSeatJob::Retry(int64_t nNow)
+{
+    nNextAction = nNow + MixSeatRetryDelay(nNow, nWindowCloses);
 }
 
 void CMixSeatJob::Schedule(int64_t nFrom, int64_t nUntil)
@@ -259,10 +283,18 @@ void CMixSeatJob::Schedule(int64_t nFrom, int64_t nUntil)
 bool CMixSeatJob::Ask(MixFrameType nType, const std::vector<unsigned char>& vchPayload,
                       MixFrameType& nReplyOut, std::vector<unsigned char>& vchReplyOut)
 {
+    // An authenticated frame already names its seat, so sharing the seat's circuit tells the
+    // coordinator nothing new. The output registration and the public result read go on
+    // circuits of their own: one must never name the seat, the other need not.
+    const std::string strOn = IsAuthenticatedMixFrame(nType) ? strCircuit : std::string();
     std::string strError;
     if (!dialer.Exchange(announce.strEndpoint, announce.nPort, nType, vchPayload, nReplyOut,
-                         vchReplyOut, &strError, nExchangeTimeoutMs))
+                         vchReplyOut, &strError, nExchangeTimeoutMs, strOn))
     {
+        // Tor keeps sending the seat's streams down a circuit that has died, each until its
+        // deadline, so the next attempt goes on a new one.
+        if (!strOn.empty())
+            NewCircuit();
         strStatus = "exchange failed: " + strError;
         return false;
     }
@@ -318,7 +350,7 @@ void CMixSeatJob::Step(int64_t nNow)
                 if (fPending)
                 {
                     strStatus = "waiting for the record slot to settle";
-                    nNextAction = nNow + RETRY_SECS;
+                    Retry(nNow);
                     return;
                 }
                 return Fail("the record slot cannot be read: " + strError);
@@ -333,7 +365,7 @@ void CMixSeatJob::Step(int64_t nNow)
         if (!FetchMixAnnouncement(dialer, config.vDirectories, rendezvous, fetched, &strError))
         {
             strStatus = "fetching the announcement: " + strError;
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         announce = fetched;
@@ -392,7 +424,7 @@ void CMixSeatJob::Step(int64_t nNow)
         fKeyImageRevealed = true;
         if (!AskAccepted(MIX_FRAME_JOIN, vchJoin))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_JOINED;
@@ -410,7 +442,7 @@ void CMixSeatJob::Step(int64_t nNow)
             CMixSnapshot snapshot;
             if (!ReadSnapshot(snapshot) || (int)snapshot.vRoster.size() != announce.nParticipants)
             {
-                nNextAction = nNow + RETRY_SECS;
+                Retry(nNow);
                 return;
             }
             CMixAnchorView view;
@@ -428,7 +460,7 @@ void CMixSeatJob::Step(int64_t nNow)
         }
         if (!AskAccepted(MIX_FRAME_VIEW_SIG, vchViewSig))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_VIEWED;
@@ -446,7 +478,7 @@ void CMixSeatJob::Step(int64_t nNow)
             return Fail(strError);
         if (!AskAccepted(MIX_FRAME_INPUT_CONSTRUCTION, vchConstruction))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_CONSTRUCTED;
@@ -464,7 +496,7 @@ void CMixSeatJob::Step(int64_t nNow)
             CMixSnapshot snapshot;
             if (!ReadSnapshot(snapshot) || snapshot.vchRsaN.empty())
             {
-                nNextAction = nNow + RETRY_SECS;
+                Retry(nNow);
                 return;
             }
             if (!seat.BuildTokenRequest(snapshot, vchTokenRequest, &strError))
@@ -475,7 +507,7 @@ void CMixSeatJob::Step(int64_t nNow)
         if (!Ask(MIX_FRAME_BLIND_REQUEST, vchTokenRequest, nReply, vchReply) ||
             nReply != MIX_FRAME_BLIND_SIGNATURE)
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         if (!seat.AcceptToken(vchReply, &strError))
@@ -495,7 +527,7 @@ void CMixSeatJob::Step(int64_t nNow)
             return Fail(strError);
         if (!AskAccepted(MIX_FRAME_OUTPUT, vchRegistration))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_REGISTERED;
@@ -514,7 +546,7 @@ void CMixSeatJob::Step(int64_t nNow)
             CMixSnapshot snapshot;
             if (!ReadSnapshot(snapshot) || snapshot.vchPrefix.empty())
             {
-                nNextAction = nNow + RETRY_SECS;
+                Retry(nNow);
                 return;
             }
             CMixAnchorView view;
@@ -525,7 +557,7 @@ void CMixSeatJob::Step(int64_t nNow)
         }
         if (!AskAccepted(MIX_FRAME_PREFIX_SIG, vchPrefixSig))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_APPROVED;
@@ -543,7 +575,7 @@ void CMixSeatJob::Step(int64_t nNow)
             return Fail(strError);
         if (!AskAccepted(MIX_FRAME_MEMBERSHIP_PROOF, vchProof))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_PROVED;
@@ -560,7 +592,7 @@ void CMixSeatJob::Step(int64_t nNow)
             return Fail(strError);
         if (!AskAccepted(MIX_FRAME_NONCE, vchNonce))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_NONCED;
@@ -579,7 +611,7 @@ void CMixSeatJob::Step(int64_t nNow)
             if (!ReadSnapshot(snapshot) ||
                 (int)snapshot.vNonces.size() != announce.nParticipants)
             {
-                nNextAction = nNow + RETRY_SECS;
+                Retry(nNow);
                 return;
             }
             CMixAnchorView view;
@@ -593,7 +625,7 @@ void CMixSeatJob::Step(int64_t nNow)
         fFinalShareSent = true;
         if (!AskAccepted(MIX_FRAME_RESPONSE, vchResponse))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         nState = MIX_SEAT_RESPONDED;
@@ -610,14 +642,14 @@ void CMixSeatJob::Step(int64_t nNow)
         std::vector<unsigned char> vchReply;
         if (!Ask(MIX_FRAME_RESULT, std::vector<unsigned char>(), nReply, vchReply))
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         if (nReply == MIX_FRAME_ABORT)
             return Fail("the round aborted");
         if (nReply != MIX_FRAME_TRANSACTION)
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         CTransaction tx;
@@ -628,7 +660,7 @@ void CMixSeatJob::Step(int64_t nNow)
         }
         catch (const std::exception&)
         {
-            nNextAction = nNow + RETRY_SECS;
+            Retry(nNow);
             return;
         }
         // Not taken on the coordinator's word: the transaction has to be built on the prefix

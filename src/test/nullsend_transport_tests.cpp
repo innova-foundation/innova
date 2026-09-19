@@ -4,6 +4,7 @@
 #include <boost/test/unit_test.hpp>
 #include <boost/thread.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -618,9 +619,41 @@ BOOST_AUTO_TEST_CASE(a_stream_gives_up_on_a_peer_that_is_not_speaking_frames)
     }
 }
 
-// One phase, one connection, and with isolation a fresh credential pair every time.
-// Reusing a pair would put every phase on one circuit, which is one exit address,
-// which is the mapping the blind signature exists to deny.
+// One phase, one connection, a fresh credential pair unless the caller names one; the
+// dialer refuses a named circuit for anything but an authenticated frame.
+BOOST_AUTO_TEST_CASE(the_dialer_keeps_unsigned_frames_off_a_named_circuit)
+{
+    const std::string strTag = "fedcba9876543210fedcba9876543210";
+    std::vector<unsigned char> vchReply;
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::string strError;
+
+    // Nothing listens here: a dial would fail as unreachable, not as refused.
+    CMixTorDialer nowhere(CService("127.0.0.1", (unsigned short)1));
+    const MixFrameType vUnsigned[] = { MIX_FRAME_OUTPUT, MIX_FRAME_RESULT, MIX_FRAME_STATE };
+    for (size_t i = 0; i < sizeof(vUnsigned) / sizeof(vUnsigned[0]); i++)
+    {
+        strError.clear();
+        BOOST_CHECK(!nowhere.Exchange("coordinator.onion", 8443, vUnsigned[i],
+                                      std::vector<unsigned char>(1, 0x01), nReply, vchReply,
+                                      &strError, 3000, strTag));
+        BOOST_CHECK_MESSAGE(strError.find("never shares a circuit") != std::string::npos,
+                            "frame " << (int)vUnsigned[i] << ": " << strError);
+    }
+
+    // An authenticated frame dials with the named pair.
+    ScriptedProxy proxy(0x02, 0x00);
+    BOOST_REQUIRE(proxy.Start());
+    CMixTorDialer dialer(CService("127.0.0.1", (unsigned short)proxy.Port()));
+    dialer.Exchange("coordinator.onion", 8443, MIX_FRAME_STATE_AUTH,
+                    std::vector<unsigned char>(1, 0x01), nReply, vchReply, &strError, 3000,
+                    strTag);
+    BOOST_REQUIRE(proxy.AuthSeen());
+    const std::vector<unsigned char>& vchAuth = proxy.Auth();
+    BOOST_CHECK(std::search(vchAuth.begin(), vchAuth.end(), strTag.begin(), strTag.end()) !=
+                vchAuth.end());
+}
+
 BOOST_AUTO_TEST_CASE(each_phase_dials_its_own_circuit)
 {
     ScriptedProxy first(0x02, 0x00);
@@ -645,6 +678,24 @@ BOOST_AUTO_TEST_CASE(each_phase_dials_its_own_circuit)
     BOOST_CHECK_MESSAGE(first.Auth() != second.Auth(),
                         "two phases dialled with the same credentials, so Tor puts them "
                         "on one circuit and one exit address serves both");
+
+    // A pair the caller names is the pair the proxy sees, every time it is named.
+    ProxyCredentials named;
+    named.strUser = named.strPassword = "0123456789abcdef0123456789abcdef";
+    ScriptedProxy third(0x02, 0x00);
+    BOOST_REQUIRE(third.Start());
+    ScriptedProxy fourth(0x02, 0x00);
+    BOOST_REQUIRE(fourth.Start());
+    CMixStream phaseThree, phaseFour;
+    BOOST_REQUIRE(DialMixPhase(CService("127.0.0.1", (unsigned short)third.Port()),
+                               "coordinator.onion", 8443, true, 5000, phaseThree, &strError,
+                               &named));
+    BOOST_REQUIRE(DialMixPhase(CService("127.0.0.1", (unsigned short)fourth.Port()),
+                               "coordinator.onion", 8443, true, 5000, phaseFour, &strError,
+                               &named));
+    BOOST_REQUIRE(third.AuthSeen() && fourth.AuthSeen());
+    BOOST_CHECK(third.Auth() == fourth.Auth());
+    BOOST_CHECK(third.Auth() != first.Auth() && third.Auth() != second.Auth());
 
     // A proxy that will not isolate fails the phase rather than carrying it.
     ScriptedProxy refuses(0x00, 0x00, true);

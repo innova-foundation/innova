@@ -669,10 +669,18 @@ bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, 
     if (!addrProxy.IsValid())
         return error("ConnectSocks5ByName: invalid proxy endpoint");
 
+    // One budget for the connect to the proxy and the handshake together.
+    const int64_t nDeadline = GetTimeMillis() + (nTimeout > 0 ? nTimeout : 0);
     SOCKET hSocket = INVALID_SOCKET;
     if (!ConnectSocketDirectly(addrProxy, hSocket, nTimeout))
         return false;
-    if (!Socks5(strDest, port, hSocket, nTimeout, pAuth))
+    const int64_t nLeft = nDeadline - GetTimeMillis();
+    if (nLeft <= 0)
+    {
+        closesocket(hSocket);
+        return error("ConnectSocks5ByName: no time left for the handshake");
+    }
+    if (!Socks5(strDest, port, hSocket, (int)nLeft, pAuth))
         return false;
 
     hSocketRet = hSocket;

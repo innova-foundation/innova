@@ -4574,7 +4574,8 @@ public:
     InProcessDialer() : nNow(0) {}
     bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
                   const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
-                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int)
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int,
+                  const std::string&)
     {
         vCalls.push_back(strEndpoint);
         std::map<std::string, std::vector<std::vector<unsigned char> > >::const_iterator itLie =
@@ -4910,13 +4911,21 @@ public:
         : job(jobIn), directory(directoryIn), nNow(nNowIn), nExchanges(0) {}
     bool Exchange(const std::string& strEndpoint, int, MixFrameType nType,
                   const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
-                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int)
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int,
+                  const std::string& strCircuit)
     {
         nExchanges++;
         if (strEndpoint == "dir.onion")
+        {
+            if (!strCircuit.empty())
+                vDirectoryOnCircuit.push_back(nType);
             return directory.Serve(nType, vchPayload, nNow, nReplyTypeOut, vchReplyOut);
+        }
         if (strEndpoint == job.Announcement().strEndpoint)
+        {
+            mapCircuitFrames[strCircuit].push_back(nType);
             return job.Serve(nType, vchPayload, nNow, nReplyTypeOut, vchReplyOut);
+        }
         if (pstrError)
             *pstrError = "unreachable";
         return false;
@@ -4925,6 +4934,9 @@ public:
     CMixDirectory& directory;
     const int64_t& nNow;
     int nExchanges;
+    // The frames sent to the coordinator on each circuit, "" being a fresh one each time.
+    std::map<std::string, std::vector<MixFrameType> > mapCircuitFrames;
+    std::vector<MixFrameType> vDirectoryOnCircuit;
 };
 
 // Hands every exchange to another dialer, but loses the reply to the first request of each
@@ -4935,10 +4947,11 @@ public:
     explicit LossyDialer(CMixDialer& innerIn) : inner(innerIn), nLost(0) {}
     bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
                   const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
-                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int nTimeoutMs)
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int nTimeoutMs,
+                  const std::string& strCircuit)
     {
         const bool fDone = inner.Exchange(strEndpoint, nPort, nType, vchPayload, nReplyTypeOut,
-                                          vchReplyOut, pstrError, nTimeoutMs);
+                                          vchReplyOut, pstrError, nTimeoutMs, strCircuit);
         // Only a reply that said the request was taken: losing a refusal tests nothing.
         bool fAccepted = false;
         if (fDone && nReplyTypeOut == MIX_FRAME_ACK && ReadMixAckBody(vchReplyOut, fAccepted) &&
@@ -4957,6 +4970,42 @@ public:
     CMixDialer& inner;
     std::set<int> setLose, setLost;
     int nLost;
+};
+
+// Hands every exchange to another dialer until the first named circuit has carried three
+// frames; from then that circuit is dead and every exchange on it fails, as Tor fails a stream
+// it keeps attaching to a circuit that has collapsed.
+class DeadCircuitDialer : public CMixDialer
+{
+public:
+    explicit DeadCircuitDialer(CMixDialer& innerIn) : inner(innerIn), nRefused(0) {}
+    bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string* pstrError, int nTimeoutMs,
+                  const std::string& strCircuit)
+    {
+        if (!strCircuit.empty() && strCircuit == strDead)
+        {
+            nRefused++;
+            if (pstrError)
+                *pstrError = "circuit dead";
+            return false;
+        }
+        const bool fDone = inner.Exchange(strEndpoint, nPort, nType, vchPayload, nReplyTypeOut,
+                                          vchReplyOut, pstrError, nTimeoutMs, strCircuit);
+        if (!strCircuit.empty())
+        {
+            vCircuits.push_back(strCircuit);
+            if (strDead.empty() &&
+                std::count(vCircuits.begin(), vCircuits.end(), strCircuit) == 3)
+                strDead = strCircuit;
+        }
+        return fDone;
+    }
+    CMixDialer& inner;
+    std::string strDead;
+    std::vector<std::string> vCircuits;
+    int nRefused;
 };
 
 } // namespace
@@ -5015,6 +5064,115 @@ BOOST_AUTO_TEST_CASE(a_coordinator_job_and_two_seat_jobs_complete_a_round_on_a_c
     BOOST_CHECK(envA.fHeld && envB.fHeld);
     BOOST_CHECK_EQUAL(envA.nReleased + envB.nReleased, 0);
     BOOST_CHECK_EQUAL(MixRendezvousRecordSlot(coordJob.Announcement().nTime), nRecordSlot);
+
+    // Each seat's authenticated frames share one circuit of its own; the output registrations
+    // and the result reads each go on a fresh one.
+    BOOST_CHECK(dialer.vDirectoryOnCircuit.empty());
+    std::map<std::string, std::vector<MixFrameType> >::const_iterator itFresh =
+        dialer.mapCircuitFrames.find(std::string());
+    BOOST_REQUIRE(itFresh != dialer.mapCircuitFrames.end());
+    BOOST_CHECK_EQUAL(std::count(itFresh->second.begin(), itFresh->second.end(), MIX_FRAME_OUTPUT),
+                      2);
+    for (size_t i = 0; i < itFresh->second.size(); i++)
+        BOOST_CHECK(itFresh->second[i] == MIX_FRAME_OUTPUT ||
+                    itFresh->second[i] == MIX_FRAME_RESULT);
+    BOOST_CHECK_EQUAL(dialer.mapCircuitFrames.size(), 3U);
+    for (std::map<std::string, std::vector<MixFrameType> >::const_iterator it =
+             dialer.mapCircuitFrames.begin();
+         it != dialer.mapCircuitFrames.end(); ++it)
+    {
+        if (it->first.empty())
+            continue;
+        BOOST_CHECK_EQUAL(it->first.size(), 32U);
+        BOOST_CHECK_EQUAL(std::count(it->second.begin(), it->second.end(), MIX_FRAME_JOIN), 1);
+        BOOST_CHECK(std::count(it->second.begin(), it->second.end(), MIX_FRAME_RESPONSE) >= 1);
+        for (size_t i = 0; i < it->second.size(); i++)
+            BOOST_CHECK_MESSAGE(IsAuthenticatedMixFrame(it->second[i]),
+                                "frame " << (int)it->second[i] << " went on a seat's circuit");
+    }
+}
+
+// A seat whose circuit dies mid-round draws a new one on the failed exchange and carries on:
+// retrying on the dead one would spend every remaining attempt the same way.
+BOOST_AUTO_TEST_CASE(a_seat_whose_circuit_dies_moves_to_a_new_one)
+{
+    int64_t nNow = 29600000 - 150;
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer jobDialer(coordJob, directory, nNow);
+    DeadCircuitDialer dialer(jobDialer);
+
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv envA(0, 0x31, coordEnv, nNow), envB(1, 0x51, coordEnv, nNow);
+    CMixSeatJob seatA(seatConfig, envA, dialer), seatB(seatConfig, envB, dialer);
+
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        seatA.Step(nNow);
+        seatB.Step(nNow);
+        const bool fSeatsSettled =
+            (seatA.State() == MIX_SEAT_DONE || seatA.State() == MIX_SEAT_FAILED) &&
+            (seatB.State() == MIX_SEAT_DONE || seatB.State() == MIX_SEAT_FAILED);
+        if (fSeatsSettled && coordJob.State() >= MIX_COORD_DONE)
+            break;
+    }
+    BOOST_REQUIRE(!dialer.strDead.empty());
+    BOOST_CHECK_EQUAL(dialer.nRefused, 1);
+    BOOST_REQUIRE_MESSAGE(seatA.State() == MIX_SEAT_DONE, "seat A: " << seatA.Status());
+    BOOST_REQUIRE_MESSAGE(seatB.State() == MIX_SEAT_DONE, "seat B: " << seatB.Status());
+    BOOST_CHECK(coordJob.Broadcasted());
+    // Three circuits in all: the one that died, its replacement, and the other seat's.
+    std::set<std::string> setCircuits(dialer.vCircuits.begin(), dialer.vCircuits.end());
+    BOOST_CHECK_EQUAL(setCircuits.size(), 3U);
+}
+
+// A seat retries on an interval, but never so late that a short window holds no second try.
+BOOST_AUTO_TEST_CASE(a_seat_retries_sooner_as_its_window_closes)
+{
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 0), CMixSeatJob::RETRY_SECS);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1030), CMixSeatJob::RETRY_SECS);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1024), CMixSeatJob::RETRY_SECS);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1015), 5);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1006), 2);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1002), 1);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 1000), 1);
+    BOOST_CHECK_EQUAL(MixSeatRetryDelay(1000, 990), 1);
+}
+
+// Only a frame the coordinator can already attribute to a seat may share the seat's circuit.
+BOOST_AUTO_TEST_CASE(only_authenticated_frames_may_share_a_circuit)
+{
+    const MixFrameType vSigned[] = {
+        MIX_FRAME_JOIN, MIX_FRAME_VIEW_SIG, MIX_FRAME_INPUT_CONSTRUCTION,
+        MIX_FRAME_BLIND_REQUEST, MIX_FRAME_PREFIX_SIG, MIX_FRAME_MEMBERSHIP_PROOF,
+        MIX_FRAME_NONCE, MIX_FRAME_RESPONSE, MIX_FRAME_STATE_AUTH };
+    for (size_t i = 0; i < sizeof(vSigned) / sizeof(vSigned[0]); i++)
+        BOOST_CHECK(IsAuthenticatedMixFrame(vSigned[i]));
+    const MixFrameType vOpen[] = {
+        MIX_FRAME_OUTPUT, MIX_FRAME_RESULT, MIX_FRAME_STATE, MIX_FRAME_ANNOUNCE_PUT,
+        MIX_FRAME_ANNOUNCE_GET, MIX_FRAME_NONE };
+    for (size_t i = 0; i < sizeof(vOpen) / sizeof(vOpen[0]); i++)
+        BOOST_CHECK(!IsAuthenticatedMixFrame(vOpen[i]));
 }
 
 // A seat resends every authenticated frame byte for byte after a lost reply, and the round

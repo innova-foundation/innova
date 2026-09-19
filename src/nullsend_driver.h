@@ -193,6 +193,8 @@ private:
              MixFrameType& nReplyOut, std::vector<unsigned char>& vchReplyOut);
     /** What is left of the current window, as an exchange deadline. */
     void Window(int64_t nNow, int64_t nCloses);
+    void Retry(int64_t nNow);
+    void NewCircuit();
     bool AskAccepted(MixFrameType nType, const std::vector<unsigned char>& vchPayload);
     bool ReadSnapshot(CMixSnapshot& snapshotOut);
     bool FreshAnchor(int64_t nNow, CMixAnchorView& viewOut);
@@ -204,6 +206,10 @@ private:
     std::string strStatus;
     int64_t nNextAction;
     int nExchangeTimeoutMs;
+    int64_t nWindowCloses;
+    // The circuit this seat's authenticated frames share: random per job, and redrawn when an
+    // exchange on it fails.
+    std::string strCircuit;
     CMixRendezvous rendezvous;
     CMixRoundAnnouncement announce;
     CMixSeat seat;
@@ -214,6 +220,10 @@ private:
     bool fFinalShareSent;
     CTransaction txResult;
 };
+
+/** How long a seat waits before trying a step again: RETRY_SECS, or a third of what is left of
+ *  its window when that is shorter, so a short window still holds a retry. */
+int64_t MixSeatRetryDelay(int64_t nNow, int64_t nWindowCloses);
 
 // ---------------------------------------------------------------------------
 // The node's mix service

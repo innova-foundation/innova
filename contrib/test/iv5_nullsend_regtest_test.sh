@@ -12,9 +12,14 @@
 # record slot to settle on the deterministic finalized chain, fetches the announcement,
 # checks it against the record and takes every step inside its window.
 #
-# There is no Tor here. Mix endpoints must be onion names and every exchange is dialed
+# By default there is no Tor. Mix endpoints must be onion names and every exchange is dialed
 # through SOCKS5, so contrib/test/mix_socks_stub.py answers the handshake and forwards to
 # the local port asked for. Names are made up; nothing is anonymous.
+#
+# With IV5_NULLSEND_TOR=<tor binary> the round runs over the Tor network: node0 runs its
+# bundled tor (-nativetor), which hosts the directory and coordinator onion services, and the
+# seats dial through a separate tor client started from that binary. Needs a USE_NATIVETOR
+# build, outbound access to Tor, and port 9089 free on the host.
 #
 # A round runs on wall-clock slots of 600 s: the record is published in one slot and the
 # round starts 120 s into the next, so a run takes 30 to 45 minutes. The chain is mined at
@@ -37,6 +42,8 @@ COORD_PORT=$(( BASE_RPC + 91 ))
 DIR_PORT=$(( BASE_RPC + 92 ))
 COORD_ONION="coordaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion"
 DIR_ONION="directoryaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion"
+TOR_BIN="${IV5_NULLSEND_TOR:-}"
+TOR_SOCKS_PORT=$(( BASE_RPC + 93 ))
 RPCUSER=nullsend
 RPCPASS=nullsendpass
 WALLETPASS=nullsendwallet
@@ -96,12 +103,21 @@ write_conf() {
         echo "regtestboundaryb=$BOUNDARY_B"
         echo "regtestiv5rehearsal=1"
         echo "debug=1"
-        echo "mixproxy=127.0.0.1:$STUB_PORT"
-        echo "mixdir=$DIR_ONION:$DIR_PORT"
+        # A -nativetor node dials through its bundled tor and names its coordinator onion from
+        # the service's hostname file.
+        if [ -n "$TOR_BIN" ] && [ "$node" -eq 0 ]; then
+            echo "nativetor=1"
+            echo "onionseed=0"
+        elif [ -n "$TOR_BIN" ]; then
+            echo "mixproxy=127.0.0.1:$TOR_SOCKS_PORT"
+        else
+            echo "mixproxy=127.0.0.1:$STUB_PORT"
+        fi
+        [ -n "$DIR_ONION" ] && echo "mixdir=$DIR_ONION:$DIR_PORT"
         if [ "$node" -eq 0 ]; then
             echo "mixcoordinatorport=$COORD_PORT"
             echo "mixdirectoryport=$DIR_PORT"
-            echo "mixonion=$COORD_ONION"
+            [ -z "$TOR_BIN" ] && echo "mixonion=$COORD_ONION"
         fi
         for ((peer=0; peer<NUM_NODES; peer++)); do
             [ "$peer" -eq "$node" ] && continue
@@ -143,11 +159,13 @@ stop_node() {
 }
 
 STUB_PID=""
+TOR_PID=""
 MINER_PID=""
 cleanup() {
     [ -n "$MINER_PID" ] && kill "$MINER_PID" 2>/dev/null
     for ((n=0; n<NUM_NODES; n++)); do stop_node "$n"; done
     [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null
+    [ -n "$TOR_PID" ] && kill "$TOR_PID" 2>/dev/null
     echo
     echo "passed: $PASSED  failed: $FAILED"
     if [ "$FAILED" -eq 0 ] && [ "${KEEP_DIR:-0}" != "1" ]; then
@@ -207,11 +225,38 @@ header "NullSend v2008 regtest round"
 [ -x "$INNOVAD" ] || { fail "innovad not found at $INNOVAD"; exit 1; }
 rm -rf "$TEST_DIR"; mkdir -p "$TEST_DIR"
 
-python3 "$STUB" --port "$STUB_PORT" > "$TEST_DIR/stub.log" 2>&1 &
-STUB_PID=$!
-
-for ((n=0; n<NUM_NODES; n++)); do write_conf "$n"; start_node "$n" || { fail "node$n did not start"; exit 1; }; done
-success "three nodes up; node0 runs the directory on $DIR_PORT and a coordinator on $COORD_PORT"
+if [ -n "$TOR_BIN" ]; then
+    [ -x "$TOR_BIN" ] || { fail "tor not found at $TOR_BIN"; exit 1; }
+    mkdir -p "$TEST_DIR/torclient"; chmod 700 "$TEST_DIR/torclient"
+    "$TOR_BIN" --SocksPort "$TOR_SOCKS_PORT" --DataDirectory "$TEST_DIR/torclient" \
+        --Log "notice file $TEST_DIR/torclient/tor.log" --ignore-missing-torrc -f /dev/null \
+        >/dev/null 2>&1 &
+    TOR_PID=$!
+    # The directory's onion name exists once node0's tor has made its service key.
+    DIR_ONION=""
+    write_conf 0
+    start_node 0 || { fail "node0 did not start"; exit 1; }
+    for _ in $(seq 1 180); do
+        DIR_ONION="$(cat "$(node_dir 0)/onion-mix-directory/hostname" 2>/dev/null)"
+        [ -n "$DIR_ONION" ] && [ -s "$(node_dir 0)/onion-mix-coordinator/hostname" ] && break
+        sleep 1
+    done
+    [ -n "$DIR_ONION" ] || { fail "node0's tor made no mix onion services"; exit 1; }
+    for _ in $(seq 1 180); do
+        grep -q "Bootstrapped 100%" "$TEST_DIR/torclient/tor.log" 2>/dev/null && break
+        sleep 1
+    done
+    grep -q "Bootstrapped 100%" "$TEST_DIR/torclient/tor.log" || { fail "the seats' tor did not bootstrap"; exit 1; }
+    # node0 reads -mixdir when it restarts after encrypting its wallet.
+    for ((n=0; n<NUM_NODES; n++)); do write_conf "$n"; done
+    for n in 1 2; do start_node "$n" || { fail "node$n did not start"; exit 1; }; done
+    success "three nodes up over Tor; directory $DIR_ONION:$DIR_PORT, coordinator $(cat "$(node_dir 0)/onion-mix-coordinator/hostname")"
+else
+    python3 "$STUB" --port "$STUB_PORT" > "$TEST_DIR/stub.log" 2>&1 &
+    STUB_PID=$!
+    for ((n=0; n<NUM_NODES; n++)); do write_conf "$n"; start_node "$n" || { fail "node$n did not start"; exit 1; }; done
+    success "three nodes up; node0 runs the directory on $DIR_PORT and a coordinator on $COORD_PORT"
+fi
 
 header "1. A chain past Boundary B, and a shielded note for each seat"
 # z_shieldall sweeps every transparent output, so a seat gets only what it shields first and

@@ -354,12 +354,12 @@ private:
     int nBoundPort;
 };
 
-/** Open one phase's connection through a SOCKS proxy. With fIsolate the dial draws
- *  a fresh username/password pair, so Tor puts this phase on its own circuit and a
- *  new connection from the same host is not the same exit address. */
+/** Open one phase's connection through a SOCKS proxy. fIsolate draws fresh SOCKS credentials
+ *  (own Tor circuit); pAuth reuses a pair, and only authenticated frames may be sent on such
+ *  a dial (CMixTorDialer::Exchange enforces it). */
 bool DialMixPhase(const CService& addrProxy, const std::string& strEndpoint, int nPort,
                   bool fIsolate, int nTimeoutMs, CMixStream& streamOut,
-                  std::string* pstrError = NULL);
+                  std::string* pstrError = NULL, const ProxyCredentials* pAuth = NULL);
 
 // Per-participant authentication: a participant registers a session key with its input and
 // signs every later message, so each phase can use its own circuit. secp256k1 because no
@@ -970,7 +970,9 @@ enum MixServiceStage
     MIX_STAGE_TERMINAL,    // published or aborted; reads only
 };
 
-/** Whether a frame carries a session key and a signature over it. */
+/** Whether a frame carries a session key and a signature over it, so the coordinator already
+ *  knows which seat sent it. Only these may share a seat's circuit; the output registration and
+ *  the public reads never do. */
 bool IsAuthenticatedMixFrame(MixFrameType nType);
 
 /** Requests one seat may make per frame kind per round. Bounds membership-proof verification
@@ -1304,18 +1306,20 @@ private:
 };
 
 /** One request and its one reply, each on a connection of its own. The node's dialer goes
- *  through Tor with a fresh circuit per exchange; a test answers from a service in the same
- *  process. Nothing about a caller travels except the frame. */
+ *  through Tor; a test answers from a service in the same process. Nothing about a caller
+ *  travels except the frame. */
 class CMixDialer
 {
 public:
     virtual ~CMixDialer() {}
     /** nTimeoutMs bounds the whole exchange; zero takes MIX_EXCHANGE_TIMEOUT_MS. A caller
-     *  inside a window passes what is left of it. */
+     *  inside a window passes what is left of it. Exchanges naming the same non-empty
+     *  strCircuit may share a circuit; an empty one gets a circuit of its own. */
     virtual bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
                           const std::vector<unsigned char>& vchPayload,
                           MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut,
-                          std::string* pstrError = NULL, int nTimeoutMs = 0) = 0;
+                          std::string* pstrError = NULL, int nTimeoutMs = 0,
+                          const std::string& strCircuit = std::string()) = 0;
 };
 
 /** The longest one exchange may take: a circuit, the request and the reply. Shorter than the
@@ -1332,7 +1336,7 @@ public:
     bool Exchange(const std::string& strEndpoint, int nPort, MixFrameType nType,
                   const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
                   std::vector<unsigned char>& vchReplyOut, std::string* pstrError = NULL,
-                  int nTimeoutMs = 0);
+                  int nTimeoutMs = 0, const std::string& strCircuit = std::string());
 
 private:
     CService addrProxy;
