@@ -110,7 +110,7 @@ ROLE_NOTE="${ROLE_NOTE:-d1 d2 m1}"
 # NullSend seats spend IV5 notes, so they are note nodes; the coordinator also serves
 # the directory. All sit on one machine because the SOCKS stub forwards to local
 # ports; real Tor is covered by contrib/test/iv5_nullsend_regtest_test.sh.
-MIX_COORD="${MIX_COORD:-d0}"
+MIX_COORD="${MIX_COORD:-d3}"
 MIX_SEATS="${MIX_SEATS:-d1 d2}"
 MIX_STUB_PORT="${MIX_STUB_PORT:-18960}"
 MIX_COORD_PORT="${MIX_COORD_PORT:-18961}"
@@ -127,6 +127,9 @@ role_of() {
   echo relay
 }
 note_nodes() { echo "$ROLE_NOTE"; }
+# Wallets that need an IV5 seed. The mix coordinator publishes its rendezvous
+# record from shielded funds, so it needs one even though it casts no note vote.
+seed_nodes() { echo "$ROLE_NOTE $MIX_COORD" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '; }
 
 field() { local n=$1 i=$2; for row in "${NODES[@]}"; do set -- $row; [ "$1" = "$n" ] && { eval echo "\${$i}"; return; }; done; }
 nhost() { field "$1" 2; }
@@ -316,7 +319,7 @@ cmd_start() {
 # not staking-only and has to be reapplied after every restart.
 cmd_unlock() {
   local n
-  for n in $(note_nodes); do
+  for n in $(seed_nodes); do
     rpc "$n" walletpassphrase "$WALLETPASS" 99999999 false >/dev/null 2>&1
     echo "unlocked $n"
   done
@@ -326,7 +329,7 @@ cmd_unlock() {
 # node, so each note voter is encrypted, restarted, unlocked and seeded in turn.
 cmd_prepare() {
   local n addr
-  for n in $(note_nodes); do
+  for n in $(seed_nodes); do
     if rpc "$n" z_getnewiv5address 2>&1 | grep -q 'address'; then
       echo "$n already seeded: $(iv5_addr "$n")"
       continue
@@ -453,13 +456,25 @@ cmd_mixround() {
   # The field is "coordinator"; it is the round's public key.
   pubkey=$(echo "$co" | tr -d '"[:space:]' | grep -o '[0-9a-f]\{66\}' | head -1)
   [ -n "$pubkey" ] || { echo "mixcoordinate: $(echo "$co" | tr -d '\n' | cut -c1-200)"; return 1; }
-  echo "coordinator $MIX_COORD opened a round, pubkey ${pubkey:0:16}"
-  # Slot 0 reads as absent, so the seats take slots from 1.
-  local slot=1
+  echo "coordinator $MIX_COORD opened a round, pubkey $pubkey"
+  # Every seat joins at the COORDINATOR's record slot -- it is where the round was
+  # published, not a per-seat index. The slot is fixed only once the coordinator's
+  # plan lands in a publishing window, so it is read back rather than assumed.
+  local slot= i
+  for i in $(seq 1 90); do
+    slot=$(rpc "$MIX_COORD" mixstatus 2>/dev/null | tr -d '"[:space:]' \
+           | sed -n 's/.*recordslot:\([0-9]\{1,\}\).*/\1/p' | head -1)
+    [ -n "$slot" ] && [ "$slot" -gt 0 ] 2>/dev/null && break
+    sleep 10
+  done
+  { [ -n "$slot" ] && [ "$slot" -gt 0 ]; } 2>/dev/null || {
+    echo "the coordinator never planned a slot: $(rpc "$MIX_COORD" mixstatus 2>/dev/null | tr -d '"[:space:]' | cut -c1-200)"
+    return 1
+  }
+  echo "round planned for record slot $slot"
   for n in $MIX_SEATS; do
     j=$(rpc "$n" mixjoin "$pubkey" "$slot" 2>&1 | tr -d '"[:space:]')
     echo "$n join: $(echo "$j" | cut -c1-140)"
-    slot=$((slot + 1))
   done
 }
 
