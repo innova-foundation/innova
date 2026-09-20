@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
-# Multi-machine IV5 regtest chain.
-#
-# Two machines by default: a line of d* nodes on the Linux build host and m* on
-# the MacBook, joined by a single link at the far end of the Linux line. Set
-# WORKSTATION_SSH to add a third machine, w*, joined the same way to the Mac.
-# DELL_NODES/MAC_NODES/WORKSTATION_NODES set how many each carries.
-#
-# A line rather than a star, on purpose: a block from the miner (d0) reaches the
-# far machine only by being relayed the whole way, which is what a single-host
-# fleet cannot exercise.
-#
-# Regtest rather than a private testnet because IsShieldedVNextConsensusReady()
-# is (fRegTest && -regtestiv5rehearsal), so the IV5 pool is unreachable off
-# regtest, and the Boundary-B / fee-note / note-vote / supply-cap / IDNS-reset
-# heights are regtest-only knobs.
-#
-# Subcommands: setup | start | mine | status | monitor | stop | wipe
+# Multi-machine IV5 regtest chain: d* on the Linux host, m* on the Mac, optional w*, in a line.
+# Subcommands: setup | start | mine | status | verify | monitor | stop | wipe
 
 set -uo pipefail
+
+# Kept before anything else runs: the table builders below use `set --` to split
+# rows, which at script scope overwrites the script's own arguments.
+ARGV=("$@")
 
 MAC_BIN="${MAC_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/innovad}"
 
@@ -61,11 +50,10 @@ if [ "$THIRD" -eq 1 ]; then
   HOSTS+=("workstation $WORKSTATION_SSH ${WORKSTATION_TS:-${WORKSTATION_SSH#*@}} ${WORKSTATION_BIN:-/home/$WORKSTATION_USER/innova/src/innovad} ${WORKSTATION_BASE:-/home/$WORKSTATION_USER/iv5tc}")
 fi
 
-# Ports are assigned per machine from a base well clear of anything a build host
-# is likely to be serving. Three contiguous runs per machine: p2p, rpc, idns.
+# Per machine, contiguous p2p/rpc/idns port runs; only the base node's port faces the tailnet.
 # prefix  host  p2p-base  rpc-base  idns-base  count
 LAYOUT=(
-  "d dell 18400 18500 18600 $DELL_NODES"
+  "d dell 18444 18500 18600 $DELL_NODES"
   "m mac  18700 18800 18900 $MAC_NODES"
 )
 [ "$THIRD" -eq 1 ] && LAYOUT+=("w workstation 19000 19100 19200 $WORKSTATION_NODES")
@@ -165,20 +153,25 @@ emit_conf() {
   [ "$ki" != "-" ] && echo "finalitytallyprivkey=${TALLYKEYS[$ki]}"
   # Each machine is a line, not a mesh: node i dials i-1, and i-2 where there is
   # one, so a block travels the length of the fleet and one lost peer does not
-  # cut the line. The machines are joined by a single link each, at the FAR end
-  # of the previous machine's line, so crossing a platform means having been
-  # relayed the whole way first.
+  # cut the line.
   local prefix="${n%%[0-9]*}" idx="${n#"${n%%[0-9]*}"}"
   [ "$idx" -ge 1 ] && echo "addnode=127.0.0.1:$(nport "$prefix$((idx - 1))")"
   [ "$idx" -ge 2 ] && echo "addnode=127.0.0.1:$(nport "$prefix$((idx - 2))")"
   if [ "$idx" -eq 0 ]; then
     case "$prefix" in
       d) [ "$DELL_NODES" -ge 2 ] && echo "addnode=127.0.0.1:$(nport d1)" ;;
-      m) echo "addnode=$(host_addr dell):$(nport "$LAST_D")" ;;
-      w) echo "addnode=$(host_addr mac):$(nport "m$((MAC_NODES - 1))")" ;;
+      # Each machine is dialled at its base port, the only one open on the
+      # tailnet. The miner sits at the far end of the Linux line, so a block
+      # still crosses the whole fleet before it crosses a machine.
+      m) echo "addnode=$(host_addr dell):$(nport d0)" ;;
+      w) echo "addnode=$(host_addr mac):$(nport m0)" ;;
     esac
   fi
 }
+
+# The far end of the Linux line. Mining there rather than at d0 is what makes
+# the hop to the next machine the last link in the chain instead of the first.
+MINER="$LAST_D"
 
 cmd_setup() {
   local n host base target
@@ -228,15 +221,15 @@ cmd_wipe() {
 # setgenerate is <generate> [blocks] [threads]; blocks=0 mines until stopped.
 cmd_mine() {
   local target=${1:-20} threads=${2:-1}
-  rpc d0 setgenerate true 0 "$threads" >/dev/null 2>&1
+  rpc "$MINER" setgenerate true 0 "$threads" >/dev/null 2>&1
   while :; do
-    local h; h=$(height d0)
+    local h; h=$(height "$MINER")
     [ -z "$h" ] && { sleep 2; continue; }
     [ "$h" -ge "$target" ] && break
     sleep 2
   done
-  rpc d0 setgenerate false >/dev/null 2>&1
-  echo "d0 at $(height d0)"
+  rpc "$MINER" setgenerate false >/dev/null 2>&1
+  echo "$MINER at $(height "$MINER")"
 }
 
 cmd_status() {
@@ -246,6 +239,34 @@ cmd_status() {
     set -- $row; n=$1
     printf '%-4s %-6s %-8s %s\n' "$n" "$(height "$n")" "$(peers "$n")" "$2"
   done
+}
+
+# Compare block hashes at a height every node has passed; sequential height
+# samples skew while blocks are being produced.
+cmd_verify() {
+  local height=${1:-} n h ref="" refnode="" agree=0 disagree=0 missing=0
+  if [ -z "$height" ]; then
+    # Highest height every node is known to hold, so the question is answerable.
+    local min=999999999 v
+    for n in $(node_names); do
+      v=$(height "$n")
+      [[ "$v" =~ ^[0-9]+$ ]] || { echo "$n did not answer; nothing to compare"; return 1; }
+      [ "$v" -lt "$min" ] && min=$v
+    done
+    height=$min
+  fi
+  for n in $(node_names); do
+    h=$(rpc "$n" getblockhash "$height" 2>/dev/null | tr -d '"[:space:]')
+    if ! echo "$h" | grep -qE '^[0-9a-f]{64}$'; then
+      echo "  $n: no hash at $height"; missing=$((missing + 1)); continue
+    fi
+    if [ -z "$ref" ]; then ref="$h"; refnode="$n"; agree=1; continue; fi
+    if [ "$h" = "$ref" ]; then agree=$((agree + 1)); else
+      echo "  $n: ${h:0:16} != ${ref:0:16} ($refnode)"; disagree=$((disagree + 1))
+    fi
+  done
+  echo "height $height: $agree agree, $disagree disagree, $missing missing (${ref:0:16})"
+  [ "$disagree" -eq 0 ] && [ "$missing" -eq 0 ]
 }
 
 # Sample every node's height on a fixed interval and record divergence.
@@ -273,6 +294,7 @@ cmd_monitor() {
 
 [ "$THIRD" -eq 1 ] || echo "note: two machines. set WORKSTATION_SSH=user@host to add w0/w1 as a third." >&2
 
+set -- "${ARGV[@]:-}"
 case "${1:-}" in
   rpc)     shift; rpc "$@" ;;
   setup)   cmd_setup ;;
@@ -281,6 +303,7 @@ case "${1:-}" in
   wipe)    cmd_wipe ;;
   mine)    shift; cmd_mine "$@" ;;
   status)  cmd_status ;;
+  verify)  shift; cmd_verify "$@" ;;
   monitor) shift; cmd_monitor "$@" ;;
-  *) echo "usage: $0 {setup|start|mine <height>|status|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
+  *) echo "usage: $0 {setup|start|mine <height>|status|verify [height]|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
 esac
