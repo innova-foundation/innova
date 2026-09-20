@@ -852,6 +852,12 @@ BOOST_AUTO_TEST_CASE(a_vote_naming_a_sibling_boundary_is_refused_on_the_main_bra
     chain.pSiblingBoundary->nFlags &= ~CBlockIndex::BLOCK_PROOF_OF_STAKE;
     v = JudgeVote(txdb, chain.pSiblingTip, nBoundary + 3, onSibling.effects);
     BOOST_CHECK_MESSAGE(v.fOK, v.strError);
+
+    // With no carrier chain the vote is refused.
+    v = JudgeVote(txdb, (const CBlockIndex*)NULL, nBoundary + 2, onMain.effects);
+    BOOST_CHECK(!v.fOK);
+    BOOST_CHECK(!v.fLocalFailure);
+    BOOST_CHECK_MESSAGE(Mentions(v.strError, "no carrier chain"), v.strError);
 }
 
 // Disconnecting the carrier erases exactly what connecting it wrote: the record at the

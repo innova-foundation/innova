@@ -2877,10 +2877,14 @@ bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
         strError = "IV5 note finality votes must name a proof-of-work boundary block";
         return false;
     }
-    // Presence in the index is not membership of this chain: a sibling branch's boundary
-    // is indexed too. Bind the block to the carrier's own ancestors.
-    if (pindexAnchorTip != NULL &&
-        GetFinalityAncestorOnChain(pindexAnchorTip, nBoundaryHeight,
+    // Bind the block to the carrier's own ancestors: a sibling branch's boundary is indexed
+    // too. With no carrier, refuse (fail closed).
+    if (pindexAnchorTip == NULL)
+    {
+        strError = "IV5 note finality vote judged with no carrier chain to bind it to";
+        return false;
+    }
+    if (GetFinalityAncestorOnChain(pindexAnchorTip, nBoundaryHeight,
                                    FINALITY_ANCESTOR_MAX_WALK) != pBoundary)
     {
         strError = "IV5 note finality vote boundary block is not an ancestor of the carrier";
