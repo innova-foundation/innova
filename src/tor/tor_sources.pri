@@ -14,8 +14,9 @@ SOURCES += \
 	src/tor/src/core/crypto/onion_fast.c \
 	src/tor/src/core/crypto/onion_ntor.c \
 	src/tor/src/core/crypto/onion_ntor_v3.c \
-	src/tor/src/core/crypto/onion_tap.c \
 	src/tor/src/core/crypto/relay_crypto.c \
+	src/tor/src/core/crypto/relay_crypto_cgo.c \
+	src/tor/src/core/crypto/relay_crypto_tor1.c \
 	src/tor/src/core/mainloop/connection.c \
 	src/tor/src/core/mainloop/cpuworker.c \
 	src/tor/src/core/mainloop/mainloop.c \
@@ -61,6 +62,7 @@ SOURCES += \
 	src/tor/src/core/or/protover.c \
 	src/tor/src/core/or/reasons.c \
 	src/tor/src/core/or/relay.c \
+	src/tor/src/core/or/relay_msg.c \
 	src/tor/src/core/or/scheduler.c \
 	src/tor/src/core/or/scheduler_kist.c \
 	src/tor/src/core/or/scheduler_vanilla.c \
@@ -117,6 +119,7 @@ SOURCES += \
 	src/tor/src/ext/ed25519/ref10/sc_reduce.c \
 	src/tor/src/ext/ed25519/ref10/sign.c \
 	src/tor/src/ext/keccak-tiny/keccak-tiny-unrolled.c \
+	src/tor/src/ext/polyval/polyval.c \
 	src/tor/src/ext/readpassphrase.c \
 	src/tor/src/ext/trunnel/trunnel.c \
 	src/tor/src/feature/api/tor_api.c \
@@ -369,4 +372,5 @@ SOURCES += \
 	src/tor/src/trunnel/pwbox.c \
 	src/tor/src/trunnel/sendme_cell.c \
 	src/tor/src/trunnel/socks5.c \
+	src/tor/src/trunnel/subproto_request.c \
 	src/tor/anonymize.cpp

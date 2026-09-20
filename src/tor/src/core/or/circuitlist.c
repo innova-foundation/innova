@@ -65,6 +65,7 @@
 #include "core/or/conflux.h"
 #include "core/or/conflux_pool.h"
 #include "core/or/crypt_path.h"
+#include "core/or/dos.h"
 #include "core/or/extendinfo.h"
 #include "core/or/status.h"
 #include "core/or/trace_probes_circuit.h"
@@ -158,6 +159,10 @@ double cc_stats_circ_close_cwnd_ma = 0;
 double cc_stats_circ_close_ss_cwnd_ma = 0;
 
 uint64_t cc_stats_circs_closed = 0;
+
+/** Total number of circuit protocol violation. This is incremented when the
+ * END_CIRC_REASON_TORPROTOCOL is used to close a circuit. */
+uint64_t circ_n_proto_violation = 0;
 
 /********* END VARIABLES ************/
 
@@ -1142,6 +1147,7 @@ or_circuit_new(circid_t p_circ_id, channel_t *p_chan)
   cell_queue_init(&circ->p_chan_cells);
 
   init_circuit_base(TO_CIRCUIT(circ));
+  dos_stream_init_circ_tbf(circ);
 
   tor_trace(TR_SUBSYS(circuit), TR_EV(new_or), circ);
   return circ;
@@ -1336,6 +1342,15 @@ circuit_clear_cpath(origin_circuit_t *circ)
   cpath_free(cpath);
 
   circ->cpath = NULL;
+  /* This will ensure that we don't accept any more authenticated
+   * SENDMEs on this circuit if we have already registered a hop,
+   * since an origin circuit never receives a relay cell from
+   * a NULL layer.
+   *
+   * In practice this funciton is only called from tests and form
+   * circuit_free_, so there's no actual risk of confusion.
+   */
+  circ->base_.sendme_digest_hop = NULL;
 }
 
 /** Release all storage held by circuits. */
@@ -1345,6 +1360,12 @@ circuit_free_all(void)
   smartlist_t *lst = circuit_get_global_list();
 
   SMARTLIST_FOREACH_BEGIN(lst, circuit_t *, tmp) {
+    tmp->global_circuitlist_idx = -1;
+    /* Must run before the resolving_streams loop below: for conflux circuits,
+     * this calls linked_circuit_free() -> linked_nullify_streams(), which
+     * NULLs the shared stream pointer on non-last legs so that the loop is
+     * a no-op for them and only the last leg actually frees the streams. */
+    circuit_about_to_free_atexit(tmp);
     if (! CIRCUIT_IS_ORIGIN(tmp)) {
       or_circuit_t *or_circ = TO_OR_CIRCUIT(tmp);
       while (or_circ->resolving_streams) {
@@ -1354,8 +1375,6 @@ circuit_free_all(void)
         or_circ->resolving_streams = next_conn;
       }
     }
-    tmp->global_circuitlist_idx = -1;
-    circuit_about_to_free_atexit(tmp);
     circuit_free(tmp);
     SMARTLIST_DEL_CURRENT(lst, tmp);
   } SMARTLIST_FOREACH_END(tmp);
@@ -2175,6 +2194,10 @@ circuit_mark_for_close_, (circuit_t *circ, int reason, int line,
   assert_circuit_ok(circ);
   tor_assert(line);
   tor_assert(file);
+
+  if (reason == END_CIRC_REASON_TORPROTOCOL) {
+    circ_n_proto_violation++;
+  }
 
   /* Check whether the circuitpadding subsystem wants to block this close */
   if (circpad_marked_circuit_for_padding(circ, reason)) {

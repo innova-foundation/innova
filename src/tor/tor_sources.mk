@@ -14,8 +14,9 @@ TOR_OBJS= \
 	obj/tor/src/core/crypto/onion_fast.o \
 	obj/tor/src/core/crypto/onion_ntor.o \
 	obj/tor/src/core/crypto/onion_ntor_v3.o \
-	obj/tor/src/core/crypto/onion_tap.o \
 	obj/tor/src/core/crypto/relay_crypto.o \
+	obj/tor/src/core/crypto/relay_crypto_cgo.o \
+	obj/tor/src/core/crypto/relay_crypto_tor1.o \
 	obj/tor/src/core/mainloop/connection.o \
 	obj/tor/src/core/mainloop/cpuworker.o \
 	obj/tor/src/core/mainloop/mainloop.o \
@@ -61,6 +62,7 @@ TOR_OBJS= \
 	obj/tor/src/core/or/protover.o \
 	obj/tor/src/core/or/reasons.o \
 	obj/tor/src/core/or/relay.o \
+	obj/tor/src/core/or/relay_msg.o \
 	obj/tor/src/core/or/scheduler.o \
 	obj/tor/src/core/or/scheduler_kist.o \
 	obj/tor/src/core/or/scheduler_vanilla.o \
@@ -117,6 +119,7 @@ TOR_OBJS= \
 	obj/tor/src/ext/ed25519/ref10/sc_reduce.o \
 	obj/tor/src/ext/ed25519/ref10/sign.o \
 	obj/tor/src/ext/keccak-tiny/keccak-tiny-unrolled.o \
+	obj/tor/src/ext/polyval/polyval.o \
 	obj/tor/src/ext/readpassphrase.o \
 	obj/tor/src/ext/trunnel/trunnel.o \
 	obj/tor/src/feature/api/tor_api.o \
@@ -369,4 +372,5 @@ TOR_OBJS= \
 	obj/tor/src/trunnel/pwbox.o \
 	obj/tor/src/trunnel/sendme_cell.o \
 	obj/tor/src/trunnel/socks5.o \
+	obj/tor/src/trunnel/subproto_request.o \
 	obj/tor/anonymize.o

@@ -7,9 +7,9 @@
 /* All assert failures are fatal */
 /* #undef ALL_BUGS_ARE_FATAL */
 
-/* # for 0.4.8.25 Approximate date when this software was released. (Updated
+/* # for 0.4.9.12 Approximate date when this software was released. (Updated
    when the version changes.) */
-#define APPROX_RELEASE_DATE "2026-05-07"
+#define APPROX_RELEASE_DATE "2026-09-08"
 
 /* tor's build directory */
 #define BUILDDIR "."
@@ -144,9 +144,6 @@
 
 /* Define to 1 if you have the <errno.h> header file. */
 #define HAVE_ERRNO_H 1
-
-/* Define to 1 if you have the `ERR_load_KDF_strings' function. */
-#define HAVE_ERR_LOAD_KDF_STRINGS 1
 
 /* Define to 1 if you have the `evdns_base_get_nameserver_addr' function. */
 #define HAVE_EVDNS_BASE_GET_NAMESERVER_ADDR 1
@@ -385,6 +382,9 @@
 /* Define to 1 if you have the <net/pfvar.h> header file. */
 /* #undef HAVE_NET_PFVAR_H */
 
+/* Define to 1 if you have the <openssl/engine.h> header file. */
+#define HAVE_OPENSSL_ENGINE_H 1
+
 /* Define to 1 if you have the `pipe' function. */
 #define HAVE_PIPE 1
 
@@ -445,32 +445,11 @@
 /* Define to 1 if the system has the type `ssize_t'. */
 #define HAVE_SSIZE_T 1
 
-/* Define to 1 if you have the `SSL_CIPHER_find' function. */
-#define HAVE_SSL_CIPHER_FIND 1
-
-/* Define to 1 if you have the `SSL_CTX_set1_groups_list' function. */
-/* #undef HAVE_SSL_CTX_SET1_GROUPS_LIST */
-
 /* Define to 1 if you have the `SSL_CTX_set_security_level' function. */
 #define HAVE_SSL_CTX_SET_SECURITY_LEVEL 1
 
-/* Define to 1 if you have the `SSL_get_client_ciphers' function. */
-#define HAVE_SSL_GET_CLIENT_CIPHERS 1
-
-/* Define to 1 if you have the `SSL_get_client_random' function. */
-#define HAVE_SSL_GET_CLIENT_RANDOM 1
-
-/* Define to 1 if you have the `SSL_get_server_random' function. */
-#define HAVE_SSL_GET_SERVER_RANDOM 1
-
-/* Define to 1 if you have the `SSL_SESSION_get_master_key' function. */
-#define HAVE_SSL_SESSION_GET_MASTER_KEY 1
-
 /* Define to 1 if you have the `SSL_set_ciphersuites' function. */
 #define HAVE_SSL_SET_CIPHERSUITES 1
-
-/* Define to 1 if `state' is a member of `SSL'. */
-/* #undef HAVE_SSL_STATE */
 
 /* Define to 1 if you have the `statvfs' function. */
 #define HAVE_STATVFS 1
@@ -532,10 +511,6 @@
 /* Define to 1 if `sin_len' is a member of `struct sockaddr_in'. */
 /* #undef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN */
 
-/* Define to 1 if `get_cipher_by_char' is a member of `struct ssl_method_st'.
-   */
-/* #undef HAVE_STRUCT_SSL_METHOD_ST_GET_CIPHER_BY_CHAR */
-
 /* Define to 1 if `tcpi_snd_mss' is a member of `struct tcp_info'. */
 #define HAVE_STRUCT_TCP_INFO_TCPI_SND_MSS 1
 
@@ -596,6 +571,9 @@
 /* Define to 1 if you have the <sys/sdt.h> header file. */
 /* #undef HAVE_SYS_SDT_H */
 
+/* Is SYS_SECCOMP defined? */
+/* #undef HAVE_SYS_SECCOMP */
+
 /* Define to 1 if you have the <sys/select.h> header file. */
 #define HAVE_SYS_SELECT_H 1
 
@@ -640,9 +618,6 @@
 
 /* Define to 1 if you have the `timingsafe_memcmp' function. */
 /* #undef HAVE_TIMINGSAFE_MEMCMP */
-
-/* Define to 1 if you have the `TLS_method' function. */
-#define HAVE_TLS_METHOD 1
 
 /* Compiled with tracing support */
 /* #undef HAVE_TRACING */
@@ -698,6 +673,9 @@
 /* Define to 1 iff malloc(0) returns a pointer */
 #define MALLOC_ZERO_WORKS 1
 
+/* whether nss defines ecdh_hybrid key exchange. */
+/* #undef NSS_HAS_ECDH_HYBRID */
+
 /* Define to 1 iff memset(0) sets pointers to NULL */
 #define NULL_REP_IS_ZERO_BYTES 1
 
@@ -714,7 +692,7 @@
 #define PACKAGE_NAME "tor"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "tor 0.4.8.25"
+#define PACKAGE_STRING "tor 0.4.9.12"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "tor"
@@ -723,7 +701,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "0.4.8.25"
+#define PACKAGE_VERSION "0.4.9.12"
 
 /* How to access the PC from a struct ucontext */
 #define PC_FROM_UCONTEXT uc_mcontext.gregs[REG_RIP]
@@ -748,9 +726,6 @@
 
 /* The size of `pid_t', as computed by sizeof. */
 #define SIZEOF_PID_T 4
-
-/* The size of `SHA_CTX', as computed by sizeof. */
-#define SIZEOF_SHA_CTX 96
 
 /* The size of `short', as computed by sizeof. */
 #define SIZEOF_SHORT 2
@@ -830,7 +805,7 @@
 #define USING_TWOS_COMPLEMENT 1
 
 /* Version number of package */
-#define VERSION "0.4.8.25"
+#define VERSION "0.4.9.12"
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */

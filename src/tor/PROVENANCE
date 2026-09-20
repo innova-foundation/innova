@@ -1,12 +1,15 @@
 Vendored Tor
 ============
 
-Upstream version : tor-0.4.8.25
-Source tarball   : https://dist.torproject.org/tor-0.4.8.25.tar.gz
-Tarball size     : 10863534 bytes
-Tarball sha256   : 371cd22178fa4b35e64b03933403890795ce3e304c5850a5b59adcc68820a799
+Upstream version : tor-0.4.9.12
+Source tarball   : https://dist.torproject.org/tor-0.4.9.12.tar.gz
+Tarball size     : 10961943 bytes
+Tarball sha256   : c0d307c9dcdaee4848a8ca53e9d6c4ec92823e4f30be12790b0fbddfc6515f5b
 
-The sha256 above matches the published tor-0.4.8.25.tar.gz.sha256sum on
+The published tor-0.4.9.12.tar.gz.sha256sum.asc carries good signatures from
+David Goulet (B74417EDDF22AC9F9E90F49142E86A2A11F48D36) and Alexander Faeroy
+(subkey 514102454D0A87DB0767A1EBBE6A0531C18A9179) over that checksum file.
+The sha256 above matches the published tor-0.4.9.12.tar.gz.sha256sum on
 dist.torproject.org, verified independently on both build hosts before use.
 
 Licence: 3-clause BSD. Upstream text is kept verbatim in src/tor/LICENSE.
@@ -67,10 +70,10 @@ Subset and exclusions
 This is a client-only vendoring: enough tor to perform a v3 onion rendezvous
 and to run an onion service for inbound P2P, and nothing else.
 
-891 files, 290k lines on disk; 369 of them compile. The set is derived
+894 files, 291k lines under src/; 373 of them compile. The set is derived
 empirically rather than by hand. The upstream build links the tor binary as
-tor_main.o plus libtor.a, so the compiled set is exactly the members of
-libtor.a, less two files:
+tor_main.o plus libtor.a, so the compiled set is exactly the 374 members of
+libtor.a, less proto_ext_or.c below; tor_main.c is not a member:
 
   src/app/main/tor_main.c   defines main(), which would collide with innovad
   src/core/proto/proto_ext_or.c
@@ -81,9 +84,10 @@ libtor.a, less two files:
                             links from an archive and the member is simply never
                             pulled; Innova links the objects directly, which
                             would force it in and leave ext_or_cmd_new
-                            undefined. Confirmed against a linker map: of 369
-                            archive members, 363 are pulled, and this is the
-                            only unpulled one that cannot also link standalone.
+                            undefined. Confirmed for 0.4.8.25 against a linker
+                            map: of 369 archive members, 363 were pulled, and
+                            this was the only unpulled one that could not also
+                            link standalone. Still a member in 0.4.9.12.
 
 The on-disk set is the header/source closure of those objects, taken from the
 build's own .deps/*.Po files on Linux and macOS and unioned. The macOS closure
@@ -116,7 +120,7 @@ Excluded, with reasons:
                       vendored.
 
 Windows: the pre-existing orconfig_win32.h / orconfig_win64.h were generated
-against tor-0.3.0.9 and are not valid for 0.4.8.25. Regenerating them needs a
+against tor-0.3.0.9 and are not valid for 0.4.9.12. Regenerating them needs a
 mingw configure run, which was out of scope for this upgrade, so orconfig.h
 fails loudly on Windows rather than building something incorrect.
 
@@ -146,8 +150,23 @@ Innova-authored files in this directory
 
 Everything else is upstream tor, unmodified.
 
-Files retired in this upgrade
------------------------------
+Upgrade to 0.4.9.12
+-------------------
+The consensus lists Desc=3-4, Microdesc=3 and Relay=5-6 as recommended
+protocols; 0.4.8.25 supports none of them and warns that it "will eventually
+stop working as a client on the Tor network". 0.4.9 implements them. Against
+0.4.8.25 the compiled set gains src/core/crypto/relay_crypto_cgo.c,
+src/core/crypto/relay_crypto_tor1.c, src/core/or/relay_msg.c (the Counter
+Galois Onion relay cell format), src/ext/polyval/polyval.c (its universal hash,
+MIT-licensed from BearSSL; its notice is in LICENSE) and
+src/trunnel/subproto_request.c, and loses src/core/crypto/onion_tap.c. On disk
+the closure gains 17 files and loses 3. polyval's upstream library flag is
+-fwrapv, which every tor object here is already built with; its CLMUL path is
+chosen per function by target attributes, so no global flag is needed. The
+embedding surface (tor_main in feature/api/tor_api.c) is unchanged.
+
+Files retired in the 0.4.8.25 upgrade
+-------------------------------------
   torcompat.c  A copy of upstream compat.c whose only divergence from upstream
                was five include lines (compat.h->torcompat.h, util.h->torutil.h,
                <sys/sysctl.h>-><linux/sysctl.h>, plus one added crypto.h). That
