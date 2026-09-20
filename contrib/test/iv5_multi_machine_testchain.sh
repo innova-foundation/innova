@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Multi-machine IV5 regtest chain: d* on the Linux host, m* on the Mac, optional w*, in a line.
-# Subcommands: setup | start | mine | status | verify | monitor | stop | wipe
+# Subcommands: setup | start | prepare | unlock | mine | status | verify | monitor | stop | wipe
 
 set -uo pipefail
 
@@ -13,11 +13,20 @@ MAC_BIN="${MAC_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/inno
 RPCUSER=iv5tc
 RPCPASS=iv5tcpass_local_only
 
-# Regtest ladder: DAG 11, connected-finality-carrier 13, epoch-state V3 and
-# Boundary A at DAG+300. Boundary B is scheduled as an alias of A, which is the
-# shipping case, and the fee note must not sit below B.
+# Regtest ladder: DAG 11, carrier 13, V3 and Boundary A at DAG+300, B aliases A.
+# The fee note must not sit below B; the note vote must land on 311 + k*300.
 BOUNDARY_B=311
 FEE_NOTE=311
+MS_TIMESTAMP="${MS_TIMESTAMP:-50}"
+COLD_STAKING="${COLD_STAKING:-80}"
+CN_PAYMENTS="${CN_PAYMENTS:-120}"
+IDNS_RESET="${IDNS_RESET:-200}"
+NOTE_VOTE="${NOTE_VOTE:-911}"
+SUPPLY_CAP_HEIGHT="${SUPPLY_CAP_HEIGHT:-1511}"
+
+# Passphrase for note-voting wallets: an IV5 seed requires an encrypted wallet and
+# a note vote requires it unlocked. Local throwaway chain only.
+WALLETPASS="${WALLETPASS:-iv5tcfleetpass}"
 
 # How many nodes each machine carries. The Linux host has the cores, so it takes
 # the depth; the Mac side stays small because its value here is being a second
@@ -93,6 +102,19 @@ TALLYKEYS=(
   "0000000000000000000000000000000000000000000000000000000000000003"
 )
 
+# Roles. Only transparent voters count in the tally; note voters are refused if no
+# transparent voter exists, so both lanes need nodes. The rest relay.
+ROLE_TRANSPARENT="$(echo "d0 $LAST_D m0")"
+ROLE_NOTE="${ROLE_NOTE:-d1 d2 m1}"
+
+has_role() { echo " $2 " | grep -q " $1 "; }
+role_of() {
+  has_role "$1" "$ROLE_TRANSPARENT" && { echo transparent; return; }
+  has_role "$1" "$ROLE_NOTE" && { echo note; return; }
+  echo relay
+}
+note_nodes() { echo "$ROLE_NOTE"; }
+
 field() { local n=$1 i=$2; for row in "${NODES[@]}"; do set -- $row; [ "$1" = "$n" ] && { eval echo "\${$i}"; return; }; done; }
 nhost() { field "$1" 2; }
 nport() { field "$1" 3; }
@@ -144,10 +166,24 @@ emit_conf() {
   # Pre-DAG PoS would fork the stretch where wallets are still being funded.
   echo "staking=0"
   echo "nofinalityvoting=0"
-  echo "finalityvotemode=transparent"
+  # One lane per node. `note` is refused unless transparent voters exist elsewhere
+  # on the chain, so the two roles are set together or neither works.
+  case "$(role_of "$n")" in
+    note) echo "finalityvotemode=note" ;;
+    *)    echo "finalityvotemode=transparent" ;;
+  esac
+  # Every rehearsal gate, so one chain crosses all of them.
   echo "regtestboundaryb=$BOUNDARY_B"
   echo "regtestiv5rehearsal=1"
   echo "regtestiv5feenote=$FEE_NOTE"
+  echo "regtestiv5notevote=$NOTE_VOTE"
+  echo "regtestmstimestamp=$MS_TIMESTAMP"
+  echo "regtestcoldstaking=$COLD_STAKING"
+  echo "regtestcnpayments=$CN_PAYMENTS"
+  echo "regtestidnsreset=$IDNS_RESET"
+  echo "regtestsupplycapheight=$SUPPLY_CAP_HEIGHT"
+  # IDNS runs rather than being switched off, so its reset gate above is reached.
+  echo "idns=1"
   echo "debug=1"
   echo "debugnet=1"
   [ "$ki" != "-" ] && echo "finalitytallyprivkey=${TALLYKEYS[$ki]}"
@@ -190,12 +226,87 @@ cmd_setup() {
   done
 }
 
+# z_getnewiv5address answers with an object, and an IV5 address is not in the
+# transparent alphabet, so neither the shape nor a leading character from the
+# transparent side identifies one.
+iv5_addr() {
+  rpc "$1" z_getnewiv5address 2>/dev/null \
+    | tr -d '"[:space:]' | sed -n 's/.*address:\([A-Za-z0-9]\{20,\}\).*/\1/p' | head -1
+}
+
+wait_rpc() {
+  local n=$1 tries=${2:-90} i
+  for i in $(seq 1 "$tries"); do
+    [[ "$(height "$n")" =~ ^[0-9]+$ ]] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# Retried: RPC stops answering before the datadir lock is released, and a start in
+# that window is refused.
+start_one() {
+  local n=$1 host attempt; host=$(nhost "$n")
+  for attempt in 1 2 3 4 5 6; do
+    on_host "$host" "$(bin_for "$host") -datadir=$(base_for "$host")/$n -regtest -daemon >/dev/null 2>&1"
+    wait_rpc "$n" 10 && return 0
+    sleep 3
+  done
+  return 1
+}
+
+wait_gone() {
+  local n=$1 i
+  for i in $(seq 1 90); do
+    [[ "$(height "$n")" =~ ^[0-9]+$ ]] || return 0
+    sleep 2
+  done
+  return 1
+}
+
 cmd_start() {
   local n host
   for row in "${NODES[@]}"; do
     set -- $row; n=$1; host=$2
     on_host "$host" "$(bin_for "$host") -datadir=$(base_for "$host")/$n -regtest -daemon >/dev/null 2>&1"
     echo "started $n"
+  done
+}
+
+# A locked wallet cannot spend, and a note vote spends its note, so the unlock is
+# not staking-only and has to be reapplied after every restart.
+cmd_unlock() {
+  local n
+  for n in $(note_nodes); do
+    rpc "$n" walletpassphrase "$WALLETPASS" 99999999 false >/dev/null 2>&1
+    echo "unlocked $n"
+  done
+}
+
+# An IV5 seed is refused in an unencrypted wallet, and encryptwallet stops the
+# node, so each note voter is encrypted, restarted, unlocked and seeded in turn.
+cmd_prepare() {
+  local n addr
+  for n in $(note_nodes); do
+    if rpc "$n" z_getnewiv5address 2>&1 | grep -q 'address'; then
+      echo "$n already seeded: $(iv5_addr "$n")"
+      continue
+    fi
+    # Resumable: a run interrupted between the encrypt and the seed leaves a
+    # wallet that is already encrypted, and encryptwallet then refuses and the
+    # node does not stop. Encryption is a separate question from seeding.
+    if ! rpc "$n" getinfo 2>/dev/null | grep -q unlocked_until; then
+      rpc "$n" encryptwallet "$WALLETPASS" >/dev/null 2>&1
+      wait_gone "$n" || { echo "$n did not stop after encryptwallet"; return 1; }
+      start_one "$n" || { echo "$n did not come back after encryptwallet"; return 1; }
+    fi
+    rpc "$n" walletpassphrase "$WALLETPASS" 99999999 false >/dev/null 2>&1
+    rpc "$n" z_createiv5seed >/dev/null 2>&1
+    addr=$(iv5_addr "$n")
+    case "$addr" in
+      ?*) echo "$n encrypted, seeded, ${addr:0:24}..." ;;
+      *)  echo "$n has no IV5 address"; return 1 ;;
+    esac
   done
 }
 
@@ -304,6 +415,8 @@ case "${1:-}" in
   mine)    shift; cmd_mine "$@" ;;
   status)  cmd_status ;;
   verify)  shift; cmd_verify "$@" ;;
+  prepare) cmd_prepare ;;
+  unlock)  cmd_unlock ;;
   monitor) shift; cmd_monitor "$@" ;;
-  *) echo "usage: $0 {setup|start|mine <height>|status|verify [height]|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
+  *) echo "usage: $0 {setup|start|prepare|unlock|mine <height>|status|verify [height]|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
 esac
