@@ -5611,17 +5611,26 @@ size_t ReleaseDepartedOrphanOwners()
 
 // Orphans expire so a block whose parent never arrives is not held forever. Expiry is
 // not a rejection: the block returns via headers or a fresh inv.
+int64_t GetOrphanBlockExpirySeconds()
+{
+    if (!fRegTest)
+        return ORPHAN_BLOCK_EXPIRY_SECONDS;
+    const int64_t nSeconds = GetArg("-orphanexpiry", ORPHAN_BLOCK_EXPIRY_SECONDS);
+    return nSeconds < 1 ? 1 : nSeconds;
+}
+
 size_t ExpireOrphanBlocks(int64_t nNow)
 {
     AssertLockHeld(cs_main);
 
-    if (ORPHAN_BLOCK_EXPIRY_SECONDS <= 0)
+    const int64_t nExpiry = GetOrphanBlockExpirySeconds();
+    if (nExpiry <= 0)
         return 0;
 
     vector<uint256> vExpired;
     for (map<uint256, COrphanBlock>::const_iterator it = mapOrphanBlocks.begin();
          it != mapOrphanBlocks.end(); ++it)
-        if (nNow - it->second.nTimeParked > ORPHAN_BLOCK_EXPIRY_SECONDS)
+        if (nNow - it->second.nTimeParked > nExpiry)
             vExpired.push_back(it->first);
 
     size_t nDropped = 0;
@@ -5631,7 +5640,7 @@ size_t ExpireOrphanBlocks(int64_t nNow)
 
     if (nDropped && fDebug)
         printf("orphan pool: expired %u records older than %" PRId64"s (%u bytes held)\n",
-               (unsigned)nDropped, (int64_t)ORPHAN_BLOCK_EXPIRY_SECONDS,
+               (unsigned)nDropped, nExpiry,
                (unsigned)nOrphanBlocksFootprint);
     return nDropped;
 }

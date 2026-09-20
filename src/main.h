@@ -127,6 +127,8 @@ static const unsigned int MAX_ORPHAN_MEM_SHARE_PER_PEER_PERCENT = 30;
  *  drain time (600 s). Pinned by orphan_pool_bound_tests/the_expiry_covers_an_honest_ancestor_fetch
  *  and .../an_orphan_older_than_the_expiry_is_dropped_and_a_younger_one_is_not. */
 static const int64_t ORPHAN_BLOCK_EXPIRY_SECONDS = 20 * 60;
+/** The applied orphan expiry: -orphanexpiry on regtest, the constant elsewhere. */
+int64_t GetOrphanBlockExpirySeconds();
 /** Base deferral added to a refused block's next request, in seconds. Doubles per
  *  refusal of the same hash so a full pool does not cause a re-request hot loop. */
 static const int64_t ORPHAN_REFUSAL_BACKOFF_SECONDS = 8;
