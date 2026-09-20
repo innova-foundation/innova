@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Multi-machine IV5 regtest chain: d* on the Linux host, m* on the Mac, optional w*, in a line.
-# Subcommands: setup | start | prepare | unlock | mine | status | verify | monitor | stop | wipe
+# Subcommands: setup | start | prepare | unlock | relink | mixstub | mixround | mine | status | verify | monitor | stop | wipe
 
 set -uo pipefail
 
@@ -107,7 +107,20 @@ TALLYKEYS=(
 ROLE_TRANSPARENT="$(echo "d0 $LAST_D m0")"
 ROLE_NOTE="${ROLE_NOTE:-d1 d2 m1}"
 
+# NullSend seats spend IV5 notes, so they are note nodes; the coordinator also serves
+# the directory. All sit on one machine because the SOCKS stub forwards to local
+# ports; real Tor is covered by contrib/test/iv5_nullsend_regtest_test.sh.
+MIX_COORD="${MIX_COORD:-d0}"
+MIX_SEATS="${MIX_SEATS:-d1 d2}"
+MIX_STUB_PORT="${MIX_STUB_PORT:-18960}"
+MIX_COORD_PORT="${MIX_COORD_PORT:-18961}"
+MIX_DIR_PORT="${MIX_DIR_PORT:-18962}"
+MIX_DIR_ONION=directoryaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion
+MIX_COORD_ONION=coordaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion
+MIX_DENOMINATION="${MIX_DENOMINATION:-1}"
+
 has_role() { echo " $2 " | grep -q " $1 "; }
+in_mix() { has_role "$1" "$MIX_COORD $MIX_SEATS"; }
 role_of() {
   has_role "$1" "$ROLE_TRANSPARENT" && { echo transparent; return; }
   has_role "$1" "$ROLE_NOTE" && { echo note; return; }
@@ -129,6 +142,34 @@ bin_for()   { hfield "$1" 4; }
 base_for()  { hfield "$1" 5; }
 
 node_names() { local row; for row in "${NODES[@]}"; do set -- $row; echo "$1"; done; }
+
+# Links this node dials, as host:port: node i dials i-1 and i-2, so one lost peer
+# does not cut the line. Machines join at the next machine's base port.
+links_of() {
+  local n=$1 prefix idx
+  prefix="${n%%[0-9]*}"; idx="${n#"$prefix"}"
+  [ "$idx" -ge 1 ] && echo "127.0.0.1:$(nport "$prefix$((idx - 1))")"
+  [ "$idx" -ge 2 ] && echo "127.0.0.1:$(nport "$prefix$((idx - 2))")"
+  if [ "$idx" -eq 0 ]; then
+    case "$prefix" in
+      d) [ "$DELL_NODES" -ge 2 ] && echo "127.0.0.1:$(nport d1)" ;;
+      m) echo "$(host_addr dell):$(nport d0)" ;;
+      w) echo "$(host_addr mac):$(nport m0)" ;;
+    esac
+  fi
+  return 0
+}
+
+# Re-dial every configured link; peers do not reliably re-dial a restarted node.
+cmd_relink() {
+  local n l
+  for n in $(node_names); do
+    for l in $(links_of "$n"); do
+      rpc "$n" addnode "$l" onetry >/dev/null 2>&1
+    done
+  done
+  echo "re-dialled every configured link"
+}
 
 # Run a command on the machine that owns the node.
 on_host() {
@@ -184,25 +225,23 @@ emit_conf() {
   echo "regtestsupplycapheight=$SUPPLY_CAP_HEIGHT"
   # IDNS runs rather than being switched off, so its reset gate above is reached.
   echo "idns=1"
+  if in_mix "$n"; then
+    echo "mixproxy=127.0.0.1:$MIX_STUB_PORT"
+    echo "mixdir=$MIX_DIR_ONION:$MIX_DIR_PORT"
+    if [ "$n" = "$MIX_COORD" ]; then
+      echo "mixcoordinatorport=$MIX_COORD_PORT"
+      echo "mixdirectoryport=$MIX_DIR_PORT"
+      echo "mixonion=$MIX_COORD_ONION"
+    fi
+  fi
   echo "debug=1"
   echo "debugnet=1"
   [ "$ki" != "-" ] && echo "finalitytallyprivkey=${TALLYKEYS[$ki]}"
   # Each machine is a line, not a mesh: node i dials i-1, and i-2 where there is
   # one, so a block travels the length of the fleet and one lost peer does not
   # cut the line.
-  local prefix="${n%%[0-9]*}" idx="${n#"${n%%[0-9]*}"}"
-  [ "$idx" -ge 1 ] && echo "addnode=127.0.0.1:$(nport "$prefix$((idx - 1))")"
-  [ "$idx" -ge 2 ] && echo "addnode=127.0.0.1:$(nport "$prefix$((idx - 2))")"
-  if [ "$idx" -eq 0 ]; then
-    case "$prefix" in
-      d) [ "$DELL_NODES" -ge 2 ] && echo "addnode=127.0.0.1:$(nport d1)" ;;
-      # Each machine is dialled at its base port, the only one open on the
-      # tailnet. The miner sits at the far end of the Linux line, so a block
-      # still crosses the whole fleet before it crosses a machine.
-      m) echo "addnode=$(host_addr dell):$(nport d0)" ;;
-      w) echo "addnode=$(host_addr mac):$(nport m0)" ;;
-    esac
-  fi
+  local l
+  for l in $(links_of "$n"); do echo "addnode=$l"; done
 }
 
 # The far end of the Linux line. Mining there rather than at d0 is what makes
@@ -308,6 +347,8 @@ cmd_prepare() {
       *)  echo "$n has no IV5 address"; return 1 ;;
     esac
   done
+  # These nodes restarted, and their peers do not necessarily come back for them.
+  cmd_relink
 }
 
 cmd_stop() {
@@ -380,6 +421,48 @@ cmd_verify() {
   [ "$disagree" -eq 0 ] && [ "$missing" -eq 0 ]
 }
 
+# SOCKS stub standing in for Tor on the mix machine: forwards the two fixed onion
+# names to the coordinator and directory ports.
+cmd_mixstub() {
+  local host; host=$(nhost "$MIX_COORD")
+  local target; target=$(host_ssh "$host")
+  local stub=contrib/test/mix_socks_stub.py
+  if [ "$target" = "-" ]; then
+    nohup python3 "$stub" --port "$MIX_STUB_PORT" >/tmp/iv5tc_mixstub.log 2>&1 &
+  else
+    scp -q "$stub" "$target:/tmp/mix_socks_stub.py"
+    # The stub ignores the onion name and forwards to 127.0.0.1 at the port asked
+    # for, so the names are arbitrary and only the ports have to be right.
+    ssh "$target" "nohup python3 /tmp/mix_socks_stub.py --port $MIX_STUB_PORT \
+      > /tmp/iv5tc_mixstub.log 2>&1 & echo started" >/dev/null 2>&1
+  fi
+  echo "mix stub on $host:$MIX_STUB_PORT"
+}
+
+# One NullSend round on the live chain: each seat prepares a note of the
+# denomination, the coordinator opens a round, and the seats join it.
+cmd_mixround() {
+  local n prep co pubkey j
+  for n in $MIX_SEATS; do
+    prep=$(rpc "$n" mixprepare "$MIX_DENOMINATION" 2>&1 | tr -d '"[:space:]')
+    if [ ${#prep} -eq 64 ]; then echo "$n prepared a $MIX_DENOMINATION INN note ${prep:0:16}"
+    else echo "$n mixprepare: $(echo "$prep" | cut -c1-140)"; return 1; fi
+  done
+  local addr; addr=$(rpc "$MIX_COORD" getnewaddress 2>/dev/null | tr -d '"[:space:]')
+  co=$(rpc "$MIX_COORD" mixcoordinate "$addr" "$MIX_DENOMINATION" "$(echo $MIX_SEATS | wc -w | tr -d ' ')" 2>&1)
+  # The field is "coordinator"; it is the round's public key.
+  pubkey=$(echo "$co" | tr -d '"[:space:]' | grep -o '[0-9a-f]\{66\}' | head -1)
+  [ -n "$pubkey" ] || { echo "mixcoordinate: $(echo "$co" | tr -d '\n' | cut -c1-200)"; return 1; }
+  echo "coordinator $MIX_COORD opened a round, pubkey ${pubkey:0:16}"
+  # Slot 0 reads as absent, so the seats take slots from 1.
+  local slot=1
+  for n in $MIX_SEATS; do
+    j=$(rpc "$n" mixjoin "$pubkey" "$slot" 2>&1 | tr -d '"[:space:]')
+    echo "$n join: $(echo "$j" | cut -c1-140)"
+    slot=$((slot + 1))
+  done
+}
+
 # Sample every node's height on a fixed interval and record divergence.
 # Deliberately does NOT re-dial or re-request: a peer that stalls behind is the
 # observation this run is for.
@@ -417,6 +500,9 @@ case "${1:-}" in
   verify)  shift; cmd_verify "$@" ;;
   prepare) cmd_prepare ;;
   unlock)  cmd_unlock ;;
+  relink)  cmd_relink ;;
+  mixstub) cmd_mixstub ;;
+  mixround) cmd_mixround ;;
   monitor) shift; cmd_monitor "$@" ;;
-  *) echo "usage: $0 {setup|start|prepare|unlock|mine <height>|status|verify [height]|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
+  *) echo "usage: $0 {setup|start|prepare|unlock|relink|mixstub|mixround|mine <height>|status|verify [height]|monitor <secs> [out]|stop|wipe}"; exit 1 ;;
 esac
