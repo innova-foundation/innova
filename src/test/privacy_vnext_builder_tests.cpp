@@ -1895,11 +1895,8 @@ BOOST_AUTO_TEST_CASE(a_disclosure_must_be_true_and_cannot_be_restated)
                      .IsValid());
 }
 
-// O is a deterministic function of the recipient, the output index, the tweak
-// ephemeral secret and y. A sender that reuses those four produces one owner key
-// for two different notes, and I = Hp(O) makes them share a key image, so spending
-// either marks both. Amounts and note keys are free to differ, which is what makes
-// the second note look like an independent payment to anyone crediting on receipt.
+// Reusing (recipient, index, tweak ephemeral, y) yields one O and so one key image for
+// two notes. Consensus does not refuse it across transactions.
 BOOST_AUTO_TEST_CASE(reused_output_material_yields_one_owner_for_two_notes)
 {
     const PrivacyVNextDigest seed = BuilderDigest(0x5c);
@@ -1936,51 +1933,15 @@ BOOST_AUTO_TEST_CASE(reused_output_material_yields_one_owner_for_two_notes)
     BOOST_CHECK(first.leaf.commitment != second.leaf.commitment);
     BOOST_CHECK(first.noteEphemeral != second.noteEphemeral);
 
-    // Consensus judges the collision on the nullifier base, so that is the value the
-    // index has to key on: it is what the two notes' key images are derived from.
+    // Not refused across transactions; the first spend marks both leaves.
     uint256 base;
     memcpy(base.begin(), first.leaf.nullifierBase.data(),
            first.leaf.nullifierBase.size());
     BOOST_REQUIRE(base != 0);
-
-    const uint256 hashFirst = uint256(
-        "1f8ce4a0f0d3bb2e5a2c0f6d4b7911cc3e2d5a687f90ab12cd34ef5601234567");
-    const uint256 hashSecond = uint256(
-        "2e7bd3910ec2aa1d493b0e5c3a6800bb2d1c49577e8f9a01bc23de45f0123456");
-
-    CTxDB txdb("r+");
-    BOOST_REQUIRE(txdb.TxnBegin());
-    BOOST_REQUIRE(txdb.ErasePrivacyVNextOutputBase(base));
-    BOOST_REQUIRE(txdb.TxnCommit(true));
-
-    CShieldedNullifierSpent observed;
-    BOOST_REQUIRE_EQUAL(txdb.ReadPrivacyVNextOutputBaseStatus(base, observed),
-                        TXDB_READ_NOT_FOUND);
-
-    // The first note claims the owner where its transaction connects.
-    CShieldedNullifierSpent created;
-    created.txnHash = hashFirst;
-    created.nIndex = 0;
-    BOOST_REQUIRE(txdb.TxnBegin());
-    BOOST_REQUIRE(txdb.WritePrivacyVNextOutputBase(base, created));
-    BOOST_REQUIRE(txdb.TxnCommit(true));
-
-    // The second note's transaction asks the same question and is answered by the
-    // first one's record, which is what makes the reissue unconnectable.
-    BOOST_REQUIRE_EQUAL(txdb.ReadPrivacyVNextOutputBaseStatus(base, observed),
-                        TXDB_READ_FOUND);
-    BOOST_CHECK(observed.txnHash == hashFirst);
-    BOOST_CHECK(observed.txnHash != hashSecond);
-
-    // Disconnecting the second transaction must not release an owner it never
-    // claimed, or a reorg would silently reopen the collision.
-    BOOST_CHECK(observed.txnHash != hashSecond || observed.nIndex != 0);
-
-    BOOST_REQUIRE(txdb.TxnBegin());
-    BOOST_REQUIRE(txdb.ErasePrivacyVNextOutputBase(base));
-    BOOST_REQUIRE(txdb.TxnCommit(true));
-    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextOutputBaseStatus(base, observed),
-                      TXDB_READ_NOT_FOUND);
+    uint256 baseSecond;
+    memcpy(baseSecond.begin(), second.leaf.nullifierBase.data(),
+           second.leaf.nullifierBase.size());
+    BOOST_CHECK(base == baseSecond);
 }
 
 // Relay policy carve-out: an IV5 envelope may carry exactly one data-stamp output despite

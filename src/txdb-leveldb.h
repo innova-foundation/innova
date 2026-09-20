@@ -526,27 +526,8 @@ public:
     bool CountPrivacyVNextNullifiers(uint64_t& nCount,
                                     std::string& strError);
 
-    // Exact full-chain membership of every IV5 output's nullifier base I = Hp(O).
-    // Two leaves that share an owner key O share I, hence share the key image any
-    // spend of either publishes: spending one marks both, so the second is value
-    // that can never be moved again. Value never leaves the pool, so that value is
-    // destroyed. A payload already refuses a repeated owner among its own outputs
-    // and a proof refuses a repeated key image among its own inputs; this index is
-    // what makes the same statement across transactions.
-    bool WritePrivacyVNextOutputBase(const uint256& base,
-                                     const CShieldedNullifierSpent& created);
-    TxDBReadStatus ReadPrivacyVNextOutputBaseStatus(
-        const uint256& base, CShieldedNullifierSpent& created);
-    bool ErasePrivacyVNextOutputBase(const uint256& base);
-    bool CountPrivacyVNextOutputBases(uint64_t& nCount,
-                                      std::string& strError);
-
-    // Collateralnode attestations, keyed on the key image the attestation published.
-    //
-    // Deliberately a separate namespace from the spent-key index: an attestation consumes
-    // nothing, and a key image recorded as spent is a note that can never move again.
-    // Registration is the derived predicate "watched and not yet spent", so a later spend
-    // deregisters by itself and neither index ever has to be edited to undo the other.
+    // Collateralnode attestations keyed on their published key image. Separate from the
+    // spent-key index, so a later spend deregisters without editing either index.
     bool WritePrivacyVNextCollateral(
         const uint256& keyImage,
         const CPrivacyVNextCollateralAttestation& attested);

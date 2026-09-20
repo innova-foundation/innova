@@ -1020,17 +1020,6 @@ void ReserveInMempool(CTransaction& tx, const PrivacyVNextStateEffects& effects)
     }
     mempool.mapPrivacyVNextTxNullifiers[hash] = vKeyImages;
 
-    std::vector<uint256> vBases;
-    for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
-    {
-        CShieldedNullifierSpent created;
-        created.txnHash = hash;
-        created.nIndex = i;
-        vBases.push_back(AsUint256(effects.outputLeaves[i].nullifierBase));
-        mempool.mapPrivacyVNextOutputBase[vBases.back()] = created;
-    }
-    mempool.mapPrivacyVNextTxOutputBases[hash] = vBases;
-
     std::vector<uint256> vAttestations;
     for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
     {

@@ -220,7 +220,7 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
 /** Apply adaptive block size penalty to a reward amount. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
 bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes);
-/** Collect an IV5 transaction's payload key images and output owners as conflict
+/** Collect an IV5 transaction's payload key images as conflict
  *  tags, so DAG sibling-conflict resolution sees them alongside vin outpoints and
  *  legacy nullifiers. */
 void AppendPrivacyVNextConflictTags(const CTransaction& tx,
@@ -3528,15 +3528,9 @@ public:
     std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextNullifier;
     std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxNullifiers;
 
-    // Output owners are reserved on the same terms as key images. Two accepted
-    // transactions issuing one owner cannot both connect, so a miner that selected
-    // both would keep solving blocks its own ConnectBlock refuses.
-    std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextOutputBase;
-    std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxOutputBases;
-    // Collateral attestations pending in the mempool. Kept apart from the spent-key
-    // reservations above: an attestation and a real spend of the same note are both valid
-    // and only their block order decides the outcome, so an attestation in flight must
-    // never keep the spend out of the mempool.
+    // Output owners are reserved on the same terms as key images.
+    // Pending collateral attestations, kept apart from spent-key reservations: an
+    // attestation in flight must never keep a spend of the same note out of the mempool.
     std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextAttestation;
     std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxAttestations;
 

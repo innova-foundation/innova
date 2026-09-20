@@ -490,12 +490,47 @@ uint256 ExpectedActiveTxSetHash(const CEpochState& s)
 
 } // namespace
 
-// 1. NULLIFIER / KEY-IMAGE CONFLICT ACROSS SIBLINGS.
-//
-// Two blocks at one height each carry a different spend of the same note. Both are in the
-// epoch's DAG order; only one is on the chain ConnectBlock ran along. The epoch must take
-// the connected one's key image and none of the merged one's -- and must take nothing at
-// all from the second merged sibling, whose shield conflicts with nothing.
+// 1. Key-image conflict across siblings: the epoch takes only the connected block's
+// key image and nothing from the merged siblings.
+BOOST_AUTO_TEST_CASE(sibling_conflict_tags_name_key_images_and_not_output_owners)
+{
+    const PayloadSet& set = Payloads();
+
+    PrivacyVNextStateEffects shieldEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                    set.vchShield, shieldEffects)
+                      .IsValid());
+    BOOST_REQUIRE(shieldEffects.keyImages.empty());
+    BOOST_REQUIRE_EQUAL(shieldEffects.outputLeaves.size(), 1u);
+
+    // A shield spends nothing, so it conflicts with nothing, however many notes it creates.
+    std::set<uint256> setShieldTags;
+    AppendPrivacyVNextConflictTags(IV5Tx(set.vchShield), setShieldTags);
+    BOOST_CHECK_MESSAGE(setShieldTags.empty(),
+                        "a shield contributed " << setShieldTags.size() << " conflict tags");
+
+    // A spend conflicts on exactly its key images.
+    PrivacyVNextStateEffects spendEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                    set.vchSpendA, spendEffects)
+                      .IsValid());
+    BOOST_REQUIRE(!spendEffects.outputLeaves.empty());
+    std::set<uint256> setSpendTags;
+    AppendPrivacyVNextConflictTags(IV5Tx(set.vchSpendA), setSpendTags);
+    BOOST_CHECK_EQUAL(setSpendTags.size(), spendEffects.keyImages.size());
+    for (size_t i = 0; i < spendEffects.keyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), spendEffects.keyImages[i].data(),
+               spendEffects.keyImages[i].size());
+        BOOST_CHECK(setSpendTags.count(keyImage) == 1);
+    }
+    // The two spends of one note still conflict, which is the tag that must stay.
+    std::set<uint256> setOtherTags;
+    AppendPrivacyVNextConflictTags(IV5Tx(set.vchSpendB), setOtherTags);
+    BOOST_CHECK(setOtherTags == setSpendTags);
+}
+
 BOOST_AUTO_TEST_CASE(a_merged_sibling_contributes_no_transaction_to_the_iv5_active_set)
 {
     EpochShapeHarness h;
