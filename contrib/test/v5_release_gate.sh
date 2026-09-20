@@ -90,6 +90,15 @@ INTEGRATION_SUITES=(
     # Proof-of-data stamps: RPC surface and DAG effects (merged blocks, reorged anchors, finalized verdict).
     "$SCRIPT_DIR/pod_regtest_test.sh"
     "$SCRIPT_DIR/pod_post_dag_regtest_test.sh"
+    # NullSend ships in v5, and the smoke flag above only reaches the wallet
+    # side of it. This is the round: directory, coordinator, seats, settlement.
+    "$SCRIPT_DIR/iv5_nullsend_regtest_test.sh"
+    # What a node does around the chain rather than to it. The unit suite ends
+    # where each of these starts: at the process boundary, at the orphan drop,
+    # and at a branch the finality gate must refuse without scoring the peer.
+    "$SCRIPT_DIR/shutdown_clean_exit_test.sh"
+    "$SCRIPT_DIR/orphan_expiry_recovery_test.sh"
+    "$SCRIPT_DIR/finality_switch_gate_fleet_test.sh"
 )
 
 log() {
