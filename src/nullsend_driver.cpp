@@ -242,8 +242,8 @@ void CMixSeatJob::Fail(const std::string& strWhy)
     nState = MIX_SEAT_FAILED;
     strStatus = strWhy;
     if (fFinalShareSent)
-        strStatus += "; the note stays held until a transaction spending it is mined or can no "
-                     "longer be, and z_holdiv5note releases it by hand";
+        strStatus += "; the note stays held and out of other rounds until a transaction "
+                     "spending it is mined, or until z_holdiv5note releases it by hand";
 }
 
 void CMixSeatJob::Window(int64_t nNow, int64_t nCloses)
@@ -264,9 +264,17 @@ int64_t MixSeatRetryDelay(int64_t nNow, int64_t nWindowCloses)
     return std::min<int64_t>(CMixSeatJob::RETRY_SECS, std::max<int64_t>(1, nLeft / 3));
 }
 
+int64_t MixSeatRetryWait(int64_t nNow, int64_t nWindowCloses)
+{
+    // Drawn from the upper half of the bound, so a seat's retries keep no fixed cadence.
+    const int64_t nMax = MixSeatRetryDelay(nNow, nWindowCloses);
+    const int64_t nMin = std::max<int64_t>(1, (nMax + 1) / 2);
+    return nMin + GetRandInt((int)(nMax - nMin + 1));
+}
+
 void CMixSeatJob::Retry(int64_t nNow)
 {
-    nNextAction = nNow + MixSeatRetryDelay(nNow, nWindowCloses);
+    nNextAction = nNow + MixSeatRetryWait(nNow, nWindowCloses);
 }
 
 void CMixSeatJob::Schedule(int64_t nFrom, int64_t nUntil)
@@ -620,8 +628,9 @@ void CMixSeatJob::Step(int64_t nNow)
             if (!seat.BuildResponse(snapshot, view, vchResponse, &strError))
                 return Fail("refused to answer: " + strError);
         }
-        if (!fFinalShareSent)
-            env.NoteFinalShare(announce.Ends() + MIX_INCLUSION_ALLOWANCE_SECS + 6 * 3600);
+        if (!fFinalShareSent && !env.NoteFinalShare(announce.Ends()))
+            return Fail("the note could not be recorded as committed, so the final share "
+                        "was not sent");
         fFinalShareSent = true;
         if (!AskAccepted(MIX_FRAME_RESPONSE, vchResponse))
         {
@@ -847,14 +856,18 @@ public:
         pwallet->EndPrivacyVNextMixAttempt(txhashHeld, nHeldIndex);
         fHeld = false;
     }
-    void NoteFinalShare(int64_t nUntil)
+    bool NoteFinalShare(int64_t nRoundEnds)
     {
         if (!fHeld)
-            return;
+            return false;
         LOCK(pwallet->cs_wallet);
         std::string strError;
-        if (!pwallet->MarkPrivacyVNextMixCommitted(txhashHeld, nHeldIndex, nUntil, strError))
+        if (!pwallet->MarkPrivacyVNextMixCommitted(txhashHeld, nHeldIndex, nRoundEnds, strError))
+        {
             printf("NullSend seat: %s\n", strError.c_str());
+            return false;
+        }
+        return true;
     }
     bool VerifyResult(const CTransaction& tx, std::string& strError)
     {

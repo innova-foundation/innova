@@ -3610,10 +3610,31 @@ bool PickMixAnnouncement(const std::vector<std::vector<unsigned char> >& vAnnoun
     return false;
 }
 
+// Whether the key that signed a record is the identity its slot key names, for a slot the
+// record could count in given when its block was mined: the slot after the one its median time
+// past falls in, which is at most one past the block time's and allowed to lag it by two.
+static bool MixRendezvousRecordSignedNear(const CMixRendezvousRecord& record, int64_t nBlockTime)
+{
+    const uint256 hashAuth = MixRendezvousAuthHash(record.idSlot, record.hashCommitment);
+    CPubKey recovered;
+    if (hashAuth == 0 || !recovered.RecoverCompact(hashAuth, record.vchSig))
+        return false;
+    const int64_t nSlot = MixRendezvousSlot(nBlockTime);
+    for (int64_t s = nSlot - 2; s <= nSlot + 1; s++)
+        if (MixRendezvousIdentitySlot(recovered, s) == record.idSlot)
+            return true;
+    return false;
+}
+
 void CMixRendezvousIndex::Connect(const CMixRendezvousRecord& record, int64_t nNow)
 {
     if (record.idSlot == 0 || record.hashCommitment == 0 ||
         record.vchSig.size() != MIX_RENDEZVOUS_SIG_SIZE)
+        return;
+    // Anyone can compute an identity's slot key, so a record is taken only once its own
+    // signature shows that identity made it: otherwise records signed by anyone could fill
+    // the slot's entries before the real one arrives.
+    if (!MixRendezvousRecordSignedNear(record, nNow))
         return;
     LOCK(cs);
     if (nRecords >= MAX_RECORDS)
@@ -3895,11 +3916,16 @@ void NoteMixRendezvousBlock(const CBlock& block, const std::set<uint256>& setSki
     {
         if (setSkippedTxs.count(block.vtx[i].GetHash()))
             continue;
+        // One record per transaction, so every announcement a directory stores costs a
+        // transaction of its own rather than an output in someone else's.
         for (size_t j = 0; j < block.vtx[i].vout.size(); j++)
         {
             CMixRendezvousRecord record;
             if (DecodeMixRendezvousScript(block.vtx[i].vout[j].scriptPubKey, record))
+            {
                 vRecords.push_back(record);
+                break;
+            }
         }
     }
     for (size_t i = 0; i < vRecords.size(); i++)
@@ -4207,12 +4233,8 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
                        (int)MIX_PUBLISH_EARLIEST_SECS, (int)nOpens));
     const int64_t nTime = nOpens + MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK;
 
-    // The longest schedule the budget allows. The middle one keeps 30 s token, nonce and
-    // response windows, each a step of two exchanges over Tor that 15 s barely holds with a
-    // retry; the floors are the last resort. The anchor is two epochs behind the tip and the
-    // round starts a fixed time after the slot opens, so which fits depends on where the tip
-    // sits in its epoch when the publishing window opens: without the floors a 30-block band
-    // of that phase fits nothing, with them an 8-block band.
+    // The longest schedule the budget allows; the middle one keeps 30 s token, nonce and
+    // response windows (two Tor exchanges each), the floors are last resort.
     struct Schedule { uint16_t v[7]; };
     const Schedule vSchedules[3] = {
         { { 90, 90, 30, (uint16_t)MIX_OUTPUT_WINDOW, 90, 30, 30 } },

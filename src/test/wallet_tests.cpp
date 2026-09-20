@@ -895,13 +895,25 @@ BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
     wallet.EndPrivacyVNextMixAttempt(uint256(64), 64);
     BOOST_CHECK(wallet.setPrivacyVNextMixInUse.empty());
     BOOST_CHECK(wallet.IsPrivacyVNextNoteHeld(wallet.vPrivacyVNextNotes[3]));
-    // A note whose final share left is committed until its round's transaction can no longer
-    // be mined, restart or not, and only then offered again.
-    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixCommitted(uint256(64), 64, GetTime() + 600, strError));
+    // A note whose final share left stays committed across restarts and regardless of
+    // age; only a manual release offers it again.
+    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixCommitted(uint256(64), 64, GetTime() - 86400,
+                                                      strError));
     BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
                                                    strError));
     BOOST_CHECK_MESSAGE(chosen.nOutputIndex == 63u, "a committed note was offered to a round");
-    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixCommitted(uint256(64), 64, GetTime() - 1, strError));
+    bool fWasCommitted = false;
+    BOOST_REQUIRE(wallet.ReleasePrivacyVNextMixNote(uint256(64), 64, fWasCommitted, strError));
+    BOOST_CHECK(fWasCommitted);
+    // Released by hand it is out of mixing altogether: no longer prepared, so while it stays
+    // held no round takes it, whatever the hold is later for.
+    BOOST_CHECK(!wallet.setPrivacyVNextMixPrepared.count(std::make_pair(uint256(64), (uint32_t)64)));
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
+                                                   strError));
+    BOOST_CHECK_EQUAL(chosen.nOutputIndex, 63u);
+    BOOST_REQUIRE(wallet.ReleasePrivacyVNextMixNote(uint256(64), 64, fWasCommitted, strError));
+    BOOST_CHECK(!fWasCommitted);
+    BOOST_REQUIRE(wallet.MarkPrivacyVNextMixPrepared(uint256(64), 64, strError));
     BOOST_REQUIRE(wallet.SelectPrivacyVNextMixNote(txdb, nRequired, nDeep + 100, 4096, chosen,
                                                    strError));
     BOOST_CHECK_EQUAL(chosen.nOutputIndex, 64u);

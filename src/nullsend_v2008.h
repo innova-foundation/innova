@@ -61,27 +61,9 @@ static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 120;
  *  after the broadcast, so it spends no anchor life. */
 static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
 
-/** The round's anchor is frozen when the announcement is signed, so everything from signing
- *  to the transaction being connected spends that anchor's life:
- *
- *      (record slot opening - signing)   90..360   MIX_PUBLISH_*_SECS
- *    + the record slot                    = 600
- *    + start offset in the run slot       120..599
- *    + the windows up to broadcast       <= 480   this bound
- *    + inclusion                          = 120   MIX_INCLUSION_ALLOWANCE_SECS
- *
- *  This cap is the static half, checked before anything else. The chain half is
- *  CheckMixAnchorBudget, which a seat runs before it reveals a key image, and PlanMixRound,
- *  which keeps a coordinator from publishing a round no seat would pass it for.
- *
- *  A schedule that does not fit produces a transaction ConnectBlock refuses AFTER every seat
- *  has revealed a key image and proved its input. The loss is what they disclosed and the
- *  work they did, not the value of the notes -- a refused transaction spends nothing -- but
- *  the disclosure is the part that cannot be taken back, so the round is refused up front.
- *
- *  The long-term fix is an announcement that commits to an anchor RULE rather than an anchor
- *  value, resolved once and frozen into the view certificate before any proving; that removes
- *  publication-lead ageing entirely. */
+/** Upper bound from JOIN to broadcast. The anchor is frozen at signing, so the whole schedule
+ *  must fit its life; CheckMixAnchorBudget (seat) and PlanMixRound (coordinator) run the chain
+ *  half of this check before any key image is disclosed. */
 static const int MIX_SCHEDULE_MAX_TO_BROADCAST_SECS = 480;
 
 /** How long a finished transaction is given to be mined after the last response. */
@@ -1430,12 +1412,10 @@ private:
     int nRequests;
 };
 
-/** When a coordinator may sign, in seconds before its record's slot opens. Earlier, and the
- *  blocks between signing and JOIN age the anchor past what a seat accepts; later, and the
- *  record cannot be mined with a median time past below the opening, which is the only window
- *  a seat reads it from. */
+/** When a coordinator may sign, in seconds before its record's slot opens: earlier ages the
+ *  anchor past what seats accept, later misses the record's median-time-past window. */
 static const int64_t MIX_PUBLISH_EARLIEST_SECS = 360;
-static const int64_t MIX_PUBLISH_LATEST_SECS = 90;
+static const int64_t MIX_PUBLISH_LATEST_SECS = 60;
 
 /** A round as a coordinator plans it before signing: slot, start, anchor and schedule, chosen
  *  so the seats' JOIN checks pass at their margin rate. */

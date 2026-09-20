@@ -2361,7 +2361,11 @@ Value z_holdiv5note(const Array& params, bool fHelp)
             "Places or releases a hold on one IV5 output of this wallet.\n"
             "\nNo spend and no note vote selects a held note; a registration that names it\n"
             "still takes it. The output need not be scanned yet, so a hold can be placed\n"
-            "the moment the transaction that creates it is known. Holds survive restarts.\n");
+            "the moment the transaction that creates it is known. Holds survive restarts.\n"
+            "\nReleasing a note also takes it out of NullSend: a note prepared for mixing is no\n"
+            "longer one, and a note whose final share in a round has left is released for\n"
+            "other rounds. That round's coordinator may still publish a transaction spending\n"
+            "it, which any other spend of the note then races.\n");
 
     uint256 txhash;
     uint32_t nOutputIndex = 0;
@@ -2369,12 +2373,21 @@ Value z_holdiv5note(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INVALID_PARAMETER, "the note is named as <txid>:<index>");
     const bool fHold = params[1].get_bool();
     std::string strError;
+    // Leave mixing before releasing the hold, so a failure leaves the note held.
+    bool fWasCommitted = false;
+    if (!fHold &&
+        !pwalletMain->ReleasePrivacyVNextMixNote(txhash, nOutputIndex, fWasCommitted, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
     if (!pwalletMain->SetPrivacyVNextHold(txhash, nOutputIndex, fHold, strError))
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     Object result;
     result.push_back(Pair("note", params[0].get_str()));
     result.push_back(Pair("held", fHold));
+    if (fWasCommitted)
+        result.push_back(Pair("warning", "this note's final share in a NullSend round had left; "
+                                         "its coordinator may still publish a transaction "
+                                         "spending it, which any other spend of the note races"));
     return result;
 }
 

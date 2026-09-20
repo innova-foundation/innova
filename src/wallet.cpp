@@ -11788,7 +11788,7 @@ void CWallet::EndPrivacyVNextMixAttempt(const uint256& txhash, uint32_t nOutputI
 }
 
 bool CWallet::MarkPrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex,
-                                           int64_t nUntil, std::string& strErrorOut)
+                                           int64_t nRoundEnds, std::string& strErrorOut)
 {
     strErrorOut.clear();
     const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
@@ -11796,13 +11796,37 @@ bool CWallet::MarkPrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutp
     if (fFileBacked)
     {
         CWalletDB walletdb(strWalletFile);
-        if (!walletdb.WritePrivacyVNextMixCommitted(txhash, nOutputIndex, nUntil))
+        if (!walletdb.WritePrivacyVNextMixCommitted(txhash, nOutputIndex, nRoundEnds))
         {
             strErrorOut = "the committed note could not be recorded in the wallet";
             return false;
         }
     }
-    mapPrivacyVNextMixCommitted[outpoint] = nUntil;
+    mapPrivacyVNextMixCommitted[outpoint] = nRoundEnds;
+    return true;
+}
+
+bool CWallet::ReleasePrivacyVNextMixNote(const uint256& txhash, uint32_t nOutputIndex,
+                                         bool& fWasCommittedOut, std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    const std::pair<uint256, uint32_t> outpoint(txhash, nOutputIndex);
+    LOCK(cs_shielded);
+    fWasCommittedOut = mapPrivacyVNextMixCommitted.count(outpoint) > 0;
+    const bool fWasPrepared = setPrivacyVNextMixPrepared.count(outpoint) > 0;
+    if (fFileBacked && (fWasCommittedOut || fWasPrepared))
+    {
+        // The committed mark goes first: of the two it is the one whose loss matters.
+        CWalletDB walletdb(strWalletFile);
+        if ((fWasCommittedOut && !walletdb.ErasePrivacyVNextMixCommitted(txhash, nOutputIndex)) ||
+            (fWasPrepared && !walletdb.ErasePrivacyVNextMixPrepared(txhash, nOutputIndex)))
+        {
+            strErrorOut = "the note could not be released from mixing in the wallet";
+            return false;
+        }
+    }
+    mapPrivacyVNextMixCommitted.erase(outpoint);
+    setPrivacyVNextMixPrepared.erase(outpoint);
     return true;
 }
 
@@ -11814,9 +11838,7 @@ static bool PrivacyVNextMixMayTake(const CWallet& wallet, const CPrivacyVNextWal
     LOCK(wallet.cs_shielded);
     if (wallet.setPrivacyVNextMixInUse.count(outpoint))
         return false;
-    std::map<std::pair<uint256, uint32_t>, int64_t>::const_iterator it =
-        wallet.mapPrivacyVNextMixCommitted.find(outpoint);
-    if (it != wallet.mapPrivacyVNextMixCommitted.end() && it->second > GetTime())
+    if (wallet.mapPrivacyVNextMixCommitted.count(outpoint))
         return false;
     return !wallet.IsPrivacyVNextNoteHeld(note) ||
            wallet.setPrivacyVNextMixPrepared.count(outpoint) > 0;

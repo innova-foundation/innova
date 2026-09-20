@@ -544,11 +544,16 @@ public:
     /** An attempt ended before its final share left: the note leaves use, and goes back to
      *  held if it was prepared for mixing, or to spendable if it was not. */
     void EndPrivacyVNextMixAttempt(const uint256& txhash, uint32_t nOutputIndex);
-    // Notes whose final share has left, persisted with the time until which a transaction
-    // spending them may still be mined, so a restart does not offer one to a second round.
+    // Notes whose final share has left, persisted with their round's end for reporting. A
+    // transaction spending one may be mined for as long as its anchor pair stays accepted,
+    // which no clock bounds, so no round is offered one again until it is released by hand.
     std::map<std::pair<uint256, uint32_t>, int64_t> mapPrivacyVNextMixCommitted;
     bool MarkPrivacyVNextMixCommitted(const uint256& txhash, uint32_t nOutputIndex,
-                                      int64_t nUntil, std::string& strErrorOut);
+                                      int64_t nRoundEnds, std::string& strErrorOut);
+    /** Take a note out of NullSend by hand: no longer prepared, no longer committed.
+     *  fWasCommittedOut says whether a round's final share for it had left. */
+    bool ReleasePrivacyVNextMixNote(const uint256& txhash, uint32_t nOutputIndex,
+                                    bool& fWasCommittedOut, std::string& strErrorOut);
     void ListPrivacyVNextHolds(std::vector<std::pair<uint256, uint32_t> >& vOut) const;
 
     // Key images selected by a build in progress, claimed under cs_shielded during selection

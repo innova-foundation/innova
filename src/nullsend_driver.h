@@ -128,9 +128,10 @@ public:
                                  PrivacyVNextDigest& outgoingOut, std::string& strError) = 0;
     /** Give the note back. Called only while no final share has left. */
     virtual void ReleaseNote() = 0;
-    /** The final share is about to leave: the note stays committed until nUntil, across a
-     *  restart, since a transaction spending it may be mined until then. */
-    virtual void NoteFinalShare(int64_t nUntil) { (void)nUntil; }
+    /** The final share is about to leave: record the note as committed, across a restart,
+     *  since a transaction spending it may be mined while its anchor stays accepted. False
+     *  when it cannot be recorded, and then the share must not leave. */
+    virtual bool NoteFinalShare(int64_t nRoundEnds) { (void)nRoundEnds; return true; }
     /** The finished transaction's payload validates and carries this seat's own output. */
     virtual bool VerifyResult(const CTransaction& tx, std::string& strError) = 0;
 };
@@ -221,9 +222,11 @@ private:
     CTransaction txResult;
 };
 
-/** How long a seat waits before trying a step again: RETRY_SECS, or a third of what is left of
- *  its window when that is shorter, so a short window still holds a retry. */
+/** The longest a seat waits before trying a step again: RETRY_SECS, or a third of what is left
+ *  of its window when that is shorter, so a short window still holds a retry. The wait itself
+ *  is drawn from the upper half of this. */
 int64_t MixSeatRetryDelay(int64_t nNow, int64_t nWindowCloses);
+int64_t MixSeatRetryWait(int64_t nNow, int64_t nWindowCloses);
 
 // ---------------------------------------------------------------------------
 // The node's mix service
