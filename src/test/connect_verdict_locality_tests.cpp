@@ -994,6 +994,85 @@ BOOST_AUTO_TEST_CASE(a_coordinator_plans_a_round_every_seat_will_enter)
                           strError);
     BOOST_CHECK_EQUAL(plan.nAnchorEpoch, 9);
     BOOST_CHECK_EQUAL((int)plan.nJoinSecs, MIX_JOIN_WINDOW_MIN_SECS);
+
+    // A window that opens 25 blocks into an epoch fits nothing with that epoch's head; at a
+    // block a second the tip crosses into the next epoch 85 s before the opening, and with the
+    // newer head the long schedule fits. The window has to last that long.
+    BOOST_CHECK(!PlanMixRound(txdb, nEpochStart + 25, nOpens - 360, plan, &strError));
+    const int nNextEpochStart = (int)GetEpochBoundaryHeight64(12);
+    BOOST_REQUIRE_MESSAGE(PlanMixRound(txdb, nNextEpochStart, nOpens - 85, plan, &strError),
+                          strError);
+    BOOST_CHECK_EQUAL(plan.nAnchorEpoch, 10);
+    BOOST_CHECK_EQUAL(plan.nJoinSecs + plan.nViewSecs + plan.nTokenSecs + plan.nOutputSecs +
+                          plan.nApproveSecs + plan.nNonceSecs + plan.nResponseSecs,
+                      480);
+    txdb.TxnAbort();
+}
+
+// An anchor is accepted by its (root, tree size) pair, not by the epoch that first carried
+// it; it stays accepted while any epoch in the window carries the pair, reported as the newest.
+BOOST_AUTO_TEST_CASE(an_anchor_is_accepted_by_its_pair_while_any_epoch_in_the_window_carries_it)
+{
+    BOOST_REQUIRE(fRegTest);
+    PrivacyVNextDigest digest;
+    digest.fill(0x5D);
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    std::vector<unsigned char> vchShared(32, 0);
+    vchShared[0] = 0xD5;
+    vchShared[1] = 0x56;
+    for (int e = 0; e <= 16; ++e)
+    {
+        CEpochState state;
+        state.nEpoch = e;
+        state.nHeightStart = (int)GetEpochBoundaryHeight64(e);
+        state.nHeightEnd = (int)GetEpochBoundaryHeight64(e + 1) - 1;
+        state.hashBoundaryBlock = uint256(0xC3000000 + e);
+        state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+        std::vector<unsigned char> vchRoot(32, 0);
+        vchRoot[0] = 0xD1;
+        vchRoot[1] = (unsigned char)e;
+        state.vchVNextRoot = vchRoot;
+        state.nVNextTreeSize = 200 + e;
+        // Nothing entered the pool during epoch 6: it carries epoch 5's pair.
+        if (e == 5 || e == 6)
+        {
+            state.vchVNextRoot = vchShared;
+            state.nVNextTreeSize = 205;
+        }
+        state.vchVNextParameterDigest.assign(digest.begin(), digest.end());
+        state.nFinalizedHeightAsOf = e >= 1 ? state.nHeightStart : 0;
+        BOOST_REQUIRE(txdb.WriteEpochState(e, state));
+    }
+
+    PrivacyVNextDigest shared, onlyFour;
+    std::copy(vchShared.begin(), vchShared.end(), shared.begin());
+    onlyFour.fill(0);
+    onlyFour[0] = 0xD1;
+    onlyFour[1] = 4;
+    struct Case { int nEpoch; bool fShared; bool fAccepted; int nAnchorEpoch; };
+    const Case vCases[5] = {
+        { 12, true, true, 6 },     // head 10, window 5..10: both carry it, the newer is named
+        { 13, true, true, 6 },     // head 11, window 6..11: epoch 5 has left, 6 still carries it
+        { 14, true, false, -1 },   // head 12, window 7..12: no epoch in the window carries it
+        { 11, false, true, 4 },    // a pair only epoch 4 carried, while 4 is in the window
+        { 12, false, false, -1 },  // and once it is not: head 10, window 5..10
+    };
+    for (size_t i = 0; i < sizeof(vCases) / sizeof(vCases[0]); i++)
+    {
+        const int nContext = (int)GetEpochBoundaryHeight64(vCases[i].nEpoch) + 10;
+        int nAnchorEpoch = -1;
+        bool fLocal = false;
+        std::string strError;
+        const bool fAccepted = CheckPrivacyVNextSpendAnchor(
+            txdb, nContext, vCases[i].fShared ? shared : onlyFour,
+            vCases[i].fShared ? 205 : 204, digest, nAnchorEpoch, fLocal, strError);
+        BOOST_CHECK_MESSAGE(fAccepted == vCases[i].fAccepted,
+                            "context epoch " << vCases[i].nEpoch << ": " << strError);
+        BOOST_CHECK(!fLocal);
+        if (fAccepted)
+            BOOST_CHECK_EQUAL(nAnchorEpoch, vCases[i].nAnchorEpoch);
+    }
     txdb.TxnAbort();
 }
 
