@@ -253,6 +253,10 @@ inline std::string GetActivationLadderJSON()
       &IsLegacyPrivacyPolicyDisabled, true, NULL, "gate_predicate" },
     { "IsShieldedVNextConsensusReady", "src/shielded.h",
       &IsShieldedVNextConsensusReady, true, "-regtestiv5rehearsal", "gate_predicate" },
+    // Not a height: a shipped hash, unset off mainnet. What the document states is
+    // whether the proof-skip exists to be reached here at all.
+    { "IsPrivacyVNextAssumeValidConfigured", "src/main.h",
+      &IsPrivacyVNextAssumeValidConfigured, true, "-assumevalid", "gate_predicate" },
     // Post-IDAG stake votes for finality instead of producing blocks, so every
     // height that may carry a privacy encoding has to sit above the DAG gate.
     { "PrivateStakeIsFinalityOnly", "src/main.h",

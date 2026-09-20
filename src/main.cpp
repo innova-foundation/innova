@@ -3512,24 +3512,13 @@ void ThreadPrivacyVNextBackgroundVerify(void* parg)
     }
 }
 
-// The assume-valid gate: may this block's payloads skip their proof verdicts?
-//
-// True only when the block is an ANCESTOR of the configured hash. Height is never the test:
-// a fork reaches any height it likes, but it cannot place a block on the path to a hash this
-// binary shipped. Resolved through CBlockIndex::GetAncestor, which walks the skip list.
-//
-// -assumevalid=<hash> overrides the compiled-in value; -assumevalid=0 disables it and every
-// payload is verified in full. Unset on testnet and regtest, so they always verify.
-bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex)
+// The assume-valid gate: true only when the block is an ancestor of the configured hash
+// (never a height test). -assumevalid=<hash> overrides, -assumevalid=0 disables; unset
+// on testnet. Resolved once, except on regtest where tests move it.
+static uint256 ResolvePrivacyVNextAssumeValid()
 {
-    if (pindex == NULL)
-        return false;
-
     static bool fResolved = false;
     static uint256 hashAssumeValid = 0;
-    // Resolved once, because the value cannot change under a running node. Regtest
-    // re-reads it every call: it is the only network where a case needs to move the
-    // gate, and it is the only network where nothing is riding on the answer.
     if (!fResolved || fRegTest)
     {
         fResolved = true;
@@ -3543,7 +3532,20 @@ bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex)
             printf("IV5: assume-valid below %s (-assumevalid=0 to verify every proof)\n",
                    hashAssumeValid.ToString().substr(0, 16).c_str());
     }
-    return IsPrivacyVNextAssumeValidAncestorOf(hashAssumeValid, pindex);
+    return hashAssumeValid;
+}
+
+// Whether an assume-valid hash is compiled in or configured at all.
+bool IsPrivacyVNextAssumeValidConfigured()
+{
+    return ResolvePrivacyVNextAssumeValid() != 0;
+}
+
+bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex)
+{
+    if (pindex == NULL)
+        return false;
+    return IsPrivacyVNextAssumeValidAncestorOf(ResolvePrivacyVNextAssumeValid(), pindex);
 }
 
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
