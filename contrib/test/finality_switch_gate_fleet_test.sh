@@ -166,7 +166,9 @@ vote_round() {
     mine_to 0 $((boundary + 3)) || return 1
     wait_sync $((boundary + 3)) "$list" || return 1
 }
-blkfile_size() { stat -f '%z' "$(node_dir "$1")/regtest/blk0001.dat" 2>/dev/null || stat -c '%s' "$(node_dir "$1")/regtest/blk0001.dat" 2>/dev/null || echo 0; }
+# Portable, and it has to be: `stat -f` is a size on macOS and a FILESYSTEM report on
+# Linux, where it succeeds and hands the comparison a paragraph.
+blkfile_size() { wc -c < "$(node_dir "$1")/regtest/blk0001.dat" 2>/dev/null | tr -d ' ' || echo 0; }
 
 cleanup() {
     local n
@@ -266,10 +268,10 @@ sleep 10
 KEPT_MIN=$(( BRANCH_H - FLEET_TIP_H ))
 for n in 0 1; do
     KEPT="$(count_log "$n" 'kept as a side block')"
-    AT_FORK="$(grep -a -c "forks at $PARK_HEIGHT below finalized height $FIN .*kept as a side block" "$(logfile "$n")")"
+    AT_FORK="$(grep -a -c "finalized at height $FIN (fork point $PARK_HEIGHT, .*kept as a side block" "$(logfile "$n")")"
     [ "$KEPT" -ge "$KEPT_MIN" ] && [ "$AT_FORK" -eq "$KEPT" ] && success "node$n side-indexed the heavier ineligible blocks ($KEPT gate decisions, all at fork $PARK_HEIGHT under anchor $FIN; >= $KEPT_MIN expected)" || fail "node$n gate decisions: $KEPT (>= $KEPT_MIN expected), $AT_FORK naming fork $PARK_HEIGHT"
 done
-[ "$(count_log 0 'kept as a side block')" -eq "$(grep -a -c 'below finalized height .* (latch anchor .*, retryable); kept as a side block' "$(logfile 0)")" ] && success "every decision on node0 was the retryable verdict" || fail "node0 logged a non-retryable verdict in this phase"
+[ "$(count_log 0 'kept as a side block')" -eq "$(grep -a -c 'finalized at height .* (fork point .*, latch anchor .*, retryable); kept as a side block' "$(logfile 0)")" ] && success "every decision on node0 was the retryable verdict" || fail "node0 logged a non-retryable verdict in this phase"
 [ "$(count_log 0 'SetBestChain() : rejected reorg')" -eq 0 ] && success "no reorg attempt reached the guard on node0" || fail "node0 still attempted a below-anchor reorg: $(grep -a 'SetBestChain() : rejected reorg' "$(logfile 0)" | tail -1 | cut -c1-140)"
 [ "$(count_log 0 'Misbehaving')" -eq "$MISB0_BEFORE" ] && [ "$(count_log 1 'Misbehaving')" -eq "$MISB1_BEFORE" ] && success "no peer was scored for relaying the branch" || fail "a peer was scored: node0 +$(( $(count_log 0 Misbehaving) - MISB0_BEFORE )) node1 +$(( $(count_log 1 Misbehaving) - MISB1_BEFORE ))"
 [ "$(count_log 0 'marked failed/invalid')" -eq 0 ] && success "no child of the branch was refused as failed on node0" || fail "node0 refused children of a flagged block"
