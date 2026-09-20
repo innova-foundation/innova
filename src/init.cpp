@@ -189,7 +189,9 @@ void Shutdown(void* parg)
         // reads it to decide whether a node is still running gets a stale answer.
         try
         {
-            fs::remove(GetPidFile());
+            // Only the process that took the datadir lock owns this file.
+            if (fDataDirLockHeld)
+                fs::remove(GetPidFile());
         }
         catch (const std::exception& e)
         {
@@ -212,7 +214,11 @@ void Shutdown(void* parg)
         fExit = true;
 #ifndef QT_GUI
         // ensure non-UI client gets exited here, but let Bitcoin-Qt reach 'return 0;' in bitcoin.cpp
-        exit(0);
+        // _exit, not exit: databases are closed, and static destruction can abort on locks a
+        // still-blocked thread holds.
+        fflush(stdout);
+        fflush(stderr);
+        _exit(0);
 #endif
     } else
     {
@@ -467,8 +473,19 @@ bool AppInit(int argc, char* argv[])
                 "Error: -replayblocks must run in the foreground so its exit status is authoritative; use -daemon=0\n");
         return false;
     }
+    // The parent writes the pid file right after the fork, long before the child reaches
+    // the datadir lock, so a second start would overwrite a running node's pid with one
+    // the lock is about to refuse. Refuse here, while nothing has been written yet.
     if (fDaemon)
     {
+        const pid_t pidRunning = ReadLivePidFile(GetPidFile());
+        if (pidRunning > 0)
+        {
+            fprintf(stderr, "Error: Innova is already running as pid %d in %s\n",
+                    (int)pidRunning, GetDataDir().string().c_str());
+            return false;
+        }
+
         pid_t pid = fork();
         if (pid < 0)
         {
@@ -1743,6 +1760,9 @@ bool AppInit2()
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     if (!lock.try_lock())
         return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Innova is probably already running."), strDataDir.c_str()));
+    // Taken: from here the pid file and the databases in this directory are this
+    // process's to remove and close. A start refused the lock owns neither.
+    fDataDirLockHeld = true;
 
     hooks = InitHook(); //Initialized Innova Name Hooks
     if (GetBoolArg("-shrinkdebugfile", !fDebug))

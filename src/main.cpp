@@ -1078,6 +1078,10 @@ void ResendWalletTransactions(bool fForce)
         pwallet->ResendWalletTransactions(fForce);
 }
 
+// Set once this process holds the datadir lock: what shutdown may remove and close is
+// only what this process took.
+bool fDataDirLockHeld = false;
+
 bool Finalise()
 {
     printf("Finalise()");
@@ -1103,13 +1107,27 @@ bool Finalise()
     bitdb.Flush(false);
     StopNode();
     bitdb.Flush(true);
-    fs::remove(GetPidFile());
+    // A start refused the lock is looking at the running node's pid file, not its own.
+    if (fDataDirLockHeld)
+        fs::remove(GetPidFile());
     UnregisterWallet(pwalletMain);
     delete pwalletMain;
 
     finaliseRingSigs();
 
-    CTxDB().Close();
+    // Closing a database this process never opened would open it first, which throws
+    // while another process holds it -- the case that brought us here.
+    if (IsTxDBOpen())
+    {
+        try
+        {
+            CTxDB().Close();
+        }
+        catch (const std::exception& e)
+        {
+            printf("Finalise() : the transaction index could not be closed: %s\n", e.what());
+        }
+    }
 
 
     return true;

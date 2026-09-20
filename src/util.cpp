@@ -58,6 +58,11 @@ namespace boost {
 # include <sys/prctl.h>
 #endif
 
+#ifndef WIN32
+#include <errno.h>
+#include <signal.h>
+#endif
+
 using namespace std;
 
 //Collateralnode  features
@@ -1470,6 +1475,23 @@ void CreatePidFile(const boost::filesystem::path &path, pid_t pid)
         fprintf(file, "%d\n", pid);
         fclose(file);
     }
+}
+
+pid_t ReadLivePidFile(const boost::filesystem::path &path)
+{
+    FILE* file = fopen(path.string().c_str(), "r");
+    if (!file)
+        return 0;
+    int pid = 0;
+    const int nRead = fscanf(file, "%d", &pid);
+    fclose(file);
+    if (nRead != 1 || pid <= 1)
+        return 0;
+    // A file left behind by a crash names nothing and must not block a start. EPERM is
+    // another user's process, which is running.
+    if (kill((pid_t)pid, 0) != 0 && errno == ESRCH)
+        return 0;
+    return (pid_t)pid;
 }
 #endif
 

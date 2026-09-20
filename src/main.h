@@ -1664,6 +1664,8 @@ void ResendWalletTransactions(bool fForce = false);
 /** Per-loop node-global relay work; must run with no peer's cs_vSend held. */
 void SendMessagesGlobal();
 
+/** Whether this process holds the datadir lock; see the definition. */
+extern bool fDataDirLockHeld;
 bool Finalise();
 /** Persist the deferred wallet best-block locator, if one is pending. */
 bool FlushWalletBestChainLocator(std::string& strErrorOut);

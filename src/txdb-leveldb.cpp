@@ -34,6 +34,14 @@ static CCriticalSection cs_txdb;
 static leveldb::Cache* txdbBlockCache = NULL;
 static const leveldb::FilterPolicy* txdbFilterPolicy = NULL;
 
+// Whether the shared LevelDB handle is open. A start that failed before opening it does
+// not own the database and must not open one on its way out.
+bool IsTxDBOpen()
+{
+    LOCK(cs_txdb);
+    return txdb != NULL;
+}
+
 static void ReleaseLevelDBSharedResources()
 {
     // DB uses the cache/filter during its destructor, so release it first.

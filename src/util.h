@@ -323,6 +323,8 @@ boost::filesystem::path GetConfigFile();
 boost::filesystem::path GetPidFile();
 #ifndef WIN32
 void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
+/** The pid the file names, if that process is still running; 0 otherwise. */
+pid_t ReadLivePidFile(const boost::filesystem::path &path);
 #endif
 
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);

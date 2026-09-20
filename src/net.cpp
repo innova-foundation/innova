@@ -3113,9 +3113,43 @@ bool StopNode()
     if (vnThreadsRunning[THREAD_DUMPADDRESS] > 0) printf("ThreadDumpAddresses still running\n");
     if (vnThreadsRunning[THREAD_STAKE_MINER] > 0) printf("ThreadStakeMiner still running\n");
     if (vnThreadsRunning[THREAD_FINALITY_VOTER] > 0) printf("ThreadFinalityVoter still running\n");
-    while (vnThreadsRunning[THREAD_MESSAGEHANDLER] > 0 || vnThreadsRunning[THREAD_RPCHANDLER] > 0)
+    // Bounded: an RPC handler checks fShutdown only between requests, so a client that
+    // connects and sends nothing holds the thread, and an unbounded wait here kept the
+    // datadir lock held. Stragglers are left to the process exit.
+    const int64_t nHandlerDeadline = GetTime() + 30;
+    while ((vnThreadsRunning[THREAD_MESSAGEHANDLER] > 0 || vnThreadsRunning[THREAD_RPCHANDLER] > 0) &&
+           GetTime() < nHandlerDeadline)
         MilliSleep(20);
+    if (vnThreadsRunning[THREAD_MESSAGEHANDLER] > 0 || vnThreadsRunning[THREAD_RPCHANDLER] > 0)
+        printf("StopNode() : %d message and %d RPC handler(s) did not return in 30s; "
+               "exiting without them\n",
+               (int)vnThreadsRunning[THREAD_MESSAGEHANDLER],
+               (int)vnThreadsRunning[THREAD_RPCHANDLER]);
     MilliSleep(50);
+
+    // Retire peers here with all threads stopped; ~CNode during static destruction would
+    // take locks owned by already-destroyed units.
+    {
+        LOCK(cs_vNodes);
+        for (CNode* pnode : vNodes)
+            if (pnode->hSocket != INVALID_SOCKET)
+                CloseSocket(pnode->hSocket);
+        for (CNode* pnode : vNodes)
+            delete pnode;
+        vNodes.clear();
+    }
+    for (CNode* pnode : vNodesDisconnected)
+        delete pnode;
+    vNodesDisconnected.clear();
+    for (ListenSocket& hListenSocket : vhListenSocket)
+        if (hListenSocket.socket != INVALID_SOCKET)
+            CloseSocket(hListenSocket.socket);
+    vhListenSocket.clear();
+    if (pnodeLocalHost)
+    {
+        delete pnodeLocalHost;
+        pnodeLocalHost = NULL;
+    }
 
     return true;
 }

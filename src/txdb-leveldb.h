@@ -149,6 +149,9 @@ public:
 // together when too many files stack up.
 //
 // Learn more: http://code.google.com/p/leveldb/
+/** Whether the shared LevelDB handle is open; see the definition. */
+bool IsTxDBOpen();
+
 class CTxDB
 {
 public:
