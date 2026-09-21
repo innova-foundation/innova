@@ -170,7 +170,7 @@
     "file_count": 284,
     "git_tree": "18eb6a7f525e9413a8b7dcea28fd4c2b1180f9c7",
     "repository": "https://github.com/monero-oxide/monero-oxide.git",
-    "sha256_tree": "20ef84e4ce6001789a5b096728b0b611d1021839587347d6ea6877eeff7c2e7b",
+    "sha256_tree": "499aa816945dc4a2fa29702b124c222366d266572cf6f4c43fe0b4f5d2a0c8b2",
     "source_directory": "upstream"
   },
   "vendored_registry": {

@@ -74,4 +74,18 @@ evidence_observe advisory_db_revision "${DB_REVISION:-none}"
 [ -n "$DB_REVISION" ] || \
     evidence_finish fail "no advisory database under $ADVISORY_DB, so the advisories check compared against nothing; set V5_RUST_ADVISORY_DB or let cargo-deny fetch it"
 
+# The deny.toml ignores assume rustls, webpki and spin are not linked; check it.
+ARCHIVE="$RUST/target/release/libinnova_privacy_vnext.a"
+if [ -f "$ARCHIVE" ]; then
+    TLS_OBJECTS="$( { ar t "$ARCHIVE" 2>/dev/null || true; } | grep -icE 'rustls|webpki|spin' || true)"
+    TLS_OBJECTS="$(printf '%s' "${TLS_OBJECTS:-0}" | tr -dc '0-9')"
+    evidence_observe archive_tls_objects "${TLS_OBJECTS:-0}"
+    evidence_observe archive_objects "$( { ar t "$ARCHIVE" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+    [ "${TLS_OBJECTS:-0}" = "0" ] || evidence_finish fail \
+        "the archive now links ${TLS_OBJECTS} rustls/webpki/spin object(s); the advisory \
+ignores in upstream/deny.toml assume those crates are not shipped and no longer hold"
+else
+    evidence_observe archive_tls_objects "no-archive"
+fi
+
 evidence_pass

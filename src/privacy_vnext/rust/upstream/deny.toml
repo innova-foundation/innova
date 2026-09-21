@@ -6,7 +6,31 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 
 yanked = "deny"
 
-ignore = []
+# Four TLS advisories against rustls and rustls-webpki. They are ignored here on
+# one ground only: those crates are not in the archive this project ships.
+# Verified against src/privacy_vnext/rust/target/release/libinnova_privacy_vnext.a
+# -- zero rustls symbols, zero webpki symbols, zero object files out of 436. They
+# enter the resolution through simple-request -> hyper-rustls, an HTTP client in
+# the upstream workspace that nothing in the IV5 path calls.
+#
+# The audit deliberately covers a superset of what is linked (see
+# contrib/test/produce_rust_audit_evidence.sh), so a crate that is resolved and
+# never compiled reaches it. That is the case here.
+#
+# produce_rust_audit_evidence.sh fails if rustls or webpki ever appear in the
+# archive, so this exemption stops holding the moment it stops being true rather
+# than quietly outliving its reason.
+ignore = [
+    "RUSTSEC-2026-0098",  # webpki: name constraints for URI names accepted
+    "RUSTSEC-2026-0099",  # webpki: name constraints accepted for a wildcard name
+    "RUSTSEC-2026-0104",  # webpki: reachable panic parsing a revocation list
+    "RUSTSEC-2026-0285",  # rustls: TLS 1.3 handshake across encryption levels
+    # spin 0.10.0 is yanked upstream. Same ground: zero object files in the
+    # archive. std-shims pulls it for its no_std path, which a std build does not
+    # compile. yanked stays "deny" for everything else rather than being relaxed
+    # globally to let this one through.
+    { crate = "spin@0.10.0", reason = "not linked into libinnova_privacy_vnext.a; std-shims no_std path only" },
+]
 
 [licenses]
 version = 2
