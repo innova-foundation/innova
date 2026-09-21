@@ -28,6 +28,8 @@
 #include "curvetree.h"
 #include "finality.h"
 #include "subsidy.h"
+
+#include <memory>
 #include "dag.h"
 #include "blockprofile.h"
 #include "privacy_vnext_ffi.h"
@@ -14241,8 +14243,9 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (mapBlockIndex.count(hash))
         return error("AddToBlockIndex() : %s already exists", hash.ToString().substr(0,20).c_str());
 
-    // Construct new block index object
-    CBlockIndex* pindexNew = new CBlockIndex(nFile, nBlockPos, *this);
+    // Construct new block index object; owned here until mapBlockIndex takes it.
+    std::unique_ptr<CBlockIndex> indexOwner(new CBlockIndex(nFile, nBlockPos, *this));
+    CBlockIndex* pindexNew = indexOwner.get();
     if (!pindexNew)
         return error("AddToBlockIndex() : new CBlockIndex failed");
     pindexNew->phashBlock = &hash;
@@ -14278,8 +14281,10 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (!CheckStakeModifierCheckpoints(pindexNew->nHeight, pindexNew->nStakeModifierChecksum))
         return error("AddToBlockIndex() : Rejected by stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindexNew->nHeight, nStakeModifier);
 
-    // Add to mapBlockIndex
+    // Add to mapBlockIndex, which owns it from here; the index lives as long as the
+    // process, so this is the hand-off, not a transfer to another owner.
     map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.insert(make_pair(hash, pindexNew)).first;
+    indexOwner.release();
     if (pindexNew->IsProofOfStake())
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
