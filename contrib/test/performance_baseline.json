@@ -1,0 +1,18 @@
+{
+  "metrics": {
+    "block_capacity_tps": {
+      "floor": 17.02,
+      "measured": 21.28
+    },
+    "confirmed_wall_clock_tps": {
+      "floor": 146.02,
+      "measured": 182.52
+    },
+    "rpc_submit_tps": {
+      "floor": 18.5,
+      "measured": 23.13
+    }
+  },
+  "note": "Floors at 80% of one measured run on the Linux build host. Measured while other release producers were running, so the numbers are pessimistic and these floors are conservative: they will catch a large regression and not a small one. Re-measure on an idle host before release and raise them.",
+  "schema_version": 1
+}
