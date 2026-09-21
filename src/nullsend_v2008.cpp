@@ -3635,7 +3635,14 @@ void CMixRendezvousIndex::Connect(const CMixRendezvousRecord& record, int64_t nN
     // signature shows that identity made it: otherwise records signed by anyone could fill
     // the slot's entries before the real one arrives.
     if (!MixRendezvousRecordSignedNear(record, nNow))
+    {
+        // Log refused records. The slot is the mining block's, not the reader's clock.
+        printf("CMixRendezvousIndex::Connect : a record for identity slot %s is "
+               "signed for no slot near %" PRId64 " (block time %" PRId64 "); refused\n",
+               record.idSlot.ToString().substr(0, 16).c_str(),
+               MixRendezvousSlot(nNow), nNow);
         return;
+    }
     LOCK(cs);
     if (nRecords >= MAX_RECORDS)
         return;
