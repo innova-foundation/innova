@@ -761,6 +761,11 @@ BOUNDARY_PRIVATE="$(json_field "$BOUNDARY_INFO" "private_votes")"
 BOUNDARY_TALLY_SHARES="$(json_field "$BOUNDARY_INFO" "current_epoch_tally_shares")"
 BOUNDARY_PENDING_CERT="$(json_field "$BOUNDARY_INFO" "pending_private_certificate_present")"
 VNEXT_READY="$(json_field "$SHIELDED_INFO" "privacy_vnext_consensus_ready")"
+# Fail closed means the pool is shut, not the verifier absent: consensus pairs
+# IsShieldedVNextConsensusReady with IsBoundaryBActiveAtHeight, so assert on
+# whether payloads are accepted.
+VNEXT_ACCEPTED="$(json_field "$SHIELDED_INFO" "privacy_vnext_transactions_accepted")"
+VNEXT_B_ACTIVE="$(json_field "$SHIELDED_INFO" "boundary_b_active")"
 VNEXT_DISCLOSURE_MODES="$(json_array_len "$SHIELDED_INFO" "privacy_vnext_disclosure_modes")"
 VNEXT_NULLSTAKE_GENERATIONS="$(json_array_len "$SHIELDED_INFO" "privacy_vnext_nullstake_generation_ids")"
 VNEXT_TREE_LAYERS="$(json_field "$SHIELDED_INFO" "privacy_vnext_tree_layers")"
@@ -771,7 +776,8 @@ PRIVACY_STATUS="$(json_field "$SHIELDED_INFO" "privacy_protocol_status")"
 if [ "$BOUNDARY_ACTIVE" = "true" ] && [ "$BOUNDARY_B_CONFIGURED" = "false" ] && \
    [ "$PRIVATE_MODE" = "disabled" ] && [ "$PRIVATE_PROMOTION" = "false" ] && \
    [ "$BOUNDARY_PRIVATE" = "0" ] && [ "$BOUNDARY_TALLY_SHARES" = "0" ] && \
-   [ "$BOUNDARY_PENDING_CERT" = "false" ] && [ "$VNEXT_READY" = "false" ] && \
+   [ "$BOUNDARY_PENDING_CERT" = "false" ] && \
+   [ "$VNEXT_ACCEPTED" = "false" ] && [ "$VNEXT_B_ACTIVE" = "false" ] && \
    [ "$VNEXT_DISCLOSURE_MODES" = "8" ] && \
    [ "$VNEXT_NULLSTAKE_GENERATIONS" = "3" ] && \
    [ "$VNEXT_TREE_LAYERS" = "8" ] && \
@@ -781,7 +787,7 @@ if [ "$BOUNDARY_ACTIVE" = "true" ] && [ "$BOUNDARY_B_CONFIGURED" = "false" ] && 
    [ "$PRIVACY_STATUS" = "legacy_frozen_privacy_vnext_unavailable" ]; then
     success "Boundary B is fail-closed while the full privacy/finality product contract remains pinned"
 else
-    fail "legacy-encoding quarantine/product-contract mismatch (A=$BOUNDARY_ACTIVE B_configured=$BOUNDARY_B_CONFIGURED mode=$PRIVATE_MODE promotion=$PRIVATE_PROMOTION private=$BOUNDARY_PRIVATE shares=$BOUNDARY_TALLY_SHARES cert=$BOUNDARY_PENDING_CERT vnext=$VNEXT_READY disclosure_modes=$VNEXT_DISCLOSURE_MODES nullstake_generations=$VNEXT_NULLSTAKE_GENERATIONS tree_layers=$VNEXT_TREE_LAYERS membership=$VNEXT_MEMBERSHIP_SCOPE staking_role=$VNEXT_STAKING_ROLE quarantined=$LEGACY_RETIRED status=$PRIVACY_STATUS)"
+    fail "legacy-encoding quarantine/product-contract mismatch (A=$BOUNDARY_ACTIVE B_configured=$BOUNDARY_B_CONFIGURED mode=$PRIVATE_MODE promotion=$PRIVATE_PROMOTION private=$BOUNDARY_PRIVATE shares=$BOUNDARY_TALLY_SHARES cert=$BOUNDARY_PENDING_CERT accepted=$VNEXT_ACCEPTED b_active=$VNEXT_B_ACTIVE vnext_linked=$VNEXT_READY disclosure_modes=$VNEXT_DISCLOSURE_MODES nullstake_generations=$VNEXT_NULLSTAKE_GENERATIONS tree_layers=$VNEXT_TREE_LAYERS membership=$VNEXT_MEMBERSHIP_SCOPE staking_role=$VNEXT_STAKING_ROLE quarantined=$LEGACY_RETIRED status=$PRIVACY_STATUS)"
 fi
 
 # --- Partition healing and short competing-tip convergence ---
@@ -888,14 +894,21 @@ if [ "${IDAG_RELAY_TEST_DIFFERENTIAL:-0}" = "1" ]; then
     # tool intentionally refuses inventories with fewer than four nodes.
     REF_EPOCH="$(json_field "$(rpc 0 getfinalityinfo 2>/dev/null)" "epoch")"
     is_int "$REF_EPOCH" || { fail "could not resolve current epoch"; exit 1; }
+    # Newest completed epoch with the schema this build writes; the schema is read from
+    # the chain, not hardcoded.
     DIFF_EPOCH="$REF_EPOCH"
+    WANT_SCHEMA=""
     while [ "$DIFF_EPOCH" -ge 0 ]; do
         DIFF_STATE="$(rpc 0 getepochinfo "$DIFF_EPOCH" 2>/dev/null)"
         DIFF_SCHEMA="$(json_field "$DIFF_STATE" "schema_version")"
-        [ "$DIFF_SCHEMA" = "3" ] && break
+        if is_int "$DIFF_SCHEMA"; then
+            [ -z "$WANT_SCHEMA" ] && WANT_SCHEMA="$DIFF_SCHEMA"
+            [ "$DIFF_SCHEMA" = "$WANT_SCHEMA" ] && break
+        fi
         DIFF_EPOCH=$((DIFF_EPOCH - 1))
     done
-    [ "$DIFF_EPOCH" -ge 0 ] || { fail "no completed schema-V3 epoch found"; exit 1; }
+    [ "$DIFF_EPOCH" -ge 0 ] || { fail "no epoch carries an epoch-state schema at all"; exit 1; }
+    log "comparing epoch $DIFF_EPOCH, epoch-state schema $WANT_SCHEMA"
 
     DIFF_OK=1
     REF_HASH="$(block_hash 0 "$V3_COMPLETE_HEIGHT")"
