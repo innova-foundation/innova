@@ -495,65 +495,38 @@ for mode in $MODE_LIST; do
 done
 
 if [ "$NULLSEND_SMOKE" -eq 1 ]; then
+    # Mode 7 uses the retired legacy path-proof layer, so the wallet must refuse it.
+    # Asserted, not skipped. The v2008 mix is covered by iv5_nullsend_regtest_test.sh.
     mode=7
     tx="$(rpc "${NODES[$mode]}" z_nullsend "${SOURCES[$mode]}" 1.0 "$mode" 2 30 2>&1)"
     if echo "$tx" | grep -q "commitment not found in curve tree"; then
-        fail "z_nullsend hit old curve-tree commitment error: $tx"
+        fail "z_nullsend reached the curve tree before the retirement refused it: $tx"
         exit 1
     fi
-    if echo "$tx" | grep -q '"txid"'; then
-        txid="$(extract_txid "$tx")" || { fail "z_nullsend txid extraction failed: $tx"; exit 1; }
-        success "z_nullsend mode 7 accepted"
+    if echo "$tx" | grep -q "legacy shielded spends are retired"; then
+        success "z_nullsend mode 7 is refused: the legacy spend path is retired"
+    elif echo "$tx" | grep -q '"txid"'; then
+        fail "z_nullsend mode 7 built a transaction through the retired legacy spend path: $tx"
+        exit 1
     else
-        fail "z_nullsend mode 7 failed: $tx"
+        fail "z_nullsend mode 7 failed for some other reason than the retirement: $tx"
         exit 1
     fi
 
-    mine_one 0 || { fail "failed to mine z_nullsend mode 7"; exit 1; }
-
-    conf="$(rpc "${NODES[$mode]}" gettransaction "$txid" 2>/dev/null | python3 -c 'import json,sys
-try:
-    print(int(json.load(sys.stdin).get("confirmations", 0)))
-except Exception:
-    print(-1)' 2>/dev/null)"
-    if is_int "$conf" && [ "$conf" -ge 1 ]; then
-        success "z_nullsend mode 7 confirmed in block (confirmations=$conf)"
-    else
-        fail "z_nullsend tx did not confirm after mining (confirmations=$conf): rejected by mempool/consensus"
-        exit 1
-    fi
-
-    raw="$(rpc "${NODES[$mode]}" getrawtransaction "$txid" 1 2>&1)"
-    if ! echo "$raw" | grep -q '"privacy_mode"'; then
-        raw="$(rpc "${NODES[$mode]}" gettransaction "$txid" 2>&1)"
-    fi
-    if echo "$raw" | grep -q '"privacy_mode"'; then
-        privacy_check="$(assert_mode_privacy_shape "$mode" "$raw" 2>&1)"
-        if [ "$privacy_check" = "ok" ]; then
-            success "z_nullsend mode 7 privacy fields match mode bits"
-        else
-            fail "z_nullsend mode 7 privacy field assertion failed: $privacy_check"
-            exit 1
-        fi
-    else
-        fail "z_nullsend mode 7 raw decode missing shielded privacy fields: $raw"
-        exit 1
-    fi
+    # Nothing was built; assert the refusal left nothing behind.
+    mine_one 0 || { fail "failed to mine after the z_nullsend refusal"; exit 1; }
 
     POOL_TOTAL=0
-    for ((node=0; node<NUM_NODES; node++)); do
-        count="$(mempool_count "$node")"
-        if ! is_int "$count"; then
-            fail "node$node mempool query failed"
-            exit 1
-        fi
+    for n in "${NODES[@]}"; do
+        count="$(mempool_count "$n")"
+        is_int "$count" || count=0
         POOL_TOTAL=$((POOL_TOTAL + count))
     done
 
     if [ "$POOL_TOTAL" -eq 0 ]; then
-        success "z_nullsend mode 7 mined and mempools are empty"
+        success "the refused z_nullsend put nothing in any mempool"
     else
-        fail "mempools not empty after mining z_nullsend: aggregate=$POOL_TOTAL"
+        fail "a refused z_nullsend still left $POOL_TOTAL transaction(s) in a mempool"
     fi
 
     header "Summary"
