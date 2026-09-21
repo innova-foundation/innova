@@ -22,6 +22,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -433,7 +434,9 @@ void PrivacyPage::onSendManyClicked()
         const QString line = lines.at(i).trimmed();
         if (line.isEmpty())
             continue;
-        const QStringList parts = line.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
+        // QRegularExpression, not QRegExp: Qt 6 removed the latter, and this is the
+        // only use of it left in the wallet.
+        const QStringList parts = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
         if (parts.size() != 2)
         {
             QMessageBox::warning(this, tr("Pay several recipients"),
