@@ -2509,12 +2509,11 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("legacy_transaction_versions", std::string("2000-2007")));
     obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_DSP));
     obj.push_back(Pair("privacy_vnext_consensus_ready", fVNextReady));
-    // Whether consensus will accept an IV5 transaction right now. This is not the same
-    // question as the product declaring itself consensus-active: the linked ABI reports
-    // consensus-active zero until that is separately reviewed, so the field above stays
-    // false on a rehearsal network where payloads are in fact being accepted.
+    // Whether consensus accepts an IV5 transaction now: verifier ready and Boundary B active.
+    // Differs from privacy_vnext_consensus_active, which the ABI reports as 0.
     obj.push_back(Pair("privacy_vnext_transactions_accepted",
-                       IsShieldedVNextConsensusReady()));
+                       IsShieldedVNextConsensusReady() &&
+                           IsBoundaryBActiveAtHeight(nCurrentHeight)));
     obj.push_back(Pair("privacy_vnext_abi_linked", fVNextAbiLinked));
     obj.push_back(Pair("privacy_vnext_abi_status",
                        fVNextAbiLinked ? std::string("linked_fail_closed")
