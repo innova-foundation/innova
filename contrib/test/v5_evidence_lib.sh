@@ -104,11 +104,12 @@ evidence_workdir() {
     rm -rf "$EV_WORK"
     mkdir -p "$EV_WORK" || evidence_die "cannot create $EV_WORK"
     evidence_log "copying the tree to $EV_WORK"
-    # .git comes along: share/genbuild.sh stamps BUILD_DESC from it, and a binary
-    # that cannot name its commit is not evidence about one.
+    # .git is copied so genbuild.sh can stamp the commit. Object excludes are anchored to
+    # the build directories so the vendored ring crate's pre-generated .o files are kept.
     rsync -a --delete \
-        --exclude 'obj' --exclude 'obj-test' \
-        --exclude 'src/innovad' --exclude 'src/test_innova' --exclude '*.o' \
+        --exclude '/src/obj' --exclude '/src/obj-test' \
+        --exclude '/src/innovad' --exclude '/src/test_innova' \
+        --exclude '/src/*.o' --exclude '/src/qt/*.o' \
         "$ROOT/" "$EV_WORK/" || evidence_die "cannot copy the tree to $EV_WORK"
 }
 
