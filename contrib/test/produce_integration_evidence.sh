@@ -51,4 +51,11 @@ evidence_observe gate_passed "$(evidence_log_count 'integration gate passed')"
 [ "$(evidence_log_count 'integration gate passed')" = "1" ] || \
     evidence_finish fail "the gate did not report its integration phase as passed"
 
+# Suites report SKIP on unmet preconditions and still pass, so count the skips.
+SKIPPED="$(evidence_log_count '\[SKIP\]')"
+evidence_observe assertions_skipped "$SKIPPED"
+[ "$SKIPPED" = "0" ] || \
+    evidence_finish fail "the integration phase skipped $SKIPPED assertion(s); \
+the evidence would record a pass for cases that never ran"
+
 evidence_pass

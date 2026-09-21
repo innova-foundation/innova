@@ -36,6 +36,7 @@ VERIFICATION_PRODUCERS=(
     "$SCRIPT_DIR/produce_asan_lsan_evidence.sh"
     "$SCRIPT_DIR/produce_crash_injection_evidence.sh"
     "$SCRIPT_DIR/produce_fuzz_corpora_evidence.sh"
+    "$SCRIPT_DIR/produce_history_replay_evidence.sh"
     "$SCRIPT_DIR/produce_integration_evidence.sh"
     "$SCRIPT_DIR/produce_linux_clean_evidence.sh"
     "$SCRIPT_DIR/produce_macos_clean_evidence.sh"
