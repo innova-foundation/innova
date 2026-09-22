@@ -361,14 +361,26 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelStake->setText(BitcoinUnits::formatWithUnit(unit, stake));
     ui->labelStake->setToolTip(tr("Stake balance"));
 
-    // Spendable value held in the v2008 privacy pool.
+    // Value held in the v2008 privacy pool. Freshly migrated coins are owned but
+    // not spendable until the finalized tree reaches the notes holding them, so
+    // showing the spendable figure alone loses them with nothing to explain it.
+    const qint64 privatePending = model->getPrivatePendingBalance();
     if (ui->labelShielded)
     {
-        ui->labelShielded->setText(BitcoinUnits::formatWithUnit(unit, privateBalance));
-        ui->labelShielded->setToolTip(tr("Spendable balance in the private pool"));
+        QString shieldedText = BitcoinUnits::formatWithUnit(unit, privateBalance);
+        if (privatePending > 0)
+            shieldedText += tr(" (+%1 pending)")
+                                .arg(BitcoinUnits::formatWithUnit(unit, privatePending));
+        ui->labelShielded->setText(shieldedText);
+        ui->labelShielded->setToolTip(
+            privatePending > 0
+                ? tr("Spendable now in the private pool, plus value that is yours but "
+                     "not spendable yet: it is waiting for the epoch that places it in "
+                     "the finalized tree.")
+                : tr("Spendable balance in the private pool"));
     }
 
-    totalBalance += privateBalance;
+    totalBalance += privateBalance + privatePending;
 
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));

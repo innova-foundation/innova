@@ -95,6 +95,7 @@ public:
     qint64 getShieldedBalance() const;
     /** Spendable balance held in the v2008 privacy pool. */
     qint64 getPrivateBalance() const;
+    qint64 getPrivatePendingBalance() const;
     QString getNewShieldedAddress();
     QStringList getShieldedAddresses() const;
     /** Execute a whitelisted RPC command and return the result string. Returns empty on error. */
@@ -206,6 +207,7 @@ private:
     qint64 cachedWatchUnconfBalance;
     qint64 cachedWatchImmatureBalance;
     qint64 cachedPrivateBalance;
+    qint64 cachedPrivatePendingBalance;
     WalletThread *walletThread;
 
     qint64 cachedNumTransactions;
