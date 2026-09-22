@@ -600,8 +600,12 @@ Value z_getbalance(const Array& params, bool fHelp)
     if (fHelp || params.size() > 1)
         throw runtime_error(
             "z_getbalance [address]\n"
-            "Returns the shielded balance.\n"
-            "If address is specified, returns balance for that shielded address only.\n");
+            "Returns the spendable shielded balance: IV5 notes plus any legacy ones.\n"
+            "Value that is owned but not spendable yet -- too shallow, or waiting for\n"
+            "the epoch that gives it a tree position -- is not counted here. Use\n"
+            "z_gettotalbalance to see it.\n"
+            "If address is specified, returns the balance of that legacy shielded\n"
+            "address only; IV5 notes are not held against a single address.\n");
 
     if (params.size() == 1)
     {
@@ -620,7 +624,9 @@ Value z_getbalance(const Array& params, bool fHelp)
         return ValueFromAmount(nBalance);
     }
 
-    return ValueFromAmount(pwalletMain->GetShieldedBalance());
+    // IV5 plus legacy notes; legacy alone reads 0 for a migrated wallet.
+    return ValueFromAmount(pwalletMain->GetPrivacyVNextBalance() +
+                           pwalletMain->GetShieldedBalance());
 }
 
 Value z_gettotalbalance(const Array& params, bool fHelp)
@@ -628,12 +634,28 @@ Value z_gettotalbalance(const Array& params, bool fHelp)
     if (fHelp || params.size() > 0)
         throw runtime_error(
             "z_gettotalbalance\n"
-            "Returns object with transparent and shielded balances.\n");
+            "Returns transparent and shielded balances.\n"
+            "\nThe shielded side is reported in three parts, because value that is\n"
+            "owned is not always spendable yet:\n"
+            "  shielded             spendable now (IV5 notes plus any legacy ones)\n"
+            "  shielded_pending     owned, but too shallow or still waiting for the\n"
+            "                       epoch that gives it a tree position\n"
+            "  shielded_collateral  owned, locked against a collateral registration\n"
+            "\"total\" is everything owned, so it counts all three.\n");
+
+    const int64_t nTransparent = pwalletMain->GetBalance();
+    const int64_t nSpendable = pwalletMain->GetPrivacyVNextBalance() +
+                               pwalletMain->GetShieldedBalance();
+    const int64_t nPending = pwalletMain->GetPrivacyVNextUnconfirmedBalance();
+    const int64_t nCollateral = pwalletMain->GetPrivacyVNextCollateralBalance();
 
     Object obj;
-    obj.push_back(Pair("transparent", ValueFromAmount(pwalletMain->GetBalance())));
-    obj.push_back(Pair("shielded", ValueFromAmount(pwalletMain->GetShieldedBalance())));
-    obj.push_back(Pair("total", ValueFromAmount(pwalletMain->GetBalance() + pwalletMain->GetShieldedBalance())));
+    obj.push_back(Pair("transparent", ValueFromAmount(nTransparent)));
+    obj.push_back(Pair("shielded", ValueFromAmount(nSpendable)));
+    obj.push_back(Pair("shielded_pending", ValueFromAmount(nPending)));
+    obj.push_back(Pair("shielded_collateral", ValueFromAmount(nCollateral)));
+    obj.push_back(Pair("total", ValueFromAmount(nTransparent + nSpendable +
+                                                nPending + nCollateral)));
     return obj;
 }
 
