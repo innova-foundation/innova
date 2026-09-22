@@ -141,10 +141,23 @@ mine_blocks() {
     local count="$2"
     local idx current
     for ((idx=0; idx<count; idx++)); do
-        mine_one "$node" || return 1
+        # Each step names itself. A bare "mining failed" cannot be told apart
+        # from a node that mined and could not publish, which are different bugs.
+        mine_one "$node" || { warn "mine_blocks: node $node failed to mine block $((idx+1))/$count"; return 1; }
         current=$(get_height "$node")
-        is_int "$current" || return 1
-        wait_all_height "$current" || return 1
+        is_int "$current" || { warn "mine_blocks: node $node reported a non-numeric height '$current'"; return 1; }
+        if ! wait_all_height "$current"; then
+            warn "mine_blocks: fleet did not reach height $current after node $node mined it"
+            # The node directories are removed on exit, so the state that explains
+            # this has to be printed while it still exists.
+            local n h c
+            for ((n=0; n<NUM_NODES; n++)); do
+                h=$(get_height "$n")
+                c=$(rpc "$n" getconnectioncount 2>/dev/null | tr -dc '0-9')
+                warn "  node $n height=${h:-?} connections=${c:-?}"
+            done
+            return 1
+        fi
         if [ $((current % 10)) -eq 0 ]; then
             log "  ...height $current"
         fi
@@ -268,13 +281,25 @@ restart_node_zero() {
         sleep 1
     done
     [ "$ready" = "1" ] || return 1
-    # RPC answers before the node has dialled anyone. Every later step mines and
-    # then waits for the whole fleet to reach that height, which a node with no
-    # peer cannot deliver, so the restart is not finished until a peer is back.
-    local peers
+
+    # Re-dial in both directions after the restart and require every node to hold a
+    # connection; later steps wait for the whole fleet to reach a height.
+    local n peers whole
     for ((attempt=0; attempt<60; attempt++)); do
-        peers=$(rpc 0 getconnectioncount 2>/dev/null | tr -dc '0-9')
-        [ -n "$peers" ] && [ "$peers" -gt 0 ] && return 0
+        for ((n=0; n<NUM_NODES; n++)); do
+            [ "$n" -eq 0 ] || rpc "$n" addnode "127.0.0.1:$(node_port 0)" onetry >/dev/null 2>&1
+            [ "$n" -eq 0 ] && continue
+            rpc 0 addnode "127.0.0.1:$(node_port "$n")" onetry >/dev/null 2>&1
+        done
+        whole=1
+        for ((n=0; n<NUM_NODES; n++)); do
+            peers=$(rpc "$n" getconnectioncount 2>/dev/null | tr -dc '0-9')
+            if [ -z "$peers" ] || [ "$peers" -lt 1 ]; then
+                whole=0
+                break
+            fi
+        done
+        [ "$whole" = "1" ] && return 0
         sleep 1
     done
     return 1
