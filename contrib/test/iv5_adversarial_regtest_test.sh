@@ -156,7 +156,10 @@ else
     exit 1
 fi
 
+# Owned, not spendable: a note is spendable only once the finalized tree reaches it.
 BAL_BEFORE="$(jnum "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_balance)"
+PEND_BEFORE="$(jnum "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_unconfirmed_balance)"
+OWNED_BEFORE="$(echo "${BAL_BEFORE:-0} + ${PEND_BEFORE:-0}" | bc -l 2>/dev/null)"
 TREE_BEFORE="$(jnum "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size)"
 
 SHIELD="$(rpc z_shieldall 2>&1)"
@@ -208,6 +211,8 @@ INFO="$(rpc z_getshieldedinfo 2>/dev/null)"
 TREE_AFTER="$(jnum "$INFO" privacy_vnext_tree_size)"
 STORE_AFTER="$(jnum "$INFO" privacy_vnext_tree_store_size)"
 BAL_AFTER="$(jnum "$INFO" privacy_vnext_balance)"
+PEND_AFTER="$(jnum "$INFO" privacy_vnext_unconfirmed_balance)"
+OWNED_AFTER="$(echo "${BAL_AFTER:-0} + ${PEND_AFTER:-0}" | bc -l 2>/dev/null)"
 
 if is_int "$TREE_AFTER" && [ "$TREE_AFTER" -gt "${TREE_BEFORE:-0}" ]; then
     success "tree grew from ${TREE_BEFORE:-0} to $TREE_AFTER leaves"
@@ -230,10 +235,10 @@ if [ "${NOTES_AFTER:-0}" -ge 1 ] 2>/dev/null; then
 else
     fail "wallet detected no shielded notes (note_count=${NOTES_AFTER:-?})"
 fi
-if [ "$(echo "$BAL_AFTER > ${BAL_BEFORE:-0}" | bc -l 2>/dev/null)" = "1" ]; then
-    success "wallet reports the shielded balance: $BAL_AFTER INN"
+if [ "$(echo "$OWNED_AFTER > ${OWNED_BEFORE:-0}" | bc -l 2>/dev/null)" = "1" ]; then
+    success "wallet reports the shielded value it owns: $OWNED_AFTER INN (spendable $BAL_AFTER, pending $PEND_AFTER)"
 else
-    fail "wallet shielded balance did not increase (before=${BAL_BEFORE:-?} after=${BAL_AFTER:-?})"
+    fail "wallet shielded value did not increase (before=${OWNED_BEFORE:-?} after=${OWNED_AFTER:-?}; spendable=${BAL_AFTER:-?} pending=${PEND_AFTER:-?})"
 fi
 
 # ============================================================
