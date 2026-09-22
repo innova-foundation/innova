@@ -907,7 +907,14 @@ target_link_libraries(Innova PRIVATE
     ${FW_FOUNDATION} ${FW_APPSERVICES} ${FW_APPKIT}
     ${FW_DISKARB} ${FW_IOKIT})
 
+# The bundle icon. Without it macOS draws the generic blank document tile, which
+# is what a bundle carrying no icon resource gets; the .pro sets the same file.
+set_source_files_properties(src/qt/res/icons/innova.icns
+    PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+target_sources(Innova PRIVATE src/qt/res/icons/innova.icns)
+
 set_target_properties(Innova PROPERTIES
+    MACOSX_BUNDLE_ICON_FILE innova.icns
     MACOSX_BUNDLE_BUNDLE_NAME Innova
     MACOSX_BUNDLE_GUI_IDENTIFIER org.innova.Innova
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
