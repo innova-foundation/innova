@@ -262,8 +262,19 @@ restart_node_zero() {
     sleep 2
     start_node 0
     local attempt
+    local ready=0
     for ((attempt=0; attempt<60; attempt++)); do
-        rpc 0 getinfo >/dev/null 2>&1 && return 0
+        rpc 0 getinfo >/dev/null 2>&1 && { ready=1; break; }
+        sleep 1
+    done
+    [ "$ready" = "1" ] || return 1
+    # RPC answers before the node has dialled anyone. Every later step mines and
+    # then waits for the whole fleet to reach that height, which a node with no
+    # peer cannot deliver, so the restart is not finished until a peer is back.
+    local peers
+    for ((attempt=0; attempt<60; attempt++)); do
+        peers=$(rpc 0 getconnectioncount 2>/dev/null | tr -dc '0-9')
+        [ -n "$peers" ] && [ "$peers" -gt 0 ] && return 0
         sleep 1
     done
     return 1
