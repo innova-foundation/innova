@@ -306,6 +306,10 @@ multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 map<uint256, NodeId> mapOrphanBlocksByNode;
 map<NodeId, int> mapOrphanCountByNode;
 static const int MAX_ORPHAN_BLOCKS_PER_PEER = 750;
+// Room above the cap kept for the gap roots this node asked a peer for, so the
+// block the pool is parked on can still be admitted at the cap. Only hashes in the
+// gap set published for that peer qualify; the byte share still bounds occupancy.
+static const int ORPHAN_GAP_RESERVE_PER_PEER = (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER;
 // A joiner fetching a merge set holds the merging block, one in-flight window of blocks
 // behind it and the set itself, one orphan each, inside this allowance.
 static_assert(1 + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER + DAG_MERGE_SET_BOUND <= MAX_ORPHAN_BLOCKS_PER_PEER,
@@ -15380,13 +15384,18 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 // per-connection id and a count the erase-at-zero rule forbids.
                 std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
                 int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
-                if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER)
+                // A gap root draws on the reserve above the cap, because it is the
+                // arrival that drains the pool rather than adding to it.
+                const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
+                const int nPeerOrphanCap = MAX_ORPHAN_BLOCKS_PER_PEER +
+                                           (fGapHash ? ORPHAN_GAP_RESERVE_PER_PEER : 0);
+                if (nOrphansFromPeer >= nPeerOrphanCap)
                 {
                     pfrom->PushGetBlocks(pindexBest, uint256(0));
 
                     // A gap hash this node asked for is refused on the room-refusal terms: deferred, and
                     // unscored.
-                    if (IsOrphanGapHashForPeer(pfrom->GetId(), hash))
+                    if (fGapHash)
                     {
                         ReAskForRefusedOrphan(pfrom, hash, OrphanBlockFootprint(*pblock),
                                               pfrom->GetId(), vMissingDAGParents);
@@ -15459,12 +15468,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             // Read, do not create (see the DAG park site above).
             std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
             int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
-            if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER) {
+            // See the DAG park site: a gap root draws on the reserve above the cap.
+            const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
+            const int nPeerOrphanCap = MAX_ORPHAN_BLOCKS_PER_PEER +
+                                       (fGapHash ? ORPHAN_GAP_RESERVE_PER_PEER : 0);
+            if (nOrphansFromPeer >= nPeerOrphanCap) {
                 pfrom->PushGetBlocks(pindexBest, uint256(0));
 
                 // See the DAG park site: a hash the gate asked this peer for is
                 // deferred on the pool's refusal record and not scored.
-                if (IsOrphanGapHashForPeer(pfrom->GetId(), hash))
+                if (fGapHash)
                 {
                     ReAskForRefusedOrphan(pfrom, hash, OrphanBlockFootprint(*pblock),
                                           pfrom->GetId(),
