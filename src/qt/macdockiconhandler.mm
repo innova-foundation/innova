@@ -96,8 +96,12 @@ void MacDockIconHandler::setIcon(const QIcon &icon)
         if (!pixmap.isNull() && notificationIconFile.open()) {
             QImageWriter writer(&notificationIconFile, "PNG");
             if (writer.write(pixmap.toImage())) {
-                const char *cString = notificationIconFile.fileName().toUtf8().data();
-                NSString *macString = [NSString stringWithCString:cString encoding:NSUTF8StringEncoding];
+                // Hold the byte array: toUtf8() returns a temporary, so taking
+                // data() off it left this pointing at freed memory and the path
+                // handed to AppKit was whatever happened to be there. The image
+                // came back nil and the dock fell through to the generic tile.
+                const QByteArray fileName = notificationIconFile.fileName().toUtf8();
+                NSString *macString = [NSString stringWithUTF8String:fileName.constData()];
                 image =  [[NSImage alloc] initWithContentsOfFile:macString];
             }
         }
