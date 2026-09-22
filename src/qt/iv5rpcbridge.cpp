@@ -29,6 +29,8 @@ const char* kAllowedMethods[] = {
     "z_importphrase",
     "getfinalityinfo",
     "collateralnode",
+    "name_rendezvous",
+    "name_rendezvous_encode",
     NULL
 };
 

@@ -11,6 +11,7 @@
 #include "namecoin.h"
 #include "guiconstants.h"
 #include "ui_interface.h"
+#include "iv5rpcbridge.h"
 
 #include <QSortFilterProxyModel>
 #include <QMessageBox>
@@ -19,6 +20,8 @@
 #include <QFileDialog>
 #include <QTimer>
 #include <QClipboard>
+#include <QPushButton>
+#include <QInputDialog>
 
 //
 // NameFilterProxyModel
@@ -134,6 +137,27 @@ ManageNamesPage::ManageNamesPage(QWidget *parent) :
 
     connect(ui->tableView, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(contextualMenu(QPoint)));
     ui->tableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    // IDNS rendezvous: a name whose value is a rendezvous descriptor resolves to an onion
+    // service; the page builds and reads back such values.
+    if (ui->importValueButton && ui->importValueButton->parentWidget())
+    {
+        QLayout* valueRow = ui->importValueButton->parentWidget()->layout();
+        if (valueRow)
+        {
+            QPushButton* rvBuild = new QPushButton(tr("Tor rendezvous..."), this);
+            rvBuild->setToolTip(tr("Build a rendezvous descriptor value from a v3 "
+                                   "onion hostname and port"));
+            valueRow->addWidget(rvBuild);
+            connect(rvBuild, SIGNAL(clicked()), this, SLOT(onBuildRendezvousValue()));
+
+            QPushButton* rvShow = new QPushButton(tr("Resolve selected"), this);
+            rvShow->setToolTip(tr("Report whether the selected name is a conventional "
+                                  "record or a Tor rendezvous descriptor"));
+            valueRow->addWidget(rvShow);
+            connect(rvShow, SIGNAL(clicked()), this, SLOT(onClassifySelectedName()));
+        }
+    }
 
     // connect(ui->tableWidget, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(contextualMenu(QPoint)));
     // ui->tableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -724,4 +748,78 @@ void ManageNamesPage::on_registerValue_textChanged()
         byteSize = importedAsBinaryFile.size();
 
     ui->labelValue->setText(tr("Value (%1%)").arg(int(100 * byteSize / MAX_VALUE_LENGTH)));
+}
+
+// Build the canonical rendezvous value for a v3 onion service and drop it into
+// the value box, so registering one does not mean hand-typing the descriptor.
+void ManageNamesPage::onBuildRendezvousValue()
+{
+    bool ok = false;
+    const QString host = QInputDialog::getText(
+        this, tr("Tor rendezvous"),
+        tr("v3 onion hostname (56 characters, ending .onion):"),
+        QLineEdit::Normal, QString(), &ok).trimmed();
+    if (!ok || host.isEmpty())
+        return;
+    const int port = QInputDialog::getInt(this, tr("Tor rendezvous"), tr("Service port:"),
+                                          8333, 1, 65535, 1, &ok);
+    if (!ok)
+        return;
+
+    QStringList params;
+    params << host << QString::number(port);
+    QString result, error;
+    if (!Iv5Rpc::Call("name_rendezvous_encode", params, result, error))
+    {
+        QMessageBox::critical(this, tr("Rendezvous"), error);
+        return;
+    }
+    QString value;
+    if (!Iv5Rpc::ReadField(result, "value", value) || value.isEmpty())
+    {
+        QMessageBox::critical(this, tr("Rendezvous"),
+                              tr("The node returned no descriptor value."));
+        return;
+    }
+    ui->registerValue->setEnabled(true);
+    ui->registerValue->setPlainText(value);
+}
+
+// Read a registered name back. The reply never carries an address: a rendezvous
+// is dialled by hostname, so the node has no address to report and says so.
+void ManageNamesPage::onClassifySelectedName()
+{
+    if (!ui->tableView->selectionModel())
+        return;
+    QModelIndexList rows = ui->tableView->selectionModel()->selectedRows(NameTableModel::Name);
+    if (rows.isEmpty())
+    {
+        QMessageBox::information(this, tr("Rendezvous"),
+                                 tr("Select a name in the table first."));
+        return;
+    }
+    const QString name = rows.at(0).data(Qt::EditRole).toString();
+
+    QStringList params;
+    params << name;
+    QString result, error;
+    if (!Iv5Rpc::Call("name_rendezvous", params, result, error))
+    {
+        QMessageBox::critical(this, tr("Rendezvous"), error);
+        return;
+    }
+    QString kind, host, port;
+    Iv5Rpc::ReadField(result, "kind", kind);
+    if (kind != "rendezvous")
+    {
+        QMessageBox::information(this, tr("Rendezvous"),
+            tr("%1 holds a conventional record, not a rendezvous descriptor.").arg(name));
+        return;
+    }
+    Iv5Rpc::ReadField(result, "host", host);
+    Iv5Rpc::ReadField(result, "port", port);
+    QMessageBox::information(this, tr("Rendezvous"),
+        tr("%1 resolves to a Tor rendezvous service.\n\nHost: %2\nPort: %3\n\n"
+           "No address is reported: the service is reached by hostname, so this "
+           "node never learns one.").arg(name, host, port));
 }
