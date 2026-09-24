@@ -28,11 +28,10 @@ NODE_IDNS="$(iv5_port 2 7665)"
 RPCUSER="iv5storetest"
 RPCPASS="testpass123"
 
-# Regtest epochs run 300 blocks from the DAG fork at height 11, so epoch 1 ends at 310.
-# Mining past it puts the chain in epoch 2 with epoch 1 complete, which is the first point
-# the hook has a finished epoch to index.
-BOUNDARY_B_HEIGHT=20
-TARGET_HEIGHT=340
+# Regtest epochs run 300 blocks from the DAG fork at 11, and Boundary B cannot sit
+# below epoch-state V3 (311), so the first epoch with tree state is 311..610.
+BOUNDARY_B_HEIGHT=311
+TARGET_HEIGHT=640
 
 PASSED=0
 FAILED=0
@@ -105,7 +104,10 @@ header "Test 1: the chain advances past Boundary B and a completed epoch"
 log "Mining to height $TARGET_HEIGHT (this completes the first post-DAG epoch)..."
 STALLED=0
 LAST_HEIGHT=0
-for i in $(seq 1 60); do
+# Post-DAG blocks are paced by the spacing floor, about 1.7 a second here, so the
+# budget scales with the target. The stall counter is what catches a real stall.
+MINE_ROUNDS=$(( TARGET_HEIGHT / 5 + 20 ))
+for i in $(seq 1 "$MINE_ROUNDS"); do
     HEIGHT=$(get_blocks)
     [ -n "$HEIGHT" ] && [ "$HEIGHT" -ge "$TARGET_HEIGHT" ] && break
     if [ -n "$HEIGHT" ] && [ "$HEIGHT" -le "$LAST_HEIGHT" ]; then
@@ -123,8 +125,10 @@ done
 HEIGHT=$(get_blocks)
 if [ -n "$HEIGHT" ] && [ "$HEIGHT" -ge "$TARGET_HEIGHT" ]; then
     success "chain reached height $HEIGHT with the store hook active"
+elif [ "$STALLED" -ge 5 ]; then
+    fail "chain stalled at height ${HEIGHT:-unknown}: no block for 25s, expected $TARGET_HEIGHT"
 else
-    fail "chain stalled at height ${HEIGHT:-unknown}, expected $TARGET_HEIGHT"
+    fail "mining budget of $MINE_ROUNDS rounds ran out at height ${HEIGHT:-unknown} before $TARGET_HEIGHT"
 fi
 
 # ============================================================
