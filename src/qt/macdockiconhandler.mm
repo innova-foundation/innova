@@ -1,8 +1,7 @@
 #include "macdockiconhandler.h"
 
-#include <QImageWriter>
+#include <QBuffer>
 #include <QMenu>
-#include <QTemporaryFile>
 #include <QWidget>
 
 #undef slots
@@ -87,23 +86,18 @@ void MacDockIconHandler::setIcon(const QIcon &icon)
     if (icon.isNull())
         image = [[NSImage imageNamed:@"NSApplicationIcon"] retain];
     else {
-        // generate NSImage from QIcon and use this as dock icon.
-        QSize size = icon.actualSize(QSize(128, 128));
+        // Encoded to PNG in memory and handed to AppKit as data. Going through a
+        // temporary file had AppKit re-read the image by path while Qt's write was
+        // still buffered, so the dock could show a blank tile.
+        QSize size = icon.actualSize(QSize(512, 512));
         QPixmap pixmap = icon.pixmap(size);
-
-        // write temp file hack (could also be done through QIODevice [memory])
-        QTemporaryFile notificationIconFile;
-        if (!pixmap.isNull() && notificationIconFile.open()) {
-            QImageWriter writer(&notificationIconFile, "PNG");
-            if (writer.write(pixmap.toImage())) {
-                // Hold the byte array: toUtf8() returns a temporary, so taking
-                // data() off it left this pointing at freed memory and the path
-                // handed to AppKit was whatever happened to be there. The image
-                // came back nil and the dock fell through to the generic tile.
-                const QByteArray fileName = notificationIconFile.fileName().toUtf8();
-                NSString *macString = [NSString stringWithUTF8String:fileName.constData()];
-                image =  [[NSImage alloc] initWithContentsOfFile:macString];
-            }
+        QByteArray png;
+        QBuffer buffer(&png);
+        if (!pixmap.isNull() && buffer.open(QIODevice::WriteOnly) &&
+            pixmap.toImage().save(&buffer, "PNG") && !png.isEmpty())
+        {
+            NSData *data = [NSData dataWithBytes:png.constData() length:(NSUInteger)png.size()];
+            image = [[NSImage alloc] initWithData:data];
         }
 
         if(!image) {
