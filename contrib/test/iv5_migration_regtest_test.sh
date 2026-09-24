@@ -31,9 +31,13 @@ WALLETPASS="iv5migwalletpass"
 # regtest); before it the epoch build carries no IV5 state.
 BOUNDARY_B=311
 FUND_HEIGHT=340
-# One epoch has to complete before notes take a tree position and count as
-# spendable pool balance, which is what the accounting section reads.
+# One epoch has to complete before notes take a tree position, which is what the
+# ownership check reads.
 EPOCH_HEIGHT=630
+# Notes become spendable only through the depth anchor here (one node, no voting):
+# EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH (600) blocks past the epoch end. The
+# latest migration note sits in the epoch closing at 910.
+SPENDABLE_HEIGHT=1510
 
 # The flat shield fee, in satoshi. The two addresses funded either side of it are
 # what make the fee test discriminate rather than merely pass.
@@ -621,10 +625,17 @@ else
     fail "pool holdings $(( POOL_SAT + PENDING_SAT )) sat do not match the $TOTAL_SHIELDED_SAT sat moved"
 fi
 
-if [ "$POOL_SAT" -eq "$TOTAL_SHIELDED_SAT" ]; then
-    success "all of it is spendable pool balance after the epoch completed"
+# Owned is not spendable yet at this height, and must not be reported as lost.
+# Drive the chain past the depth anchor and require every satoshi to spend:
+# that is the path a wallet migrating alone, with no finality, depends on.
+mine_to "$SPENDABLE_HEIGHT" || { fail "could not mine to $SPENDABLE_HEIGHT"; exit 1; }
+unlock
+INFO_DEEP="$(rpc z_getshieldedinfo 2>/dev/null)"
+POOL_DEEP_SAT="$(to_sat "$(jnum "$INFO_DEEP" privacy_vnext_balance)")"
+if [ "$POOL_DEEP_SAT" -eq "$TOTAL_SHIELDED_SAT" ]; then
+    success "all of it is spendable once the depth anchor reaches it, with no finality: $POOL_DEEP_SAT sat"
 else
-    fail "spendable pool balance is $POOL_SAT sat of $TOTAL_SHIELDED_SAT sat moved"
+    fail "spendable pool balance is $POOL_DEEP_SAT sat of $TOTAL_SHIELDED_SAT sat moved at height $SPENDABLE_HEIGHT (was $POOL_SAT at $EPOCH_HEIGHT)"
 fi
 
 # Every shield writes two notes. A shortfall is value that reached the tree but
