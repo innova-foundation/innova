@@ -69,6 +69,8 @@ using namespace std;
 namespace fs = boost::filesystem;
 
 CWallet* pwalletMain = NULL;
+// Exit status for the final _exit in Shutdown(); an init refusal must report non-zero.
+static int nShutdownExitCode = 0;
 IDns* idns = NULL;
 CClientUIInterface uiInterface;
 bool fConfChange;
@@ -218,7 +220,7 @@ void Shutdown(void* parg)
         // still-blocked thread holds.
         fflush(stdout);
         fflush(stderr);
-        _exit(0);
+        _exit(nShutdownExitCode);
 #endif
     } else
     {
@@ -519,10 +521,11 @@ bool AppInit(int argc, char* argv[])
     {
         PrintException(NULL, "AppInit()");
     };
-    //if (!fRet)
-        //Shutdown(NULL);
     if (!fRet)
-      Shutdown(NULL);
+    {
+        nShutdownExitCode = 1;
+        Shutdown(NULL);
+    }
 
     return fRet;
 }
