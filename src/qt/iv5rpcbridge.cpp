@@ -326,6 +326,12 @@ bool FetchPool(PoolSnapshot& out, QString& errorOut)
 bool Call(const QString& method, const QStringList& params,
           QString& resultOut, QString& errorOut)
 {
+    // Widgets poll on timers that outlive the core's shutdown.
+    if (fShutdown)
+    {
+        errorOut = QObject::tr("The node is shutting down.");
+        return false;
+    }
     json_spirit::Value value;
     if (!Execute(method, params, value, errorOut))
         return false;

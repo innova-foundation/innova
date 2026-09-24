@@ -1477,6 +1477,12 @@ json_spirit::Value CRPCTable::execute(const std::string &strMethod, const json_s
     if (!pcmd)
         throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Method not found");
 
+    // Shutdown tears the wallet down while in-process callers -- the GUI's refresh
+    // timers -- can still reach this table. A locked command would then take
+    // pwalletMain->cs_wallet on freed memory.
+    if (fShutdown || (!pcmd->unlocked && !pwalletMain))
+        throw JSONRPCError(RPC_MISC_ERROR, "Server is shutting down");
+
     // Observe safe mode
     string strWarning = GetWarnings("rpc");
     if (strWarning != "" && !GetBoolArg("-disablesafemode") &&
