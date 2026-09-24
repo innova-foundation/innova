@@ -35,11 +35,19 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent PrintSupport)
 
-# build.h carries the commit description; the qmake build regenerates it each run.
+# build.h carries the commit description. Generated at configure so it exists for
+# the first compile, and again on every build: generated only at configure, the
+# version string froze at whatever commit was checked out when cmake last ran.
+# genbuild.sh replaces the file only when its content changes.
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/build)
 execute_process(
     COMMAND /bin/sh share/genbuild.sh ${CMAKE_CURRENT_BINARY_DIR}/build/build.h
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_custom_target(genbuild ALL
+    COMMAND /bin/sh share/genbuild.sh ${CMAKE_CURRENT_BINARY_DIR}/build/build.h
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/build/build.h
+    COMMENT "refreshing build.h")
 
 set(INNOVA_DEFINES
     QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
@@ -876,6 +884,7 @@ qt6_wrap_ui(INNOVA_UI_HEADERS ${INNOVA_FORMS})
 add_executable(Innova MACOSX_BUNDLE
     ${INNOVA_CXX_SOURCES} ${INNOVA_HEADERS} ${INNOVA_UI_HEADERS} ${INNOVA_RESOURCES})
 
+add_dependencies(Innova genbuild)
 target_compile_definitions(Innova PRIVATE ${INNOVA_DEFINES})
 target_include_directories(Innova PRIVATE ${INNOVA_INCLUDES})
 target_compile_options(Innova PRIVATE
