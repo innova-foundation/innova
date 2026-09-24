@@ -13950,11 +13950,28 @@ bool CWallet::PrivacyVNextScanGapIsPersisted() const
 // its notes a payload in the unscanned span already spent.
 bool CWallet::PrivacyVNextScanGapBlocksSpend(std::string& strErrorOut) const
 {
-    const int nGap = GetPrivacyVNextScanGapHeight();
+    LOCK(cs_shielded);
+    const int nGap = nPrivacyVNextScanGapHeight;
     if (nGap < 0)
         return false;
-    strErrorOut = strprintf(
-        "an IV5 scan gap is recorded at height %d; run z_rescaniv5", nGap);
+    // An unlock queues the close itself, so telling the user to rescan while it is
+    // already running sends them to do by hand what finishes on its own.
+    if (nPrivacyVNextScanGapCloseState == PRIVACY_VNEXT_GAP_CLOSE_REQUESTED ||
+        nPrivacyVNextScanGapCloseState == PRIVACY_VNEXT_GAP_CLOSE_RUNNING)
+        strErrorOut = strprintf(
+            "the wallet is catching up on blocks from height %d that it could not scan "
+            "while locked; spending resumes when that finishes", nGap);
+    else if (nPrivacyVNextScanGapCloseState == PRIVACY_VNEXT_GAP_CLOSE_FAILED)
+        strErrorOut = strprintf(
+            "an IV5 scan gap is recorded at height %d and the automatic catch-up failed; "
+            "run z_rescaniv5", nGap);
+    else if (vchPrivacyVNextSeed.size() != 32)
+        strErrorOut = strprintf(
+            "an IV5 scan gap is recorded at height %d; unlock the wallet so it can "
+            "catch up", nGap);
+    else
+        strErrorOut = strprintf(
+            "an IV5 scan gap is recorded at height %d; run z_rescaniv5", nGap);
     return true;
 }
 

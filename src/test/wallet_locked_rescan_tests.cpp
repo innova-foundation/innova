@@ -405,6 +405,48 @@ BOOST_AUTO_TEST_CASE(an_iv5_spend_is_refused_while_a_scan_gap_is_recorded)
                         "the gap refusal outlived the gap: " + strError);
 }
 
+// The refusal names the step that actually ends the gap. An unlock queues the close
+// on its own, so a wallet already catching up must not be sent to rescan by hand, and a
+// locked one must be told to unlock rather than to run a rescan it cannot do.
+BOOST_AUTO_TEST_CASE(the_scan_gap_refusal_names_the_step_that_ends_it)
+{
+    CWallet wallet(kWalletFile);
+    OpenWallet(wallet);
+    // A wallet that has a seed, locked: the record exists and the bytes are absent. A
+    // wallet with no seed at all records no gap, since it owns no IV5 note to miss.
+    wallet.privacyVNextSeedRecord.nGeneration = 1;
+    wallet.vchPrivacyVNextSeed.clear();
+    BOOST_CHECK(wallet.MarkPrivacyVNextScanGap(4));
+    std::string strGapError;
+
+    // Locked.
+    BOOST_CHECK(wallet.PrivacyVNextScanGapBlocksSpend(strGapError));
+    BOOST_CHECK_EQUAL(strGapError, "an IV5 scan gap is recorded at height 4; unlock the "
+                                   "wallet so it can catch up");
+
+    // Unlocked and the close already queued or running.
+    wallet.vchPrivacyVNextSeed.assign(32, 0x77);
+    wallet.nPrivacyVNextScanGapCloseState = CWallet::PRIVACY_VNEXT_GAP_CLOSE_REQUESTED;
+    BOOST_CHECK(wallet.PrivacyVNextScanGapBlocksSpend(strGapError));
+    BOOST_CHECK_EQUAL(strGapError, "the wallet is catching up on blocks from height 4 that "
+                                   "it could not scan while locked; spending resumes when "
+                                   "that finishes");
+    wallet.nPrivacyVNextScanGapCloseState = CWallet::PRIVACY_VNEXT_GAP_CLOSE_RUNNING;
+    BOOST_CHECK(wallet.PrivacyVNextScanGapBlocksSpend(strGapError));
+    BOOST_CHECK(strGapError.find("catching up") != std::string::npos);
+
+    // The automatic close failed: only now is a manual rescan the answer.
+    wallet.nPrivacyVNextScanGapCloseState = CWallet::PRIVACY_VNEXT_GAP_CLOSE_FAILED;
+    BOOST_CHECK(wallet.PrivacyVNextScanGapBlocksSpend(strGapError));
+    BOOST_CHECK_EQUAL(strGapError, "an IV5 scan gap is recorded at height 4 and the "
+                                   "automatic catch-up failed; run z_rescaniv5");
+
+    // The wallet file is shared by every case in the suite and the gap is persisted.
+    wallet.nPrivacyVNextScanGapCloseState = CWallet::PRIVACY_VNEXT_GAP_CLOSE_IDLE;
+    wallet.ClearPrivacyVNextScanGap(0);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextScanGapHeight(), -1);
+}
+
 // A wallet with no IV5 seed records no scan gap: it owns no note, and a gap it cannot
 // close would block startup.
 BOOST_AUTO_TEST_CASE(a_wallet_with_no_iv5_seed_records_no_gap)
