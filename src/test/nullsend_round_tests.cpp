@@ -1005,6 +1005,15 @@ BOOST_AUTO_TEST_CASE(a_prefix_is_frozen_once_and_every_seat_approves_the_same_on
     std::vector<unsigned char> vchOther;
     BOOST_REQUIRE(vSeats[0].key.Sign(uint256(0x7070), vchOther));
     BOOST_CHECK(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchOther, &strError));
+    // That one fails verification before the once-per-seat check is reached. A second
+    // valid approval of the same frozen prefix is the case the check exists for: it
+    // would replace the approval the round already accepted.
+    std::vector<unsigned char> vchSig0Again;
+    BOOST_REQUIRE(vSeats[0].key.Sign(hashPrefix, vchSig0Again));
+    BOOST_REQUIRE_MESSAGE(vchSig0Again != vchSig0,
+                          "signing is deterministic; this case needs a second valid signature");
+    BOOST_CHECK_MESSAGE(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0Again, &strError),
+                        "a second valid approval replaced the one the round accepted");
     BOOST_CHECK_MESSAGE(!round.PrefixAgreed(), "one approval of two agreed the prefix");
     BOOST_REQUIRE(vSeats[1].key.Sign(hashPrefix, vchSig1));
     BOOST_REQUIRE_MESSAGE(round.SubmitPrefixSignature(vSeats[1].pubkey, vchSig1, &strError),
