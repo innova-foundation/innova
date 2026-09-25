@@ -12,6 +12,17 @@
 #include <boost/filesystem.hpp>
 #include <stdexcept>
 
+#if defined(__SANITIZE_ADDRESS__)
+#define INNOVA_TEST_LSAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define INNOVA_TEST_LSAN 1
+#endif
+#endif
+#ifdef INNOVA_TEST_LSAN
+#include <sanitizer/lsan_interface.h>
+#endif
+
 CWallet* pwalletMain;
 CClientUIInterface uiInterface;
 bool fConfChange = false;
@@ -72,6 +83,12 @@ struct TestingSetup {
         bitdb.Flush(true);
         CZKContext::Shutdown();
         boost::filesystem::remove_all(pathTestData);
+#ifdef INNOVA_TEST_LSAN
+        // Leak check while the chain globals are alive. At exit, static teardown
+        // destroys mapBlockIndex first, and a side-branch index reachable only
+        // through it reads as leaked.
+        __lsan_do_leak_check();
+#endif
     }
 };
 
