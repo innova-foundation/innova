@@ -1,17 +1,15 @@
 #!/bin/bash
 # Copyright (c) 2026 The Innova developers
-# IV5 note finality vote regtest: drive CNoteFinalityVote end to end.
+# IV5 note finality vote regtest: drive the op-10 note vote end to end.
 #
-# A note vote is the IV5-native private finality vote: an FCMP++ membership proof
-# over the IV5 note tree, an ed25519 sigma authorisation, Shamir tally shares to
-# the canonical committee, and a weight-floor range proof. It anchors to an
-# ALREADY-FINALIZED epoch's IV5 root, so this needs a chain that finalizes, which
-# one node can never do: a finalized height needs FINALITY_CONFIRMATION_EPOCHS
-# consecutive HARD epochs, a HARD epoch needs >= FINALITY_MIN_VOTERS distinct
-# transparent voters, and one wallet casts exactly one vote. Three wallets, each
-# casting its own transparent vote at every boundary, is the smallest fleet that
-# reaches a finalized height. Only node0 holds an IV5 seed and IV5 notes, so only
-# node0 can cast a note vote and the observation stays deterministic.
+# A note vote is an ordinary privacy-vNext transaction, operation 10, that spends the
+# voting note and reissues it. Its tag is the spent note's key image, so a second vote
+# from one note is a double spend. It anchors to epoch state E-1, relays through the
+# mempool, and must be mined in [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). The
+# epoch's v4 tally certificate commits the counted set as a root and a count, which
+# every node rebuilds at connect. A HARD epoch still needs FINALITY_MIN_VOTERS
+# transparent voters, so the fleet is three wallets: node0 holds the IV5 notes and
+# votes only in the note lane, node1 and node2 carry the identity lane.
 #
 # Configuration this harness needs that the spend harness does not:
 #   -regtestiv5notevote=<h>  the note-vote fork; init refuses a height below
@@ -21,22 +19,10 @@
 #                            drawn per term from the IV5 collateral registry, and
 #                            a node serves a seat only when the drawn set names
 #                            the pubkey of this secret
-#   -finalityvotemode=auto   "transparent" returns before the note vote is even
-#                            attempted
-#   -debug -debugnet         every producer gate log is behind if(fDebug), and
-#                            the peer-side receive log is behind fDebugNet
+#   -finalityvotemode=note   node0's lane; the peers run "transparent"
+#   -debug -debugnet         the producer's refusal lines are behind fDebug
 #
-# The specific untested claim this exists to settle (F2): the producer builds its
-# vote against a DETERMINISTIC anchor, but only pushes it if AddPendingNoteVote
-# succeeds, and that calls CheckNoteVoteForContext with nContextHeight = -1 --
-# the relay branch -- which resolves the anchor through
-# CDAGManager::GetLastFinalizedEpochState. That function skips every epoch whose
-# LEGACY hashCurveRoot is zero, and on a pure-IV5 chain with no ring-signature
-# history it is zero for every epoch. If it fires, the node builds a valid vote,
-# its own relay check refuses it as local state, the vote is never pushed, and
-# the note has already been burned in the per-epoch cast set.
-#
-# The second thing it settles is where the committee comes from; see
+# It also settles where the committee comes from; see
 # PRE_TERM_EPOCH below for the check that separates a registry draw from a fixed
 # set, and why nothing else here does.
 #
@@ -73,15 +59,18 @@ BOUNDARY_B=311
 # earliest legal height and every epoch boundary from 2 on is an attempt.
 NOTE_VOTE_HEIGHT=311
 
-FUND_AMOUNT=100
-FUND_HEIGHT=20
-FUND_CONFIRM_HEIGHT=25
+# Above the 500 INN vote stake floor (GetFinalityMinVoteWeight): a peer holding less
+# casts a vote every node refuses as below the minimum weight.
+FUND_AMOUNT=600
+FUND_HEIGHT=40
+FUND_CONFIRM_HEIGHT=45
 SHIELD_HEIGHT=330
 SHIELD_CONFIRM_HEIGHT=345
 SHIELD_SWEEPS=4
 
-# Epochs 2, 3 and 4 are the HARD run; epoch 4 ends at 1210.
-FINALIZED_HEIGHT=1210
+# Epochs 2, 3 and 4 are the HARD run. The third consecutive HARD epoch's record
+# carries a finalized height of its own start: epoch 4 finalizes 911.
+FINALIZED_HEIGHT=911
 FINALIZED_EPOCH=4
 
 # CPU miner threads for the long haul. Single-threaded regtest mines ~1.6
@@ -136,13 +125,15 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 # ---------------------------------------------------------------------------
 
 # Transparent value is shielded here, the collateral notes are carved out of it
-# one epoch later, and they are registered the epoch after that. Funding this
+# two epochs later, and they are registered two epochs after that. Each step is a
+# spend, and a spend anchors to the finalized height the PREDECESSOR epoch's record
+# carries: notes the epoch-E build places are spendable from epoch E+2. Funding this
 # late because the pool has to hold well over 6 x 25000 INN (see
 # POOL_SHIELD_TOTAL) and node0 is the only miner. The regtest ladder's last rung
 # ends at 1811, so this height is funded out of the post-ladder tail.
 POOL_FUND_EPOCH=14
-CARVE_EPOCH=$(( POOL_FUND_EPOCH + 1 ))
-REGISTER_EPOCH=$(( CARVE_EPOCH + 1 ))
+CARVE_EPOCH=$(( POOL_FUND_EPOCH + 2 ))
+REGISTER_EPOCH=$(( CARVE_EPOCH + 2 ))
 
 # A term is GetFinalityCommitteeTermEpochs() epochs long and starts on a multiple
 # of that length: (epoch / len) * len. A term epoch off that grid is never the
@@ -215,11 +206,18 @@ REGISTER_HEIGHT="$(epoch_start "$REGISTER_EPOCH")"
 
 # Boundaries observed for note votes. Both epochs of the term the draw seats.
 NOTE_VOTE_EPOCHS="$COMMITTEE_TERM_EPOCH $(( COMMITTEE_TERM_EPOCH + 1 ))"
-# Blocks mined past a boundary while the vote is pending. Stays inside
-# FINALITY_VOTE_INCLUSION_WINDOW (24) so every one of them may carry the vote.
+# The epoch after them, for the carrier-disconnect case in section 15a.
+REORG_VOTE_EPOCH=$(( COMMITTEE_TERM_EPOCH + 2 ))
+# FINALITY_VOTE_INCLUSION_WINDOW: a vote for boundary B connects only in [B, B+24).
+NOTE_VOTE_INCLUSION_WINDOW=24
+# FINALITY_VOTE_EMIT_OFFSET_POST_DAG: the producer casts once the tip is 2 blocks past
+# the boundary, so a note-vote round holds the chain there, not at the boundary.
+NOTE_VOTE_EMIT_OFFSET=2
+# Blocks mined past a boundary while the vote is pending. Inside the inclusion
+# window, so every one of them may carry the vote.
 NOTE_VOTE_WINDOW=10
-# Seconds the chain is held at the boundary. ThreadFinalityVoter wakes on a 5s
-# cycle and the note vote's proofs are the slow part of the call.
+# Seconds the chain is held at the emit height. ThreadFinalityVoter wakes on a 5s
+# cycle and proving takes ~5s.
 NOTE_VOTE_SETTLE=30
 
 # One member secret per node. These are NOT a committee: nothing is pinned. A node
@@ -250,8 +248,8 @@ COMMITTEE_PUBKEYS=(
 # it spends the note it votes with, so the ledger enforces one vote per note per epoch.
 # The coinbase-script lane it replaced was deleted.
 NOTE_VOTE_OPERATION=10
-# OP_RETURN payload tag of a canonical tally-certificate envelope ("IFCC").
-TALLY_CERT_TAG_HEX="49464343"
+# FINALITY_NOTE_CERT_VERSION: the certificate whose note leg is a root and a count.
+NOTE_CERT_VERSION=4
 
 # The epoch whose note tally is driven to a certificate. It is the first of
 # NOTE_VOTE_EPOCHS and derived from it, because the certificate has to be carried
@@ -267,8 +265,8 @@ TALLY_WINDOW_CLOSE=$(( 11 + (TALLY_EPOCH - 1) * 300 + 24 ))
 # converge and for a miner to carry the certificate it assembles.
 TALLY_CARRY_HEIGHT=$(( TALLY_WINDOW_CLOSE + 40 ))
 # Seconds the chain rests at the freeze point. ThreadFinalityVoter drives
-# ProcessFinalityTallyCommittee on a 5s cycle, and the pass, the partial exchange
-# and the M-of-N signature round each need one.
+# ProcessFinalityTallyCommittee on a 5s cycle, and the pass and the M-of-N
+# signature round each need one.
 TALLY_SETTLE=45
 
 PASSED=0
@@ -640,47 +638,251 @@ votes_in_range() {
 # Note-vote observation
 # ------------------------------------------------------------------
 
-# The producer's own account of one epoch, straight out of node0's log.
-# All of these are printf'd by ProduceNoteFinalityVote; the gate lines are
-# behind fDebug, which is why this harness runs with -debug.
-producer_success()  { grep -F "ProduceNoteFinalityVote: epoch=$1 " "$(node_log 0)" 2>/dev/null; }
-producer_refused()  { grep -F "ProduceNoteFinalityVote: epoch $1 vote was refused locally:" "$(node_log 0)" 2>/dev/null; }
-producer_dup_tag()  { grep -F "ProduceNoteFinalityVote: epoch $1 already carries this note's tag" "$(node_log 0)" 2>/dev/null; }
+# The producer's own account of one epoch, out of node0's log. The success line is
+# printed by ProducePrivacyVNextNoteVote after the vote entered node0's mempool; a
+# refusal is printed by ProduceFinalityVote behind fDebug.
+#   ProducePrivacyVNextNoteVote: epoch=E boundary=B height=H txid=<10 hex>
+producer_success()  { grep -aF "ProducePrivacyVNextNoteVote: epoch=$1 " "$(node_log 0)" 2>/dev/null; }
+producer_refused()  { grep -aF "no IV5 note vote for epoch $1: the note finality vote was built but could not be committed" "$(node_log 0)" 2>/dev/null; }
+producer_all()      { grep -aE "ProducePrivacyVNextNoteVote:|no IV5 note vote for epoch" "$(node_log 0)" 2>/dev/null; }
+producer_txid()     { producer_success "$1" | head -1 | sed -n 's/.*txid=\([0-9a-f]*\).*/\1/p'; }
+producer_boundary() { producer_success "$1" | head -1 | sed -n 's/.* boundary=\([0-9]*\).*/\1/p'; }
 
-# Everything the producer said, for a diagnosis dump.
-producer_all()      { grep -F "ProduceNoteFinalityVote:" "$(node_log 0)" 2>/dev/null; }
+raw_tx() { rpc "$1" getrawtransaction "$2" 2>/dev/null | tr -d '"[:space:]'; }
 
-# The tag the producer reported for an epoch (its first 10 hex chars).
-producer_tag() {
-    producer_success "$1" | head -1 | sed -n 's/.*tag=\([0-9a-f]*\).*/\1/p'
+# The full id of the mempool transaction whose txid starts with PREFIX, if any.
+mempool_txid() {
+    [ -n "$2" ] || return 0
+    rpc "$1" getrawmempool 2>/dev/null | grep -oE '[0-9a-f]{64}' | grep "^$2" | head -1
 }
 
-# Tagged finality envelopes carried by a block's coinbase, one scriptPubKey hex
-# per line. An envelope is OP_RETURN <tag || object>, so the tag sits immediately
-# after the push opcode whatever its width.
-tagged_scripts() {
-    local node="$1" h="$2" tag_hex="$3" bh cb
-    bh="$(block_hash "$node" "$h")"
+# An operation-10 payload read off the transaction bytes rather than the node's parse:
+# "<inputs> <key image> <boundary height> <boundary hash>", hashes in the byte order the
+# RPC prints a uint256, so the key image reads as the tag getepochinfo reports.
+notevote_fields() {
+    local raw; raw="$(raw_tx "$1" "$2")"
+    [ -n "$raw" ] || return 1
+    RAW="$raw" python3 -c '
+import os, sys
+b = bytes.fromhex(os.environ["RAW"]); i = 0
+def take(n):
+    global i
+    if i + n > len(b): raise ValueError("short")
+    v = b[i:i+n]; i += n; return v
+def u(n): return int.from_bytes(take(n), "little")
+def cs():
+    n = u(1)
+    return n if n < 253 else u({253: 2, 254: 4, 255: 8}[n])
+try:
+    u(4); u(4)
+    for _ in range(cs()): take(36); take(cs()); u(4)
+    for _ in range(cs()): u(8); take(cs())
+    u(4)
+    if take(5) != b"\xffIV5P": raise ValueError("no IV5 envelope")
+    u(2)
+    b, i = take(cs()), 0
+    if u(2) != 1: raise ValueError("payload schema")
+    if u(1) != 10: raise ValueError("not operation 10")
+    take(6)
+    # genesis, parameter digest, finalized root, tree size, balance, fee, binding
+    take(32 + 32 + 32 + 8 + 8 + 8 + 32)
+    n_in = cs(); kis = []
+    for _ in range(n_in): take(32); kis.append(take(32))
+    for _ in range(cs()):
+        take(128); take(cs()); take(cs())
+    bh = take(32); bheight = u(4)
+    print(n_in, kis[0][::-1].hex() if kis else "-", bheight, bh[::-1].hex())
+except Exception:
+    sys.exit(1)
+'
+}
+
+# Every canonical tally certificate a block's coinbase carries, off the script bytes:
+# "<cert version> <epoch> <tier> <signers> <note count> <note root>" per IFCC envelope,
+# the root in RPC byte order. getblock reports neither note field.
+cert_envelopes() {
+    local bh cb raw
+    bh="$(block_hash "$1" "$2")"
     [ ${#bh} -eq 64 ] || return 1
-    cb="$(rpc "$node" getblock "$bh" 2>/dev/null | python3 -c '
+    cb="$(rpc "$1" getblock "$bh" 2>/dev/null | python3 -c '
 import json, sys
 try: print(json.load(sys.stdin)["tx"][0])
 except Exception: pass
 ')"
     [ ${#cb} -eq 64 ] || return 1
-    rpc "$node" getrawtransaction "$cb" 1 2>/dev/null | \
-    TAG="$tag_hex" python3 -c '
-import json, os, sys
-tag = os.environ["TAG"]
+    raw="$(raw_tx "$1" "$cb")"
+    [ -n "$raw" ] || return 1
+    RAW="$raw" python3 -c '
+import os, sys
+b = bytes.fromhex(os.environ["RAW"]); i = 0
+def take(n):
+    global i
+    if i + n > len(b): raise ValueError("short")
+    v = b[i:i+n]; i += n; return v
+def u(n): return int.from_bytes(take(n), "little")
+def s(n): return int.from_bytes(take(n), "little", signed=True)
+def cs():
+    n = u(1)
+    return n if n < 253 else u({253: 2, 254: 4, 255: 8}[n])
 try:
-    tx = json.load(sys.stdin)
+    u(4); u(4)
+    for _ in range(cs()): take(36); take(cs()); u(4)
+    scripts = []
+    for _ in range(cs()): u(8); scripts.append(take(cs()))
 except Exception:
-    sys.exit(0)
-for out in tx.get("vout", []):
-    h = (out.get("scriptPubKey") or {}).get("hex") or ""
-    if h.startswith("6a") and tag in h[:16]:
-        print(h)
+    sys.exit(1)
+for sc in scripts:
+    if len(sc) < 2 or sc[0] != 0x6a: continue
+    op, j = sc[1], 2
+    if op <= 75: n = op
+    elif op == 0x4c: n = sc[j]; j += 1
+    elif op == 0x4d: n = int.from_bytes(sc[j:j+2], "little"); j += 2
+    else: continue
+    d = sc[j:j+n]
+    if d[:4] != b"IFCC": continue
+    b, i = d[4:], 0
+    try:
+        # CCanonicalFinalityTallyCertificateEnvelope, finality.h
+        lv = u(4); cv = s(4); ep = s(4); take(32); s(4); tier = s(4); s(4)
+        take(96); take(24)
+        for _ in range(cs()): take(32)
+        signers, cnt, root = 0, 0, bytes(32)
+        if lv >= 2:
+            signers = cs(); take(2 * signers)
+            for _ in range(cs()): take(cs())
+            root = take(32); cnt = u(4)
+        if i != len(b): raise ValueError("trailing bytes")
+        print(cv, ep, tier, signers, cnt, root[::-1].hex())
+    except Exception:
+        print("undecodable")
 '
+}
+
+# ComputeNoteVoteSetRoot over RPC-order tags: sorted, domain-separated double-SHA256
+# leaves and nodes, an odd tail promoted rather than duplicated.
+note_set_root() {
+    TAGS="$*" python3 -c '
+import hashlib, os
+def h(x): return hashlib.sha256(hashlib.sha256(x).digest()).digest()
+def ser(s): return bytes([len(s)]) + s
+tags = sorted(t for t in os.environ["TAGS"].split() if t)
+if not tags:
+    print("0" * 64); raise SystemExit
+lv = [h(ser(b"Innova/Finality/NoteVoteLeaf/v1") + bytes.fromhex(t)[::-1]) for t in tags]
+while len(lv) > 1:
+    nx = [h(ser(b"Innova/Finality/NoteVoteNode/v1") + lv[k] + lv[k + 1])
+          for k in range(0, len(lv) - 1, 2)]
+    if len(lv) % 2: nx.append(lv[-1])
+    lv = nx
+print(lv[0][::-1].hex())
+'
+}
+
+# The note_vote_tags array of a getepochinfo result, space separated.
+epoch_note_tags() {
+    python3 -c '
+import json, sys
+try: print(" ".join(json.load(sys.stdin).get("note_vote_tags") or []))
+except Exception: pass
+' <<< "$1" 2>/dev/null
+}
+
+# One epoch's counted note-vote set on NODE: "<counted> <equivocated> <tags...>", tags
+# sorted. getepochinfo reports only epochs whose state is built; the tip's own epoch is
+# read from getfinalityinfo's live note_votes view instead.
+epoch_note_view() {
+    local ei fi
+    ei="$(rpc "$1" getepochinfo "$2" 2>/dev/null)"
+    fi="$(rpc "$1" getfinalityinfo 2>/dev/null)"
+    EI="$ei" FI="$fi" E="$2" python3 -c '
+import json, os
+def load(k):
+    try: return json.loads(os.environ[k])
+    except Exception: return {}
+ei, nv = load("EI"), load("FI").get("note_votes") or {}
+if "note_votes_counted" in ei:
+    c, q, t = ei["note_votes_counted"], ei.get("note_votes_equivocated"), ei.get("note_vote_tags") or []
+elif nv.get("epoch") == int(os.environ["E"]):
+    c, q, t = nv.get("counted"), nv.get("equivocated"), nv.get("tags") or []
+else:
+    raise SystemExit
+print(" ".join([str(c), str(q)] + sorted(t)))
+'
+}
+
+# A second vote from one note (same vote, nTime one second earlier) must be refused by
+# the spent-key rule alone. Sets PROBE_WHY on failure.
+double_vote_probe() {
+    local node="$1" txid="$2" expect="$3" raw ki mut mut_id res pat before after
+    PROBE_WHY=""
+    raw="$(raw_tx "$node" "$txid")"
+    ki="$(notevote_fields "$node" "$txid" | awk '{print $2}')"
+    [ -n "$raw" ] && [ ${#ki} -eq 64 ] || { PROBE_WHY="node$node cannot read vote ${txid:0:16}"; return 1; }
+    read -r mut mut_id < <(RAW="$raw" python3 -c '
+import hashlib, os
+b = bytearray.fromhex(os.environ["RAW"])
+t = int.from_bytes(b[4:8], "little") - 1
+b[4:8] = t.to_bytes(4, "little")
+print(b.hex(), hashlib.sha256(hashlib.sha256(bytes(b)).digest()).digest()[::-1].hex())
+')
+    [ ${#mut_id} -eq 64 ] && [ "$mut_id" != "$txid" ] || { PROBE_WHY="could not build the second vote"; return 1; }
+    pat="IV5 spent key ${ki:0:10} $expect ${txid:0:10}"
+    before="$(grep -acF "$pat" "$(node_log "$node")" 2>/dev/null)"
+    res="$(rpc "$node" sendrawtransaction "$mut" 2>&1 | tr -d '"[:space:]')"
+    sleep 1
+    after="$(grep -acF "$pat" "$(node_log "$node")" 2>/dev/null)"
+    is_int "${before:-x}" || before=0
+    is_int "${after:-x}" || after=0
+    if [ "$res" = "$mut_id" ] || [ -n "$(mempool_txid "$node" "$mut_id")" ]; then
+        PROBE_WHY="node$node ACCEPTED a second vote ${mut_id:0:16} spending key image ${ki:0:16}"
+        return 1
+    fi
+    if [ "$after" -le "$before" ]; then
+        PROBE_WHY="node$node refused ${mut_id:0:16} but not with '$pat': $(grep -a "CTxMemPool::accept()" "$(node_log "$node")" | tail -1)"
+        return 1
+    fi
+    PROBE_KI="$ki"
+    return 0
+}
+
+# One note-vote epoch. The chain is held at the emit height, where the vote is cast and
+# relayed while nothing can mine it away, and each node's mempool is watched for it.
+# Records NV_TXID[E] (full txid, from node0's mempool) and NV_SEEN[E] (nodes whose mempool
+# held it). With PROBE=1, a second vote is offered to node1 once node1 holds the first.
+NV_TXID=()
+NV_SEEN=()
+PROBE_MEMPOOL_OK=""
+PROBE_MEMPOOL_WHY=""
+note_vote_round() {
+    local e="$1" b="$2" carry="$3" probe="${4:-0}" hold s n t10 full
+    hold=$(( b + NOTE_VOTE_EMIT_OFFSET ))
+    mine_to 0 "$hold" || return 1
+    wait_sync "$hold" || return 1
+    NV_SEEN[$e]=""
+    NV_TXID[$e]=""
+    for ((s=0; s<NOTE_VOTE_SETTLE; s++)); do
+        sleep 1
+        t10="$(producer_txid "$e")"
+        [ -n "$t10" ] || continue
+        for ((n=0; n<NUM_NODES; n++)); do
+            case " ${NV_SEEN[$e]} " in *" $n "*) continue ;; esac
+            full="$(mempool_txid "$n" "$t10")"
+            [ ${#full} -eq 64 ] || continue
+            NV_SEEN[$e]="${NV_SEEN[$e]} $n"
+            [ "$n" -eq 0 ] && NV_TXID[$e]="$full"
+        done
+    done
+    if [ "$probe" = "1" ]; then
+        full="$(mempool_txid 1 "$(producer_txid "$e")")"
+        if [ ${#full} -eq 64 ] && double_vote_probe 1 "$full" "is reserved by"; then
+            PROBE_MEMPOOL_OK=1
+        else
+            PROBE_MEMPOOL_OK=0
+            PROBE_MEMPOOL_WHY="${PROBE_WHY:-node1 never held the epoch $e vote}"
+        fi
+    fi
+    mine_to 0 $(( b + carry )) || return 1
+    wait_sync $(( b + carry )) || return 1
 }
 
 # Every note-vote transaction in a block, by txid. A vote declares operation 10 in its
@@ -1072,18 +1274,22 @@ header "5. Three consecutive HARD epochs produce a finalized height"
 
 vote_round 611  || { fail "epoch 3 vote round failed"; exit 1; }
 
-# A note is only spendable -- and only votable -- once an epoch build has put it
-# in the IV5 tree and assigned its leaf index, which happens when the chain
-# crosses into the next epoch. Nothing before this boundary could have voted.
+# A note is votable once an epoch build has put it in the IV5 tree and assigned its
+# leaf index, which happens when the chain crosses into the next epoch. The vote
+# anchors to epoch state E-1, not to finality, so spendable balance -- which waits on
+# the finalized tree or the depth anchor -- is zero here by design. Placement is the
+# owned value less the unplaced part, which also holds value that arrived in the
+# current epoch; the floor is 500 INN of placed value.
 INFO="$(rpc 0 z_getshieldedinfo 2>/dev/null)"
-POOL_BAL="$(jget "$INFO" privacy_vnext_balance)"
+POOL_OWNED="$(python3 -c "print(float('$(jget "$INFO" privacy_vnext_balance)' or 0) + float('$(jget "$INFO" privacy_vnext_unconfirmed_balance)' or 0))" 2>/dev/null)"
+POOL_UNPLACED="$(jget "$INFO" privacy_vnext_unplaced_balance)"
 POOL_NOTES="$(jget "$INFO" privacy_vnext_note_count)"
 TREE_SIZE="$(jget "$INFO" privacy_vnext_tree_size)"
-if [ "$(python3 -c "print(1 if float('${POOL_BAL:-0}') >= 100 else 0)")" = "1" ] && \
+if [ "$(python3 -c "print(1 if float('${POOL_OWNED:-0}') - float('${POOL_UNPLACED:-0}') >= 500 else 0)" 2>/dev/null)" = "1" ] && \
    is_int "$TREE_SIZE" && [ "$TREE_SIZE" -gt 0 ]; then
-    success "node0 holds $POOL_BAL INN across $POOL_NOTES leaf-indexed note(s), tree=$TREE_SIZE"
+    success "node0 owns $POOL_OWNED INN ($POOL_UNPLACED not yet placed) across $POOL_NOTES note(s), tree=$TREE_SIZE"
 else
-    fail "node0 has no votable IV5 note (balance=$POOL_BAL notes=$POOL_NOTES tree=$TREE_SIZE)"
+    fail "node0 has no votable IV5 note (owned=${POOL_OWNED:-?} unplaced=${POOL_UNPLACED:-?} notes=$POOL_NOTES tree=$TREE_SIZE)"
     exit 1
 fi
 
@@ -1188,7 +1394,7 @@ fi
 # Cross into the carve epoch: the funding epoch's build indexes those notes and,
 # because the epoch goes HARD, finalizes them into the anchor a spend proves
 # against.
-advance_through_epochs "$CARVE_EPOCH" "$CARVE_EPOCH" || { fail "the epoch $CARVE_EPOCH vote round failed"; exit 1; }
+advance_through_epochs $(( POOL_FUND_EPOCH + 1 )) "$CARVE_EPOCH" || { fail "the epoch $(( POOL_FUND_EPOCH + 1 ))-$CARVE_EPOCH vote rounds failed"; exit 1; }
 mine_to 0 $((CARVE_HEIGHT + 10)) || { fail "could not mine into epoch $CARVE_EPOCH"; exit 1; }
 wait_sync $((CARVE_HEIGHT + 10)) || { fail "fleet did not sync into epoch $CARVE_EPOCH"; exit 1; }
 
@@ -1243,7 +1449,7 @@ header "5c. Six finality-member registrations confirm below the anchor height"
 
 # Cross into the register epoch so the carve epoch is built AND finalized: a note
 # is attestable only once its leaf index is inside the finalized spend anchor.
-advance_through_epochs "$REGISTER_EPOCH" "$REGISTER_EPOCH" || { fail "the epoch $REGISTER_EPOCH vote round failed"; exit 1; }
+advance_through_epochs $(( CARVE_EPOCH + 1 )) "$REGISTER_EPOCH" || { fail "the epoch $(( CARVE_EPOCH + 1 ))-$REGISTER_EPOCH vote rounds failed"; exit 1; }
 mine_to 0 $((REGISTER_HEIGHT + 10)) || { fail "could not mine into epoch $REGISTER_EPOCH"; exit 1; }
 wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch $REGISTER_EPOCH"; exit 1; }
 
@@ -1467,16 +1673,19 @@ fi
 header "6. Note-vote rounds over the finalized chain"
 # ============================================================
 
-# Epoch 5 is the first boundary at which a finalized height can exist, so each
-# round below both drives the transparent votes that keep finality advancing and
-# gives node0 its one chance that epoch to cast a note vote.
+# Each round drives the transparent votes that keep finality advancing and gives
+# node0 its one note vote for the epoch. The tally epoch's round also offers node1 a
+# second vote from the same note while the first is still in its mempool.
 for E in $NOTE_VOTE_EPOCHS; do
     B=$(( 11 + (E - 1) * 300 ))
-    log "epoch $E: holding the chain at boundary $B for ${NOTE_VOTE_SETTLE}s"
-    vote_round "$B" "$NOTE_VOTE_SETTLE" "$NOTE_VOTE_WINDOW" || {
+    log "epoch $E: holding the chain at $((B + NOTE_VOTE_EMIT_OFFSET)) for ${NOTE_VOTE_SETTLE}s"
+    PROBE=0
+    [ "$E" = "$TALLY_EPOCH" ] && PROBE=1
+    note_vote_round "$E" "$B" "$NOTE_VOTE_WINDOW" "$PROBE" || {
         fail "epoch $E vote round failed"
         exit 1
     }
+    log "epoch $E: vote ${NV_TXID[$E]:-<none>} held by node(s)${NV_SEEN[$E]:- none}"
     log "epoch $E: window mined to $((B + NOTE_VOTE_WINDOW))"
 
     # The tally epoch gets two more stops inside its own span: one at the
@@ -1525,10 +1734,9 @@ else
     exit 1
 fi
 
-# The anchor a note vote must prove against: the finalized epoch's IV5 tree.
+# The finalized epoch carries a populated IV5 tree.
 ANCHOR_TREE_ROOT="$(jget "$E4" iv5_tree_root)"
 ANCHOR_TREE_SIZE="$(jget "$E4" iv5_tree_size)"
-ANCHOR_CURVE_ROOT="$(jget "$E4" curve_root)"
 if [ ${#ANCHOR_TREE_ROOT} -ge 64 ] && ! is_zero_hex "$ANCHOR_TREE_ROOT" && \
    is_int "$ANCHOR_TREE_SIZE" && [ "$ANCHOR_TREE_SIZE" -gt 0 ]; then
     success "the finalized epoch carries an IV5 tree ($ANCHOR_TREE_SIZE leaves, root ${ANCHOR_TREE_ROOT:0:12})"
@@ -1538,112 +1746,96 @@ else
 fi
 
 # ============================================================
-header "7. (a) node0 builds a note vote"
+header "7. (a) node0 builds one note vote per epoch"
 # ============================================================
 
+# One producer line per epoch at most, from the first votable epoch on. The note-vote
+# epochs are held for the producer, so each must have exactly one, naming its own
+# boundary; the earlier epochs are crossed at mining pace and are only bounded.
+BUILT_OK=1
 BUILT_EPOCHS=""
-for E in $NOTE_VOTE_EPOCHS; do
-    if [ -n "$(producer_success "$E")" ] || [ -n "$(producer_refused "$E")" ] || \
-       [ -n "$(producer_dup_tag "$E")" ]; then
-        BUILT_EPOCHS="$BUILT_EPOCHS $E"
-    fi
+LAST_NV_EPOCH="${NOTE_VOTE_EPOCHS##* }"
+for ((E=3; E<=LAST_NV_EPOCH; E++)); do
+    N="$(producer_success "$E" | grep -c . || true)"
+    is_int "$N" || N=0
+    [ "$N" -le 1 ] || { BUILT_OK=0; fail "node0 built $N note votes in epoch $E"; }
+    [ "$N" -eq 1 ] && BUILT_EPOCHS="$BUILT_EPOCHS $E"
 done
-if [ -n "$BUILT_EPOCHS" ]; then
-    success "node0 built a note vote in epoch(s)$BUILT_EPOCHS"
+for E in $NOTE_VOTE_EPOCHS; do
+    PB="$(producer_boundary "$E")"
+    [ "$PB" = "$(epoch_start "$E")" ] || \
+        { BUILT_OK=0; fail "epoch $E: the producer named boundary '$PB', expected $(epoch_start "$E")"; }
+done
+if [ "$BUILT_OK" -eq 1 ]; then
+    success "node0 built exactly one note vote in each of epoch(s)$BUILT_EPOCHS, the held epochs naming their own boundary"
 else
-    fail "node0 never built a note vote; the producer stopped at a gate:"
     producer_all | tail -12
-    if [ -z "$(producer_all)" ]; then
-        fail "the producer logged nothing at all -- it was never reached"
-    fi
 fi
 
 # ============================================================
-header "8. (b) node0's own relay check accepts the vote  [F2]"
+header "8. (b) node0's own mempool accepts the vote"
 # ============================================================
 
-# ProduceNoteFinalityVote prints its success line only AFTER AddPendingNoteVote
-# returns true, and prints "vote was refused locally" when it does not. So the
-# presence of one and the absence of the other is exactly the F2 question.
-ACCEPTED_EPOCHS=""
-REFUSED_EPOCHS=""
-F2_REASON=""
-F2_LINE=""
+# The producer commits the vote through the wallet and prints its line only after the
+# mempool took it; the old lane's relay check (AddPendingNoteVote) was deleted with it.
+OWN_OK=1
 for E in $NOTE_VOTE_EPOCHS; do
-    if [ -n "$(producer_success "$E")" ]; then
-        ACCEPTED_EPOCHS="$ACCEPTED_EPOCHS $E"
-    elif [ -n "$(producer_refused "$E")" ]; then
-        REFUSED_EPOCHS="$REFUSED_EPOCHS $E"
-        if [ -z "$F2_LINE" ]; then
-            F2_LINE="$(producer_refused "$E" | head -1)"
-            F2_REASON="${F2_LINE##*refused locally: }"
-        fi
+    case " ${NV_SEEN[$E]} " in
+        *" 0 "*) ;;
+        *) OWN_OK=0; fail "epoch $E: node0's mempool never held its vote (producer txid '$(producer_txid "$E")')" ;;
+    esac
+    if [ ${#NV_TXID[$E]} -ne 64 ] || [ "${NV_TXID[$E]:0:10}" != "$(producer_txid "$E")" ]; then
+        OWN_OK=0
+        fail "epoch $E: node0's mempool vote '${NV_TXID[$E]}' is not the producer's '$(producer_txid "$E")'"
     fi
 done
-
-if [ -n "$ACCEPTED_EPOCHS" ] && [ -z "$REFUSED_EPOCHS" ]; then
-    success "every built note vote passed node0's own relay check (epoch(s)$ACCEPTED_EPOCHS)"
-elif [ -n "$REFUSED_EPOCHS" ]; then
-    fail "node0 REFUSED ITS OWN note vote in epoch(s)$REFUSED_EPOCHS"
-    fail "  reason: $F2_REASON"
-    echo "  $F2_LINE"
-else
-    fail "no note vote reached node0's relay check at all"
+OWN_REFUSED="$(grep -aF "the note finality vote was built but could not be committed" "$(node_log 0)" 2>/dev/null | head -1)"
+[ -z "$OWN_REFUSED" ] || { OWN_OK=0; fail "node0 refused its own note vote: $OWN_REFUSED"; }
+if [ "$OWN_OK" -eq 1 ]; then
+    success "every held epoch's vote entered node0's own mempool and none was refused locally"
 fi
 
 # ============================================================
 header "9. (c) Peers receive the note vote"
 # ============================================================
 
-RECEIVED_OK=1
-for ((n=1; n<NUM_NODES; n++)); do
-    # A vote is an ordinary transaction now, so it reaches peers through the mempool
-    # rather than a finality message of its own. Seeing it in the peer's block is the
-    # end state that matters; seeing it in the peer's mempool first is the relay itself.
-    RX=0
-    for E in $NOTE_VOTE_EPOCHS; do
-        RB=$(( 11 + (E - 1) * 300 ))
-        C="$(notevotes_in_range "$n" "$RB" $((RB + NOTE_VOTE_WINDOW)) \
-             | awk 'NF{print $2}' | sort -u | grep -c . || true)"
-        is_int "$C" && RX=$((RX + C))
+# A vote relays as an ordinary transaction. The chain is held at the emit height, so a
+# peer's mempool holding it is the relay itself, observed before any block carried it.
+RELAY_OK=1
+for E in $NOTE_VOTE_EPOCHS; do
+    for ((n=1; n<NUM_NODES; n++)); do
+        case " ${NV_SEEN[$E]} " in
+            *" $n "*) ;;
+            *) RELAY_OK=0; fail "epoch $E: node$n's mempool never held the vote ${NV_TXID[$E]:0:16}" ;;
+        esac
     done
-    REJ="$(grep -F "rejected note vote from peer" "$(node_log "$n")" 2>/dev/null | head -1)"
-    if is_int "$RX" && [ "$RX" -gt 0 ] && [ -z "$REJ" ]; then
-        log "  node$n carries $RX note vote transaction(s)"
-    else
-        RECEIVED_OK=0
-        [ -n "$REJ" ] && fail "node$n rejected a relayed note vote: $REJ"
-    fi
 done
-if [ "$RECEIVED_OK" -eq 1 ]; then
-    success "both peers carry the note vote over $NUM_NODES-node relay and none rejected it"
-else
-    fail "the note vote did not reach both peers (no operation-10 transaction on at least one node)"
+if [ "$RELAY_OK" -eq 1 ]; then
+    success "both peers held each note vote in their mempools before any block carried it"
 fi
-
 
 # ------------------------------------------------------------
 # C6: no node originates both a named and an anonymous vote.
 #
 # A CFinalityVote names its voter -- pubkey, real staked outpoints, cleartext
-# weight and time -- and a CNoteFinalityVote carries only a per-epoch tag. The
-# two originated by one node put the name and the tag on the same connection,
-# and no tag construction undoes that. Origination is what this reads: relay
-# carries every object to every node, so the producer lines are the only place
-# the origin is visible.
-#   ProduceFinalityVote: epoch=      identity lane, one per epoch cast
-#   ProduceNoteFinalityVote: epoch=  anonymous lane, one per epoch cast
+# weight and time -- and a note vote carries only a key image. The two originated
+# by one node put the name and the tag on the same connection, and no tag
+# construction undoes that. Origination is what this reads: relay carries every
+# object to every node, so the producer lines are the only place the origin is
+# visible.
+#   ProduceFinalityVote: epoch=          identity lane, one per epoch cast
+#   ProducePrivacyVNextNoteVote: epoch=  anonymous lane, one per epoch cast
 # ------------------------------------------------------------
 LANE_OK=1
 LANE_TOTAL_ANON=0
 LANE_TOTAL_IDENT=0
 for ((n=0; n<NUM_NODES; n++)); do
     L="$(node_log "$n")"
-    N_IDENT="$(grep -cF "ProduceFinalityVote: epoch=" "$L" 2>/dev/null)"
-    N_ANON="$(grep -cF "ProduceNoteFinalityVote: epoch=" "$L" 2>/dev/null)"
+    N_IDENT="$(grep -acF "ProduceFinalityVote: epoch=" "$L" 2>/dev/null)"
+    N_ANON="$(grep -acF "ProducePrivacyVNextNoteVote: epoch=" "$L" 2>/dev/null)"
     is_int "${N_IDENT:-x}" || N_IDENT=0
     is_int "${N_ANON:-x}" || N_ANON=0
-    N_LANE="$(grep -oE "FINALITY vote lane latched: lane=[a-z]+" "$L" 2>/dev/null | \
+    N_LANE="$(grep -aoE "FINALITY vote lane latched: lane=[a-z]+" "$L" 2>/dev/null | \
               sed -n 's/.*lane=//p' | sort -u | tr '\n' ' ' | tr -d '[:space:]')"
     LANE_TOTAL_IDENT=$((LANE_TOTAL_IDENT + N_IDENT))
     LANE_TOTAL_ANON=$((LANE_TOTAL_ANON + N_ANON))
@@ -1674,9 +1866,9 @@ if [ "$LANE_OK" -eq 1 ]; then
     success "no node originated both lanes ($LANE_TOTAL_IDENT identity, $LANE_TOTAL_ANON anonymous, split across nodes)"
 fi
 
-# The liveness half of the same property: the anonymous node contributes nothing
-# to the deterministic tally, so the split is only safe while the identity voters
-# still finalize. This run finalized at $FINALIZED_HEIGHT with node0 silent.
+# The liveness half of the same property: the split is only safe while the identity
+# voters still finalize. This run finalized at $FINALIZED_HEIGHT with node0 silent on
+# the identity lane.
 FIN_NOW="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" finalized_height)"
 if is_int "${FIN_NOW:-x}" && [ "${FIN_NOW:-0}" -ge "$FINALIZED_HEIGHT" ]; then
     success "finality still advances with node0 silent on the identity lane (finalized_height=$FIN_NOW)"
@@ -1685,108 +1877,125 @@ else
 fi
 
 # ============================================================
-header "10. (d) The vote is carried in a coinbase and connects"
+header "10. (d) The vote is mined inside its inclusion window and connects"
 # ============================================================
 
-CARRIED_TOTAL=0
+# Exactly one operation-10 transaction per held epoch, the one node0 cast, at a height
+# in [B, B+24). Connected on every node: each node's carrier block is the same block
+# and each node's transaction index places the vote in it.
+CARRIED_OK=1
 CARRIED_EPOCHS=""
-CARRY_HEIGHTS=""
 for E in $NOTE_VOTE_EPOCHS; do
-    B=$(( 11 + (E - 1) * 300 ))
+    B="$(epoch_start "$E")"
     ROWS="$(notevotes_in_range 0 "$B" $((B + NOTE_VOTE_WINDOW)))"
-    DISTINCT="$(echo "$ROWS" | awk 'NF{print $2}' | sort -u | grep -c . || true)"
-    is_int "$DISTINCT" || DISTINCT=0
-    if [ "$DISTINCT" -gt 0 ]; then
-        FIRST_H="$(echo "$ROWS" | awk 'NF{print $1; exit}')"
-        CARRIED_EPOCHS="$CARRIED_EPOCHS $E"
-        CARRY_HEIGHTS="$CARRY_HEIGHTS $FIRST_H"
-        CARRIED_TOTAL=$((CARRIED_TOTAL + DISTINCT))
-        log "  epoch $E: $DISTINCT distinct note-vote envelope(s), first at height $FIRST_H"
-    else
-        log "  epoch $E: no note-vote envelope in [$B, $((B + NOTE_VOTE_WINDOW))]"
+    N="$(echo "$ROWS" | grep -c . || true)"
+    H="$(echo "$ROWS" | awk 'NF{print $1; exit}')"
+    T="$(echo "$ROWS" | awk 'NF{print $2; exit}')"
+    if [ "$N" != "1" ]; then
+        CARRIED_OK=0
+        fail "epoch $E: $N operation-10 transaction(s) in [$B, $((B + NOTE_VOTE_WINDOW))], expected 1"
+        continue
     fi
-done
-
-if [ "$CARRIED_TOTAL" -gt 0 ]; then
-    success "coinbases carry $CARRIED_TOTAL note-vote envelope(s) across epoch(s)$CARRIED_EPOCHS"
-else
-    fail "no coinbase carried a note-vote envelope"
-fi
-
-# A block whose ConnectBlockNoteVotes rejected the vote is invalid, so a carrier
-# that every node holds at the same height is a connected vote on every node.
-# node0's hash has to be a real one first: three nodes whose getblockhash all
-# failed also return the same value.
-CONVERGED=1
-for H in $CARRY_HEIGHTS; do
+    if [ "$T" != "${NV_TXID[$E]}" ]; then
+        CARRIED_OK=0
+        fail "epoch $E: the carried vote ${T:0:16} is not the one node0 cast (${NV_TXID[$E]:0:16})"
+        continue
+    fi
+    if [ "$H" -lt "$B" ] || [ "$H" -ge $((B + NOTE_VOTE_INCLUSION_WINDOW)) ]; then
+        CARRIED_OK=0
+        fail "epoch $E: the vote is carried at $H, outside [$B, $((B + NOTE_VOTE_INCLUSION_WINDOW)))"
+        continue
+    fi
     BH0="$(block_hash 0 "$H")"
-    [ ${#BH0} -eq 64 ] || CONVERGED=0
-    for ((n=1; n<NUM_NODES; n++)); do
-        [ "$(block_hash "$n" "$H")" = "$BH0" ] || CONVERGED=0
+    for ((n=0; n<NUM_NODES; n++)); do
+        BHN="$(block_hash "$n" "$H")"
+        TBN="$(jget "$(rpc "$n" getrawtransaction "$T" 1 2>/dev/null)" blockhash)"
+        if [ ${#BH0} -ne 64 ] || [ "$BHN" != "$BH0" ] || [ "$TBN" != "$BH0" ]; then
+            CARRIED_OK=0
+            fail "epoch $E: node$n holds block '${BHN:0:16}' at $H and places the vote in '${TBN:0:16}', node0 has '${BH0:0:16}'"
+        fi
     done
+    CARRIED_EPOCHS="$CARRIED_EPOCHS $E@$H"
 done
 CONNECT_REJECT=""
 for ((n=0; n<NUM_NODES; n++)); do
-    R="$(grep -F "ConnectBlockNoteVotes: rejected vote in block" "$(node_log "$n")" 2>/dev/null | head -1)"
+    R="$(grep -aF "ConnectBlockNoteVotes: rejected vote in block" "$(node_log "$n")" 2>/dev/null | head -1)"
     [ -n "$R" ] && CONNECT_REJECT="node$n: $R"
 done
-if [ -n "$CARRY_HEIGHTS" ] && [ "$CONVERGED" -eq 1 ] && [ -z "$CONNECT_REJECT" ]; then
-    success "every carrier block converged fleet-wide, so the vote connected on all $NUM_NODES nodes"
-elif [ -n "$CONNECT_REJECT" ]; then
-    fail "a node rejected a note vote at connect: $CONNECT_REJECT"
-elif [ -z "$CARRY_HEIGHTS" ]; then
-    fail "there was no carrier block to check for convergence"
-else
-    fail "a carrier block did not converge across the fleet"
+[ -z "$CONNECT_REJECT" ] || { CARRIED_OK=0; fail "a node rejected a note vote at connect: $CONNECT_REJECT"; }
+if [ "$CARRIED_OK" -eq 1 ]; then
+    success "each vote was mined once inside its inclusion window and connected on all $NUM_NODES nodes (epoch@height:$CARRIED_EPOCHS)"
 fi
 
 # ============================================================
-header "11. (e) One note yields at most one vote per epoch"
+header "11. (e) One note, one vote: a second vote from it is a double spend"
 # ============================================================
 
-# The tag T_e = x*U_e is one note's single identity for one epoch. node0 holds
-# several notes but the producer casts once per epoch, so each epoch must show
-# exactly one production and exactly one distinct envelope, and the tag must
-# differ between epochs because the epoch generator does.
-DEDUP_OK=1
-TAGS=""
+# Read off each vote's own bytes: one spent note, the epoch's boundary height and
+# hash. The tag the tally counts is that note's key image, so no key image may repeat
+# across epochs -- a vote reissues its note under a fresh one.
+NV_KI=()
+KI_ALL=""
+FIELDS_OK=1
 for E in $NOTE_VOTE_EPOCHS; do
-    B=$(( 11 + (E - 1) * 300 ))
-    NPROD="$(producer_success "$E" | grep -c . || true)"
-    is_int "$NPROD" || NPROD=0
-    NENV="$(notevotes_in_range 0 "$B" $((B + NOTE_VOTE_WINDOW)) | awk 'NF{print $2}' | sort -u | grep -c . || true)"
-    is_int "$NENV" || NENV=0
-    [ "$NPROD" -le 1 ] || { DEDUP_OK=0; fail "epoch $E produced $NPROD note votes, expected at most 1"; }
-    [ "$NENV" -le 1 ]  || { DEDUP_OK=0; fail "epoch $E carried $NENV distinct note-vote envelopes, expected at most 1"; }
-    T="$(producer_tag "$E")"
-    [ -n "$T" ] && TAGS="$TAGS $T"
+    B="$(epoch_start "$E")"
+    read -r NIN KI BHT BHASH <<< "$(notevote_fields 0 "${NV_TXID[$E]}")"
+    if [ "$NIN" = "1" ] && [ ${#KI} -eq 64 ] && [ "$BHT" = "$B" ] && \
+       [ "$BHASH" = "$(block_hash 0 "$B")" ]; then
+        NV_KI[$E]="$KI"
+        KI_ALL="$KI_ALL $KI"
+        log "  epoch $E: key image ${KI:0:16}, boundary $BHT ${BHASH:0:16}"
+    else
+        FIELDS_OK=0
+        fail "epoch $E: vote ${NV_TXID[$E]:0:16} reads inputs='$NIN' key_image='${KI:0:16}' boundary='$BHT' '${BHASH:0:16}', expected 1 input naming $B $(block_hash 0 "$B" | cut -c1-16)"
+    fi
 done
-NTAGS="$(echo "$TAGS" | tr ' ' '\n' | grep -c . || true)"
-NUNIQ="$(echo "$TAGS" | tr ' ' '\n' | grep . | sort -u | grep -c . || true)"
-is_int "$NTAGS" || NTAGS=0
-is_int "$NUNIQ" || NUNIQ=0
-if [ "$NTAGS" -gt 0 ] && [ "$NTAGS" != "$NUNIQ" ]; then
-    DEDUP_OK=0
-    fail "the same tag was cast in more than one epoch ($NTAGS votes, $NUNIQ distinct tags)"
-fi
-if [ "$DEDUP_OK" -eq 1 ] && [ "$NTAGS" -gt 0 ]; then
-    success "each epoch cast exactly one note vote under its own tag ($NTAGS epoch(s), $NUNIQ distinct tags)"
-elif [ "$DEDUP_OK" -eq 1 ]; then
-    fail "no note vote was cast, so the per-epoch tag rule could not be exercised"
+NKI="$(echo "$KI_ALL" | tr ' ' '\n' | grep -c . || true)"
+NKI_UNIQ="$(echo "$KI_ALL" | tr ' ' '\n' | grep . | sort -u | grep -c . || true)"
+if [ "$FIELDS_OK" -eq 1 ] && [ "$NKI" -gt 0 ] && [ "$NKI" = "$NKI_UNIQ" ]; then
+    success "each vote spends one note and names its own boundary; $NKI vote(s), $NKI_UNIQ distinct key image(s)"
+elif [ "$FIELDS_OK" -eq 1 ]; then
+    fail "a key image repeats across epochs ($NKI votes, $NKI_UNIQ distinct)"
 fi
 
+# The same note voting again while its first vote is pending: offered to node1 during
+# the tally epoch's hold (section 6).
+if [ "$PROBE_MEMPOOL_OK" = "1" ]; then
+    success "node1 refused a second epoch-$TALLY_EPOCH vote from the same note while the first was pending: its key image is reserved"
+else
+    fail "the pending double-vote probe did not refuse on the spent key: ${PROBE_MEMPOOL_WHY:-it never ran}"
+fi
+
+# And once the first vote is mined, still inside the window, so only the spent-key
+# rule stands between the second vote and the mempool.
+if double_vote_probe 1 "${NV_TXID[$LAST_NV_EPOCH]}" "was already consumed by"; then
+    success "node1 refused a second epoch-$LAST_NV_EPOCH vote from the same note after the first was mined: key image ${PROBE_KI:0:16} is spent"
+else
+    fail "the mined double-vote probe: $PROBE_WHY"
+fi
+
+# Neither second vote reached a block: every held epoch counts one vote and no tag
+# was retired as equivocated.
+EQUIV_OK=1
+for E in $NOTE_VOTE_EPOCHS; do
+    for ((n=0; n<NUM_NODES; n++)); do
+        read -r C Q _ <<< "$(epoch_note_view "$n" "$E")"
+        [ "$C" = "1" ] && [ "$Q" = "0" ] || \
+            { EQUIV_OK=0; fail "node$n epoch $E: counted='$C' equivocated='$Q', expected 1 and 0"; }
+    done
+done
+[ "$EQUIV_OK" -eq 1 ] && success "every node counts exactly one note vote per held epoch, none equivocated"
+
 # ============================================================
-header "12. The note tally committee runs over the counted set"
+header "12. The note tally runs over the counted set"
 # ============================================================
 
-# Increment B. Each node is a seat on the canonical committee, decrypts its own
-# evaluation of every counted note vote, sums them, seals the sum to the other
-# seats, and interpolates M of those partials into an opening of the aggregate a
-# validator recomputes from the votes' own commitments.
+# A counted note vote is one voter; nothing is opened. The seat's pass logs how many it
+# counted and how many back the winning boundary.
 TALLY_LINE=""
 TALLY_NODE=""
 for ((n=0; n<NUM_NODES; n++)); do
-    L="$(grep -F "ProcessNoteTallyCommitteeEpoch: epoch $TALLY_EPOCH tier=" "$(node_log "$n")" 2>/dev/null | tail -1)"
+    L="$(grep -aF "ProcessNoteTallyCommitteeEpoch: epoch $TALLY_EPOCH tier=" "$(node_log "$n")" 2>/dev/null | tail -1)"
     if [ -n "$L" ]; then
         TALLY_LINE="$L"
         TALLY_NODE="$n"
@@ -1799,51 +2008,29 @@ if [ -n "$TALLY_LINE" ]; then
 else
     fail "no node ran the note tally committee pass for epoch $TALLY_EPOCH"
     for ((n=0; n<NUM_NODES; n++)); do
-        grep -F "ProcessNoteTallyCommitteeEpoch:" "$(node_log "$n")" 2>/dev/null | tail -3
+        grep -aF "ProcessNoteTallyCommitteeEpoch:" "$(node_log "$n")" 2>/dev/null | tail -3
     done
 fi
 
-# The note weight really entered the tier comparison: an opened aggregate of zero
-# would mean the committee summed nothing and the tier is transparent-only.
-NOTE_ACTIVE="$(echo "$TALLY_LINE" | sed -n 's/.*note_active=\([0-9.]*\).*/\1/p')"
-NOTE_COVERED="$(echo "$TALLY_LINE" | sed -n 's/.*covered=\([0-9]*\).*/\1/p')"
-if [ -n "$NOTE_ACTIVE" ] && ! feq "${NOTE_ACTIVE:-0}" 0 && \
-   is_int "${NOTE_COVERED:-x}" && [ "${NOTE_COVERED:-0}" -gt 0 ]; then
-    success "the committee opened $NOTE_COVERED covered note vote(s) to $NOTE_ACTIVE of note weight"
+TALLY_COUNTED="$(jget "$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)" note_votes_counted)"
+NOTE_VOTES="$(echo "$TALLY_LINE" | sed -n 's/.* note_votes=\([0-9]*\).*/\1/p')"
+NOTE_WINNERS="$(echo "$TALLY_LINE" | sed -n 's/.* note_winners=\([0-9]*\).*/\1/p')"
+if is_int "${NOTE_VOTES:-x}" && is_int "${NOTE_WINNERS:-x}" && \
+   [ "$NOTE_VOTES" = "$TALLY_COUNTED" ] && [ "$NOTE_VOTES" -ge 1 ] && \
+   [ "$NOTE_WINNERS" -ge 1 ] && [ "$NOTE_WINNERS" -le "$NOTE_VOTES" ]; then
+    success "the tally counted $NOTE_WINNERS of $NOTE_VOTES note vote(s) for the winner, the epoch's whole counted set"
 else
-    fail "the note tally opened no weight (covered='$NOTE_COVERED' note_active='$NOTE_ACTIVE')"
+    fail "the tally does not match the counted set (note_votes='$NOTE_VOTES' note_winners='$NOTE_WINNERS' counted='$TALLY_COUNTED')"
 fi
-
-# Partials are relay/automation state, never consensus input, so the only thing
-# that has to be true of them on the wire is that peers accept them.
-PART_OK=0
-PART_REJECT=""
-for ((n=0; n<NUM_NODES; n++)); do
-    RX="$(grep -cF "received: fnpart" "$(node_log "$n")" 2>/dev/null)"
-    is_int "${RX:-x}" && [ "${RX:-0}" -gt 0 ] && PART_OK=1
-    R="$(grep -F "AddNoteTallyAggregatePartial: rejected partial" "$(node_log "$n")" 2>/dev/null | head -1)"
-    [ -n "$R" ] && PART_REJECT="node$n: $R"
-done
-if [ "$PART_OK" -eq 1 ] && [ -z "$PART_REJECT" ]; then
-    success "note tally partials relayed across the fleet and none were rejected"
-elif [ -n "$PART_REJECT" ]; then
-    fail "a node rejected a relayed note tally partial: $PART_REJECT"
-else
-    fail "no node received a note tally partial"
-fi
+# Removed: the tally-partial relay check. The Shamir partials, complaints and share
+# openings were deleted with the tally shares (43a059c1); nothing is exchanged now.
 
 # ============================================================
-header "13. A v4 note certificate connects in its own epoch"
+header "13. The v4 note certificate commits the counted set"
 # ============================================================
 
-# The assembled certificate's hash, straight from the producer. The M-of-N
-# signature set is a note certificate's whole authorization: its range proofs are
-# entropy-bearing, so no validator can rebuild it byte-for-byte.
-# Every hash the fleet assembled, not just the first: a note certificate's range
-# proofs carry entropy, so each member's candidate is a different object and more
-# than one can reach the threshold. Which of them an epoch selects is decided
-# deterministically at connect time, so the epoch's certificate has to be one of
-# these -- but not necessarily any particular node's.
+# Every certificate the committee assembled. More than one can reach the threshold;
+# which one an epoch selects is decided at connect time.
 NOTE_CERT_HASHES=""
 NOTE_CERT_LINE=""
 for ((n=0; n<NUM_NODES; n++)); do
@@ -1852,7 +2039,7 @@ for ((n=0; n<NUM_NODES; n++)); do
         [ -n "$NOTE_CERT_LINE" ] || NOTE_CERT_LINE="$L"
         H="$(echo "$L" | sed -n 's/.*note certificate \([0-9a-f]\{64\}\).*/\1/p')"
         [ -n "$H" ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
-    done < <(grep -F "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " \
+    done < <(grep -aF "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " \
                   "$(node_log "$n")" 2>/dev/null)
 done
 NOTE_CERT_HASHES="$(echo "$NOTE_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
@@ -1863,28 +2050,78 @@ else
     fail "no M-of-N note certificate was assembled for epoch $TALLY_EPOCH"
 fi
 
-# A certificate envelope in a block of the tally epoch's own span. The
-# deterministic tier reads the epoch's OWN blocks, so a certificate carried a
-# whole epoch later is block-valid and tier-irrelevant.
+# The carried certificate, decoded from the coinbase bytes. It has to be in a block of
+# the tally epoch's own span: the tier reads the epoch's own blocks.
 CERT_CARRY_HEIGHT=""
-for ((h=TALLY_WINDOW_CLOSE; h<=TALLY_CARRY_HEIGHT + 20; h++)); do
-    if [ -n "$(tagged_scripts 0 "$h" "$TALLY_CERT_TAG_HEX")" ]; then
-        CERT_CARRY_HEIGHT="$h"
-        break
-    fi
+CERT_FIELDS=""
+for ((h=TALLY_WINDOW_CLOSE; h<=TALLY_CARRY_HEIGHT + 20 && h<=$(epoch_end "$TALLY_EPOCH"); h++)); do
+    while read -r L; do
+        read -r F_VER F_EPOCH _ <<< "$L"
+        if [ "${F_VER:-}" = "$NOTE_CERT_VERSION" ] && [ "${F_EPOCH:-}" = "$TALLY_EPOCH" ]; then
+            CERT_CARRY_HEIGHT="$h"
+            CERT_FIELDS="$L"
+            break
+        fi
+    done < <(cert_envelopes 0 "$h")
+    [ -n "$CERT_CARRY_HEIGHT" ] && break
 done
 if [ -n "$CERT_CARRY_HEIGHT" ]; then
-    success "a tally certificate envelope is carried at height $CERT_CARRY_HEIGHT, inside epoch $TALLY_EPOCH"
+    success "a v$NOTE_CERT_VERSION certificate for epoch $TALLY_EPOCH is carried at height $CERT_CARRY_HEIGHT, inside the epoch"
 else
-    fail "no tally certificate envelope was carried inside epoch $TALLY_EPOCH [$TALLY_WINDOW_CLOSE, $((TALLY_CARRY_HEIGHT + 20))]"
+    fail "no v$NOTE_CERT_VERSION certificate for epoch $TALLY_EPOCH was carried in [$TALLY_WINDOW_CLOSE, $((TALLY_CARRY_HEIGHT + 20))]"
 fi
+
+# The commitment: the count and root the certificate carries must be the counted set's,
+# rebuilt here twice -- from the tags getepochinfo reports and from the key image read
+# off the vote transaction itself.
+read -r C_VER C_EPOCH C_TIER C_SIGNERS C_COUNT C_ROOT <<< "$CERT_FIELDS"
+TALLY_TAGS="$(epoch_note_tags "$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)")"
+ROOT_FROM_RPC="$(note_set_root $TALLY_TAGS)"
+ROOT_FROM_TX="$(note_set_root "${NV_KI[$TALLY_EPOCH]}")"
+if is_real_hash "$C_ROOT" && [ "$C_COUNT" = "$TALLY_COUNTED" ] && \
+   [ "$C_ROOT" = "$ROOT_FROM_RPC" ] && [ "$C_ROOT" = "$ROOT_FROM_TX" ]; then
+    success "the certificate commits count=$C_COUNT and root ${C_ROOT:0:16}, the root of the cast vote's key image"
+else
+    fail "the certificate does not commit the counted set: count='$C_COUNT' root='$C_ROOT', counted=$TALLY_COUNTED rpc_root=$ROOT_FROM_RPC tx_root=$ROOT_FROM_TX"
+fi
+if is_int "${C_SIGNERS:-x}" && [ "$C_SIGNERS" -ge "$COMMITTEE_THRESHOLD_M" ] && \
+   [ "$C_SIGNERS" -le "$COMMITTEE_SEAT_COUNT" ]; then
+    success "the certificate carries $C_SIGNERS member signature(s), at least M=$COMMITTEE_THRESHOLD_M of $COMMITTEE_SEAT_COUNT"
+else
+    fail "the certificate carries '$C_SIGNERS' signature(s), expected $COMMITTEE_THRESHOLD_M..$COMMITTEE_SEAT_COUNT"
+fi
+
+# Connect-time CheckNoteVoteSetCommitment rebuilds that root from each node's own
+# counted set, so a carrier block every node holds is a commitment every node accepted.
+CERT_CONVERGED=1
+BH0="$(block_hash 0 "${CERT_CARRY_HEIGHT:-0}")"
+[ ${#BH0} -eq 64 ] || CERT_CONVERGED=0
+for ((n=1; n<NUM_NODES; n++)); do
+    [ "$(block_hash "$n" "${CERT_CARRY_HEIGHT:-0}")" = "$BH0" ] || CERT_CONVERGED=0
+done
+if [ "$CERT_CONVERGED" -eq 1 ]; then
+    success "the certificate's carrier block ${BH0:0:16} connected on all $NUM_NODES nodes"
+else
+    fail "the certificate's carrier block did not converge across the fleet"
+fi
+
+# The logical hash of that certificate, for section 14.
+CARRIED_CERT_HASH="$(rpc 0 getblock "$BH0" 2>/dev/null | \
+    V="$NOTE_CERT_VERSION" E="$TALLY_EPOCH" python3 -c '
+import json, os, sys
+try: certs = json.load(sys.stdin).get("finality_tally_certificates") or []
+except Exception: certs = []
+for c in certs:
+    if c.get("version") == int(os.environ["V"]) and c.get("epoch") == int(os.environ["E"]):
+        print(c.get("hash", "")); break
+')"
 
 # Advisory, not an assertion. A miner legitimately excludes a certificate it cannot
 # yet cover, so neither outcome is a verdict -- and a check whose clean side scores
 # a PASS would make the maximum attainable count depend on a benign race.
 CERT_REJECT=""
 for ((n=0; n<NUM_NODES; n++)); do
-    R="$(grep -F "excluding finality tally certificate" "$(node_log "$n")" 2>/dev/null | tail -1)"
+    R="$(grep -aF "excluding finality tally certificate" "$(node_log "$n")" 2>/dev/null | tail -1)"
     [ -n "$R" ] && CERT_REJECT="node$n: $R"
 done
 if [ -z "$CERT_REJECT" ]; then
@@ -1894,7 +2131,7 @@ else
 fi
 
 # ============================================================
-header "14. The epoch's tier comes from the note-weighted certificate"
+header "14. The epoch's tier comes from the note certificate"
 # ============================================================
 
 TALLY_EI="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
@@ -1903,29 +2140,23 @@ TALLY_TIER="$(jget "$TALLY_EI" finality_tier)"
 TALLY_ROOT="$(jget "$TALLY_EI" vote_set_root)"
 TALLY_DIGEST="$(jget "$TALLY_EI" epoch_state_digest)"
 
-if [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT" && \
+if is_real_hash "$TALLY_CERT" && [ "$TALLY_CERT" = "$CARRIED_CERT_HASH" ] && \
    echo " $NOTE_CERT_HASHES " | grep -qF " $TALLY_CERT "; then
-    success "epoch $TALLY_EPOCH selected the note certificate ${TALLY_CERT:0:16} (tier=$TALLY_TIER)"
-elif [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT"; then
-    fail "epoch $TALLY_EPOCH selected certificate ${TALLY_CERT:0:16}, which is not one of the assembled note certificates:$NOTE_CERT_HASHES"
+    success "epoch $TALLY_EPOCH selected the carried note certificate ${TALLY_CERT:0:16} (tier=$TALLY_TIER)"
 else
-    fail "epoch $TALLY_EPOCH selected no certificate at all (finality_certificate=$TALLY_CERT)"
+    fail "epoch $TALLY_EPOCH selected '${TALLY_CERT:0:16}', expected the carried v$NOTE_CERT_VERSION certificate '${CARRIED_CERT_HASH:0:16}' (assembled:$NOTE_CERT_HASHES)"
 fi
 
-if [ "$TALLY_TIER" = "hard" ]; then
-    success "epoch $TALLY_EPOCH is tier=$TALLY_TIER under the note-weighted certificate"
+# FinalityTier: HARD is 3.
+if [ "$TALLY_TIER" = "hard" ] && [ "$C_TIER" = "3" ]; then
+    success "epoch $TALLY_EPOCH is tier=$TALLY_TIER, the tier its note certificate carries"
 else
-    fail "epoch $TALLY_EPOCH is tier=$TALLY_TIER"
+    fail "epoch $TALLY_EPOCH is tier=$TALLY_TIER, certificate tier '$C_TIER'"
 fi
 
-# The counted note votes are committed in hashVoteSetRoot, so fleet-wide equality
-# of the root and the whole epoch-state digest is the determinism claim: a
-# certificate is a function of the connected chain plus its own bytes, and the
-# node-local partial and complaint gossip that produced it never enters one.
-# node0's own values are required to be real first. getepochinfo answers an
-# uncomputed epoch with the zero hash for every one of these fields, and three
-# nodes reporting the zero hash agree just as well as three nodes reporting a
-# certificate.
+# Fleet-wide equality of the certificate, the vote-set root and the whole epoch-state
+# digest is the determinism claim. node0's values must be real first: getepochinfo
+# answers an uncomputed epoch with the zero hash, and three zero hashes agree.
 EPOCH_AGREE=1
 EPOCH_WHY=""
 is_real_hash "$TALLY_ROOT"   || { EPOCH_AGREE=0; EPOCH_WHY="node0's vote-set root is '$TALLY_ROOT'"; }
@@ -1947,16 +2178,9 @@ fi
 header "14a. An operator can read the counted note-vote set over RPC"
 # ============================================================
 
-# Everything above reads the note lane out of debug.log and out of coinbase
-# scripts. An operator has neither. The counted set is what the tally acts on,
-# so it is the number that says the private lane is working -- and it is the one
-# number no status call reported: transparent_votes/private_votes count
-# CFinalityVote carriers, which this run never produces, so a healthy note lane
-# reads as zero on every other field.
-#
-# Both surfaces are checked because they answer different questions:
-# getfinalityinfo answers "is the lane live right now", getepochinfo answers
-# "what did epoch E count", and only the second is addressable after the fact.
+# getfinalityinfo answers "is the lane live right now", getepochinfo answers "what did
+# epoch E count"; transparent_votes/private_votes count CFinalityVote carriers and read
+# zero while the note lane runs.
 NV_RPC_OK=1
 NV_WHY=""
 for ((n=0; n<NUM_NODES; n++)); do
@@ -1975,9 +2199,8 @@ else
     fail "the note-vote lane is not reported as live: $NV_WHY"
 fi
 
-# The counted set for the epoch the tally certified, from the epoch-addressable
-# call. node0's own number has to be real before agreement means anything: three
-# nodes all reporting zero agree just as well as three reporting one.
+# The counted set for the tally epoch. node0's number has to be real before agreement
+# means anything.
 TALLY_EI_NV="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
 NV_COUNTED="$(jget "$TALLY_EI_NV" note_votes_counted)"
 NV_EQUIV="$(jget "$TALLY_EI_NV" note_votes_equivocated)"
@@ -2003,23 +2226,19 @@ print(v[0] if isinstance(v, list) and v else "")
 ' <<< "$1" 2>/dev/null
 }
 
-# The tag the RPC publishes must be the tag the producer cast. Anything else
-# would be a number that moves with the lane without being of it. The producer
-# logs a 10-character prefix, so the comparison is on that prefix.
+# The tag the RPC publishes is the key image the vote transaction spent, in full.
 NV_RPC_TAG="$(jfirst "$TALLY_EI_NV" note_vote_tags)"
-PROD_TAG="$(producer_tag "$TALLY_EPOCH")"
-if [ ${#PROD_TAG} -ge 10 ] && [ -n "$NV_RPC_TAG" ] && \
-   [ "${NV_RPC_TAG:0:${#PROD_TAG}}" = "$PROD_TAG" ]; then
-    success "the tag getepochinfo publishes is the one node0 cast (${NV_RPC_TAG:0:16})"
+if [ ${#NV_RPC_TAG} -eq 64 ] && [ "$NV_RPC_TAG" = "${NV_KI[$TALLY_EPOCH]}" ]; then
+    success "the tag getepochinfo publishes is the key image node0's vote spent (${NV_RPC_TAG:0:16})"
 else
-    fail "getepochinfo tag '$NV_RPC_TAG' does not start with the cast tag '$PROD_TAG'"
+    fail "getepochinfo tag '$NV_RPC_TAG' is not the vote's key image '${NV_KI[$TALLY_EPOCH]}'"
 fi
 
 NV_AGREE=1
 for ((n=1; n<NUM_NODES; n++)); do
     PEER_EI="$(rpc "$n" getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
     [ "$(jget "$PEER_EI" note_votes_counted)" = "$NV_COUNTED" ] || NV_AGREE=0
-    [ "$(jfirst "$PEER_EI" note_vote_tags)" = "$NV_RPC_TAG" ] || NV_AGREE=0
+    [ "$(epoch_note_tags "$PEER_EI")" = "$(epoch_note_tags "$TALLY_EI_NV")" ] || NV_AGREE=0
 done
 if [ "$NV_AGREE" -eq 1 ]; then
     success "every node reports the same counted note-vote set for epoch $TALLY_EPOCH"
@@ -2027,10 +2246,29 @@ else
     fail "nodes disagree on epoch $TALLY_EPOCH's counted note-vote set"
 fi
 
-# The point of the surface: the lane worked while every pre-existing vote
-# counter read zero. If transparent/private vote counts are ever non-zero here
-# this assertion is measuring the wrong thing and must be revisited, so it fails
-# rather than being relaxed.
+# The live view: the tip is inside the last held epoch, whose one vote is counted.
+LIVE_OK=1
+LIVE_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    LE="$(jget2 "$FI" note_votes epoch)"
+    LC="$(jget2 "$FI" note_votes counted)"
+    LT="$(FI="$FI" python3 -c '
+import json, os
+try: print(" ".join((json.loads(os.environ["FI"]).get("note_votes") or {}).get("tags") or []))
+except Exception: pass
+')"
+    [ "$LE" = "$LAST_NV_EPOCH" ] && [ "$LC" = "1" ] && [ "$LT" = "${NV_KI[$LAST_NV_EPOCH]}" ] || \
+        { LIVE_OK=0; LIVE_WHY="node$n: epoch='$LE' counted='$LC' tags='${LT:0:16}'"; }
+done
+if [ "$LIVE_OK" -eq 1 ]; then
+    success "getfinalityinfo reports epoch $LAST_NV_EPOCH's one counted note vote, tag ${NV_KI[$LAST_NV_EPOCH]:0:16}, on every node"
+else
+    fail "getfinalityinfo's live note-vote view is wrong: $LIVE_WHY (expected epoch $LAST_NV_EPOCH, 1, ${NV_KI[$LAST_NV_EPOCH]:0:16})"
+fi
+
+# The lane worked while every pre-existing vote counter read zero. A non-zero value
+# here means this run no longer isolates the note lane, so it fails.
 BLIND_OK=1
 BLIND_WHY=""
 for ((n=0; n<NUM_NODES; n++)); do
@@ -2298,6 +2536,137 @@ if [ "$REORG_RUN" -eq 1 ]; then
 fi
 
 # ============================================================
+header "15a. A reorg that disconnects a note vote's carrier takes it out of the counted set"
+# ============================================================
+
+# Connect records a block's votes in the carrier index and disconnect owes their
+# removal whether or not the vote comes back. node0 invalidates the block carrying its
+# own vote, then outruns the fleet so every peer reorganises off that block too.
+# Throughout, a node's counted set must be exactly the operation-10 votes its active
+# chain carries in the epoch's window.
+RV_E="$REORG_VOTE_EPOCH"
+RV_B="$(epoch_start "$RV_E")"
+# Short on purpose: node0 drops below the carrier, and a peer chain far ahead of an
+# invalidated tip is a large-work fork warning rather than a reorg.
+RV_CARRY=5
+log "epoch $RV_E: holding the chain at $((RV_B + NOTE_VOTE_EMIT_OFFSET)) for ${NOTE_VOTE_SETTLE}s"
+note_vote_round "$RV_E" "$RV_B" "$RV_CARRY" || { fail "epoch $RV_E vote round failed"; exit 1; }
+
+RV_ROWS="$(notevotes_in_range 0 "$RV_B" $((RV_B + RV_CARRY)))"
+RV_N="$(echo "$RV_ROWS" | grep -c . || true)"
+RV_H="$(echo "$RV_ROWS" | awk 'NF{print $1; exit}')"
+RV_TXID="$(echo "$RV_ROWS" | awk 'NF{print $2; exit}')"
+RV_RUN=1
+if [ "$RV_N" = "1" ] && [ ${#RV_TXID} -eq 64 ] && [ "$RV_TXID" = "${NV_TXID[$RV_E]}" ]; then
+    success "node0's epoch $RV_E vote ${RV_TXID:0:16} is carried at height $RV_H"
+else
+    fail "epoch $RV_E carries $RV_N vote(s) ('${RV_TXID:0:16}' vs cast '${NV_TXID[$RV_E]:0:16}'); nothing to disconnect"
+    RV_RUN=0
+fi
+
+if [ "$RV_RUN" -eq 1 ]; then
+    RV_KI="$(notevote_fields 0 "$RV_TXID" | awk '{print $2}')"
+    PRE_OK=1
+    for ((n=0; n<NUM_NODES; n++)); do
+        V="$(epoch_note_view "$n" "$RV_E")"
+        [ "$V" = "1 0 $RV_KI" ] || \
+            { PRE_OK=0; fail "node$n does not count the carried vote before the disconnect (view '${V:0:40}')"; }
+    done
+    [ "$PRE_OK" -eq 1 ] && [ ${#RV_KI} -eq 64 ] && \
+        success "every node counts the vote (tag ${RV_KI:0:16}) before the disconnect"
+
+    RV_HASH="$(block_hash 0 "$RV_H")"
+    RV_RAW="$(raw_tx 0 "$RV_TXID")"
+    R1_BEFORE="$(reorg_count 1)"
+    R2_BEFORE="$(reorg_count 2)"
+    INV="$(rpc 0 invalidateblock "$RV_HASH" 2>&1)"
+    for _ in $(seq 1 30); do
+        [ "$(height 0)" = "$((RV_H - 1))" ] && break
+        sleep 1
+    done
+    V0="$(epoch_note_view 0 "$RV_E")"
+    if [ "$(height 0)" = "$((RV_H - 1))" ] && [ "$V0" = "0 0" ]; then
+        success "with its carrier ${RV_HASH:0:16} disconnected, node0 counts no note vote for epoch $RV_E"
+    else
+        fail "after invalidating the carrier node0 is at $(height 0) (expected $((RV_H - 1))) and reports '${V0:0:40}' for the epoch ($INV)"
+    fi
+    # Reorganize() resurrects a disconnected transaction only above
+    # Checkpoints::GetTotalBlocksEstimate(), which reads the mainnet checkpoint map on
+    # regtest, so no regtest reorg returns anything to the mempool. The vote is offered
+    # again by hand: with its carrier gone its key image is unspent, so it must be taken.
+    if [ -n "$(mempool_txid 0 "$RV_TXID")" ]; then
+        log "  the disconnected vote is back in node0's mempool"
+    else
+        RS="$(rpc 0 sendrawtransaction "$RV_RAW" 2>&1 | tr -d '"[:space:]')"
+        if [ "$RS" = "$RV_TXID" ] && [ -n "$(mempool_txid 0 "$RV_TXID")" ]; then
+            success "with its carrier disconnected the vote's key image is unspent again: node0 re-admits the same vote"
+        else
+            fail "node0 refused the disconnected vote ($RS): $(grep -a "CTxMemPool::accept()" "$(node_log 0)" | tail -1)"
+        fi
+    fi
+
+    # node0 outruns the peers, still inside the vote's inclusion window.
+    PEER_TIP="$(height 1)"
+    RV_TARGET=$(( PEER_TIP + 2 ))
+    if [ "$RV_TARGET" -ge $((RV_B + NOTE_VOTE_INCLUSION_WINDOW)) ]; then
+        fail "the peers' tip $PEER_TIP leaves no room inside the window ending $((RV_B + NOTE_VOTE_INCLUSION_WINDOW - 1))"
+    fi
+    mine_chunk 0 "$RV_TARGET" || fail "node0 did not extend its branch to $RV_TARGET"
+    RV_CONV=0
+    for _ in $(seq 1 240); do
+        T0="$(block_hash 0 "$RV_TARGET")"
+        OK=1
+        for ((n=1; n<NUM_NODES; n++)); do
+            [ ${#T0} -eq 64 ] && [ "$(block_hash "$n" "$RV_TARGET")" = "$T0" ] || OK=0
+        done
+        [ "$OK" -eq 1 ] && { RV_CONV=1; break; }
+        sleep 1
+    done
+    R1_AFTER="$(reorg_count 1)"
+    R2_AFTER="$(reorg_count 2)"
+    SWAP_OK=1
+    for ((n=0; n<NUM_NODES; n++)); do
+        [ "$(block_hash "$n" "$RV_H")" != "$RV_HASH" ] || SWAP_OK=0
+    done
+    if [ "$RV_CONV" -eq 1 ] && [ "$SWAP_OK" -eq 1 ] && \
+       [ "$R1_AFTER" -gt "$R1_BEFORE" ] && [ "$R2_AFTER" -gt "$R2_BEFORE" ]; then
+        success "both peers reorganised onto node0's branch (height $RV_TARGET) and no node holds the old carrier at $RV_H"
+    else
+        fail "the fleet did not reorganise off the carrier: converged=$RV_CONV replaced=$SWAP_OK node1 $R1_BEFORE->$R1_AFTER node2 $R2_BEFORE->$R2_AFTER"
+    fi
+
+    # The invariant, against the reorganised chain.
+    NEW_ROWS="$(notevotes_in_range 0 "$RV_B" "$RV_TARGET")"
+    NEW_KIS=""
+    while read -r _ T; do
+        [ ${#T} -eq 64 ] && NEW_KIS="$NEW_KIS $(notevote_fields 0 "$T" | awk '{print $2}')"
+    done <<< "$NEW_ROWS"
+    NEW_KIS="$(echo "$NEW_KIS" | tr ' ' '\n' | grep . | sort | tr '\n' ' ' | sed 's/ $//')"
+    NEW_N="$(echo "$NEW_KIS" | wc -w | tr -d ' ')"
+    SET_OK=1
+    for ((n=0; n<NUM_NODES; n++)); do
+        V="$(epoch_note_view "$n" "$RV_E")"
+        [ "$V" = "$(echo "$NEW_N 0 $NEW_KIS" | sed 's/ $//')" ] || \
+            { SET_OK=0; fail "node$n reports '${V:0:40}' for epoch $RV_E; its chain carries $NEW_N [${NEW_KIS:0:16}]"; }
+    done
+    [ "$SET_OK" -eq 1 ] && \
+        success "every node's epoch $RV_E counted set equals the $NEW_N vote(s) its reorganised chain carries"
+
+    # The vote is carried again, once, inside its window.
+    RE_H="$(echo "$NEW_ROWS" | awk -v t="$RV_TXID" '$2 == t {print $1}')"
+    if [ "$NEW_N" = "1" ] && [ "$NEW_KIS" = "$RV_KI" ] && is_int "${RE_H:-x}" && \
+       [ "$RE_H" -lt $((RV_B + NOTE_VOTE_INCLUSION_WINDOW)) ]; then
+        success "the disconnected vote was carried again at height $RE_H, inside its window, under the same tag"
+    else
+        fail "the disconnected vote was not re-carried once (carried $NEW_N vote(s), txid at '${RE_H:-none}')"
+    fi
+
+    # Clear the mark; the old carrier is on the shorter branch, so the tip stays.
+    RC="$(rpc 0 reconsiderblock "$RV_HASH" 2>&1)"
+    log "  reconsiderblock: tip_moved=$(jget "$RC" tip_moved) tip_height=$(jget "$RC" tip_height)"
+fi
+
+# ============================================================
 header "16. The fleet reports no errors"
 # ============================================================
 
@@ -2314,51 +2683,6 @@ for ((n=0; n<NUM_NODES; n++)); do
     fi
 done
 [ "$ERR_OK" -eq 1 ] && success "no node reports errors or IV5 validation complaints"
-
-# ============================================================
-header "F2 verdict"
-# ============================================================
-
-if [ -n "$ACCEPTED_EPOCHS" ] && [ -z "$REFUSED_EPOCHS" ]; then
-    echo -e "${GREEN}F2 does NOT fire.${NC} node0's relay check accepted its own note vote in"
-    echo "epoch(s)$ACCEPTED_EPOCHS and the vote was pushed to the fleet."
-elif [ -n "$REFUSED_EPOCHS" ]; then
-    echo -e "${RED}F2 FIRES.${NC} node0 built a valid note vote and then refused it itself."
-    echo "  epochs affected:$REFUSED_EPOCHS"
-    echo "  refusal:        $F2_LINE"
-    echo "  reason string:  $F2_REASON"
-    case "$F2_REASON" in
-        *"unavailable finalized epoch state"*)
-            echo
-            echo "  This is the predicted path. AddPendingNoteVote calls"
-            echo "  CheckNoteVoteForContext with nContextHeight = -1, whose anchor comes from"
-            echo "  CDAGManager::GetLastFinalizedEpochState, and that skips every epoch whose"
-            echo "  LEGACY hashCurveRoot is zero."
-            echo "  Corroboration from the finalized epoch $FINALIZED_EPOCH itself:"
-            echo "    curve_root    = ${ANCHOR_CURVE_ROOT:-<empty>}"
-            echo "    iv5_tree_root = ${ANCHOR_TREE_ROOT:-<empty>} ($ANCHOR_TREE_SIZE leaves)"
-            if is_zero_hex "$ANCHOR_CURVE_ROOT"; then
-                echo "    the legacy curve root IS zero while the IV5 tree is populated, so"
-                echo "    GetLastFinalizedEpochState finds nothing and the relay check reports"
-                echo "    local state for a vote whose deterministic anchor resolved fine."
-            fi
-            ;;
-        *"already-finalized epoch"*)
-            echo "  The relay check saw NO finalized height at all (live GetFinalizedHeight"
-            echo "  was zero when the vote was offered), which is a different failure from F2."
-            ;;
-        *)
-            echo "  The refusal is real but the reason is not the predicted anchor path."
-            ;;
-    esac
-    echo
-    echo "  The note was already recorded in the per-epoch cast set before the proof, so"
-    echo "  each refused epoch cost that note its vote."
-else
-    echo -e "${YELLOW}Undetermined.${NC} No note vote reached the relay check, so F2 was not exercised."
-    echo "  the producer's last words:"
-    producer_all | tail -8
-fi
 
 # ============================================================
 print_results
