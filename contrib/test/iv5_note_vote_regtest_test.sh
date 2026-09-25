@@ -1801,17 +1801,25 @@ header "9. (c) Peers receive the note vote"
 
 # A vote relays as an ordinary transaction. The chain is held at the emit height, so a
 # peer's mempool holding it is the relay itself, observed before any block carried it.
+# The sample stops when the hold ends, and a stem-routed vote can reach the last peer
+# after that but before the carrier. Its relay-accept line is the same evidence: the
+# tx handler writes it only when AcceptToMemoryPool admits the vote, which fails once
+# a connected block has spent the note.
+relay_accepted() { grep -aqF "TXRELAY accept tx=${2:0:10} " "$(node_log "$1")" 2>/dev/null; }
 RELAY_OK=1
 for E in $NOTE_VOTE_EPOCHS; do
     for ((n=1; n<NUM_NODES; n++)); do
         case " ${NV_SEEN[$E]} " in
             *" $n "*) ;;
-            *) RELAY_OK=0; fail "epoch $E: node$n's mempool never held the vote ${NV_TXID[$E]:0:16}" ;;
+            *) relay_accepted "$n" "${NV_TXID[$E]}" || {
+                   RELAY_OK=0
+                   fail "epoch $E: node$n never accepted the vote ${NV_TXID[$E]:0:16} by relay"
+               } ;;
         esac
     done
 done
 if [ "$RELAY_OK" -eq 1 ]; then
-    success "both peers held each note vote in their mempools before any block carried it"
+    success "both peers accepted each note vote by relay before any block carried it"
 fi
 
 # ------------------------------------------------------------
