@@ -671,23 +671,29 @@ for node in 0 1; do
     fi
 done
 
-BAL_V0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_balance)"
-NOTES0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_note_count)"
-BAL_V1="$(jget "$(rpc 1 z_getshieldedinfo 2>/dev/null)" privacy_vnext_balance)"
-NOTES1="$(jget "$(rpc 1 z_getshieldedinfo 2>/dev/null)" privacy_vnext_note_count)"
+# Owned is spendable plus pending: at this height no epoch is past the depth anchor, so
+# spendable alone is zero by design. Placement is the unplaced balance reaching zero.
+owned() {
+    python3 -c "print(f'{float(\"${1:-0}\") + float(\"${2:-0}\"):.8f}')" 2>/dev/null
+}
+INFO0="$(rpc 0 z_getshieldedinfo 2>/dev/null)"
+INFO1="$(rpc 1 z_getshieldedinfo 2>/dev/null)"
+NOTES0="$(jget "$INFO0" privacy_vnext_note_count)"
+NOTES1="$(jget "$INFO1" privacy_vnext_note_count)"
+UNPLACED0="$(jget "$INFO0" privacy_vnext_unplaced_balance)"
+UNPLACED1="$(jget "$INFO1" privacy_vnext_unplaced_balance)"
+BAL_V0="$(owned "$(jget "$INFO0" privacy_vnext_balance)" "$(jget "$INFO0" privacy_vnext_unconfirmed_balance)")"
+BAL_V1="$(owned "$(jget "$INFO1" privacy_vnext_balance)" "$(jget "$INFO1" privacy_vnext_unconfirmed_balance)")"
 
-# A shielded balance is only reported for notes the wallet could place in the
-# tree, so a zero balance against a nonzero note count is the wallet replayer
-# refusing to assign leaf indices.
-if [ "$(python3 -c "print(1 if float('${BAL_V0:-0}') > 0 else 0)" 2>/dev/null)" = "1" ]; then
-    success "node0 can place its own $NOTES0 note(s): $BAL_V0 INN"
+if [ "$(python3 -c "print(1 if float('${BAL_V0:-0}') > 0 and float('${UNPLACED0:-1}') == 0 else 0)" 2>/dev/null)" = "1" ]; then
+    success "node0 placed its own $NOTES0 note(s) in the tree: $BAL_V0 INN owned"
 else
-    fail "node0 holds $NOTES0 note(s) it cannot place in the tree (balance $BAL_V0)"
+    fail "node0 holds $NOTES0 note(s) it cannot place in the tree (owned ${BAL_V0:-?}, unplaced ${UNPLACED0:-?})"
 fi
-if [ "$(python3 -c "print(1 if float('${BAL_V1:-0}') > 0 else 0)" 2>/dev/null)" = "1" ]; then
-    success "node1's re-mined shield reached the tree: $BAL_V1 INN over $NOTES1 note(s)"
+if [ "$(python3 -c "print(1 if float('${BAL_V1:-0}') > 0 and float('${UNPLACED1:-1}') == 0 else 0)" 2>/dev/null)" = "1" ]; then
+    success "node1's re-mined shield reached the tree: $BAL_V1 INN owned over $NOTES1 note(s)"
 else
-    fail "node1's re-mined shield never reached the tree (balance $BAL_V1, notes $NOTES1)"
+    fail "node1's re-mined shield never reached the tree (owned ${BAL_V1:-?}, unplaced ${UNPLACED1:-?}, notes $NOTES1)"
 fi
 
 # ============================================================
