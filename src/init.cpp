@@ -1148,13 +1148,20 @@ bool HasPendingOrCorruptShieldedWalletRecovery(std::string& strErrorOut)
 /** Initialize bitcoin.
  *  @pre Parameters should be parsed and config file should be read.
  */
-// -replayblocks is a release gate: a run that cannot complete must exit
-// non-zero. InitError alone unwinds into Shutdown(), which exits 0.
+// -replayblocks is a release gate, so a failed run must exit non-zero. _exit skips
+// static destructors that can abort on locks still held by live threads.
+static void ReplayExit(int nCode)
+{
+    fflush(stdout);
+    fflush(stderr);
+    _exit(nCode);
+}
+
 static bool ReplayFail(const std::string& strMsg)
 {
     printf("-replayblocks FAILED: %s\n", strMsg.c_str());
     fprintf(stderr, "-replayblocks FAILED: %s\n", strMsg.c_str());
-    exit(1);
+    ReplayExit(1);
     return false;
 }
 
@@ -2701,7 +2708,7 @@ bool AppInit2()
                            : uint256(0).ToString().c_str()));
         printf("-replayblocks: trusted terminal tip verified at %d/%s\n",
                (int)nExpectedHeight64, hashExpected.ToString().c_str());
-        exit(0);
+        ReplayExit(0);
     }
 
     if (mapArgs.count("-loadblock"))
