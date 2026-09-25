@@ -17,7 +17,7 @@ evidence_toolchain "$(${CXX:-g++} --version 2>/dev/null | head -1)"
 evidence_workdir
 
 JOBS="${V5_EVIDENCE_JOBS:-$(nproc)}"
-MAKE_ARGS="USE_NATIVETOR=- USE_IPFS=- INNOVA_SPINNER=0 -f makefile.unix"
+MAKE_ARGS="USE_NATIVETOR=- INNOVA_SPINNER=0 -f makefile.unix"
 WARN_ARGS="CXXFLAGS=\"-Werror=return-type -Werror=format\" CFLAGS=\"-Werror=return-type -Werror=format\""
 
 evidence_run "clean tree" "cd src && make $MAKE_ARGS clean"
