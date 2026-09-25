@@ -38,6 +38,9 @@ SHIELD_E3_CONFIRM=720
 # Two boundaries past the epoch-2 note, and far enough past the epoch-3 one that
 # only the missing position can keep either out of the spendable balance.
 HOLD_END_HEIGHT=950
+# One node with voting off, so notes spend only by anchor depth
+# (EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH = 600); the later epoch closes at 910.
+SPENDABLE_HEIGHT=1520
 
 PASSED=0
 FAILED=0
@@ -291,27 +294,31 @@ INFO="$(rpc z_getshieldedinfo 2>/dev/null)"
 FREED_BAL="$(jget "$INFO" privacy_vnext_balance)"
 FREED_UNCONF="$(jget "$INFO" privacy_vnext_unconfirmed_balance)"
 FREED_NOTES="$(jget "$INFO" privacy_vnext_note_count)"
+FREED_UNPLACED="$(jget "$INFO" privacy_vnext_unplaced_balance)"
 
-# The tip is in epoch 4, so an assignment driven from the tip reaches epoch 3 and
-# stops. Both epochs have to be walked for the whole amount to come back.
-if feq "${FREED_BAL:-0}" "$HELD_UNCONF"; then
-    success "all $FREED_BAL INN is spendable again across $FREED_NOTES note(s)"
+# Assignment driven from the tip would stop at epoch 3 and leave the epoch-2 note
+# unplaced. Placement is read directly, not inferred from spendability.
+if feq "${FREED_UNPLACED:-1}" 0; then
+    success "every note holds a tree position one block after the release: both epochs were walked"
 else
-    fail "only $FREED_BAL INN of $HELD_UNCONF became spendable; notes from an earlier epoch were left without a position"
+    fail "$FREED_UNPLACED INN is still without a tree position; the epoch-2 note is the one a tip-driven walk cannot reach"
 fi
 
-if feq "${FREED_UNCONF:-0}" 0; then
-    success "no detected value is left waiting for a position"
+if feq "$(echo "${FREED_BAL:-0} + ${FREED_UNCONF:-0}" | bc -l)" "$HELD_UNCONF"; then
+    success "all $HELD_UNCONF INN is still owned across $FREED_NOTES note(s): spendable $FREED_BAL, pending $FREED_UNCONF"
 else
-    fail "$FREED_UNCONF INN is still without a tree position"
+    fail "owned value $(echo "${FREED_BAL:-0} + ${FREED_UNCONF:-0}" | bc -l) INN does not match the $HELD_UNCONF INN held"
 fi
 
-# The epoch-2 note is the one a tip-driven walk cannot reach, so its value alone
-# must have moved from unconfirmed into spendable.
-if fgt "${FREED_BAL:-0}" "$E3_AMOUNT"; then
-    success "the spendable balance exceeds the epoch-3 shield alone, so epoch 2 was walked too"
+# Placed notes spend once their epochs are deep enough. Carry the chain past the
+# later one and require all of it.
+mine_to "$SPENDABLE_HEIGHT" || { fail "could not mine to $SPENDABLE_HEIGHT"; exit 1; }
+INFO_DEEP="$(rpc z_getshieldedinfo 2>/dev/null)"
+DEEP_BAL="$(jget "$INFO_DEEP" privacy_vnext_balance)"
+if feq "${DEEP_BAL:-0}" "$HELD_UNCONF"; then
+    success "all $DEEP_BAL INN is spendable once the depth anchor reaches both epochs"
 else
-    fail "spendable balance $FREED_BAL does not exceed the epoch-3 shield $E3_AMOUNT; only the epoch behind the tip was walked"
+    fail "only $DEEP_BAL INN of $HELD_UNCONF is spendable at height $SPENDABLE_HEIGHT"
 fi
 
 # A scan gap would mean the wallet knows it missed payload data, which is a
