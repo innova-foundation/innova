@@ -2410,6 +2410,86 @@ BOOST_AUTO_TEST_CASE(a_refused_orphan_still_asks_for_its_parent)
     CheckPoolInvariants("after a refused classic park");
 }
 
+// A node far behind its peer does not park a block whose parent it never asked
+// for; doing so walks the peer's chain backward one block per round trip while
+// forward sync starves.
+BOOST_AUTO_TEST_CASE(a_block_ahead_of_the_sync_front_is_not_parked)
+{
+    BOOST_REQUIRE(fRegTest);
+    CScopedOrphanTables tables;
+
+    TestPeer peer(19325);
+    const CBlock tmpl = BaseTemplate();
+
+    // Far behind, parent never requested: dropped, and forward sync is asked for.
+    peer.node.nChainHeight = nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER + 1000;
+    CBlock ahead = DetachedBlock(tmpl, 2810, 0, 0);
+    ForgetAskedFor(ahead.hashPrevBlock);
+    peer.node.getBlocksHash.clear();
+    BOOST_CHECK(!Deliver(peer, ahead));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK_MESSAGE(!mapOrphanBlocks.count(ahead.GetHash()),
+                            "a block ahead of the sync front was parked");
+    }
+    BOOST_CHECK_MESSAGE(!AskedFor(peer.node, ahead.hashPrevBlock),
+                        "the dropped block started a backward walk");
+    BOOST_CHECK_MESSAGE(!peer.node.getBlocksHash.empty(), "no forward getblocks was queued");
+
+    // Far behind, parent requested: out-of-order delivery within a batch parks.
+    CBlock inBatch = DetachedBlock(tmpl, 2811, 0, 0);
+    peer.node.AskFor(CInv(MSG_BLOCK, inBatch.hashPrevBlock));
+    BOOST_CHECK(Deliver(peer, inBatch));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK_MESSAGE(mapOrphanBlocks.count(inBatch.GetHash()),
+                            "a block whose parent is in flight was not parked");
+    }
+    ForgetAskedFor(inBatch.hashPrevBlock);
+
+    // A held orphan's parent whose own parent was never requested: dropped, so a
+    // parked tip cannot restart the walk, and its ask record is cleared.
+    CBlock waitedOn = DetachedBlock(tmpl, 2813, 0, 0);
+    CBlock child = DetachedBlock(tmpl, 2814, 0, 0);
+    child.hashPrevBlock = waitedOn.GetHash();
+    peer.node.AskFor(CInv(MSG_BLOCK, waitedOn.GetHash()));
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE(AddOrphanBlock(child.GetHash(), new CBlock(child), child.hashPrevBlock,
+                                     774010, OrphanBlockFootprint(child)));
+    }
+    ForgetAskedFor(waitedOn.hashPrevBlock);
+    BOOST_CHECK(!Deliver(peer, waitedOn));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK_MESSAGE(!mapOrphanBlocks.count(waitedOn.GetHash()),
+                            "a held orphan's parent from ahead of the sync front was parked");
+    }
+    BOOST_CHECK_MESSAGE(!AskedFor(peer.node, waitedOn.hashPrevBlock),
+                        "a held orphan's parent continued the backward walk");
+    {
+        LOCK(cs_mapAlreadyAskedFor);
+        BOOST_CHECK_MESSAGE(!mapAlreadyAskedFor.count(CInv(MSG_BLOCK, waitedOn.GetHash())),
+                            "a dropped block kept its ask record, so its child reads as requested");
+    }
+
+    // Level with the peer: an orphan still parks and asks for its parent.
+    peer.node.nChainHeight = nBestHeight;
+    CBlock level = DetachedBlock(tmpl, 2812, 0, 0);
+    ForgetAskedFor(level.hashPrevBlock);
+    BOOST_CHECK(Deliver(peer, level));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK_MESSAGE(mapOrphanBlocks.count(level.GetHash()),
+                            "an orphan from a level peer was not parked");
+    }
+    BOOST_CHECK_MESSAGE(AskedFor(peer.node, level.hashPrevBlock),
+                        "an orphan from a level peer did not ask for its parent");
+    ForgetAskedFor(level.hashPrevBlock);
+    BOOST_CHECK(peer.node.nMisbehavior == 0);
+    CheckPoolInvariants("after the sync-front cases");
+}
+
 // The same on the DAG park site: the merge parents it is waiting on.
 BOOST_AUTO_TEST_CASE(a_refused_dag_orphan_still_asks_for_its_merge_parents)
 {

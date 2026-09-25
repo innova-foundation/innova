@@ -15464,6 +15464,28 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             }
         }
 
+        // Far behind the peer, a block whose parent was never requested is a relayed tip: drop
+        // it and clear its ask record; forward getblocks reaches it. A parent in flight parks.
+        if (pfrom)
+        {
+            const int nPeerHeight = pfrom->nBestKnownHeight >= 0 ? pfrom->nBestKnownHeight : pfrom->nChainHeight;
+            const bool fBehind = IsInitialBlockDownload() ||
+                                 nPeerHeight > nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER;
+            bool fAhead = false;
+            if (fBehind && !mapOrphanBlocks.count(pblock->hashPrevBlock))
+            {
+                LOCK(cs_mapAlreadyAskedFor);
+                fAhead = !mapAlreadyAskedFor.count(CInv(MSG_BLOCK, pblock->hashPrevBlock));
+                if (fAhead)
+                    mapAlreadyAskedFor.erase(CInv(MSG_BLOCK, hash));
+            }
+            if (fAhead)
+            {
+                pfrom->PushGetBlocks(pindexBest, uint256(0));
+                return error("ProcessBlock() : %s is ahead of the sync front, not parked", hash.ToString().substr(0,20).c_str());
+            }
+        }
+
         if (pfrom) {
             // Read, do not create (see the DAG park site above).
             std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
