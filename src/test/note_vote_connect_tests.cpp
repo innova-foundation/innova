@@ -119,21 +119,35 @@ struct FundedNote
     FundedNote() : nTreeSize(0) { finalizedRoot.fill(0); }
 };
 
-bool FundNote(CTxDB& txdb, unsigned char nSeed, uint64_t nAmount,
-              FundedNote& out, std::string& error)
+// Notes of a chosen amount, grown together into one fresh tree and reopened by their
+// owners, each with its membership witness against the shared root.
+bool FundNotes(CTxDB& txdb, const std::vector<unsigned char>& vSeeds, uint64_t nAmount,
+               const std::vector<FundedNote*>& vOut, std::string& error)
 {
     const PrivacyVNextDigest genesis = LocalGenesis();
-    if (!DerivePrivacyVNextKeys(CollateralDigest(nSeed), genesis, 0,
-                                LocalNetwork(), 0, out.keys, error))
+    if (vOut.size() != vSeeds.size())
+    {
+        error = "funding needs one note per seed";
         return false;
-    if (!EncryptPrivacyVNextNote(
-            LocalNetwork(), 0, 0, genesis, out.keys.spendPublic,
-            out.keys.viewPublic, out.keys.outgoingViewSecret,
-            CollateralScalar(nSeed + 1), CollateralScalar(nSeed + 2), nAmount,
-            CollateralScalar(nSeed + 3), CollateralScalar(nSeed + 4),
-            FundingContext(),
-            out.encrypted, error))
-        return false;
+    }
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    for (size_t n = 0; n < vSeeds.size(); ++n)
+    {
+        const unsigned char nSeed = vSeeds[n];
+        FundedNote& out = *vOut[n];
+        if (!DerivePrivacyVNextKeys(CollateralDigest(nSeed), genesis, 0,
+                                    LocalNetwork(), 0, out.keys, error))
+            return false;
+        if (!EncryptPrivacyVNextNote(
+                LocalNetwork(), 0, 0, genesis, out.keys.spendPublic,
+                out.keys.viewPublic, out.keys.outgoingViewSecret,
+                CollateralScalar(nSeed + 1), CollateralScalar(nSeed + 2), nAmount,
+                CollateralScalar(nSeed + 3), CollateralScalar(nSeed + 4),
+                FundingContext(),
+                out.encrypted, error))
+            return false;
+        vLeaves.push_back(out.encrypted.leaf);
+    }
 
     PrivacyVNextEpochSeed epochSeed;
     if (!LoadPrivacyVNextEpochSeed(epochSeed, error))
@@ -141,20 +155,19 @@ bool FundNote(CTxDB& txdb, unsigned char nSeed, uint64_t nAmount,
     std::vector<unsigned char> treeState = epochSeed.vchTreeState;
     if (!TrimPrivacyVNextTreeStore(txdb, 0, treeState, error))
         return false;
-    std::vector<PrivacyVNextOutputLeaf> vLeaves;
-    vLeaves.push_back(out.encrypted.leaf);
     if (!GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, error))
         return false;
 
     std::vector<unsigned char> vchRoot;
-    if (!DecodePrivacyVNextTreeState(treeState, vchRoot, out.nTreeSize, error))
+    uint64_t nTreeSize = 0;
+    if (!DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error))
         return false;
-    std::memcpy(out.finalizedRoot.data(), &vchRoot[0], 32);
 
     std::vector<uint64_t> vTargets;
-    vTargets.push_back(0);
+    for (size_t n = 0; n < vSeeds.size(); ++n)
+        vTargets.push_back(n);
     std::vector<unsigned char> vchPaths;
-    if (!ReadPrivacyVNextTreePaths(txdb, out.nTreeSize, treeState, vTargets,
+    if (!ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets,
                                    vchPaths, error))
         return false;
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
@@ -162,29 +175,48 @@ bool FundNote(CTxDB& txdb, unsigned char nSeed, uint64_t nAmount,
     if (!BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
                                              vWitnesses, treeRoot, error))
         return false;
-
-    PrivacyVNextEncryptedNote onChain;
-    onChain.nOutputIndex = 0;
-    onChain.genesis = genesis;
-    onChain.leafO = out.encrypted.leaf.owner;
-    onChain.leafC = out.encrypted.leaf.commitment;
-    onChain.noteEphemeral = out.encrypted.noteEphemeral;
-    onChain.tweakEphemeral = out.encrypted.tweakEphemeral;
-    onChain.vchCiphertext = out.encrypted.vchRecipientCiphertext;
-    onChain.inputContext = FundingContext();
-    PrivacyVNextScannedNote scanned;
-    if (!ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0,
-                              onChain, out.keys.viewSecret,
-                              out.keys.spendSecret, scanned, error))
+    if (vWitnesses.size() != vSeeds.size())
+    {
+        error = "funding returned the wrong witness count";
         return false;
+    }
 
-    out.spend.spendSecret = scanned.spendSecret;
-    out.spend.y = scanned.y;
-    out.spend.mask = scanned.mask;
-    out.spend.nAmount = scanned.nAmount;
-    out.spend.leaf = out.encrypted.leaf;
-    out.spend.vchWitnessRecord = vWitnesses[0].vchRecord;
+    for (size_t n = 0; n < vSeeds.size(); ++n)
+    {
+        FundedNote& out = *vOut[n];
+        out.nTreeSize = nTreeSize;
+        std::memcpy(out.finalizedRoot.data(), &vchRoot[0], 32);
+
+        PrivacyVNextEncryptedNote onChain;
+        onChain.nOutputIndex = 0;
+        onChain.genesis = genesis;
+        onChain.leafO = out.encrypted.leaf.owner;
+        onChain.leafC = out.encrypted.leaf.commitment;
+        onChain.noteEphemeral = out.encrypted.noteEphemeral;
+        onChain.tweakEphemeral = out.encrypted.tweakEphemeral;
+        onChain.vchCiphertext = out.encrypted.vchRecipientCiphertext;
+        onChain.inputContext = FundingContext();
+        PrivacyVNextScannedNote scanned;
+        if (!ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, LocalNetwork(), 0,
+                                  onChain, out.keys.viewSecret,
+                                  out.keys.spendSecret, scanned, error))
+            return false;
+
+        out.spend.spendSecret = scanned.spendSecret;
+        out.spend.y = scanned.y;
+        out.spend.mask = scanned.mask;
+        out.spend.nAmount = scanned.nAmount;
+        out.spend.leaf = out.encrypted.leaf;
+        out.spend.vchWitnessRecord = vWitnesses[n].vchRecord;
+    }
     return true;
+}
+
+bool FundNote(CTxDB& txdb, unsigned char nSeed, uint64_t nAmount,
+              FundedNote& out, std::string& error)
+{
+    return FundNotes(txdb, std::vector<unsigned char>(1, nSeed), nAmount,
+                     std::vector<FundedNote*>(1, &out), error);
 }
 
 // A transaction that carries a payload, which is all the consensus transitions read.
@@ -273,16 +305,25 @@ bool BuildShapedNoteVote(const FundedNote& note,
                          PrivacyVNextDigest& keyImageOut,
                          PrivacyVNextOutputLeaf& reissueOut,
                          std::string& error,
-                         bool fProveUnshifted = false)
+                         bool fProveUnshifted = false,
+                         const FundedNote* pSecond = NULL)
 {
     vchPayloadOut.clear();
     const PrivacyVNextDigest entropy = CollateralScalar(0x5c);
 
-    std::vector<PrivacyVNextSpendInput> vInputs(1);
-    vInputs[0].spendScalar = note.spend.spendSecret;
-    vInputs[0].commitmentScalar = note.spend.y;
-    vInputs[0].leaf = note.spend.leaf;
-    vInputs[0].vchWitnessRecord = note.spend.vchWitnessRecord;
+    // pSecond spends a second note of the same tree alongside the first.
+    std::vector<const FundedNote*> vNotes(1, &note);
+    if (pSecond)
+        vNotes.push_back(pSecond);
+    const size_t nInputs = vNotes.size();
+    std::vector<PrivacyVNextSpendInput> vInputs(nInputs);
+    for (size_t i = 0; i < nInputs; ++i)
+    {
+        vInputs[i].spendScalar = vNotes[i]->spend.spendSecret;
+        vInputs[i].commitmentScalar = vNotes[i]->spend.y;
+        vInputs[i].leaf = vNotes[i]->spend.leaf;
+        vInputs[i].vchWitnessRecord = vNotes[i]->spend.vchWitnessRecord;
+    }
 
     // Pass one fixes the pseudo-output and key image the entropy determines.
     PrivacyVNextDigest provisional;
@@ -293,7 +334,7 @@ bool BuildShapedNoteVote(const FundedNote& note,
     if (!ProvePrivacyVNextMembership(note.finalizedRoot, provisional, entropy,
                                      vInputs, vDraft, vchDraft, error))
         return false;
-    if (vDraft.size() != 1)
+    if (vDraft.size() != nInputs)
     {
         error = "shaped vote proving returned the wrong input count";
         return false;
@@ -301,7 +342,9 @@ bool BuildShapedNoteVote(const FundedNote& note,
 
     // The reissue derives under the vote's context: operation 10, the binding, the key
     // image. Unique per note, so the reissue's one-time key cannot recur.
-    std::vector<PrivacyVNextDigest> vKeyImages(1, vDraft[0].keyImage);
+    std::vector<PrivacyVNextDigest> vKeyImages;
+    for (size_t i = 0; i < nInputs; ++i)
+        vKeyImages.push_back(vDraft[i].keyImage);
     PrivacyVNextDigest context;
     if (!DerivePrivacyVNextInputContext(iv5::NOTE_FINALITY_VOTE, NoTransparentSide(),
                                         vKeyImages, context, error))
@@ -333,9 +376,12 @@ bool BuildShapedNoteVote(const FundedNote& note,
     PutLE64(prefix, (uint64_t)nTransparentValueBalance);
     PutLE64(prefix, nFee);
     PutDigest(prefix, NoTransparentSide());
-    PutCompact(prefix, 1);
-    PutDigest(prefix, vDraft[0].pseudoOut);
-    PutDigest(prefix, vDraft[0].keyImage);
+    PutCompact(prefix, nInputs);
+    for (size_t i = 0; i < nInputs; ++i)
+    {
+        PutDigest(prefix, vDraft[i].pseudoOut);
+        PutDigest(prefix, vDraft[i].keyImage);
+    }
     PutCompact(prefix, 1);
     PutDigest(prefix, reissue.leaf.owner);
     PutDigest(prefix, reissue.leaf.commitment);
@@ -358,20 +404,37 @@ bool BuildShapedNoteVote(const FundedNote& note,
     if (!ProvePrivacyVNextMembership(note.finalizedRoot, signingHash, entropy,
                                      vInputs, vFinal, vchMembership, error))
         return false;
-    if (vFinal.size() != 1 || vFinal[0].pseudoOut != vDraft[0].pseudoOut ||
-        vFinal[0].keyImage != vDraft[0].keyImage)
+    if (vFinal.size() != nInputs)
     {
-        error = "shaped vote proving is not deterministic in its entropy";
+        error = "shaped vote proving returned the wrong input count";
         return false;
     }
+    for (size_t i = 0; i < nInputs; ++i)
+        if (vFinal[i].pseudoOut != vDraft[i].pseudoOut ||
+            vFinal[i].keyImage != vDraft[i].keyImage)
+        {
+            error = "shaped vote proving is not deterministic in its entropy";
+            return false;
+        }
 
-    // excess = (note mask + rerandomization delta) - reissue mask
+    // excess = sum(note mask + rerandomization delta) - reissue mask
     std::vector<unsigned char> vchInputMask;
     std::vector<unsigned char> vchNegatedOutput;
     std::vector<unsigned char> vchExcess;
-    if (!Ed25519ScalarAdd(DigestBytes(note.spend.mask),
-                          DigestBytes(vFinal[0].pseudoOutMaskDelta), vchInputMask) ||
-        !Ed25519ScalarNeg(DigestBytes(outputMask), vchNegatedOutput) ||
+    for (size_t i = 0; i < nInputs; ++i)
+    {
+        std::vector<unsigned char> vchOne;
+        std::vector<unsigned char> vchSum;
+        if (!Ed25519ScalarAdd(DigestBytes(vNotes[i]->spend.mask),
+                              DigestBytes(vFinal[i].pseudoOutMaskDelta), vchOne) ||
+            (i > 0 && !Ed25519ScalarAdd(vchInputMask, vchOne, vchSum)))
+        {
+            error = "shaped vote excess mask accumulation failed";
+            return false;
+        }
+        vchInputMask.swap(i > 0 ? vchSum : vchOne);
+    }
+    if (!Ed25519ScalarNeg(DigestBytes(outputMask), vchNegatedOutput) ||
         !Ed25519ScalarAdd(vchInputMask, vchNegatedOutput, vchExcess) ||
         vchExcess.size() != 32)
     {
@@ -381,7 +444,9 @@ bool BuildShapedNoteVote(const FundedNote& note,
     PrivacyVNextDigest excessMask;
     std::memcpy(excessMask.data(), &vchExcess[0], 32);
 
-    std::vector<PrivacyVNextDigest> vPseudoOuts(1, vFinal[0].pseudoOut);
+    std::vector<PrivacyVNextDigest> vPseudoOuts;
+    for (size_t i = 0; i < nInputs; ++i)
+        vPseudoOuts.push_back(vFinal[i].pseudoOut);
     std::vector<PrivacyVNextValueOutput> vOutputs(1);
     vOutputs[0].nAmount = nReissueAmount;
     vOutputs[0].mask = outputMask;
@@ -1171,6 +1236,7 @@ BOOST_AUTO_TEST_CASE(the_extractor_derives_a_record_from_an_op_10_payload)
     // The tag is the payload's key image.
     BOOST_REQUIRE_EQUAL(vote.vchTag.size(), (size_t)FINALITY_NOTE_POINT_SIZE);
     BOOST_CHECK(memcmp(&vote.vchTag[0], keyImage.data(), keyImage.size()) == 0);
+    BOOST_CHECK_EQUAL(vote.nVersion, FINALITY_NOTE_VOTE_VERSION);
 
     // The record must round-trip through the tracker's persistence.
     BOOST_CHECK(vote.IsValidBasic(&error));
@@ -1245,6 +1311,162 @@ BOOST_AUTO_TEST_CASE(a_vote_rides_bare_and_the_caps_hold)
     BOOST_CHECK(!CheckPrivacyVNextNoteVoteCaps(2, nWindowMax - 1, error));
     BOOST_CHECK(!CheckPrivacyVNextNoteVoteCaps(0, nWindowMax + 1, error));
     BOOST_CHECK(CheckPrivacyVNextNoteVoteCaps(0, nWindowMax, error));
+}
+
+// Validity of a payload by both decoders: the verifying one and the proof-free one the
+// vote extractor reads.
+void CheckPayloadVerdict(const std::vector<unsigned char>& payload, bool fExpectValid,
+                         const char* what)
+{
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation verified =
+        ExtractPrivacyVNextPayloadEffects(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                          payload, effects);
+    BOOST_CHECK_MESSAGE(verified.IsValid() == fExpectValid,
+                        std::string(what) + " (verifying): " + verified.strError);
+    PrivacyVNextStateEffects assumed;
+    const PrivacyVNextPayloadValidation unverified =
+        ExtractPrivacyVNextPayloadEffectsAssumeValid(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, assumed);
+    BOOST_CHECK_MESSAGE(unverified.IsValid() == fExpectValid,
+                        std::string(what) + " (assume-valid): " + unverified.strError);
+}
+
+// The extractor's verdict on a block carrying one payload.
+bool ExtractFromCarrier(const std::vector<unsigned char>& payload,
+                        std::vector<CNoteFinalityVote>& vVotes,
+                        FinalityEnvelopeDecodeResult& failure)
+{
+    CBlock block;
+    block.vtx.push_back(CTransaction());
+    block.vtx.push_back(CarryingTx(payload, 1000));
+    BOOST_REQUIRE(IsPrivacyVNextNoteVoteShape(block.vtx[1]));
+    failure = FINALITY_ENVELOPE_NO_MATCH;
+    return ExtractNoteFinalityVotesFromBlockForHeight(block, 6100, vVotes, &failure);
+}
+
+// A vote spends exactly one note; a two-note vote is refused by the payload shape rule.
+BOOST_AUTO_TEST_CASE(a_note_vote_with_two_inputs_is_refused_by_the_payload_validator)
+{
+    ScopedNoteVoteHeight fork(0);
+    CTxDB txdb("r+");
+    std::string error;
+    std::vector<unsigned char> vSeeds;
+    vSeeds.push_back(0xD1);
+    vSeeds.push_back(0xD5);
+    FundedNote first;
+    FundedNote second;
+    std::vector<FundedNote*> vNotes;
+    vNotes.push_back(&first);
+    vNotes.push_back(&second);
+    BOOST_REQUIRE_MESSAGE(FundNotes(txdb, vSeeds, kVoteNote, vNotes, error), error);
+
+    // The control: one of the same notes, same tree, validates.
+    {
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest keyImage;
+        PrivacyVNextOutputLeaf reissue;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(first, ContractDigest(), kVoteNote, 0, 0,
+                                ContractDigest(), 6000, payload, keyImage, reissue,
+                                error),
+            error);
+        CheckPayloadVerdict(payload, true, "one-input vote");
+    }
+
+    std::vector<unsigned char> payload;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(first, ContractDigest(), 2 * kVoteNote, 0, 0,
+                            ContractDigest(), 6000, payload, keyImage, reissue, error,
+                            false, &second),
+        error);
+    CheckPayloadVerdict(payload, false, "two-input vote");
+
+    std::vector<CNoteFinalityVote> vVotes;
+    FinalityEnvelopeDecodeResult failure;
+    BOOST_CHECK(!ExtractFromCarrier(payload, vVotes, failure));
+    BOOST_CHECK(vVotes.empty());
+    BOOST_CHECK_EQUAL(failure, FINALITY_ENVELOPE_INVALID);
+}
+
+// The record fields IsValidBasic checks are fixed before the record is built: a zero
+// boundary hash and a key image that is not a prime-order point are refused by the
+// decoder, and a boundary height past the height type by the extractor.
+BOOST_AUTO_TEST_CASE(a_vote_record_field_is_refused_before_the_record_is_built)
+{
+    ScopedNoteVoteHeight fork(0);
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xD9, kVoteNote, note, error), error);
+
+    std::vector<unsigned char> good;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextOutputLeaf reissue;
+    BOOST_REQUIRE_MESSAGE(
+        BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0, ContractDigest(),
+                            6000, good, keyImage, reissue, error),
+        error);
+    CheckPayloadVerdict(good, true, "control vote");
+
+    // A zero boundary hash, proven over as asked.
+    {
+        PrivacyVNextDigest zero;
+        zero.fill(0);
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest ki;
+        PrivacyVNextOutputLeaf leaf;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0, zero, 6000,
+                                payload, ki, leaf, error),
+            error);
+        CheckPayloadVerdict(payload, false, "zero boundary hash");
+    }
+
+    // The published key image replaced by the all-zero encoding (a small-order point)
+    // and by the identity. The proof-free decoder is the one the extractor reads.
+    std::vector<unsigned char>::iterator at =
+        std::search(good.begin(), good.end(), keyImage.begin(), keyImage.end());
+    BOOST_REQUIRE(at != good.end());
+    const size_t nOffset = at - good.begin();
+    {
+        std::vector<unsigned char> payload = good;
+        std::fill(payload.begin() + nOffset, payload.begin() + nOffset + 32, 0);
+        CheckPayloadVerdict(payload, false, "zero key image");
+    }
+    {
+        std::vector<unsigned char> payload = good;
+        std::fill(payload.begin() + nOffset, payload.begin() + nOffset + 32, 0);
+        payload[nOffset] = 1;
+        CheckPayloadVerdict(payload, false, "identity key image");
+    }
+
+    // A boundary height the height type cannot hold: the payload does not judge it, the
+    // extractor refuses it.
+    {
+        std::vector<unsigned char> payload;
+        PrivacyVNextDigest ki;
+        PrivacyVNextOutputLeaf leaf;
+        const uint32_t nWide = (uint32_t)std::numeric_limits<int>::max() + 1U;
+        BOOST_REQUIRE_MESSAGE(
+            BuildShapedNoteVote(note, ContractDigest(), kVoteNote, 0, 0,
+                                ContractDigest(), nWide, payload, ki, leaf, error),
+            error);
+        CheckPayloadVerdict(payload, true, "wide boundary height");
+        std::vector<CNoteFinalityVote> vVotes;
+        FinalityEnvelopeDecodeResult failure;
+        BOOST_CHECK(!ExtractFromCarrier(payload, vVotes, failure));
+        BOOST_CHECK(vVotes.empty());
+        BOOST_CHECK_EQUAL(failure, FINALITY_ENVELOPE_INVALID);
+    }
+
+    // The control yields its record.
+    std::vector<CNoteFinalityVote> vVotes;
+    FinalityEnvelopeDecodeResult failure;
+    BOOST_CHECK(ExtractFromCarrier(good, vVotes, failure));
+    BOOST_CHECK_EQUAL(vVotes.size(), 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
