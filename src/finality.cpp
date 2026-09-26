@@ -326,65 +326,6 @@ bool AssembleCertificateFromSignatures(CFinalityTallyCertificate& cert,
            CheckTallyCertificateCommitteeSignatures(cert, vCommittee, nThreshold, setHash, NULL);
 }
 
-bool CFinalityTracker::AddCertSignature(const CFinalityCertSignature& msg, CTxDB& txdb,
-                                        CFinalityTallyCertificate* pAssembledOut, bool* pfAssembled,
-                                        std::string* pstrError)
-{
-    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
-    if (pfAssembled) *pfAssembled = false;
-
-    const CFinalityTallyCertificate& cand = msg.candidate;
-    // Only the legacy private certificate is committee-signed; a note certificate is
-    // rebuilt by every node and carries no signer-set.
-    if (!cand.HasPrivateWeight() || cand.HasNoteWeight())
-        return reject("cert-signature candidate carries no weight a committee authorizes");
-
-    // Validate the candidate's CONTENT (tally/coverage/proofs) — everything
-    // except the committee signer-set, which is what we are collecting.
-    std::string strErr;
-    if (!CheckTallyCertificate(cand, txdb, &strErr, NULL, true, -1, true))
-        return reject(std::string("cert-signature candidate invalid: ") + strErr);
-
-    // Resolve the committee that must authorize this epoch, then verify the signature.
-    std::vector<CPubKey> vCommittee; int nM = 0; uint256 setHash;
-    if (!GetCanonicalFinalityCommittee(txdb, cand.nEpoch, vCommittee, nM, setHash))
-        return reject("no canonical committee for candidate epoch");
-    if (cand.committeeSetHash != setHash)
-        return reject("cert-signature candidate committee-set mismatch");
-
-    uint256 digest = cand.GetSignatureDigest();
-    if (msg.nSignerIndex >= vCommittee.size())
-        return reject("cert-signature signer index out of range");
-    if (!vCommittee[msg.nSignerIndex].IsValid() ||
-        !vCommittee[msg.nSignerIndex].Verify(digest, msg.vchSig))
-        return reject("cert-signature invalid");
-
-    LOCK(cs_finality);
-    mapCandidateCerts[digest] = cand;
-    std::map<uint16_t, std::vector<unsigned char> >& sigs = mapCollectedCertSigs[digest];
-    std::map<uint16_t, std::vector<unsigned char> >::iterator itS = sigs.find(msg.nSignerIndex);
-    if (itS != sigs.end())
-    {
-        // A member must not sign two different candidates' content under the same
-        // index/digest; identical resends are benign duplicates (do not relay).
-        if (itS->second != msg.vchSig)
-            return reject("cert-signature equivocation for signer index");
-        return false; // duplicate: valid but nothing new to relay
-    }
-    sigs[msg.nSignerIndex] = msg.vchSig;
-
-    if ((int)sigs.size() >= nM)
-    {
-        CFinalityTallyCertificate assembled = cand;
-        if (AssembleCertificateFromSignatures(assembled, sigs, vCommittee, nM, setHash))
-        {
-            if (pAssembledOut) *pAssembledOut = assembled;
-            if (pfAssembled) *pfAssembled = true;
-        }
-    }
-    return true; // newly stored
-}
-
 
 bool GetCanonicalFinalityCommittee(CTxDB& txdb, int nEpoch,
                                    std::vector<CPubKey>& vCommitteeOut,
@@ -3117,25 +3058,16 @@ void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert)
 }
 
 // One line per note certificate this node builds and admits to its pending set.
-static void LogAssembledNoteCertificate(const CFinalityTallyCertificate& cert)
+static void LogBuiltNoteCertificate(const CFinalityTallyCertificate& cert)
 {
     if (!cert.HasNoteWeight())
         return;
-    printf("FinalityNoteTally: epoch %d note certificate %s assembled tier=%d "
+    printf("FinalityNoteTally: epoch %d note certificate %s built tier=%d "
            "note_votes=%u transparent_votes=%u signers=%u\n",
            cert.nEpoch, cert.GetHash().ToString().c_str(), cert.nTier,
            (unsigned int)cert.nNoteVoteCount,
            (unsigned int)cert.vVoteNullifiers.size(),
            (unsigned int)cert.vSignerIndexes.size());
-}
-
-static void RelayFinalityCertSignature(const CFinalityCertSignature& msg)
-{
-    if (msg.candidate.HasNoteWeight() || LegacyPrivateFinalityTrafficDisabledAtTip())
-        return;
-    LOCK(cs_vNodes);
-    for (CNode* pnode : vNodes)
-        pnode->PushMessage("ftcsig", msg);
 }
 
 
@@ -3370,31 +3302,6 @@ static bool FinalityBuildAndRelayCertificateForCohort(
                             vTallyShareHashes.end());
     cert.vTallyShareHashes = vTallyShareHashes;
 
-    // The threshold/reward BPAC proofs bind cert.nVersion and cert.committeeSetHash
-    // into their Fiat-Shamir transcript (FinalityCertificateProofContextHash), so the
-    // cert's FINAL version and committee binding must be fixed BEFORE the proofs are
-    // built — otherwise the verifier rebuilds a different transcript and the proof
-    // fails. From the governance fork a private cert is v3, bound to the canonical
-    // committee that authorizes its epoch; resolve that here, ahead of proof creation.
-    static std::set<uint256> setProducedCertificateContexts;
-    CFinalityTallyConfig cfg = GetFinalityTallyConfig();
-    std::vector<CPubKey> vCommittee; int nCommitteeM = 0; uint256 committeeSetHashCanon;
-    CKey memberKey;
-    // Production-side, so a batch-free handle is both available and correct.
-    CTxDB txdbCommittee("r");
-    bool fSignAsCommittee = (cert.nHeight >= FORK_HEIGHT_TALLY_GOVERNANCE) &&
-                            cfg.nLocalCommitteeIndex >= 0 &&
-                            GetFinalityTallyPrivateKey(memberKey) &&
-                            GetCanonicalFinalityCommittee(txdbCommittee, cert.nEpoch, vCommittee,
-                                                          nCommitteeM, committeeSetHashCanon);
-    if (fSignAsCommittee)
-    {
-        cert.nVersion = 3;
-        cert.committeeSetHash = committeeSetHashCanon;
-        cert.vSignerIndexes.clear();
-        cert.vSignerSigs.clear();
-    }
-
     if (!CreateFinalityAggregateThresholdProofV2(cert,
                                                  nPrivateActiveWeight,
                                                  nPrivateWinningWeight,
@@ -3410,34 +3317,7 @@ static bool FinalityBuildAndRelayCertificateForCohort(
                                            cert.vchRewardBudgetProof))
         return false;
 
-    // D2: from the governance fork, a committee member signs the v3 candidate and
-    // submits its signature to the collection. A 1-of-1 committee assembles
-    // immediately; for M-of-N the signature is relayed so members can gather M and
-    // assemble. Pre-fork (or with no pinned committee) the cert stays v2 (below).
-    if (fSignAsCommittee)
-    {
-        uint256 hashContext = FinalityCertificateAutomationContextHash(cert);
-        if (setProducedCertificateContexts.count(hashContext))
-            return false;
-
-        CFinalityCertSignature sigMsg;
-        sigMsg.candidate = cert;
-        sigMsg.nSignerIndex = (uint16_t)cfg.nLocalCommitteeIndex;
-        if (!memberKey.Sign(cert.GetSignatureDigest(), sigMsg.vchSig) || sigMsg.vchSig.empty())
-            return false;
-
-        CTxDB txdb("r");
-        CFinalityTallyCertificate assembled;
-        bool fAssembled = false;
-        g_finalityTracker.AddCertSignature(sigMsg, txdb, &assembled, &fAssembled, NULL);
-        RelayFinalityCertSignature(sigMsg);
-        setProducedCertificateContexts.insert(hashContext);
-
-        if (fAssembled && g_finalityTracker.AddTallyCertificate(assembled))
-            RelayFinalityTallyCertificate(assembled);
-        return true;
-    }
-
+    static std::set<uint256> setProducedCertificateContexts;
     uint256 hashContext = FinalityCertificateAutomationContextHash(cert);
     if (setProducedCertificateContexts.count(hashContext))
         return false;
@@ -5527,6 +5407,54 @@ bool CFinalityTracker::AddTallyAggregatePartial(const CFinalityTallyAggregatePar
     return true;
 }
 
+// Relay policy for the pending set; never consulted by a connect-time verdict.
+enum PendingCertificateVerdict
+{
+    PENDING_CERT_INVALID = 0,
+    PENDING_CERT_UNDECIDED = 1,
+    PENDING_CERT_VALID = 2,
+};
+
+// Judged as the next block on this node's tip would judge it, once the certificate's
+// vote-inclusion window is closed there; undecided before that.
+static int JudgePendingTallyCertificate(const CFinalityTracker& tracker,
+                                        const CFinalityTallyCertificate& cert,
+                                        CTxDB& txdb)
+{
+    LOCK(cs_main);
+    const CBlockIndex* pTip = pindexBest;
+    if (!pTip || pTip->nHeight == std::numeric_limits<int>::max())
+        return PENDING_CERT_UNDECIDED;
+    const int nNextHeight = pTip->nHeight + 1;
+    if (nNextHeight < FORK_HEIGHT_VOTESET_ROOT ||
+        cert.nEpoch > GetEpochForHeight(nNextHeight) ||
+        !IsFinalityVoteWindowClosedForTip(cert.nEpoch, pTip->nHeight))
+        return PENDING_CERT_UNDECIDED;
+    FinalityResult result = FINALITY_RESULT_OK;
+    if (tracker.CheckTallyCertificate(cert, txdb, NULL, NULL, false, nNextHeight, false,
+                                      &result, pTip))
+        return PENDING_CERT_VALID;
+    return result == FINALITY_RESULT_INVALID ? PENDING_CERT_INVALID
+                                             : PENDING_CERT_UNDECIDED;
+}
+
+// Eviction order within one epoch. Undecided certificates rank by coverage first: the
+// one a block can carry covers the epoch's whole connected set.
+static bool PendingCertificateRanksBelow(int nScoreA, const CFinalityTallyCertificate& a,
+                                         int nScoreB, const CFinalityTallyCertificate& b)
+{
+    if (nScoreA != nScoreB)
+        return nScoreA < nScoreB;
+    if (nScoreA == PENDING_CERT_UNDECIDED)
+    {
+        const uint64_t nCoverA = (uint64_t)a.vVoteNullifiers.size() + a.nNoteVoteCount;
+        const uint64_t nCoverB = (uint64_t)b.vVoteNullifiers.size() + b.nNoteVoteCount;
+        if (nCoverA != nCoverB)
+            return nCoverA < nCoverB;
+    }
+    return FinalityCertificateOutranks(b, a);
+}
+
 bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck, bool fRecordFinality)
 {
     const uint256 hashContext =
@@ -5557,6 +5485,40 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
                 printf("AddTallyCertificate: rejected tally certificate: %s\n", strError.c_str());
             return false;
         }
+    }
+
+    // Pending-set policy: past the window, admit only what a block on this tip could
+    // carry, and hold at most FINALITY_PENDING_CERTS_PER_EPOCH per epoch.
+    std::map<uint256, int> mapPendingScores;
+    if (!fRecordFinality)
+    {
+        CTxDB txdb("r");
+        const int nScore = JudgePendingTallyCertificate(*this, cert, txdb);
+        if (fCheck && nScore == PENDING_CERT_INVALID)
+        {
+            if (fDebug)
+                printf("AddTallyCertificate: not relaying tally certificate %s: "
+                       "invalid for the next block\n",
+                       cert.GetHash().ToString().substr(0, 20).c_str());
+            return false;
+        }
+        mapPendingScores[cert.GetHash()] = nScore;
+
+        std::vector<CFinalityTallyCertificate> vSameEpoch;
+        {
+            LOCK(cs_finality);
+            size_t nSameEpoch = 0;
+            for (const auto& pair : mapPendingTallyCertificates)
+                if (pair.second.nEpoch == cert.nEpoch)
+                    nSameEpoch++;
+            if (nSameEpoch >= FINALITY_PENDING_CERTS_PER_EPOCH)
+                for (const auto& pair : mapPendingTallyCertificates)
+                    if (pair.second.nEpoch == cert.nEpoch)
+                        vSameEpoch.push_back(pair.second);
+        }
+        for (const CFinalityTallyCertificate& held : vSameEpoch)
+            mapPendingScores[held.GetHash()] =
+                JudgePendingTallyCertificate(*this, held, txdb);
     }
 
     LOCK(cs_finality);
@@ -5590,6 +5552,35 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
             return false;
         }
         mapPendingTallyCertificates[hashCert] = cert;
+
+        const auto scoreOf = [&](const uint256& hash) -> int {
+            std::map<uint256, int>::const_iterator it = mapPendingScores.find(hash);
+            return it == mapPendingScores.end() ? (int)PENDING_CERT_UNDECIDED : it->second;
+        };
+        for (;;)
+        {
+            std::map<uint256, CFinalityTallyCertificate>::iterator itWorst =
+                mapPendingTallyCertificates.end();
+            size_t nSameEpoch = 0;
+            for (std::map<uint256, CFinalityTallyCertificate>::iterator it =
+                     mapPendingTallyCertificates.begin();
+                 it != mapPendingTallyCertificates.end(); ++it)
+            {
+                if (it->second.nEpoch != cert.nEpoch)
+                    continue;
+                nSameEpoch++;
+                if (itWorst == mapPendingTallyCertificates.end() ||
+                    PendingCertificateRanksBelow(scoreOf(it->first), it->second,
+                                                 scoreOf(itWorst->first), itWorst->second))
+                    itWorst = it;
+            }
+            if (nSameEpoch <= FINALITY_PENDING_CERTS_PER_EPOCH)
+                break;
+            const bool fEvictedSelf = itWorst->first == hashCert;
+            mapPendingTallyCertificates.erase(itWorst);
+            if (fEvictedSelf)
+                return false;
+        }
         return true;
     }
 
@@ -6326,6 +6317,87 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::GetPendingTallyCertific
             break;
     }
     return vCerts;
+}
+
+std::vector<CFinalityTallyCertificate> CFinalityTracker::SelectTallyCertificatesForBlock(
+    CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+    const CBlockIndex* pindexPrev, unsigned int nMaxCerts) const
+{
+    // Validate before capping: a cap over unvalidated candidates lets relay-valid
+    // certificates that no block can carry displace the one that it can.
+    const std::vector<CFinalityTallyCertificate> vCandidates =
+        GetPendingTallyCertificatesForBlock(nBlockHeight,
+                                            std::numeric_limits<unsigned int>::max());
+    const bool fNoPrivate = IsLegacyPrivacyPolicyDisabled() ||
+                            IsBoundaryAActiveAtHeight(nBlockHeight);
+    std::vector<CFinalityTallyCertificate> vValid;
+    for (const CFinalityTallyCertificate& cert : vCandidates)
+    {
+        if (cert.HasPrivateWeight() && fNoPrivate)
+            continue;
+        std::string strError;
+        if (!CheckTallyCertificate(cert, txdb, &strError, pvBlockVotes, false, nBlockHeight,
+                                   false, NULL, pindexPrev))
+        {
+            printf("CreateNewBlock: excluding finality tally certificate %s: %s\n",
+                   cert.GetHash().ToString().substr(0, 20).c_str(), strError.c_str());
+            continue;
+        }
+        vValid.push_back(cert);
+    }
+
+    // Newest epoch first; within an epoch, the certificate the epoch record selects.
+    std::sort(vValid.begin(), vValid.end(),
+              [](const CFinalityTallyCertificate& a, const CFinalityTallyCertificate& b) {
+                  if (a.nEpoch != b.nEpoch)
+                      return a.nEpoch > b.nEpoch;
+                  return FinalityCertificateOutranks(a, b);
+              });
+    std::vector<CFinalityTallyCertificate> vSelected;
+    std::set<int> setEpochs;
+    std::set<uint256> setSelected;
+    for (const CFinalityTallyCertificate& cert : vValid)
+    {
+        if (vSelected.size() >= nMaxCerts)
+            break;
+        if (!setEpochs.insert(cert.nEpoch).second)
+            continue;
+        vSelected.push_back(cert);
+        setSelected.insert(cert.GetHash());
+    }
+    for (const CFinalityTallyCertificate& cert : vValid)
+    {
+        if (vSelected.size() >= nMaxCerts)
+            break;
+        if (setSelected.insert(cert.GetHash()).second)
+            vSelected.push_back(cert);
+    }
+    return vSelected;
+}
+
+size_t CFinalityTracker::GetPendingTallyCertificateCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    size_t nCount = 0;
+    for (const auto& pair : mapPendingTallyCertificates)
+        if (pair.second.nEpoch == nEpoch)
+            nCount++;
+    return nCount;
+}
+
+void CFinalityTracker::PrunePendingTallyCertificates(int nNextHeight)
+{
+    LOCK(cs_finality);
+    const int nNextEpoch = GetEpochForHeight(nNextHeight);
+    for (std::map<uint256, CFinalityTallyCertificate>::iterator it =
+             mapPendingTallyCertificates.begin();
+         it != mapPendingTallyCertificates.end(); )
+    {
+        if (it->second.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nNextEpoch)
+            mapPendingTallyCertificates.erase(it++);
+        else
+            ++it;
+    }
 }
 
 std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock(int nBlockHeight, unsigned int nMaxShares,
@@ -7622,8 +7694,6 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapTallyAggregatePartials.clear();
         mapTallyPartialBySource.clear();
         mapBlockConnectedTallyShares.clear();
-        mapCandidateCerts.clear();
-        mapCollectedCertSigs.clear();
         mapPendingTallyCertificates.clear();
         mapConnectedTallyCertificates.clear();
         mapConnectedTallyCertificateByContext.clear();
@@ -7906,72 +7976,6 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
                     continue;
                 PushFinalityTallyCertificateMessage(pnode, cert);
             }
-        }
-
-        return true;
-    }
-    else if (strCommand == "ftcsig")
-    {
-        // 2c-4b: a committee member's signature over a candidate certificate.
-        CFinalityCertSignature msg;
-        vRecv >> msg;
-
-        // A note certificate is never committee-signed.
-        if (msg.candidate.HasNoteWeight() || LegacyPrivateFinalityTrafficDisabledAtTip())
-            return false;
-
-        if (msg.candidate.nEpoch < 0 || msg.candidate.nHeight < 0)
-            return false;
-        int nCurrentEpoch = 0;
-        {
-            CBlockIndex* pBest = pindexBest;
-            if (pBest)
-                nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
-        }
-        if (msg.candidate.nEpoch > nCurrentEpoch + 2)
-            return false;
-
-        CTxDB txdb("r");
-        CFinalityTallyCertificate assembled;
-        bool fAssembled = false;
-        // AddCertSignature validates the candidate + signature and returns true
-        // only when it stored a NEW signature (so we gossip each sig once).
-        if (g_finalityTracker.AddCertSignature(msg, txdb, &assembled, &fAssembled, NULL))
-        {
-            {
-                LOCK(cs_vNodes);
-                for (CNode* pnode : vNodes)
-                {
-                    if (pnode == pfrom)
-                        continue;
-                    pnode->PushMessage("ftcsig", msg);
-                }
-            }
-
-            // If we are a committee member that has not yet signed this candidate,
-            // co-sign it and relay our signature (drives the M-of-N collection).
-            CFinalityTallyConfig cfg = GetFinalityTallyConfig();
-            CKey memberKey;
-            int nLocalSeat = cfg.nLocalCommitteeIndex;
-            if (nLocalSeat >= 0 && GetFinalityTallyPrivateKey(memberKey))
-            {
-                CFinalityCertSignature mine;
-                mine.candidate = msg.candidate;
-                mine.nSignerIndex = (uint16_t)nLocalSeat;
-                if (memberKey.Sign(msg.candidate.GetSignatureDigest(), mine.vchSig) && !mine.vchSig.empty())
-                {
-                    CFinalityTallyCertificate assembled2;
-                    bool fAssembled2 = false;
-                    if (g_finalityTracker.AddCertSignature(mine, txdb, &assembled2, &fAssembled2, NULL))
-                    {
-                        RelayFinalityCertSignature(mine);
-                        if (fAssembled2) { assembled = assembled2; fAssembled = true; }
-                    }
-                }
-            }
-
-            if (fAssembled && g_finalityTracker.AddTallyCertificate(assembled))
-                RelayFinalityTallyCertificate(assembled);
         }
 
         return true;
@@ -8285,7 +8289,7 @@ static bool ProduceNoteTallyCertificateEpoch(int nEpoch)
                (unsigned int)cert.vVoteNullifiers.size());
     if (!g_finalityTracker.AddTallyCertificate(cert))
         return false;
-    LogAssembledNoteCertificate(cert);
+    LogBuiltNoteCertificate(cert);
     RelayFinalityTallyCertificate(cert);
     return true;
 }

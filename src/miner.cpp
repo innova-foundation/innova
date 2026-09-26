@@ -1424,29 +1424,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nShareCommitSize + 16;
             }
 
-            std::vector<CFinalityTallyCertificate> vFinalityCerts = g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
+            // Validated in this block's context (votes connected or embedded here,
+            // named boundary an ancestor of the template parent) before the cap.
+            std::vector<CFinalityTallyCertificate> vFinalityCerts =
+                g_finalityTracker.SelectTallyCertificatesForBlock(txdb, nHeight, &vVotesEmbedded,
+                                                                  pindexPrev);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
-                if (cert.HasPrivateWeight() &&
-                    (IsLegacyPrivacyPolicyDisabled() ||
-                     IsBoundaryAActiveAtHeight(nHeight)))
-                    continue;
-                // Only embed certificates every node can validate: votes must
-                // be connected or embedded in this same block. Certificates
-                // depending on local pending relay state would make the block
-                // invalid on nodes that have not seen those votes.
-                // Anchored to the template parent: connect binds the named boundary
-                // block to the carrier's ancestors, so a certificate naming a sibling
-                // branch's block would make this node reject its own block.
-                std::string strCertError;
-                if (!g_finalityTracker.CheckTallyCertificate(cert, txdb, &strCertError, &vVotesEmbedded, false, nHeight,
-                                                             false, NULL, pindexPrev))
-                {
-                    printf("CreateNewBlock: excluding finality tally certificate %s: %s\n",
-                           cert.GetHash().ToString().substr(0,20).c_str(), strCertError.c_str());
-                    continue;
-                }
-
                 CScript certScript;
                 if (!BuildFinalityTallyCertificateScriptForHeight(
                         cert, nHeight, certScript))

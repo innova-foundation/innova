@@ -2091,8 +2091,8 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
 
 // Strongest tier first; at equal tier a note-weighted certificate outranks a transparent one.
 // Pure in the certificates' bytes, so every node picks the same one.
-static bool FinalityCertificateOutranks(const CFinalityTallyCertificate& a,
-                                        const CFinalityTallyCertificate& b)
+bool FinalityCertificateOutranks(const CFinalityTallyCertificate& a,
+                                 const CFinalityTallyCertificate& b)
 {
     if (a.nTier != b.nTier)
         return a.nTier > b.nTier;

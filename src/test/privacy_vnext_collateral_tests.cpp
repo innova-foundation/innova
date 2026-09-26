@@ -1235,13 +1235,8 @@ BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload)
         "a member key must not be replaceable after the proof is made");
 }
 
-// Operation 9 is refused at connect and at mempool acceptance at every height: below
-// the note-vote height (where it was already refused), at it and above it. A
-// collateralnode attestation (operation 8) of the same note still connects.
-//
-// Mutation proving this: make CheckPrivacyVNextNoMemberRegistration return true, or drop
-// its call from ConnectPrivacyVNextAttestations (connect arms fail) or from
-// CTxMemPool::accept (mempool arms fail).
+// Operation 9 is refused at connect and mempool acceptance at every height; an
+// operation 8 attestation of the same note still connects.
 BOOST_AUTO_TEST_CASE(a_member_registration_is_refused_at_every_height)
 {
     CTxDB txdb("r+");
@@ -1375,6 +1370,39 @@ BOOST_AUTO_TEST_CASE(a_member_registration_is_refused_at_every_height)
             strLog.find("CTxMemPool::accept() : IV5 finality member registration "
                         "is not a valid operation") != std::string::npos,
             "mempool arm " << i << " log: " << strLog.substr(0, 600));
+    }
+
+    // A declared operation 9 is refused before decode and proof verification, even with its last
+    // byte flipped. MUTATION: drop DeclaresPrivacyVNextMemberRegistration from CTxMemPool::accept.
+    {
+        std::vector<unsigned char> broken = payload;
+        broken.back() ^= 0x01;
+        BOOST_REQUIRE(!ValidatePrivacyVNextPayload(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                                   broken)
+                           .IsValid());
+        ScopedNoteVoteHeight fork(0);
+        CTransaction relayed = CarryingTx(broken, 1500000052);
+        CTxMemPool isolatedPool;
+        bool fMissingInputs = false;
+        bool fAccepted = true;
+        std::string strLog;
+        {
+            LOCK(cs_main);
+            CTxDB txdbRead("r");
+            CLogCapture capture;
+            fAccepted = isolatedPool.accept(txdbRead, relayed, false,
+                                            &fMissingInputs, true);
+            strLog = capture.Release();
+        }
+        BOOST_CHECK(!fAccepted);
+        BOOST_CHECK_EQUAL(isolatedPool.size(), 0U);
+        BOOST_CHECK_MESSAGE(
+            strLog.find("CTxMemPool::accept() : IV5 finality member registration "
+                        "is not a valid operation") != std::string::npos,
+            "malformed arm log: " << strLog.substr(0, 600));
+        BOOST_CHECK_MESSAGE(strLog.find("CheckTransaction failed") == std::string::npos &&
+                                strLog.find("invalid IV5 payload effects") == std::string::npos,
+                            "malformed arm reached decode: " << strLog.substr(0, 600));
     }
     nRegtestBoundaryBHeight = nSavedBoundaryB;
     fRegTest = fSavedRegTest;

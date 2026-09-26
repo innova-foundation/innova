@@ -2322,12 +2322,29 @@ uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
 
 // Operation 9 (finality member registration) is refused at every height; the finality
 // certificate needs no committee.
+static const char* const IV5_MEMBER_REGISTRATION_REFUSED =
+    "IV5 finality member registration is not a valid operation";
+
+// Mempool pre-check on the declared operation byte, before decode. Refuses nothing
+// CheckPrivacyVNextNoMemberRegistration would admit.
+static bool DeclaresPrivacyVNextMemberRegistration(const CTransaction& tx)
+{
+    if (!tx.IsPrivacyVNext() || tx.privacyVNext.vchPayload.empty())
+        return false;
+    uint8_t nOperation = 0;
+    uint8_t nDisclosureMask = 0;
+    return iv5::ReadDeclaredEnvelope(&tx.privacyVNext.vchPayload[0],
+                                     tx.privacyVNext.vchPayload.size(),
+                                     nOperation, nDisclosureMask) &&
+           nOperation == iv5::NOTE_FINALITY_MEMBER_REGISTER;
+}
+
 bool CheckPrivacyVNextNoMemberRegistration(const PrivacyVNextStateEffects& effects,
                                            std::string& strError)
 {
     if (!effects.HasMemberKey())
         return true;
-    strError = "IV5 finality member registration is not a valid operation";
+    strError = IV5_MEMBER_REGISTRATION_REFUSED;
     return false;
 }
 
@@ -3709,6 +3726,11 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     size_t nMaxMempoolSize = GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     if (GetTotalMemoryUsage() >= nMaxMempoolSize)
         return error("CTxMemPool::accept() : mempool full (%" PRIu64" bytes)", (uint64_t)nMaxMempoolSize);
+
+    // No DoS score, as for the post-decode refusal below: a peer on an older build may
+    // still relay one.
+    if (DeclaresPrivacyVNextMemberRegistration(tx))
+        return error("CTxMemPool::accept() : %s", IV5_MEMBER_REGISTRATION_REFUSED);
 
     if (!tx.CheckTransaction())
         return error("CTxMemPool::accept() : CheckTransaction failed");
@@ -6887,15 +6909,8 @@ static const PoWPostDagTier vPoWPostDagRegtest[] = {
     { 100,  75000000000LL },   //  750     -> 50
     { 120, 150000000000LL },   // 1500     -> 100
 };
-// Regtest's tail funds harnesses, it does not model scarcity. The chain is a
-// fixture rebuilt from genesis every run, so a decaying tail buys nothing and
-// costs the multi-epoch harnesses their funding: the last rung ends at 1811 and
-// the committee harness has to hold six 25,000 INN collateral registrations by
-// height 4051, which a 0.05 INN tail cannot reach at any reachable height.
-// 500 INN a block clears that with room for the harness to grow, and still
-// leaves the MAX_MONEY clamp unreached until ~37,600 -- an order of magnitude
-// deeper than any harness in contrib/test mines. Mainnet and testnet keep their
-// own tails above; this constant is read only when fRegTest is set.
+// Regtest tail funds multi-epoch harnesses rather than modelling scarcity. 500 INN/block
+// keeps MAX_MONEY unreached until ~37,600. Read only when fRegTest is set.
 static const int64_t nPoWPostDagTailRegtest = 750000000000LL;  // 7500 -> 500
 
 static const PoWPostDagTier* GetPoWPostDagLadder(size_t& nCount, int64_t& nTail)
@@ -12031,6 +12046,7 @@ static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
     // Every durable tip is reported to the vote producers here, the one place all tip
     // paths publish, so no epoch boundary goes unobserved.
     NotifyFinalityTipChanged(pindexCommitted->nHeight);
+    g_finalityTracker.PrunePendingTallyCertificates(pindexCommitted->nHeight + 1);
 }
 
 static void RestoreCommittedFinalityOrShutdown(const char* pszContext)

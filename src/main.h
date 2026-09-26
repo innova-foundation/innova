@@ -629,32 +629,8 @@ inline int GetForkHeightIV5FeeNote()
 }
 #define FORK_HEIGHT_IV5_FEE_NOTE (GetForkHeightIV5FeeNote())
 
-// F2: note-weighted finality voting. One flag day carries the whole set -- the vote
-// envelope, the share carrier with its VSS coefficients, the complaint object, the v4
-// certificate and its coverage carve-out -- because every one of them is
-// consensus-visible and retrofitting any of them would cost a second flag day on a chain
-// that needs every node upgraded before the first.
-//
-// Transparent votes stay permanently valid on both sides of this height: they are the
-// liveness floor a stalled committee falls back to.
-//
-// The pool must exist before a note can be voted, so this is scheduled after
-// Assume-valid: the block whose ancestry this binary asserts was fully validated.
-//
-// A payload in a block that is an ANCESTOR of this hash may skip its proof verdicts during
-// sync -- 97-98% of the cost of validating one. Everything else still runs: proof-of-work on
-// every block, every structural rule, and the identical state computation.
-//
-// Ancestry, never height. A fork can reach any height it likes; it cannot put a block on the
-// path to a hash shipped in the binary.
-//
-// The trust this buys back is real and worth stating: below this hash a node trusts the
-// release rather than the mathematics, and GetPrivacyVNextPoolDelta reads the balance a
-// payload DECLARES, whose proof is one of the verdicts skipped. -assumevalid=0 restores
-// full verification. Only ever advance this to a block the project has itself validated in
-// full, and re-cut it each release.
-//
-// Empty on testnet and regtest: they are rebuilt often and their history is not asserted.
+// Assume-valid: payloads in ancestors of this block skip proof verdicts; everything else
+// still runs. Keyed on ancestry, never height. Re-cut each release; empty off mainnet.
 static const char* const MAINNET_ASSUME_VALID_BLOCK =
     "0x00000000523d02837bf00acee580aa7e4443b6da34929b8b2caa7116e10c353a";  // 7,750,000
 

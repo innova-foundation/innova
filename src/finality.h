@@ -55,6 +55,8 @@ static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundar
 static const int FINALITY_VOTE_INCLUSION_WINDOW = 24;
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
+// Relay policy: pending tally certificates held per epoch.
+static const unsigned int FINALITY_PENDING_CERTS_PER_EPOCH = 8;
 // Producer-side poll period and the share of the inclusion window a producer still
 // starts a vote in. Node-local, not consensus. The post-DAG poll must sample faster than
 // the window, and the last quarter of the window is left for signing and relay.
@@ -1034,6 +1036,10 @@ public:
  *  the next candidate height. */
 void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert);
 
+/** The epoch record's certificate ranking: tier, then note weight, then digest. */
+bool FinalityCertificateOutranks(const CFinalityTallyCertificate& a,
+                                 const CFinalityTallyCertificate& b);
+
 
 /** 2c-4b: M-of-N certificate production. Because the BPAC proofs are builder-
  *  randomized, committee members sign ONE builder's candidate certificate. This
@@ -1361,6 +1367,15 @@ public:
     std::vector<CFinalityTallyShare> GetPendingTallySharesForBlock(int nBlockHeight, unsigned int nMaxShares = 16,
                                                                    const std::vector<CFinalityVote>* pvBlockVotes = NULL) const;
     std::vector<CFinalityTallyCertificate> GetPendingTallyCertificatesForBlock(int nBlockHeight, unsigned int nMaxCerts = 4) const;
+    /** Pending certificates a block at nBlockHeight on pindexPrev may carry: each is
+     *  validated in that context first, the best per epoch (by the epoch record's
+     *  ranking) is taken newest epoch first, then the cap is applied. */
+    std::vector<CFinalityTallyCertificate> SelectTallyCertificatesForBlock(
+        CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+        const CBlockIndex* pindexPrev, unsigned int nMaxCerts = 4) const;
+    size_t GetPendingTallyCertificateCount(int nEpoch) const;
+    /** Drop pending certificates no block at nNextHeight or later may carry. */
+    void PrunePendingTallyCertificates(int nNextHeight);
     bool HasVoteNullifier(const uint256& nullifier) const;
 
     /** Connect/disconnect votes included in a block. ctx carries the block being
@@ -1430,13 +1445,6 @@ public:
     /** Rebuild connected finality maps from committed LevelDB state after a best-chain
      *  transaction aborts. Memory-only relay objects are discarded. */
     bool RestoreCommittedStateAfterAbort();
-
-    // 2c-4b: collect a committee member's signature over a candidate certificate;
-    // when M distinct valid signatures are gathered for the same candidate, the
-    // complete certificate is assembled into *pAssembledOut (pfAssembled=true).
-    bool AddCertSignature(const CFinalityCertSignature& msg, CTxDB& txdb,
-                          CFinalityTallyCertificate* pAssembledOut, bool* pfAssembled,
-                          std::string* pstrError = NULL);
 
     /** Check if a block at the given height is finalized */
     bool IsFinalized(int nHeight) const;
@@ -1572,10 +1580,6 @@ private:
     // key is an equivocation.
     std::map<std::pair<uint256, std::pair<int,int> >, uint256> mapTallyPartialBySource;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
-    // 2c-4b cert-production: candidate certs + collected member signatures keyed
-    // by the candidate's GetSignatureDigest() (in-memory; relay-time only).
-    std::map<uint256, CFinalityTallyCertificate> mapCandidateCerts;
-    std::map<uint256, std::map<uint16_t, std::vector<unsigned char> > > mapCollectedCertSigs;
     std::map<uint256, CFinalityTallyCertificate> mapPendingTallyCertificates;
     std::map<uint256, CFinalityTallyCertificate> mapConnectedTallyCertificates;
     // automation-context hash -> canonical minimum certificate hash

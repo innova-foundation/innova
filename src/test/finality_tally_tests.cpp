@@ -2834,20 +2834,6 @@ BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_reb
     signer.vSignerSigs.push_back(std::vector<unsigned char>(72, 0x30));
     BOOST_CHECK_EQUAL(refusalFor(signer), "note tally certificate must not carry a signer-set");
 
-    // The committee-signature path refuses a note candidate outright. MUTATION: admit
-    // HasNoteWeight() candidates in AddCertSignature and the refusal moves to the
-    // committee lookup.
-    {
-        CFinalityCertSignature sigMsg;
-        sigMsg.candidate = noteCert;
-        sigMsg.nSignerIndex = 0;
-        sigMsg.vchSig.assign(72, 0x30);
-        std::string strSig;
-        BOOST_CHECK(!tracker.AddCertSignature(sigMsg, txdb, NULL, NULL, &strSig));
-        BOOST_CHECK_EQUAL(strSig,
-                          "cert-signature candidate carries no weight a committee authorizes");
-    }
-
     // The same bytes from the legacy encoding would skip the skeleton rebuild.
     // MUTATION: drop the canonical-envelope rule and this is accepted.
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);

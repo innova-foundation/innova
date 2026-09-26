@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -425,6 +426,177 @@ BOOST_AUTO_TEST_CASE(the_miner_does_not_embed_a_certificate_naming_a_sibling_bou
                         "canonical-boundary certificate not embedded");
     BOOST_CHECK_MESSAGE(!CoinbaseCarries(*pblock, scriptSibling),
                         "sibling-boundary certificate embedded");
+}
+
+// Relay-valid subset certificates with lower hashes must not crowd the covering
+// certificate out of the template or the per-epoch pending bound.
+BOOST_AUTO_TEST_CASE(non_covering_certificates_do_not_starve_the_covering_one)
+{
+    CBlockIndex* pindexPrev = NULL;
+    int nHeight = 0;
+    int nEpoch = 0;
+    for (int nMined = 0;; nMined++)
+    {
+        BOOST_REQUIRE(nMined < 3000);
+        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        pindexPrev = TemplateParent(*pblock);
+        nHeight = pindexPrev->nHeight + 1;
+        nEpoch = GetEpochForHeight(nHeight);
+        if (IsBoundaryAActiveAtHeight(nHeight) &&
+            nHeight >= GetEpochBoundaryHeight(nEpoch, nHeight) + FINALITY_VOTE_INCLUSION_WINDOW &&
+            GetEpochBoundaryHeight(nEpoch - FINALITY_CONFIRMATION_EPOCHS, nHeight) >=
+                FORK_HEIGHT_BOUNDARY_A)
+            break;
+        MineOnTemplate();
+    }
+    BOOST_REQUIRE(pindexPrev == pindexBest);
+    const int nFirstEpoch = nEpoch - FINALITY_CONFIRMATION_EPOCHS;
+
+    CertAncestryRegtest network;
+    GlobalFinalityRestore restore;
+    CTxDB txdb("r");
+
+    const int kVoters = 5;
+    std::map<int, std::vector<CFinalityVote> > mapVotes;
+    for (int e = nFirstEpoch; e <= nEpoch; e++)
+    {
+        BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(e), 0);
+        BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(e), 0U);
+        const int nBoundary = GetEpochBoundaryHeight(e, nHeight);
+        const CBlockIndex* pBoundary =
+            GetFinalityAncestorOnChain(pindexPrev, nBoundary, FINALITY_ANCESTOR_MAX_WALK);
+        BOOST_REQUIRE(pBoundary != NULL && pBoundary->IsProofOfWork());
+        // The covering certificate's hash is drawn from the upper half, so the other
+        // epochs' subset certificates supply at least four lower hashes.
+        for (int nTry = 0;; nTry++)
+        {
+            BOOST_REQUIRE(nTry < 256);
+            std::vector<CFinalityVote> votes;
+            for (int i = 0; i < kVoters; i++)
+            {
+                CKey key;
+                key.MakeNewKey(true);
+                votes.push_back(MakeVote(key, e, nBoundary, pBoundary->GetBlockHash()));
+            }
+            if (e == nEpoch && !(CanonicalCertificate(votes).GetHash() > (uint256(1) << 255)))
+                continue;
+            mapVotes[e] = votes;
+            break;
+        }
+        for (const CFinalityVote& vote : mapVotes[e])
+            BOOST_REQUIRE(g_finalityTracker.AddVote(vote, false, true));
+    }
+
+    const CFinalityTallyCertificate honest = CanonicalCertificate(mapVotes[nEpoch]);
+    BOOST_REQUIRE_EQUAL(honest.nTier, (int)FINALITY_HARD);
+    {
+        const Verdict v = Judge(g_finalityTracker, honest, txdb, nHeight, pindexPrev);
+        BOOST_REQUIRE_MESSAGE(v.fOk, "covering certificate refused: " << v.error);
+    }
+
+    // Every subset of two to four voters, per epoch.
+    std::map<int, std::vector<CFinalityTallyCertificate> > mapJunk;
+    for (int e = nFirstEpoch; e <= nEpoch; e++)
+    {
+        for (unsigned int mask = 1; mask < (1U << kVoters); mask++)
+        {
+            std::vector<CFinalityVote> subset;
+            for (int i = 0; i < kVoters; i++)
+                if (mask & (1U << i))
+                    subset.push_back(mapVotes[e][i]);
+            if (subset.size() < (size_t)FINALITY_MIN_VOTERS || subset.size() == (size_t)kVoters)
+                continue;
+            const CFinalityTallyCertificate junk = CanonicalCertificate(subset);
+            const Verdict relay = Judge(g_finalityTracker, junk, txdb, -1, NULL);
+            BOOST_REQUIRE_MESSAGE(relay.fOk, "subset certificate not relay-valid: " << relay.error);
+            const Verdict block = Judge(g_finalityTracker, junk, txdb, nHeight, pindexPrev);
+            BOOST_REQUIRE(!block.fOk);
+            BOOST_REQUIRE_EQUAL(block.error,
+                                "tally certificate does not cover the full connected epoch vote set");
+            mapJunk[e].push_back(junk);
+        }
+    }
+
+    // Past the window, relay refuses a non-covering certificate outright.
+    BOOST_CHECK(!g_finalityTracker.AddTallyCertificate(mapJunk[nEpoch][0]));
+    BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+
+    // Admitted without the relay check, as if they arrived before the window closed:
+    // up to a full epoch's worth that hash below the covering certificate.
+    std::vector<CFinalityTallyCertificate> vLowJunk;
+    size_t nLowOlderEpochs = 0;
+    for (int e = nFirstEpoch; e <= nEpoch; e++)
+    {
+        size_t nAdded = 0;
+        for (const CFinalityTallyCertificate& junk : mapJunk[e])
+        {
+            if (!(junk.GetHash() < honest.GetHash()) ||
+                nAdded + 1 >= FINALITY_PENDING_CERTS_PER_EPOCH)
+                continue;
+            BOOST_REQUIRE(g_finalityTracker.AddTallyCertificate(junk, false));
+            vLowJunk.push_back(junk);
+            nAdded++;
+            if (e != nEpoch)
+                nLowOlderEpochs++;
+        }
+    }
+    BOOST_REQUIRE_GE(nLowOlderEpochs, 4U);
+    BOOST_REQUIRE(g_finalityTracker.AddTallyCertificate(honest));
+
+    // Every other subset for the epoch: the pending set stays bounded and keeps the
+    // covering certificate.
+    for (const CFinalityTallyCertificate& junk : mapJunk[nEpoch])
+        g_finalityTracker.AddTallyCertificate(junk, false);
+    BOOST_CHECK_LE(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch),
+                   (size_t)FINALITY_PENDING_CERTS_PER_EPOCH);
+    for (int e = nFirstEpoch; e <= nEpoch; e++)
+        BOOST_CHECK_LE(g_finalityTracker.GetPendingTallyCertificateCount(e),
+                       (size_t)FINALITY_PENDING_CERTS_PER_EPOCH);
+    bool fHonestPending = false;
+    const std::vector<CFinalityTallyCertificate> vPending =
+        g_finalityTracker.GetPendingTallyCertificatesForBlock(
+            nHeight, std::numeric_limits<unsigned int>::max());
+    for (const CFinalityTallyCertificate& cert : vPending)
+        if (cert.GetHash() == honest.GetHash())
+            fHonestPending = true;
+    BOOST_CHECK_MESSAGE(fHonestPending, "covering certificate was evicted");
+
+    // The unvalidated cap would hand the template only non-covering certificates.
+    {
+        const std::vector<CFinalityTallyCertificate> vFirstByHash =
+            g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
+        BOOST_REQUIRE_EQUAL(vFirstByHash.size(), 4U);
+        for (const CFinalityTallyCertificate& cert : vFirstByHash)
+            BOOST_REQUIRE(cert.GetHash() != honest.GetHash());
+    }
+
+    const std::vector<CFinalityTallyCertificate> vSelected =
+        g_finalityTracker.SelectTallyCertificatesForBlock(txdb, nHeight, NULL, pindexPrev);
+    BOOST_REQUIRE_EQUAL(vSelected.size(), 1U);
+    BOOST_CHECK(vSelected[0].GetHash() == honest.GetHash());
+
+    CScript scriptHonest;
+    BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(honest, nHeight, scriptHonest));
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    BOOST_REQUIRE(TemplateParent(*pblock) == pindexPrev);
+    BOOST_CHECK_MESSAGE(CoinbaseCarries(*pblock, scriptHonest),
+                        "covering certificate not embedded");
+    for (const CFinalityTallyCertificate& junk : vLowJunk)
+    {
+        CScript scriptJunk;
+        BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(junk, nHeight, scriptJunk));
+        BOOST_CHECK(!CoinbaseCarries(*pblock, scriptJunk));
+    }
+
+    // Pruned on every node once no later block may carry them.
+    const int nNextEpochStart =
+        GetEpochBoundaryHeight(nEpoch, nHeight) + GetEpochInterval(nHeight);
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nNextEpochStart), nEpoch + 1);
+    g_finalityTracker.PrunePendingTallyCertificates(nNextEpochStart);
+    BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nFirstEpoch), 0U);
+    BOOST_CHECK(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch) > 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

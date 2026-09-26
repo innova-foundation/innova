@@ -49,11 +49,14 @@ expected_note = {
     "finality_vote": 10,
     "none": 255,
 }
-# Consensus-defined but not surfaced to callers yet, so the RPC/release-schema checks
-# below skip them. Registration cannot go live while the attestation tag is the note's
-# own key image; the note vote has no connect path, producer or RPC yet. Remove an
-# entry here when its operation is exposed, and this set must be empty before release.
-not_yet_surfaced = {"collateral_register", "finality_member_register", "finality_vote"}
+# Consensus-defined but not yet exposed; the RPC/release-schema checks skip them.
+# Remove an entry when its operation is exposed; must be empty before release.
+not_yet_surfaced = {"collateral_register"}
+# Refused by consensus at every height; never surfaced.
+refused_by_consensus = {"finality_member_register"}
+# Produced by the node, not built by a caller: surfaced through the finality RPCs
+# rather than the operation lists.
+surfaced_by_finality_rpc = {"finality_vote": ("note_votes", "note_votes_counted", "note_vote_tags")}
 expected_profiles = {"none": 0, "nullstake_v1": 1, "nullstake_v2": 2, "nullstake_v3": 3}
 expected_auth = {"owner": 0, "cold_staker": 1, "m_of_n_public_signers": 2, "m_of_n_hidden_signers": 3}
 expected_objects = {"none": 0, "vote": 1, "tally_share": 2, "certificate": 3, "committee_rotation": 4}
@@ -157,15 +160,27 @@ require(
 )
 require('include_bytes!("../../contract/iv5_protocol_v1.json")' in rust, "Rust does not hash canonical contract bytes")
 rpc = (ROOT / "src/rpcshielded.cpp").read_text(encoding="utf-8")
+skip_operation_lists = not_yet_surfaced | refused_by_consensus | set(surfaced_by_finality_rpc)
+require(not (not_yet_surfaced & refused_by_consensus), "an operation is both pending and refused")
 for name in expected_note:
-    if name != "none" and name not in not_yet_surfaced:
+    if name != "none" and name not in skip_operation_lists:
         require('"' + name + '"' in rpc, "RPC omits note operation " + name)
+for name in refused_by_consensus:
+    require('"' + name + '"' not in rpc, "RPC surfaces refused note operation " + name)
+main_cpp = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+require("NOTE_FINALITY_MEMBER_REGISTER" in main_cpp and
+        "IV5 finality member registration is not a valid operation" in main_cpp,
+        "consensus no longer refuses finality_member_register")
+finality_rpc = (ROOT / "src/rpcblockchain.cpp").read_text(encoding="utf-8")
+for name, fields in surfaced_by_finality_rpc.items():
+    for field in fields:
+        require('"' + field + '"' in finality_rpc, "finality RPC omits " + field + " for " + name)
 for name in ("nullstake_v1", "nullstake_v2", "nullstake_v3"):
     require('"' + name + '"' in rpc, "RPC omits finality profile " + name)
 
 evidence = (ROOT / "contrib/test/v5_release_evidence_schema.py").read_text(encoding="utf-8")
 for name in expected_note:
-    if name != "none" and name not in not_yet_surfaced:
+    if name != "none" and name not in skip_operation_lists:
         require('"' + name + '"' in evidence, "release schema omits note operation " + name)
 
 docs = (ROOT / "docs/architecture/IV5-PROTOCOL.md").read_text(encoding="utf-8")
