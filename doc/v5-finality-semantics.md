@@ -42,4 +42,5 @@ later release once real participation data exists.
 
 From the note-vote height the transparent floor is also 500 INN. A transparent voter
 holding less stops counting at that height, so operators should check their voting
-outputs before activation.
+outputs before activation. Most current mainnet voting outputs already hold more than
+500 INN, so participation is not expected to fall below the quorum at that height.
