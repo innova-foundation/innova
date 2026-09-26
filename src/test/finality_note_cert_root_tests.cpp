@@ -58,7 +58,7 @@ CFinalityTallyCertificate MakeCanonicalNoteCert(int nHeight, size_t nNullifiers)
     cert.hashBlock = uint256(0xb0a11);
     cert.nTier = FINALITY_HARD;
     cert.nConsecutiveHardCount = 0;
-    cert.committeeSetHash = uint256(0xc0ffee);
+    cert.committeeSetHash = 0;
     cert.nTransparentActiveWeight = 0;
     cert.nTransparentWinningWeight = 0;
     cert.nTransparentRewardBudget = 0;
@@ -306,7 +306,7 @@ BOOST_AUTO_TEST_CASE(note_cert_note_leg_round_trips_through_schema_two)
 }
 
 // The whole point of the root: a certificate at the note-lane cap still fits the carrier,
-// worst case, with a full transparent leg and a full committee signer set beside it.
+// worst case, with a full transparent leg beside it. A v4 certificate carries no signer-set.
 BOOST_AUTO_TEST_CASE(note_cert_at_the_epoch_cap_fits_max_script_size)
 {
     ScopedNoteVoteFork fork(1);
@@ -317,12 +317,6 @@ BOOST_AUTO_TEST_CASE(note_cert_at_the_epoch_cap_fits_max_script_size)
     cert.nNoteVoteCount = FINALITY_MAX_EPOCH_NOTE_VOTES;
     cert.hashNoteVoteRoot =
         ComputeNoteVoteSetRoot(MakeTags(FINALITY_MAX_EPOCH_NOTE_VOTES, 0x88));
-    // The signer set at its own bound, with maximum-length signatures.
-    for (uint16_t i = 0; i < FINALITY_MAX_TALLY_COMMITTEE; i++)
-    {
-        cert.vSignerIndexes.push_back(i);
-        cert.vSignerSigs.push_back(std::vector<unsigned char>(80, 0x30));
-    }
     std::string strError;
     BOOST_REQUIRE_MESSAGE(cert.IsValidBasic(&strError), strError);
 
@@ -467,7 +461,7 @@ BOOST_AUTO_TEST_CASE(note_leg_voter_counts_are_counted_votes_and_their_winners)
 }
 
 // The per-block carrier cap and the per-epoch cap have to leave the epoch cap binding:
-// 32 votes a block over a 24-block inclusion window is 768 slots against 256, so no block
+// 32 votes a block over a 24-block inclusion window is 768 slots against 128, so no block
 // is ever forced to carry a whole epoch's votes to reach the cap.
 BOOST_AUTO_TEST_CASE(note_vote_block_and_epoch_caps_are_consistent)
 {
@@ -478,6 +472,76 @@ BOOST_AUTO_TEST_CASE(note_vote_block_and_epoch_caps_are_consistent)
     // constraint on the window rather than a restatement of the block bound.
     BOOST_CHECK_LT((unsigned int)FINALITY_MAX_BLOCK_NOTE_VOTES,
                    FINALITY_MAX_EPOCH_NOTE_VOTES);
+}
+
+// A v4 certificate carries no committee: its committee hash is zero and its signer-set is
+// empty, in the logical object and in both envelope directions.
+BOOST_AUTO_TEST_CASE(note_cert_carries_no_committee_hash_and_no_signer)
+{
+    ScopedNoteVoteFork fork(1);
+    const int nHeight = NoteBoundaryHeight();
+
+    CFinalityTallyCertificate cert = MakeCanonicalNoteCert(nHeight, 2);
+    cert.nNoteVoteCount = 2;
+    cert.hashNoteVoteRoot = ComputeNoteVoteSetRoot(MakeTags(2, 0x5a));
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(cert.IsValidBasic(&strError), strError);
+
+    // MUTATION: drop the v4 committeeSetHash rule in IsValidBasic and this passes.
+    CFinalityTallyCertificate named = cert;
+    named.committeeSetHash = uint256(0xc0ffee);
+    BOOST_CHECK(!named.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "note tally certificate must not name a committee");
+
+    // MUTATION: drop the v4 signer-set rule in IsValidBasic and these pass (the v3
+    // structural rule admits a well-formed signer-set).
+    CFinalityTallyCertificate signed1 = cert;
+    signed1.vSignerIndexes.push_back(0);
+    signed1.vSignerSigs.push_back(std::vector<unsigned char>(72, 0x30));
+    BOOST_CHECK(!signed1.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "note tally certificate must not carry a signer-set");
+    CFinalityTallyCertificate bareSigned = signed1;
+    bareSigned.nNoteVoteCount = 0;
+    bareSigned.hashNoteVoteRoot = 0;
+    bareSigned.nTier = FINALITY_NONE;
+    BOOST_CHECK(!bareSigned.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "note tally certificate must not carry a signer-set");
+
+    // v3 keeps its signer-set rules unchanged.
+    CFinalityTallyCertificate v3 = signed1;
+    v3.nVersion = 3;
+    v3.nNoteVoteCount = 0;
+    v3.hashNoteVoteRoot = 0;
+    v3.nTier = FINALITY_NONE;
+    BOOST_CHECK_MESSAGE(v3.IsValidBasic(&strError), strError);
+
+    // Encoding refuses a signer-set.
+    CCanonicalFinalityTallyCertificateEnvelope refused;
+    BOOST_CHECK(!refused.FromLogical(signed1));
+
+    CCanonicalFinalityTallyCertificateEnvelope envelope;
+    BOOST_REQUIRE(envelope.FromLogical(cert));
+    BOOST_CHECK(envelope.vSignerIndexes.empty());
+    BOOST_CHECK(envelope.vSignerSigs.empty());
+    CFinalityTallyCertificate back;
+    BOOST_REQUIRE(envelope.ToLogical(back));
+    BOOST_CHECK(back.GetHash() == cert.GetHash());
+
+    // Decoding refuses one. MUTATION: drop ToLogical's schema-2 empty-signer rule and
+    // these decode.
+    CCanonicalFinalityTallyCertificateEnvelope withIndex = envelope;
+    withIndex.vSignerIndexes.push_back(0);
+    withIndex.vSignerSigs.push_back(std::vector<unsigned char>(72, 0x30));
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << withIndex;
+    CCanonicalFinalityTallyCertificateEnvelope decoded;
+    ss >> decoded;
+    BOOST_REQUIRE_EQUAL(decoded.vSignerIndexes.size(), (size_t)1);
+    CFinalityTallyCertificate smuggled;
+    BOOST_CHECK(!decoded.ToLogical(smuggled));
+    CCanonicalFinalityTallyCertificateEnvelope sigOnly = envelope;
+    sigOnly.vSignerSigs.push_back(std::vector<unsigned char>(72, 0x30));
+    BOOST_CHECK(!sigOnly.ToLogical(smuggled));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

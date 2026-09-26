@@ -201,8 +201,8 @@ static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE = 2;
 // Per-block cap on note-vote carriers, mirroring FINALITY_MAX_BLOCK_VOTES for the
 // transparent path. At the envelope's working size the full set sits inside the
 // penalty-free generation target with room for ordinary traffic alongside. 32 per block
-// over the 24-block inclusion window is 768 slots against the 256 the epoch admits, so
-// the epoch cap is what binds and no block is forced to carry the whole epoch.
+// over the 24-block inclusion window is 768 slots against the
+// FINALITY_MAX_EPOCH_NOTE_VOTES (128) the epoch admits, so the epoch cap is what binds.
 static const int FINALITY_MAX_BLOCK_NOTE_VOTES = 32;
 // LevelDB-only envelope generation, independent of network envelope versions: records
 // the decoded carrier so a restart cannot change the object's hash/signature domain.
@@ -210,10 +210,8 @@ static const int FINALITY_DISK_ENVELOPE_GENERATION = 1;
 // Keeps the canonical certificate below MAX_SCRIPT_SIZE. Bounds the transparent leg only;
 // live under Boundary A, so it changes only with a flag day.
 static const unsigned int FINALITY_CANONICAL_CERT_MAX_NULLIFIERS = 128;
-// Per-epoch cap on IV5 note finality votes. Separate from the transparent bound above
-// because the certificate commits to the note leg by root and count (36 bytes) instead
-// of enumerating it, so the cap costs the carrier nothing at any size. Fork-gated by
-// FORK_HEIGHT_IV5_NOTE_VOTE, which is unset on every value network.
+// Per-epoch cap on IV5 note votes; the certificate commits the note leg by root and
+// count, not by enumeration. Fork-gated by FORK_HEIGHT_IV5_NOTE_VOTE.
 static const unsigned int FINALITY_MAX_EPOCH_NOTE_VOTES = 128;
 
 enum FinalityEnvelopeDecodeResult
@@ -967,18 +965,15 @@ public:
     std::vector<uint256> vTallyShareHashes;
     std::vector<unsigned char> vchAggregateThresholdProof;
     std::vector<unsigned char> vchRewardBudgetProof;
-    // nVersion >= 3 (D2): committee signer-set. >= M distinct, strictly ascending
+    // nVersion 3 (D2): committee signer-set. >= M distinct, strictly ascending
     // indexes into the canonical committee for nEpoch, with parallel detached
     // signatures over GetSignatureDigest(). Enforced in CheckTallyCertificate
-    // from FORK_HEIGHT_TALLY_GOVERNANCE.
+    // from FORK_HEIGHT_TALLY_GOVERNANCE. A v4 certificate carries none.
     std::vector<uint16_t> vSignerIndexes;
     std::vector<std::vector<unsigned char> > vSignerSigs;
-    // nVersion >= 4: the note-vote side, as a commitment rather than an enumeration.
-    // hashNoteVoteRoot is the Merkle root over the epoch's counted note-vote tags, sorted
-    // ascending (ComputeNoteVoteSetRoot); nNoteVoteCount is how many leaves it has. The
-    // verifier rebuilds both from the connected counted set, so the pair is a binding on
-    // the set the certificate counted, not a list it asks to be trusted about. 36 bytes at
-    // any cap, which is what lets FINALITY_MAX_EPOCH_NOTE_VOTES move without a carrier.
+    // nVersion >= 4: Merkle root over the epoch's counted note-vote tags, sorted ascending
+    // (ComputeNoteVoteSetRoot), and its leaf count. The verifier rebuilds both from the
+    // connected counted set. committeeSetHash is zero on v4.
     uint256 hashNoteVoteRoot;
     uint32_t nNoteVoteCount;
     // Runtime provenance only; never added to the legacy certificate bytes.
@@ -1069,12 +1064,9 @@ public:
     bool IsValidBasic(std::string* pstrError = NULL, size_t nOtherLegVoters = 0) const;
 };
 
-/** Boundary-A canonical transparent certificate schema.  Private commitments,
- * tally-share hashes, and private proof blobs are intentionally absent.
- *
- * Logical schema 2 additionally transports the note-vote leg -- the counted-set root and
- * its count -- and the committee signer-set that authorizes it. Schema 1 keeps its exact
- * bytes, so pre-note certificates round-trip unchanged. */
+/** Boundary-A canonical transparent certificate schema; no private fields. Schema 2
+ *  adds the note-vote root and count plus two signer vectors that must be empty; schema 1
+ *  bytes are unchanged. */
 class CCanonicalFinalityTallyCertificateEnvelope
 {
 public:
@@ -1240,21 +1232,21 @@ bool BuildCanonicalTransparentFinalityCertificate(
     CFinalityTallyCertificate& certOut,
     std::string* pstrError = NULL,
     size_t nOtherLegVoters = 0);
-/** Skeleton for an epoch that carried no transparent vote at all.
- *
- *  The transparent builder above needs transparent votes to derive a winner from, so
- *  an all-private epoch had no producer even once consensus accepted such a
- *  certificate. This supplies the same skeleton from the note leg: the winner is the
- *  counted note votes' most-named block (hash tie-break -- a public rule, so every
- *  committee member converges on one candidate and their partials interpolate), and
- *  every transparent field is left at the empty value CheckTallyCertificate pins for
- *  a note-only certificate. nTier is left NONE for the caller to set from the opened
- *  aggregates. */
+/** Skeleton for an epoch with no transparent vote. The winner is the counted note
+ *  votes' most-named block (hash tie-break); transparent fields are left empty as
+ *  CheckTallyCertificate requires. nTier is left NONE for the caller. */
 bool BuildNoteOnlyFinalitySkeleton(
     int nEpoch,
     const std::vector<CNoteFinalityVote>& vCountedNoteVotes,
     CFinalityTallyCertificate& certOut,
     std::string* pstrError = NULL);
+/** The epoch's v4 note certificate: transparent skeleton, counted note set's root and
+ *  count, and the strongest supported tier. No committee or signer-set. */
+bool BuildNoteTallyCertificate(int nEpoch,
+                               const std::vector<CFinalityVote>& vConnectedTransparent,
+                               const std::vector<CNoteFinalityVote>& vCounted,
+                               CFinalityTallyCertificate& certOut,
+                               std::string* pstrError = NULL);
 bool BuildFinalityVoteScriptForHeight(const CFinalityVote& vote, int nHeight,
                                       CScript& scriptOut);
 bool BuildFinalityTallyCertificateScriptForHeight(const CFinalityTallyCertificate& cert,
