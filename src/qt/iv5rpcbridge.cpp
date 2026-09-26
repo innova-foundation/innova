@@ -36,6 +36,13 @@ const char* kAllowedMethods[] = {
     "mixprepare",
     "mixjoin",
     "mixstatus",
+    "mixsettings",
+    "mixsetsetting",
+    "mixproxystatus",
+    "mixlistrounds",
+    "mixnotes",
+    "mixcancel",
+    "mixclear",
     "z_listiv5holds",
     "z_holdiv5note",
     NULL
@@ -80,6 +87,28 @@ void ReadStr(const json_spirit::Object& obj, const char* key, QString& out)
     const json_spirit::Value* v = Find(obj, key);
     if (v != NULL && v->type() == json_spirit::str_type)
         out = QString::fromStdString(v->get_str());
+}
+
+void ReadInt64(const json_spirit::Object& obj, const char* key, qint64& out)
+{
+    const json_spirit::Value* v = Find(obj, key);
+    if (v == NULL)
+        return;
+    if (v->type() == json_spirit::int_type)
+        out = (qint64)v->get_int64();
+    else if (v->type() == json_spirit::real_type)
+        out = (qint64)v->get_real();
+}
+
+void ReadStrList(const json_spirit::Object& obj, const char* key, QStringList& out)
+{
+    const json_spirit::Value* v = Find(obj, key);
+    if (v == NULL || v->type() != json_spirit::array_type)
+        return;
+    const json_spirit::Array& arr = v->get_array();
+    for (size_t i = 0; i < arr.size(); i++)
+        if (arr[i].type() == json_spirit::str_type)
+            out << QString::fromStdString(arr[i].get_str());
 }
 
 void ReadReal(const json_spirit::Object& obj, const char* key, double& out, bool& haveOut)
@@ -351,9 +380,10 @@ QString FormatInn(qint64 nAmount)
 
 int MixDirectoriesConfigured()
 {
-    std::map<std::string, std::vector<std::string> >::const_iterator it =
-        mapMultiArgs.find("-mixdir");
-    return it == mapMultiArgs.end() ? 0 : (int)it->second.size();
+    CMixSettings running;
+    bool fRunning = false;
+    GetRunningMixSettings(running, fRunning);
+    return (int)running.vDirectories.size();
 }
 
 bool FetchMix(MixSnapshot& out, QString& errorOut)
@@ -375,6 +405,10 @@ bool FetchMix(MixSnapshot& out, QString& errorOut)
     const json_spirit::Object& obj = value.get_obj();
     ReadInt(obj, "directoryentries", out.nDirectoryEntries);
     ReadInt(obj, "records", out.nRecords);
+    ReadBool(obj, "running", out.fRunning);
+    ReadInt(obj, "directories", out.nDirectories);
+    ReadStr(obj, "proxy", out.strProxy);
+    ReadStr(obj, "proxy_source", out.strProxySource);
     const json_spirit::Value* jobs = Find(obj, "jobs");
     if (jobs != NULL && jobs->type() == json_spirit::array_type)
     {
@@ -385,6 +419,12 @@ bool FetchMix(MixSnapshot& out, QString& errorOut)
                 continue;
             const json_spirit::Object& o = arr[i].get_obj();
             MixJob job;
+            ReadInt64(o, "id", job.nId);
+            ReadInt64(o, "started", job.nStarted);
+            ReadInt64(o, "updated", job.nUpdated);
+            ReadBool(o, "finished", job.fFinished);
+            ReadBool(o, "cancelled", job.fCancelled);
+            ReadBool(o, "cancel_pending", job.fCancelPending);
             ReadStr(o, "role", job.strRole);
             ReadStr(o, "state", job.strState);
             ReadStr(o, "status", job.strStatus);
@@ -394,6 +434,165 @@ bool FetchMix(MixSnapshot& out, QString& errorOut)
                 job.nRecordSlot = slot->get_int64();
             out.vJobs << job;
         }
+    }
+    return true;
+}
+
+bool FetchMixSettings(MixSettingsView& out, QString& errorOut)
+{
+    out = MixSettingsView();
+    json_spirit::Value value;
+    if (!Execute("mixsettings", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("mixsettings did not return an object");
+        return false;
+    }
+    const json_spirit::Object& obj = value.get_obj();
+    ReadBool(obj, "running", out.fRunning);
+    ReadBool(obj, "restart_required", out.fRestartRequired);
+    ReadStr(obj, "settings_file", out.strSettingsFile);
+    const json_spirit::Value* current = Find(obj, "current");
+    if (current != NULL && current->type() == json_spirit::obj_type)
+    {
+        ReadStrList(current->get_obj(), "directories", out.vDirectories);
+        ReadStr(current->get_obj(), "proxy", out.strProxy);
+        ReadStr(current->get_obj(), "proxy_source", out.strProxySource);
+    }
+    const json_spirit::Value* next = Find(obj, "next_start");
+    if (next != NULL && next->type() == json_spirit::obj_type)
+    {
+        ReadStrList(next->get_obj(), "directories", out.vNextDirectories);
+        ReadStr(next->get_obj(), "proxy", out.strNextProxy);
+    }
+    return true;
+}
+
+bool FetchMixProxy(MixProxyView& out, QString& errorOut)
+{
+    out = MixProxyView();
+    json_spirit::Value value;
+    if (!Execute("mixproxystatus", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("mixproxystatus did not return an object");
+        return false;
+    }
+    const json_spirit::Object& obj = value.get_obj();
+    ReadStr(obj, "proxy", out.strProxy);
+    ReadStr(obj, "source", out.strSource);
+    ReadBool(obj, "reachable", out.fReachable);
+    ReadBool(obj, "socks5", out.fSocks5);
+    ReadBool(obj, "isolation", out.fIsolation);
+    ReadBool(obj, "ready", out.fReady);
+    ReadInt64(obj, "latency_ms", out.nLatencyMs);
+    ReadStr(obj, "error", out.strError);
+    return true;
+}
+
+bool FetchMixRounds(QList<MixRoundRow>& out, QStringList& failuresOut, QString& errorOut)
+{
+    out.clear();
+    failuresOut.clear();
+    json_spirit::Value value;
+    if (!Execute("mixlistrounds", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("mixlistrounds did not return an object");
+        return false;
+    }
+    const json_spirit::Object& obj = value.get_obj();
+    const json_spirit::Value* rounds = Find(obj, "rounds");
+    if (rounds != NULL && rounds->type() == json_spirit::array_type)
+    {
+        const json_spirit::Array& arr = rounds->get_array();
+        for (size_t i = 0; i < arr.size(); i++)
+        {
+            if (arr[i].type() != json_spirit::obj_type)
+                continue;
+            const json_spirit::Object& o = arr[i].get_obj();
+            MixRoundRow row;
+            bool fHave = false;
+            ReadStr(o, "round", row.strRound);
+            ReadStr(o, "coordinator", row.strCoordinator);
+            ReadInt64(o, "recordslot", row.nRecordSlot);
+            ReadReal(o, "denomination", row.dDenomination, fHave);
+            ReadReal(o, "note_amount", row.dNoteAmount, fHave);
+            ReadInt(o, "seats", row.nSeats);
+            ReadInt64(o, "starts", row.nStarts);
+            ReadInt64(o, "join_closes", row.nJoinCloses);
+            ReadInt64(o, "ends", row.nEnds);
+            ReadStr(o, "record", row.strRecord);
+            ReadBool(o, "joinable", row.fJoinable);
+            ReadInt(o, "eligible_notes", row.nEligibleNotes);
+            ReadStrList(o, "directories", row.vDirectories);
+            out << row;
+        }
+    }
+    const json_spirit::Value* failed = Find(obj, "failed");
+    if (failed != NULL && failed->type() == json_spirit::array_type)
+    {
+        const json_spirit::Array& arr = failed->get_array();
+        for (size_t i = 0; i < arr.size(); i++)
+        {
+            if (arr[i].type() != json_spirit::obj_type)
+                continue;
+            QString strDir, strError;
+            ReadStr(arr[i].get_obj(), "directory", strDir);
+            ReadStr(arr[i].get_obj(), "error", strError);
+            failuresOut << QObject::tr("%1: %2").arg(strDir).arg(strError);
+        }
+    }
+    return true;
+}
+
+bool FetchMixNotes(const QString& strRound, QList<MixNoteRow>& out, QString& errorOut)
+{
+    out.clear();
+    if (fShutdown)
+    {
+        errorOut = QObject::tr("The node is shutting down.");
+        return false;
+    }
+    json_spirit::Value value;
+    QStringList params;
+    if (!strRound.isEmpty())
+        params << strRound;
+    if (!Execute("mixnotes", params, value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("mixnotes did not return an object");
+        return false;
+    }
+    const json_spirit::Value* notes = Find(value.get_obj(), "notes");
+    if (notes == NULL || notes->type() != json_spirit::array_type)
+        return true;
+    const json_spirit::Array& arr = notes->get_array();
+    for (size_t i = 0; i < arr.size(); i++)
+    {
+        if (arr[i].type() != json_spirit::obj_type)
+            continue;
+        const json_spirit::Object& o = arr[i].get_obj();
+        MixNoteRow row;
+        bool fHave = false;
+        ReadStr(o, "note", row.strNote);
+        ReadReal(o, "amount", row.dAmount, fHave);
+        ReadInt(o, "height", row.nHeight);
+        ReadBool(o, "prepared", row.fPrepared);
+        ReadBool(o, "in_tree", row.fInTree);
+        ReadBool(o, "usable", row.fUsable);
+        ReadStr(o, "reason", row.strReason);
+        ReadInt(o, "eligible_height", row.nEligibleHeight);
+        ReadInt(o, "eligible_in_blocks", row.nEligibleInBlocks);
+        ReadInt64(o, "eligible_time", row.nEligibleTime);
+        row.fHaveRound = Find(o, "eligible") != NULL;
+        ReadBool(o, "eligible", row.fEligible);
+        ReadStr(o, "round_reason", row.strRoundReason);
+        out << row;
     }
     return true;
 }

@@ -5767,4 +5767,408 @@ BOOST_AUTO_TEST_CASE(a_rendezvous_record_relays_and_nothing_else_grows)
     BOOST_CHECK(!IsStandardTx(txOff, reason));
 }
 
+namespace {
+
+// Answers an INDEX request with a scripted body, and records what was asked.
+class IndexScriptDialer : public CMixDialer
+{
+public:
+    IndexScriptDialer() : nType(MIX_FRAME_NONE), nPayload(0), nReplyType(MIX_FRAME_ANNOUNCE_INDEX_LIST) {}
+    bool Exchange(const std::string&, int, MixFrameType nTypeIn,
+                  const std::vector<unsigned char>& vchPayload, MixFrameType& nReplyTypeOut,
+                  std::vector<unsigned char>& vchReplyOut, std::string*, int,
+                  const std::string& strCircuitIn)
+    {
+        nType = nTypeIn;
+        nPayload = vchPayload.size();
+        strCircuit = strCircuitIn;
+        nReplyTypeOut = nReplyType;
+        vchReplyOut = vchReply;
+        return true;
+    }
+    MixFrameType nType;
+    size_t nPayload;
+    std::string strCircuit;
+    MixFrameType nReplyType;
+    std::vector<unsigned char> vchReply;
+};
+
+} // namespace
+
+// A directory lists every round still open to join, soonest first and bounded, to a request
+// that carries nothing; a caller keeps only what decodes and verifies.
+BOOST_AUTO_TEST_CASE(a_directory_lists_open_rounds_soonest_first_and_bounded)
+{
+    const int64_t T0 = 28000500;
+    const int64_t nNow = T0 - MIX_RENDEZVOUS_SLOT_SECONDS;
+    const CNullSendSession roundKey = FreshRoundKey(4701);
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    const int nRounds = (int)MIX_DIRECTORY_INDEX_MAX + 6;
+    std::vector<CMixRoundAnnouncement> vAll;
+    // Uploaded latest first, so the order a reply takes is the directory's, not arrival's.
+    for (int i = nRounds - 1; i >= 0; i--)
+    {
+        CKey key;
+        const CMixRoundAnnouncement announce = ProvenAnnouncement(key, roundKey, T0 + i);
+        CMixRendezvousRecord record;
+        BOOST_REQUIRE(SignMixRendezvous(key, MixRendezvousRecordSlot(announce.nTime),
+                                        announce.hashRound, record));
+        index.Connect(record, nNow);
+        std::vector<unsigned char> vch;
+        BOOST_REQUIRE(EncodeMixAnnouncement(announce, vch));
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(directory.Put(vch, nNow, &strError), strError);
+        vAll.push_back(announce);
+    }
+    BOOST_REQUIRE_EQUAL(directory.Size(), (size_t)nRounds);
+
+    std::vector<std::vector<unsigned char> > vIndex;
+    directory.Index(nNow, vIndex);
+    BOOST_REQUIRE_EQUAL(vIndex.size(), MIX_DIRECTORY_INDEX_MAX);
+    int64_t nPrev = 0;
+    for (size_t i = 0; i < vIndex.size(); i++)
+    {
+        CMixRoundAnnouncement decoded;
+        BOOST_REQUIRE(DecodeMixAnnouncement(vIndex[i], decoded));
+        BOOST_CHECK_EQUAL(decoded.nTime, T0 + (int64_t)i);
+        BOOST_CHECK(decoded.nTime >= nPrev);
+        nPrev = decoded.nTime;
+    }
+    // A round whose join window has closed is not listed, though the directory still holds it.
+    const int64_t nLater = T0 + 70;
+    directory.Index(nLater, vIndex);
+    for (size_t i = 0; i < vIndex.size(); i++)
+    {
+        CMixRoundAnnouncement decoded;
+        BOOST_REQUIRE(DecodeMixAnnouncement(vIndex[i], decoded));
+        BOOST_CHECK(decoded.JoinCloses() > nLater);
+    }
+    BOOST_CHECK_EQUAL(vIndex.size(), (size_t)(nRounds - 11));
+
+    // Over the frames: an empty request, one reply shape, the request budget shared.
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchReply;
+    BOOST_REQUIRE(directory.Serve(MIX_FRAME_ANNOUNCE_INDEX, std::vector<unsigned char>(), nNow,
+                                  nReply, vchReply));
+    BOOST_CHECK_EQUAL((int)nReply, (int)MIX_FRAME_ANNOUNCE_INDEX_LIST);
+    std::vector<std::vector<unsigned char> > vRead;
+    BOOST_REQUIRE(ReadMixAnnounceIndexBody(vchReply, vRead));
+    BOOST_CHECK_EQUAL(vRead.size(), MIX_DIRECTORY_INDEX_MAX);
+    BOOST_CHECK_MESSAGE(vchReply.size() < MIX_FRAME_MAX_PAYLOAD / 16, vchReply.size());
+    BOOST_CHECK(!directory.Serve(MIX_FRAME_ANNOUNCE_INDEX, std::vector<unsigned char>(1, 0), nNow,
+                                 nReply, vchReply));
+    const int64_t nBusy = nNow + 7;
+    int nServed = 0;
+    for (int i = 0; i < 2 * MIX_DIRECTORY_REQUESTS_PER_SECOND; i++)
+        if (directory.Serve(MIX_FRAME_ANNOUNCE_INDEX, std::vector<unsigned char>(), nBusy, nReply,
+                            vchReply))
+            nServed++;
+    BOOST_CHECK_EQUAL(nServed, MIX_DIRECTORY_REQUESTS_PER_SECOND);
+
+    // Through a dialer, on no named circuit.
+    InProcessDialer dialer;
+    dialer.nNow = nNow;
+    dialer.mapDirs["dir.onion"] = &directory;
+    std::vector<CMixRoundAnnouncement> vListed;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(FetchMixRoundIndex(dialer, CMixDirectoryEndpoint("dir.onion", 80),
+                                             vListed, &strError), strError);
+    BOOST_CHECK_EQUAL(vListed.size(), MIX_DIRECTORY_INDEX_MAX);
+    BOOST_CHECK(!FetchMixRoundIndex(dialer, CMixDirectoryEndpoint("down.onion", 80), vListed,
+                                    &strError));
+    // A directory that answers with another frame has answered nothing.
+    dialer.mapLies["liar.onion"] = std::vector<std::vector<unsigned char> >();
+    BOOST_CHECK(!FetchMixRoundIndex(dialer, CMixDirectoryEndpoint("liar.onion", 80), vListed,
+                                    &strError));
+
+    IndexScriptDialer script;
+    std::vector<std::vector<unsigned char> > vBody;
+    std::vector<unsigned char> vchGood, vchTampered;
+    BOOST_REQUIRE(EncodeMixAnnouncement(vAll[0], vchGood));
+    CMixRoundAnnouncement tampered = vAll[1];
+    tampered.nPort++;
+    BOOST_REQUIRE(EncodeMixAnnouncement(tampered, vchTampered));
+    vBody.push_back(vchGood);
+    vBody.push_back(std::vector<unsigned char>(40, 9));
+    vBody.push_back(vchTampered);
+    vBody.push_back(vchGood);
+    BOOST_REQUIRE(BuildMixAnnounceIndexBody(vBody, script.vchReply));
+    BOOST_REQUIRE(FetchMixRoundIndex(script, CMixDirectoryEndpoint("dir.onion", 80), vListed,
+                                     &strError));
+    BOOST_REQUIRE_EQUAL(vListed.size(), 1u);
+    BOOST_CHECK(vListed[0].hashRound == vAll[0].hashRound);
+    BOOST_CHECK_EQUAL((int)script.nType, (int)MIX_FRAME_ANNOUNCE_INDEX);
+    BOOST_CHECK_EQUAL(script.nPayload, 0u);
+    BOOST_CHECK(script.strCircuit.empty());
+    BOOST_CHECK(!IsAuthenticatedMixFrame(MIX_FRAME_ANNOUNCE_INDEX));
+    // The right bytes under another frame type are no answer.
+    IndexScriptDialer wrongType;
+    wrongType.nReplyType = MIX_FRAME_ANNOUNCE_LIST;
+    wrongType.vchReply = script.vchReply;
+    BOOST_CHECK(!FetchMixRoundIndex(wrongType, CMixDirectoryEndpoint("dir.onion", 80), vListed,
+                                    &strError));
+    BOOST_CHECK(vListed.empty());
+
+    // The body, strictly.
+    std::vector<unsigned char> vch;
+    BOOST_REQUIRE(BuildMixAnnounceIndexBody(vBody, vch));
+    BOOST_REQUIRE(ReadMixAnnounceIndexBody(vch, vRead));
+    BOOST_CHECK(vRead == vBody);
+    std::vector<unsigned char> vchLong = vch;
+    vchLong.push_back(0);
+    BOOST_CHECK(!ReadMixAnnounceIndexBody(vchLong, vRead));
+    std::vector<unsigned char> vchShort(vch.begin(), vch.end() - 1);
+    BOOST_CHECK(!ReadMixAnnounceIndexBody(vchShort, vRead));
+    std::vector<unsigned char> vchMany = vch;
+    vchMany[0] = (unsigned char)((MIX_DIRECTORY_INDEX_MAX + 1) & 0xFF);
+    vchMany[1] = (unsigned char)(((MIX_DIRECTORY_INDEX_MAX + 1) >> 8) & 0xFF);
+    BOOST_CHECK(!ReadMixAnnounceIndexBody(vchMany, vRead));
+    // One entry past the bound, every byte of it present.
+    std::vector<unsigned char> vchOver;
+    BOOST_REQUIRE(BuildMixAnnounceIndexBody(
+        std::vector<std::vector<unsigned char> >(MIX_DIRECTORY_INDEX_MAX,
+                                                 std::vector<unsigned char>(1, 1)),
+        vchOver));
+    vchOver[0] = (unsigned char)((MIX_DIRECTORY_INDEX_MAX + 1) & 0xFF);
+    vchOver[1] = (unsigned char)(((MIX_DIRECTORY_INDEX_MAX + 1) >> 8) & 0xFF);
+    vchOver.push_back(1);
+    vchOver.push_back(0);
+    vchOver.push_back(1);
+    BOOST_CHECK(!ReadMixAnnounceIndexBody(vchOver, vRead));
+    BOOST_CHECK(!BuildMixAnnounceIndexBody(
+        std::vector<std::vector<unsigned char> >(MIX_DIRECTORY_INDEX_MAX + 1,
+                                                 std::vector<unsigned char>(1, 1)),
+        vch));
+    BOOST_CHECK(!ReadMixAnnounceIndexBody(std::vector<unsigned char>(1, 0), vRead));
+    BOOST_REQUIRE(BuildMixAnnounceIndexBody(std::vector<std::vector<unsigned char> >(), vch));
+    BOOST_REQUIRE(ReadMixAnnounceIndexBody(vch, vRead));
+    BOOST_CHECK(vRead.empty());
+}
+
+// Cancel is free before the key image leaves, needs force after, and is refused once the
+// final share has left; a cancelled attempt gives its note back as a failure does.
+BOOST_AUTO_TEST_CASE(a_seat_cancel_is_bounded_by_what_it_has_disclosed)
+{
+    int64_t nNow = 29000000 - 150;
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer dialer(coordJob, directory, nNow);
+
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv envA(0, 0x31, coordEnv, nNow), envB(1, 0x51, coordEnv, nNow);
+    FakeSeatEnv envEarly(0, 0x61, coordEnv, nNow), envProved(1, 0x71, coordEnv, nNow);
+    CMixSeatJob seatA(seatConfig, envA, dialer), seatB(seatConfig, envB, dialer);
+    CMixSeatJob early(seatConfig, envEarly, dialer), proved(seatConfig, envProved, dialer);
+
+    std::string strWhyNot;
+    BOOST_REQUIRE(early.Cancel(false, strWhyNot));
+    BOOST_CHECK_EQUAL((int)early.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK(early.Cancelled());
+    BOOST_CHECK_EQUAL(envEarly.nReleased, 0);
+    BOOST_CHECK(!early.Cancel(true, strWhyNot));
+    BOOST_CHECK(strWhyNot.find("ended") != std::string::npos);
+
+    bool fProvedCancelled = false, fJoinedRefused = false, fShareRefused = false;
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        if (!fProvedCancelled)
+        {
+            proved.Step(nNow);
+            if (proved.State() == MIX_SEAT_BEGUN)
+            {
+                BOOST_REQUIRE(!proved.KeyImageRevealed());
+                BOOST_REQUIRE_MESSAGE(proved.Cancel(false, strWhyNot), strWhyNot);
+                fProvedCancelled = true;
+            }
+        }
+        seatA.Step(nNow);
+        seatB.Step(nNow);
+        if (!fJoinedRefused && seatB.KeyImageRevealed() && !seatB.FinalShareSent())
+        {
+            BOOST_CHECK(!seatB.Cancel(false, strWhyNot));
+            BOOST_CHECK_MESSAGE(strWhyNot.find("force") != std::string::npos, strWhyNot);
+            BOOST_CHECK(!seatB.Cancelled());
+            fJoinedRefused = true;
+        }
+        if (!fShareRefused && seatA.FinalShareSent() && seatA.State() != MIX_SEAT_DONE)
+        {
+            BOOST_CHECK(!seatA.Cancel(true, strWhyNot));
+            BOOST_CHECK_MESSAGE(strWhyNot.find("final share") != std::string::npos, strWhyNot);
+            fShareRefused = true;
+        }
+        const bool fSeatsSettled =
+            (seatA.State() == MIX_SEAT_DONE || seatA.State() == MIX_SEAT_FAILED) &&
+            (seatB.State() == MIX_SEAT_DONE || seatB.State() == MIX_SEAT_FAILED);
+        if (fSeatsSettled && coordJob.State() >= MIX_COORD_DONE)
+            break;
+    }
+    BOOST_CHECK(fProvedCancelled);
+    BOOST_CHECK_EQUAL((int)proved.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK_EQUAL(envProved.nReleased, 1);
+    BOOST_CHECK(!envProved.fHeld);
+    BOOST_CHECK(fJoinedRefused);
+    BOOST_CHECK(fShareRefused);
+    // Neither refusal disturbed the round.
+    BOOST_CHECK_MESSAGE(seatA.State() == MIX_SEAT_DONE, "seat A: " << seatA.Status());
+    BOOST_CHECK_MESSAGE(seatB.State() == MIX_SEAT_DONE, "seat B: " << seatB.Status());
+    BOOST_CHECK(envA.fHeld && envB.fHeld);
+}
+
+// With force, a seat whose key image has gone out stops and gives its note back.
+BOOST_AUTO_TEST_CASE(a_forced_cancel_after_the_key_image_releases_the_note)
+{
+    int64_t nNow = 29600000 - 150;
+    const int64_t nRecordSlot = MixRendezvousSlot(nNow) + 1;
+    CMixRendezvousIndex index;
+    CMixDirectory directory(&index);
+    FakeCoordinatorEnv coordEnv(index, nNow);
+    CMixCoordinatorConfig config;
+    config.keyCoordinator.MakeNewKey(true);
+    config.strEndpoint = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    config.nPort = 8443;
+    config.nParticipants = 2;
+    config.nDenomination = MIX_DENOM;
+    config.nFeeSharePerSeat = MIX_FEE_SHARE;
+    config.vDirectories.push_back(CMixDirectoryEndpoint("dir.onion", 80));
+    InProcessDialer uploadDialer;
+    uploadDialer.mapDirs["dir.onion"] = &directory;
+    CMixCoordinatorJob coordJob(config, coordEnv, uploadDialer);
+    JobDialer dialer(coordJob, directory, nNow);
+    CMixSeatConfig seatConfig;
+    seatConfig.pubkeyCoordinator = config.keyCoordinator.GetPubKey();
+    seatConfig.nRecordSlot = nRecordSlot;
+    seatConfig.policy = TestPolicy();
+    seatConfig.vDirectories = config.vDirectories;
+    FakeSeatEnv env(0, 0x31, coordEnv, nNow);
+    CMixSeatJob seat(seatConfig, env, dialer);
+    const int64_t nStop = nNow + 3000;
+    for (; nNow < nStop && !seat.KeyImageRevealed() && seat.State() != MIX_SEAT_FAILED; nNow++)
+    {
+        uploadDialer.nNow = nNow;
+        coordJob.Step(nNow);
+        seat.Step(nNow);
+    }
+    BOOST_REQUIRE_MESSAGE(seat.KeyImageRevealed(), seat.Status());
+    std::string strWhyNot;
+    BOOST_CHECK(!seat.Cancel(false, strWhyNot));
+    BOOST_CHECK(env.fHeld);
+    BOOST_REQUIRE_MESSAGE(seat.Cancel(true, strWhyNot), strWhyNot);
+    BOOST_CHECK_EQUAL((int)seat.State(), (int)MIX_SEAT_FAILED);
+    BOOST_CHECK(seat.Cancelled());
+    BOOST_CHECK_EQUAL(env.nReleased, 1);
+    BOOST_CHECK(!env.fHeld);
+    BOOST_CHECK(seat.Status().find("key image") != std::string::npos);
+}
+
+// Mix settings: what the file and the RPC accept, and what applies without a restart.
+BOOST_AUTO_TEST_CASE(mix_settings_parse_strictly)
+{
+    const std::string strA = "wq3wlxjlpvxhuxpe5x6dtnrhrxvgkfxkvxmmwpnrfexbbxbxbxbxbxbd.onion";
+    const std::string strB = "directoryaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion";
+    std::map<std::string, std::vector<std::string> > mapSettings;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(ParseMixSettingsText("# comment\n\nmixdir=" + strA + ":80\n  mixdir = " +
+                                                   strB + ":81 \nmixproxy=127.0.0.1:9050\n"
+                                                   "mixcoordinatorport=0\n",
+                                               mapSettings, strError),
+                          strError);
+    BOOST_CHECK_EQUAL(mapSettings["mixdir"].size(), 2u);
+    BOOST_CHECK_EQUAL(mapSettings["mixproxy"][0], "127.0.0.1:9050");
+    std::map<std::string, std::vector<std::string> > mapAgain;
+    BOOST_REQUIRE(ParseMixSettingsText(FormatMixSettingsText(mapSettings), mapAgain, strError));
+    BOOST_CHECK(mapAgain == mapSettings);
+
+    BOOST_CHECK(!ParseMixSettingsText("rpcpassword=x\n", mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixproxy=127.0.0.1:9050\nmixproxy=127.0.0.1:9051\n",
+                                      mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixproxy=\n", mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixdir=" + strA + ":80\nmixdir=" + strA + ":80\n",
+                                      mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixdir=example.com:80\n", mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixdirectoryport=70000\n", mapSettings, strError));
+    BOOST_CHECK(!ParseMixSettingsText("mixonion=example.com\n", mapSettings, strError));
+    BOOST_CHECK(mapSettings.empty());
+
+    BOOST_CHECK(CheckMixSettingValue("mixdir", strA + ":80, " + strB + ":81", strError));
+    BOOST_CHECK(!CheckMixSettingValue("mixdir", strA, strError));
+    BOOST_CHECK(!CheckMixSettingValue("mixdir", strA + ":0", strError));
+    BOOST_CHECK(!CheckMixSettingValue("mixdir", strA + ":80x", strError));
+    BOOST_CHECK(CheckMixSettingValue("mixproxy", "", strError));
+    BOOST_CHECK(!CheckMixSettingValue("mixproxy", "localhost:9050", strError));
+    BOOST_CHECK(!CheckMixSettingValue("-mixdir", strA + ":80", strError));
+    BOOST_CHECK(CheckMixSettingValue("mixcoordinatorport", "8443", strError));
+    BOOST_CHECK(!CheckMixSettingValue("mixcoordinatorport", "-1", strError));
+
+    BOOST_CHECK(MixSettingIsLive("mixdir"));
+    BOOST_CHECK(MixSettingIsLive("mixproxy"));
+    BOOST_CHECK(!MixSettingIsLive("mixonion"));
+    BOOST_CHECK(!MixSettingIsLive("mixcoordinatorport"));
+    BOOST_CHECK(!MixSettingIsLive("mixdirectoryport"));
+}
+
+// Whether a note can take a seat in a round, and from when a round's anchor covers it.
+BOOST_AUTO_TEST_CASE(a_note_is_eligible_only_under_the_rounds_anchor_at_its_amount)
+{
+    CKey key;
+    const CMixRoundAnnouncement announce = ProvenAnnouncement(key, FreshRoundKey(4702), 28000500);
+    BOOST_REQUIRE(announce.nFinalizedTreeSize > 1);
+    CMixNoteFacts note;
+    note.nAmount = announce.nDenomination + announce.nFee / (uint64_t)announce.nParticipants;
+    note.nHeight = 100;
+    note.fLeafIndexKnown = true;
+    note.nLeafIndex = announce.nFinalizedTreeSize - 1;
+    BOOST_CHECK_EQUAL(MixNoteIneligibility(note, announce), "");
+
+    CMixNoteFacts newer = note;
+    newer.nLeafIndex = announce.nFinalizedTreeSize;
+    BOOST_CHECK(MixNoteIneligibility(newer, announce).find("newer") != std::string::npos);
+    CMixNoteFacts unplaced = note;
+    unplaced.fLeafIndexKnown = false;
+    BOOST_CHECK(MixNoteIneligibility(unplaced, announce).find("tree") != std::string::npos);
+    CMixNoteFacts wrong = note;
+    wrong.nAmount++;
+    BOOST_CHECK(MixNoteIneligibility(wrong, announce).find("exactly") != std::string::npos);
+    CMixNoteFacts held = note;
+    held.strUnusable = "a seat is using this note now";
+    BOOST_CHECK_EQUAL(MixNoteIneligibility(held, announce), held.strUnusable);
+
+    BOOST_CHECK_EQUAL(MixNoteEligibleHeight(0), -1);
+    const int nHeights[] = { 1, 299, 300, 301, 5000, 123457 };
+    for (size_t i = 0; i < sizeof(nHeights) / sizeof(nHeights[0]); i++)
+    {
+        const int h = nHeights[i];
+        const int64_t nEnd = GetEpochBoundaryHeight64(GetEpochForHeight(h) + 1) - 1;
+        const int nEligible = MixNoteEligibleHeight(h);
+        BOOST_CHECK(nEligible >= h + MIN_SHIELDED_SPEND_DEPTH);
+        BOOST_CHECK_EQUAL((int64_t)nEligible,
+                          std::max<int64_t>(nEnd + EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH,
+                                            h + MIN_SHIELDED_SPEND_DEPTH));
+        // Every note of one epoch waits for the same anchor.
+        const int nFirst = (int)GetEpochBoundaryHeight64(GetEpochForHeight(h));
+        if (nFirst > 0)
+            BOOST_CHECK_EQUAL(MixNoteEligibleHeight(nFirst), nEligible);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

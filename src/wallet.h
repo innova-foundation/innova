@@ -48,6 +48,7 @@ uint32_t PrivacyVNextChangeIndexFor(
 struct CMixSeatMaterial;
 class CMixRoundAnnouncement;
 struct CMixPolicy;
+struct CMixNoteFacts;
 
 // Keys every self-pay output is sent to: a spend's change, and the receiver a shield
 // pays into. One function, so no self-pay site can be left on a user-facing index
@@ -500,6 +501,11 @@ public:
 
     /** Spendable, unheld notes this wallet holds at exactly this amount. */
     size_t CountPrivacyVNextMixNotes(CTxDB& txdb, uint64_t nRequired, int nSpendHeight) const;
+
+    /** Every unspent note worth one of vAmounts, with what the round-independent selection
+     *  rules say about it, for reporting which rounds it can join. */
+    void ListPrivacyVNextMixNoteFacts(CTxDB& txdb, const std::vector<uint64_t>& vAmounts,
+                                      int nSpendHeight, std::vector<CMixNoteFacts>& vOut) const;
 
     /** Prepare one note for a tier: an ordinary shielded self-transfer for denomination +
      *  share, held on arrival. Intentionally not a distinct operation type. */

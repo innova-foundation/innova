@@ -391,6 +391,13 @@ static const CRPCCommand vRPCCommands[] =
     { "mixcoordinate",          &mixcoordinate,          false,  true },
     { "mixjoin",                &mixjoin,                false,  true },
     { "mixstatus",              &mixstatus,              true,   true },
+    { "mixsettings",            &mixsettings,            true,   true },
+    { "mixsetsetting",          &mixsetsetting,          false,  true },
+    { "mixproxystatus",         &mixproxystatus,         true,   true },
+    { "mixlistrounds",          &mixlistrounds,          true,   true },
+    { "mixnotes",               &mixnotes,               true,   true },
+    { "mixcancel",              &mixcancel,              false,  true },
+    { "mixclear",               &mixclear,               false,  true },
 
     { "getnewstealthaddress",   &getnewstealthaddress,   false,  false},
     { "liststealthaddresses",   &liststealthaddresses,   false,  false},
@@ -1648,6 +1655,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "mixcoordinate"          && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "mixcoordinate"          && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "mixjoin"                && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "mixcancel"              && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "mixcancel"              && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<int64_t>(params[1]);

@@ -216,7 +216,7 @@ CMixSeatJob::CMixSeatJob(const CMixSeatConfig& configIn, CMixSeatEnv& envIn,
     : config(configIn), env(envIn), dialer(dialerIn), nState(MIX_SEAT_FINDING),
       strStatus("waiting for the record slot to settle"), nNextAction(0),
       nExchangeTimeoutMs(MIX_EXCHANGE_TIMEOUT_MS), nWindowCloses(0), fKeyImageRevealed(false),
-      fFinalShareSent(false)
+      fFinalShareSent(false), fCancelled(false)
 {
     NewCircuit();
 }
@@ -232,6 +232,33 @@ MixSeatJobState CMixSeatJob::State() const { return nState; }
 std::string CMixSeatJob::Status() const { return strStatus; }
 bool CMixSeatJob::KeyImageRevealed() const { return fKeyImageRevealed; }
 bool CMixSeatJob::FinalShareSent() const { return fFinalShareSent; }
+
+bool CMixSeatJob::Cancel(bool fForce, std::string& strWhyNot)
+{
+    if (nState == MIX_SEAT_DONE || nState == MIX_SEAT_FAILED)
+    {
+        strWhyNot = "the attempt has already ended";
+        return false;
+    }
+    if (fFinalShareSent)
+    {
+        strWhyNot = "the final share has left: the note is committed to this round and a "
+                    "transaction spending it may still be published, so the attempt runs to "
+                    "the round's end";
+        return false;
+    }
+    if (fKeyImageRevealed && !fForce)
+    {
+        strWhyNot = "the key image has gone to the coordinator: cancelling now ends the round "
+                    "for every seat and does not take the key image back; pass force to "
+                    "cancel anyway";
+        return false;
+    }
+    Fail(fKeyImageRevealed ? "cancelled by the user after the key image was sent"
+                           : "cancelled by the user");
+    fCancelled = true;
+    return true;
+}
 
 void CMixSeatJob::Fail(const std::string& strWhy)
 {
@@ -713,6 +740,43 @@ boost::filesystem::path GetMixOnionServiceDir(const std::string& strRole)
     return GetDataDir(false) / ("onion-mix-" + strRole);
 }
 
+bool ReadSettledMixRendezvous(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                              CMixRendezvous& rendezvousOut, bool& fPendingOut,
+                              std::string& strError)
+{
+    fPendingOut = false;
+    rendezvousOut = CMixRendezvous();
+    LOCK(cs_main);
+    if (!pindexBest)
+    {
+        fPendingOut = true;
+        strError = "no chain yet";
+        return false;
+    }
+    // The deterministic latch of the last epoch complete at the tip, which every node
+    // computes alike; the live finalized height differs between nodes.
+    const int nUpToEpoch = GetEpochForHeight(pindexBest->nHeight + 1) - 1;
+    int nHeight = 0;
+    uint256 hashBlock = 0;
+    if (!g_dagManager.TryGetDeterministicFinalizedAnchor(nUpToEpoch, nHeight, hashBlock) ||
+        nHeight <= 0)
+    {
+        fPendingOut = true;
+        strError = "nothing is finalized yet";
+        return false;
+    }
+    const CBlockIndex* pindexFinal = pindexBest->GetAncestor(nHeight);
+    if (!pindexFinal ||
+        pindexFinal->GetMedianTimePast() < nSlot * MIX_RENDEZVOUS_SLOT_SECONDS)
+    {
+        fPendingOut = true;
+        strError = "the record slot is not settled yet";
+        return false;
+    }
+    return LookupMixRendezvous(pindexBest, CMixSettledPoint(nHeight, hashBlock),
+                               pubkeyCoordinator, nSlot, rendezvousOut, &strError);
+}
+
 namespace {
 
 class CNodeMixCoordinatorEnv : public CMixCoordinatorEnv
@@ -778,37 +842,8 @@ public:
     bool ReadRendezvous(const CPubKey& pubkeyCoordinator, int64_t nSlot,
                         CMixRendezvous& rendezvousOut, bool& fPendingOut, std::string& strError)
     {
-        fPendingOut = false;
-        rendezvousOut = CMixRendezvous();
-        LOCK(cs_main);
-        if (!pindexBest)
-        {
-            fPendingOut = true;
-            strError = "no chain yet";
-            return false;
-        }
-        // The deterministic latch of the last epoch complete at the tip, which every node
-        // computes alike; the live finalized height differs between nodes.
-        const int nUpToEpoch = GetEpochForHeight(pindexBest->nHeight + 1) - 1;
-        int nHeight = 0;
-        uint256 hashBlock = 0;
-        if (!g_dagManager.TryGetDeterministicFinalizedAnchor(nUpToEpoch, nHeight, hashBlock) ||
-            nHeight <= 0)
-        {
-            fPendingOut = true;
-            strError = "nothing is finalized yet";
-            return false;
-        }
-        const CBlockIndex* pindexFinal = pindexBest->GetAncestor(nHeight);
-        if (!pindexFinal ||
-            pindexFinal->GetMedianTimePast() < nSlot * MIX_RENDEZVOUS_SLOT_SECONDS)
-        {
-            fPendingOut = true;
-            strError = "the record slot is not settled yet";
-            return false;
-        }
-        return LookupMixRendezvous(pindexBest, CMixSettledPoint(nHeight, hashBlock),
-                                   pubkeyCoordinator, nSlot, rendezvousOut, &strError);
+        return ReadSettledMixRendezvous(pubkeyCoordinator, nSlot, rendezvousOut, fPendingOut,
+                                        strError);
     }
     bool ReadAnchor(const CMixRoundAnnouncement& announce, int64_t nNow,
                     CMixAnchorView& viewOut, std::string& strError)
@@ -888,11 +923,19 @@ private:
     uint32_t nHeldIndex;
 };
 
+// The job holds references to the env and the dialer, so it is declared last and freed first.
 struct CMixSeatSlot
 {
+    std::shared_ptr<CMixDialer> dialer;
     std::unique_ptr<CNodeMixSeatEnv> env;
     std::unique_ptr<CMixSeatJob> job;
     CMixJobStatus status;
+    // 0 none, 1 cancel, 2 cancel after the key image has gone out. Taken by the seats thread.
+    int nCancelRequest;
+    bool fCancelAnswered;
+    bool fCancelDone;
+    std::string strCancelAnswer;
+    CMixSeatSlot() : nCancelRequest(0), fCancelAnswered(false), fCancelDone(false) {}
 };
 
 // A coordinator job and the environment it holds a reference to, kept alive together by
@@ -900,6 +943,7 @@ struct CMixSeatSlot
 // request for it in hand must not be freed under that thread.
 struct CMixCoordinatorRun
 {
+    std::shared_ptr<CMixDialer> dialer;
     std::unique_ptr<CNodeMixCoordinatorEnv> env;
     std::unique_ptr<CMixCoordinatorJob> job;
 };
@@ -910,7 +954,11 @@ struct CMixServiceState
     bool fRunning;
     volatile bool fStop;
     CWallet* pwallet;
-    std::unique_ptr<CMixTorDialer> dialer;
+    // Replaced when the proxy changes; every job keeps the one it started with alive.
+    std::shared_ptr<CMixDialer> dialer;
+    CService addrProxy;
+    std::string strProxy;
+    std::string strProxySource;
     std::vector<CMixDirectoryEndpoint> vDirectories;
     std::string strCoordinatorOnion;
     int nCoordinatorPort;
@@ -922,10 +970,13 @@ struct CMixServiceState
     CMixListener listenCoordinator;
     CMixListener listenDirectory;
     int nConnections;
+    int64_t nNextJobId;
+    // The rounds the last listing returned, by round id, for eligibility queries.
+    std::map<uint256, CMixRoundAnnouncement> mapListed;
 
     CMixServiceState()
         : fRunning(false), fStop(false), pwallet(NULL), nCoordinatorPort(0), nDirectoryPort(0),
-          nConnections(0) {}
+          nConnections(0), nNextJobId(1) {}
 };
 
 CMixServiceState g_mix;
@@ -1086,10 +1137,35 @@ void ThreadMixSeats(void*)
             }
             for (size_t i = 0; i < vSeats.size() && !g_mix.fStop; i++)
             {
-                vSeats[i]->job->Step(GetTime());
+                CMixSeatSlot& slot = *vSeats[i];
+                int nCancel = 0;
+                {
+                    LOCK(g_mix.cs);
+                    nCancel = slot.nCancelRequest;
+                    slot.nCancelRequest = 0;
+                }
+                // Applied here, between steps, because nothing else touches the job.
+                std::string strWhyNot;
+                const bool fCancelled = nCancel != 0 && slot.job->Cancel(nCancel == 2, strWhyNot);
+                if (nCancel == 0)
+                    slot.job->Step(GetTime());
                 LOCK(g_mix.cs);
-                vSeats[i]->status.strState = strprintf("%d", (int)vSeats[i]->job->State());
-                vSeats[i]->status.strStatus = vSeats[i]->job->Status();
+                if (nCancel != 0)
+                {
+                    slot.fCancelAnswered = true;
+                    slot.fCancelDone = fCancelled;
+                    slot.strCancelAnswer = fCancelled ? slot.job->Status() : strWhyNot;
+                    slot.status.fCancelPending = false;
+                }
+                const std::string strState = strprintf("%d", (int)slot.job->State());
+                const std::string strStatus = slot.job->Status();
+                if (strState != slot.status.strState || strStatus != slot.status.strStatus)
+                    slot.status.nUpdated = GetTime();
+                slot.status.strState = strState;
+                slot.status.strStatus = strStatus;
+                slot.status.fFinished = slot.job->State() == MIX_SEAT_DONE ||
+                                        slot.job->State() == MIX_SEAT_FAILED;
+                slot.status.fCancelled = slot.job->Cancelled();
             }
             MilliSleep(250);
         }
@@ -1156,49 +1232,443 @@ bool StartThread(void (*pfn)(void*))
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+const std::vector<std::string>& MixSettingNames()
+{
+    static std::vector<std::string> vNames;
+    if (vNames.empty())
+    {
+        vNames.push_back("mixdir");
+        vNames.push_back("mixproxy");
+        vNames.push_back("mixonion");
+        vNames.push_back("mixcoordinatorport");
+        vNames.push_back("mixdirectoryport");
+    }
+    return vNames;
+}
+
+bool MixSettingIsLive(const std::string& strName)
+{
+    return strName == "mixdir" || strName == "mixproxy";
+}
+
+static bool IsMixSettingName(const std::string& strName)
+{
+    const std::vector<std::string>& v = MixSettingNames();
+    return std::find(v.begin(), v.end(), strName) != v.end();
+}
+
+bool ParseMixDirectories(const std::vector<std::string>& vIn,
+                         std::vector<CMixDirectoryEndpoint>& vOut, std::string& strError)
+{
+    vOut.clear();
+    for (size_t i = 0; i < vIn.size(); i++)
+    {
+        const std::string& str = vIn[i];
+        const size_t nColon = str.rfind(':');
+        const std::string strHost = nColon == std::string::npos ? str : str.substr(0, nColon);
+        const std::string strPort = nColon == std::string::npos ? "" : str.substr(nColon + 1);
+        int nPort = 0;
+        if (!strPort.empty() && strPort.size() <= 5 &&
+            strPort.find_first_not_of("0123456789") == std::string::npos)
+            nPort = atoi(strPort.c_str());
+        if (!IsMixOnionEndpoint(strHost) || nPort < 1 || nPort > 65535)
+        {
+            strError = "-mixdir must be an onion name and a port: " + str;
+            return false;
+        }
+        for (size_t k = 0; k < vOut.size(); k++)
+            if (vOut[k].strHost == strHost && vOut[k].nPort == nPort)
+            {
+                strError = "-mixdir names one directory twice: " + str;
+                return false;
+            }
+        vOut.push_back(CMixDirectoryEndpoint(strHost, nPort));
+    }
+    return true;
+}
+
+bool ParseMixProxy(const std::string& str, CService& addrOut, std::string& strError)
+{
+    if (str.empty() || !LookupNumeric(str.c_str(), addrOut, 9050) || !addrOut.IsValid() ||
+        addrOut.GetPort() == 0)
+    {
+        strError = "invalid -mixproxy: " + str + " (a numeric address and port)";
+        return false;
+    }
+    return true;
+}
+
+static std::vector<std::string> SplitMixList(const std::string& str)
+{
+    std::vector<std::string> vOut;
+    std::string strCur;
+    for (size_t i = 0; i <= str.size(); i++)
+    {
+        const char c = i < str.size() ? str[i] : ',';
+        if (c == ',' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
+        {
+            if (!strCur.empty())
+                vOut.push_back(strCur);
+            strCur.clear();
+        }
+        else
+            strCur += c;
+    }
+    return vOut;
+}
+
+static std::string TrimMix(const std::string& str)
+{
+    const size_t nBegin = str.find_first_not_of(" \t\r\n");
+    if (nBegin == std::string::npos)
+        return std::string();
+    const size_t nEnd = str.find_last_not_of(" \t\r\n");
+    return str.substr(nBegin, nEnd - nBegin + 1);
+}
+
+bool CheckMixSettingValue(const std::string& strName, const std::string& strValue,
+                          std::string& strError)
+{
+    if (!IsMixSettingName(strName))
+    {
+        strError = "unknown mix setting: " + strName;
+        return false;
+    }
+    if (strValue.empty())
+        return true;
+    if (strName == "mixdir")
+    {
+        std::vector<CMixDirectoryEndpoint> vDirs;
+        return ParseMixDirectories(SplitMixList(strValue), vDirs, strError);
+    }
+    if (strName == "mixproxy")
+    {
+        CService addr;
+        return ParseMixProxy(strValue, addr, strError);
+    }
+    if (strName == "mixonion")
+    {
+        if (!IsMixOnionEndpoint(strValue))
+        {
+            strError = "-mixonion must be a v3 onion name";
+            return false;
+        }
+        return true;
+    }
+    if (strValue.size() > 5 || strValue.find_first_not_of("0123456789") != std::string::npos ||
+        atoi(strValue.c_str()) > 65535)
+    {
+        strError = "-" + strName + " must be a port from 0 (off) to 65535";
+        return false;
+    }
+    return true;
+}
+
+bool ParseMixSettingsText(const std::string& strText,
+                          std::map<std::string, std::vector<std::string> >& mapOut,
+                          std::string& strError)
+{
+    mapOut.clear();
+    std::map<std::string, std::vector<std::string> > mapRead;
+    size_t nAt = 0;
+    int nLine = 0;
+    while (nAt <= strText.size())
+    {
+        size_t nEnd = strText.find('\n', nAt);
+        if (nEnd == std::string::npos)
+            nEnd = strText.size();
+        const std::string strLine = TrimMix(strText.substr(nAt, nEnd - nAt));
+        nAt = nEnd + 1;
+        nLine++;
+        if (strLine.empty() || strLine[0] == '#')
+            continue;
+        const size_t nEq = strLine.find('=');
+        const std::string strKey = TrimMix(strLine.substr(0, nEq));
+        const std::string strValue =
+            nEq == std::string::npos ? std::string() : TrimMix(strLine.substr(nEq + 1));
+        if (nEq == std::string::npos || strValue.empty() || !IsMixSettingName(strKey))
+        {
+            strError = strprintf("mix settings line %d is not a mix setting: %s", nLine,
+                                 strLine.c_str());
+            return false;
+        }
+        if (strKey != "mixdir" && mapRead.count(strKey))
+        {
+            strError = strprintf("mix settings line %d sets %s a second time", nLine,
+                                 strKey.c_str());
+            return false;
+        }
+        if (!CheckMixSettingValue(strKey, strValue, strError))
+            return false;
+        mapRead[strKey].push_back(strValue);
+    }
+    if (mapRead.count("mixdir"))
+    {
+        std::vector<CMixDirectoryEndpoint> vDirs;
+        if (!ParseMixDirectories(mapRead["mixdir"], vDirs, strError))
+            return false;
+    }
+    mapOut.swap(mapRead);
+    return true;
+}
+
+std::string FormatMixSettingsText(const std::map<std::string, std::vector<std::string> >& mapIn)
+{
+    std::string str = "# NullSend settings written by mixsetsetting. A key here takes precedence "
+                      "over innova.conf.\n";
+    const std::vector<std::string>& vNames = MixSettingNames();
+    for (size_t i = 0; i < vNames.size(); i++)
+    {
+        std::map<std::string, std::vector<std::string> >::const_iterator it = mapIn.find(vNames[i]);
+        if (it == mapIn.end())
+            continue;
+        for (size_t k = 0; k < it->second.size(); k++)
+            str += vNames[i] + "=" + it->second[k] + "\n";
+    }
+    return str;
+}
+
+boost::filesystem::path GetMixSettingsPath()
+{
+    return GetDataDir(true) / "mixsettings.conf";
+}
+
+namespace {
+
+// Bounded: a settings file is a few lines.
+static const size_t MIX_SETTINGS_MAX_BYTES = 65536;
+
+bool ReadMixSettingsFile(std::map<std::string, std::vector<std::string> >& mapOut,
+                         std::string& strError)
+{
+    mapOut.clear();
+    const boost::filesystem::path path = GetMixSettingsPath();
+    FILE* file = fopen(path.string().c_str(), "rb");
+    if (!file)
+        return true;
+    std::string strText;
+    char buf[4096];
+    size_t nRead = 0;
+    while ((nRead = fread(buf, 1, sizeof(buf), file)) > 0)
+    {
+        strText.append(buf, nRead);
+        if (strText.size() > MIX_SETTINGS_MAX_BYTES)
+        {
+            fclose(file);
+            strError = path.string() + " is too large to be mix settings";
+            return false;
+        }
+    }
+    fclose(file);
+    if (!ParseMixSettingsText(strText, mapOut, strError))
+    {
+        strError = path.string() + ": " + strError;
+        return false;
+    }
+    return true;
+}
+
+bool WriteMixSettingsFile(const std::map<std::string, std::vector<std::string> >& mapIn,
+                          std::string& strError)
+{
+    const boost::filesystem::path path = GetMixSettingsPath();
+    const boost::filesystem::path pathTmp = path.string() + ".new";
+    const std::string strText = FormatMixSettingsText(mapIn);
+    FILE* file = fopen(pathTmp.string().c_str(), "wb");
+    if (!file)
+    {
+        strError = "cannot write " + pathTmp.string();
+        return false;
+    }
+    const bool fWritten = fwrite(strText.data(), 1, strText.size(), file) == strText.size();
+    const bool fClosed = fclose(file) == 0;
+    if (!fWritten || !fClosed)
+    {
+        strError = "cannot write " + pathTmp.string();
+        return false;
+    }
+    try
+    {
+        boost::filesystem::rename(pathTmp, path);
+    }
+    catch (const boost::filesystem::filesystem_error& e)
+    {
+        strError = std::string("cannot replace the mix settings file: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+// Settings the RPC changes are read and written under this, apart from the service's lock.
+CCriticalSection cs_mixSettings;
+
+} // namespace
+
+bool ResolveMixSettings(CMixSettings& out, std::string& strError)
+{
+    out = CMixSettings();
+    std::map<std::string, std::vector<std::string> > mapFile;
+    {
+        LOCK(cs_mixSettings);
+        if (!ReadMixSettingsFile(mapFile, strError))
+            return false;
+    }
+    for (std::map<std::string, std::vector<std::string> >::const_iterator it = mapFile.begin();
+         it != mapFile.end(); ++it)
+        out.vOverridden.push_back(it->first);
+
+    std::vector<std::string> vDirs;
+    if (mapFile.count("mixdir"))
+        vDirs = mapFile["mixdir"];
+    else
+    {
+        std::map<std::string, std::vector<std::string> >::const_iterator it =
+            mapMultiArgs.find("-mixdir");
+        if (it != mapMultiArgs.end())
+            vDirs = it->second;
+    }
+    if (!ParseMixDirectories(vDirs, out.vDirectories, strError))
+        return false;
+
+    // The SOCKS proxy mix exchanges go through: the bundled tor's when it runs. There is no
+    // direct fallback -- an exchange that cannot go through the proxy does not happen.
+    if (mapFile.count("mixproxy"))
+    {
+        out.strProxy = mapFile["mixproxy"].back();
+        out.strProxySource = "settings file";
+    }
+    else if (mapArgs.count("-mixproxy"))
+    {
+        out.strProxy = mapArgs["-mixproxy"];
+        out.strProxySource = "config";
+    }
+    else if (fNativeTor)
+    {
+        out.strProxy = strprintf("127.0.0.1:%u", NATIVETOR_SOCKS_PORT);
+        out.strProxySource = "nativetor";
+    }
+    else
+    {
+        out.strProxy = "127.0.0.1:9050";
+        out.strProxySource = "default";
+    }
+    CService addrProxy;
+    if (!ParseMixProxy(out.strProxy, addrProxy, strError))
+        return false;
+
+    out.strOnion = mapFile.count("mixonion") ? mapFile["mixonion"].back()
+                                             : GetArg("-mixonion", "");
+    out.nCoordinatorPort = mapFile.count("mixcoordinatorport")
+                               ? atoi(mapFile["mixcoordinatorport"].back().c_str())
+                               : (int)GetArg("-mixcoordinatorport", 0);
+    out.nDirectoryPort = mapFile.count("mixdirectoryport")
+                             ? atoi(mapFile["mixdirectoryport"].back().c_str())
+                             : (int)GetArg("-mixdirectoryport", 0);
+    if (out.nCoordinatorPort < 0 || out.nCoordinatorPort > 65535 || out.nDirectoryPort < 0 ||
+        out.nDirectoryPort > 65535)
+    {
+        strError = "a mix port must be from 0 (off) to 65535";
+        return false;
+    }
+    if (out.nCoordinatorPort > 0 && !out.strOnion.empty() && !IsMixOnionEndpoint(out.strOnion))
+    {
+        strError = "-mixonion must be a v3 onion name";
+        return false;
+    }
+    return true;
+}
+
+void GetRunningMixSettings(CMixSettings& out, bool& fRunningOut)
+{
+    out = CMixSettings();
+    LOCK(g_mix.cs);
+    fRunningOut = g_mix.fRunning;
+    out.vDirectories = g_mix.vDirectories;
+    out.strProxy = g_mix.strProxy;
+    out.strProxySource = g_mix.strProxySource;
+    out.strOnion = g_mix.strCoordinatorOnion;
+    out.nCoordinatorPort = g_mix.nCoordinatorPort;
+    out.nDirectoryPort = g_mix.nDirectoryPort;
+}
+
+bool MixSetSetting(const std::string& strName, const std::string& strValue, bool& fRestartOut,
+                   std::string& strError)
+{
+    fRestartOut = false;
+    const std::string strTrimmed = TrimMix(strValue);
+    if (!CheckMixSettingValue(strName, strTrimmed, strError))
+        return false;
+    {
+        LOCK(cs_mixSettings);
+        std::map<std::string, std::vector<std::string> > mapFile;
+        if (!ReadMixSettingsFile(mapFile, strError))
+            return false;
+        if (strTrimmed.empty())
+            mapFile.erase(strName);
+        else if (strName == "mixdir")
+            mapFile[strName] = SplitMixList(strTrimmed);
+        else
+            mapFile[strName] = std::vector<std::string>(1, strTrimmed);
+        if (!WriteMixSettingsFile(mapFile, strError))
+            return false;
+    }
+    CMixSettings resolved;
+    if (!ResolveMixSettings(resolved, strError))
+        return false;
+    if (!MixSettingIsLive(strName))
+    {
+        bool fRunning = false;
+        CMixSettings running;
+        GetRunningMixSettings(running, fRunning);
+        fRestartOut = running.strOnion != resolved.strOnion ||
+                      running.nCoordinatorPort != resolved.nCoordinatorPort ||
+                      running.nDirectoryPort != resolved.nDirectoryPort;
+        return true;
+    }
+    CService addrProxy;
+    if (!ParseMixProxy(resolved.strProxy, addrProxy, strError))
+        return false;
+    LOCK(g_mix.cs);
+    if (!g_mix.fRunning)
+    {
+        fRestartOut = true;
+        return true;
+    }
+    g_mix.vDirectories = resolved.vDirectories;
+    if (!(addrProxy == g_mix.addrProxy))
+        g_mix.dialer.reset(new CMixTorDialer(addrProxy));
+    g_mix.addrProxy = addrProxy;
+    g_mix.strProxy = resolved.strProxy;
+    g_mix.strProxySource = resolved.strProxySource;
+    return true;
+}
+
 bool StartMixService(CWallet* pwallet, std::string& strError)
 {
+    CMixSettings settings;
+    if (!ResolveMixSettings(settings, strError))
+        return false;
+    CService addrProxy;
+    if (!ParseMixProxy(settings.strProxy, addrProxy, strError))
+        return false;
+
     LOCK(g_mix.cs);
     if (g_mix.fRunning)
         return true;
     g_mix.pwallet = pwallet;
     g_mix.fStop = false;
     g_fMixExchangesStopped = false;
-    g_mix.nCoordinatorPort = (int)GetArg("-mixcoordinatorport", 0);
-    g_mix.nDirectoryPort = (int)GetArg("-mixdirectoryport", 0);
-
-    // The SOCKS proxy mix exchanges go through: the bundled tor's when it runs. There is no
-    // direct fallback -- an exchange that cannot go through the proxy does not happen.
-    const std::string strProxyDefault =
-        fNativeTor ? strprintf("127.0.0.1:%u", NATIVETOR_SOCKS_PORT) : std::string("127.0.0.1:9050");
-    const std::string strProxy = GetArg("-mixproxy", strProxyDefault);
-    CService addrProxy;
-    if (!LookupNumeric(strProxy.c_str(), addrProxy, 9050) || !addrProxy.IsValid())
-    {
-        strError = "invalid -mixproxy: " + strProxy;
-        return false;
-    }
+    g_mix.nCoordinatorPort = settings.nCoordinatorPort;
+    g_mix.nDirectoryPort = settings.nDirectoryPort;
+    g_mix.addrProxy = addrProxy;
+    g_mix.strProxy = settings.strProxy;
+    g_mix.strProxySource = settings.strProxySource;
     g_mix.dialer.reset(new CMixTorDialer(addrProxy));
-
-    g_mix.vDirectories.clear();
-    std::map<std::string, std::vector<std::string> >::const_iterator itDirs =
-        mapMultiArgs.find("-mixdir");
-    if (itDirs != mapMultiArgs.end())
-    {
-        for (size_t i = 0; i < itDirs->second.size(); i++)
-        {
-            const std::string& str = itDirs->second[i];
-            const size_t nColon = str.rfind(':');
-            const int nPort = nColon == std::string::npos ? 0 : atoi(str.substr(nColon + 1).c_str());
-            const std::string strHost = nColon == std::string::npos ? str : str.substr(0, nColon);
-            if (!IsMixOnionEndpoint(strHost) || nPort < 1 || nPort > 65535)
-            {
-                strError = "-mixdir must be an onion name and a port: " + str;
-                return false;
-            }
-            g_mix.vDirectories.push_back(CMixDirectoryEndpoint(strHost, nPort));
-        }
-    }
+    g_mix.vDirectories = settings.vDirectories;
 
     if (g_mix.nDirectoryPort > 0)
     {
@@ -1213,12 +1683,7 @@ bool StartMixService(CWallet* pwallet, std::string& strError)
     {
         if (!g_mix.listenCoordinator.Listen(g_mix.nCoordinatorPort, &strError))
             return false;
-        g_mix.strCoordinatorOnion = GetArg("-mixonion", "");
-        if (!g_mix.strCoordinatorOnion.empty() && !IsMixOnionEndpoint(g_mix.strCoordinatorOnion))
-        {
-            strError = "-mixonion must be a v3 onion name";
-            return false;
-        }
+        g_mix.strCoordinatorOnion = settings.strOnion;
     }
     g_mix.fRunning = true;
     if (!StartThread(ThreadMixService) || !StartThread(ThreadMixListen) ||
@@ -1300,14 +1765,16 @@ bool MixStartCoordinator(const CKey& keyCoordinator, uint64_t nDenomination, int
     config.nFeeSharePerSeat = policy.nFeeSharePerSeat;
     config.vDirectories = g_mix.vDirectories;
     std::shared_ptr<CMixCoordinatorRun> run(new CMixCoordinatorRun());
+    run->dialer = g_mix.dialer;
     run->env.reset(new CNodeMixCoordinatorEnv(g_mix.pwallet));
-    run->job.reset(new CMixCoordinatorJob(config, *run->env, *g_mix.dialer));
+    run->job.reset(new CMixCoordinatorJob(config, *run->env, *run->dialer));
     // The previous round, if any, lives on in whatever connection still holds it.
     g_mix.coordinator = run;
     return true;
 }
 
-bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::string& strError)
+bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::string& strError,
+                  int64_t* pnIdOut)
 {
     LOCK(g_mix.cs);
     if (!g_mix.fRunning || !g_mix.pwallet)
@@ -1317,7 +1784,7 @@ bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::st
     }
     if (g_mix.vDirectories.empty())
     {
-        strError = "no directory to fetch from: set -mixdir";
+        strError = "no directory to fetch from: set -mixdir, or add one with mixsetsetting";
         return false;
     }
     if (!pubkeyCoordinator.IsValid() || !pubkeyCoordinator.IsCompressed())
@@ -1336,11 +1803,19 @@ bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::st
     config.policy = CMixPolicy::Standard();
     config.vDirectories = g_mix.vDirectories;
     std::shared_ptr<CMixSeatSlot> slot(new CMixSeatSlot());
+    slot->dialer = g_mix.dialer;
     slot->env.reset(new CNodeMixSeatEnv(g_mix.pwallet));
-    slot->job.reset(new CMixSeatJob(config, *slot->env, *g_mix.dialer));
+    slot->job.reset(new CMixSeatJob(config, *slot->env, *slot->dialer));
+    slot->status.nId = g_mix.nNextJobId++;
     slot->status.strRole = "seat";
     slot->status.nRecordSlot = nRecordSlot;
+    slot->status.nStarted = GetTime();
+    slot->status.nUpdated = slot->status.nStarted;
+    slot->status.strState = strprintf("%d", (int)MIX_SEAT_FINDING);
+    slot->status.strStatus = slot->job->Status();
     g_mix.vSeats.push_back(slot);
+    if (pnIdOut)
+        *pnIdOut = slot->status.nId;
     return true;
 }
 
@@ -1354,9 +1829,12 @@ void GetMixServiceStatus(std::vector<CMixJobStatus>& vJobsOut, size_t& nDirector
     if (g_mix.coordinator)
     {
         CMixJobStatus status;
+        status.nId = 0;
         status.strRole = "coordinator";
-        status.strState = strprintf("%d", (int)g_mix.coordinator->job->State());
+        const MixCoordinatorJobState nState = g_mix.coordinator->job->State();
+        status.strState = strprintf("%d", (int)nState);
         status.strStatus = g_mix.coordinator->job->Status();
+        status.fFinished = nState == MIX_COORD_DONE || nState == MIX_COORD_FAILED;
         const CMixRoundAnnouncement announce = g_mix.coordinator->job->Announcement();
         status.strRound = announce.hashRound.ToString();
         status.nRecordSlot = announce.nTime > 0 ? MixRendezvousRecordSlot(announce.nTime) : 0;
@@ -1364,4 +1842,247 @@ void GetMixServiceStatus(std::vector<CMixJobStatus>& vJobsOut, size_t& nDirector
     }
     for (size_t i = 0; i < g_mix.vSeats.size(); i++)
         vJobsOut.push_back(g_mix.vSeats[i]->status);
+}
+
+bool MixCancelSeat(int64_t nId, bool fForce, int nWaitMs, bool& fAppliedOut,
+                   std::string& strResult, std::string& strError)
+{
+    fAppliedOut = false;
+    std::shared_ptr<CMixSeatSlot> slot;
+    {
+        LOCK(g_mix.cs);
+        for (size_t i = 0; i < g_mix.vSeats.size(); i++)
+            if (g_mix.vSeats[i]->status.nId == nId)
+                slot = g_mix.vSeats[i];
+        if (!slot)
+        {
+            strError = "no seat has that id";
+            return false;
+        }
+        if (slot->status.fFinished)
+        {
+            strError = "that seat's attempt has already ended";
+            return false;
+        }
+        slot->nCancelRequest = fForce ? 2 : 1;
+        slot->fCancelAnswered = false;
+        slot->status.fCancelPending = true;
+    }
+    const int64_t nUntil = GetTimeMillis() + std::max(0, nWaitMs);
+    while (true)
+    {
+        {
+            LOCK(g_mix.cs);
+            if (slot->fCancelAnswered)
+            {
+                fAppliedOut = true;
+                if (!slot->fCancelDone)
+                {
+                    strError = slot->strCancelAnswer;
+                    return false;
+                }
+                strResult = slot->strCancelAnswer;
+                return true;
+            }
+        }
+        if (GetTimeMillis() >= nUntil || fShutdown)
+            break;
+        MilliSleep(50);
+    }
+    strResult = "queued: it is applied when the seat's current exchange ends";
+    return true;
+}
+
+size_t MixClearFinishedSeats()
+{
+    LOCK(g_mix.cs);
+    size_t nCleared = 0;
+    for (size_t i = 0; i < g_mix.vSeats.size();)
+    {
+        if (g_mix.vSeats[i]->status.fFinished && g_mix.vSeats[i]->nCancelRequest == 0)
+        {
+            g_mix.vSeats.erase(g_mix.vSeats.begin() + i);
+            nCleared++;
+        }
+        else
+            i++;
+    }
+    return nCleared;
+}
+
+// ---------------------------------------------------------------------------
+// Proxy readiness
+// ---------------------------------------------------------------------------
+
+bool ProbeMixProxy(const CService& addrProxy, int nTimeoutMs, CMixProxyStatus& statusOut)
+{
+    statusOut.fReachable = false;
+    statusOut.fSocks5 = false;
+    statusOut.fIsolation = false;
+    statusOut.nLatencyMs = -1;
+    statusOut.strError.clear();
+    const int64_t nStart = GetTimeMillis();
+    statusOut.fReachable = ProbeSocks5Proxy(addrProxy, nTimeoutMs, statusOut.fSocks5,
+                                            statusOut.fIsolation, statusOut.strError);
+    if (statusOut.fReachable)
+        statusOut.nLatencyMs = GetTimeMillis() - nStart;
+    return statusOut.Ready();
+}
+
+void GetMixProxyStatus(int nTimeoutMs, CMixProxyStatus& statusOut)
+{
+    statusOut = CMixProxyStatus();
+    CService addrProxy;
+    bool fRunning = false;
+    {
+        LOCK(g_mix.cs);
+        fRunning = g_mix.fRunning;
+        addrProxy = g_mix.addrProxy;
+        statusOut.strProxy = g_mix.strProxy;
+        statusOut.strSource = g_mix.strProxySource;
+    }
+    if (!fRunning)
+    {
+        statusOut.strError = "the mix service is not running";
+        return;
+    }
+    ProbeMixProxy(addrProxy, nTimeoutMs, statusOut);
+}
+
+// ---------------------------------------------------------------------------
+// Round discovery
+// ---------------------------------------------------------------------------
+
+bool MixListRounds(const std::string& strOnly, std::vector<CMixListedRound>& vOut,
+                   std::vector<std::pair<std::string, std::string> >& vFailuresOut,
+                   std::string& strError)
+{
+    vOut.clear();
+    vFailuresOut.clear();
+    std::shared_ptr<CMixDialer> dialer;
+    std::vector<CMixDirectoryEndpoint> vDirs;
+    {
+        LOCK(g_mix.cs);
+        if (!g_mix.fRunning)
+        {
+            strError = "the mix service is not running";
+            return false;
+        }
+        dialer = g_mix.dialer;
+        vDirs = g_mix.vDirectories;
+    }
+    if (!strOnly.empty())
+    {
+        std::vector<CMixDirectoryEndpoint> vOnly;
+        if (!ParseMixDirectories(std::vector<std::string>(1, strOnly), vOnly, strError))
+            return false;
+        vDirs = vOnly;
+    }
+    if (vDirs.empty())
+    {
+        strError = "no directory to ask: set -mixdir, or add one with mixsetsetting";
+        return false;
+    }
+    uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+
+    // Each directory on a fresh circuit, in a random order.
+    for (size_t i = vDirs.size(); i > 1; i--)
+        std::swap(vDirs[i - 1], vDirs[GetRandInt((int)i)]);
+    std::map<uint256, size_t> mapAt;
+    size_t nAsked = 0;
+    for (size_t d = 0; d < vDirs.size(); d++)
+    {
+        const std::string strDir = strprintf("%s:%d", vDirs[d].strHost.c_str(), vDirs[d].nPort);
+        std::vector<CMixRoundAnnouncement> vListed;
+        std::string strFetch;
+        if (!FetchMixRoundIndex(*dialer, vDirs[d], vListed, &strFetch))
+        {
+            vFailuresOut.push_back(std::make_pair(strDir, strFetch));
+            continue;
+        }
+        nAsked++;
+        for (size_t k = 0; k < vListed.size(); k++)
+        {
+            const CMixRoundAnnouncement& announce = vListed[k];
+            if (announce.nNetwork != nNetwork || !(announce.genesis == genesis))
+                continue;
+            std::map<uint256, size_t>::const_iterator it = mapAt.find(announce.hashRound);
+            if (it != mapAt.end())
+            {
+                vOut[it->second].vDirectories.push_back(strDir);
+                continue;
+            }
+            mapAt[announce.hashRound] = vOut.size();
+            CMixListedRound row;
+            row.announce = announce;
+            row.vDirectories.push_back(strDir);
+            vOut.push_back(row);
+        }
+    }
+    std::sort(vOut.begin(), vOut.end(),
+              [](const CMixListedRound& a, const CMixListedRound& b) {
+                  return a.announce.nTime < b.announce.nTime ||
+                         (a.announce.nTime == b.announce.nTime &&
+                          a.announce.hashRound < b.announce.hashRound);
+              });
+    {
+        LOCK(g_mix.cs);
+        g_mix.mapListed.clear();
+        for (size_t i = 0; i < vOut.size(); i++)
+            g_mix.mapListed[vOut[i].announce.hashRound] = vOut[i].announce;
+    }
+    if (nAsked == 0)
+    {
+        strError = "no directory answered";
+        return false;
+    }
+    return true;
+}
+
+bool MixCachedRound(const uint256& hashRound, CMixRoundAnnouncement& announceOut)
+{
+    LOCK(g_mix.cs);
+    std::map<uint256, CMixRoundAnnouncement>::const_iterator it = g_mix.mapListed.find(hashRound);
+    if (it == g_mix.mapListed.end())
+        return false;
+    announceOut = it->second;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Note eligibility
+// ---------------------------------------------------------------------------
+
+int MixNoteEligibleHeight(int nNoteHeight)
+{
+    if (nNoteHeight <= 0)
+        return -1;
+    // An epoch's anchor covers the notes of blocks up to its last height, and a round takes
+    // an anchor only once it is this deep at JOIN.
+    const int64_t nEnd = GetEpochBoundaryHeight64(GetEpochForHeight(nNoteHeight) + 1) - 1;
+    const int64_t nHeight = std::max<int64_t>(
+        nEnd + EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH,
+        (int64_t)nNoteHeight + MIN_SHIELDED_SPEND_DEPTH);
+    return nHeight > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max()
+                                                     : (int)nHeight;
+}
+
+std::string MixNoteIneligibility(const CMixNoteFacts& note, const CMixRoundAnnouncement& announce)
+{
+    if (announce.nParticipants <= 0)
+        return "the round names no seats";
+    const uint64_t nRequired =
+        announce.nDenomination + announce.nFee / (uint64_t)announce.nParticipants;
+    if (note.nAmount != nRequired)
+        return strprintf("the round takes a note of exactly %s INN", FormatMoney(nRequired).c_str());
+    if (!note.strUnusable.empty())
+        return note.strUnusable;
+    if (!note.fLeafIndexKnown)
+        return "the note is not in the tree yet: its epoch has not been built";
+    if (note.nLeafIndex >= announce.nFinalizedTreeSize)
+        return "the note is newer than this round's anchor; it can join a round planned later";
+    return std::string();
 }

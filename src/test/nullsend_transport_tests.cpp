@@ -11,6 +11,7 @@
 
 #include "../netbase.h"
 #include "../nullsend_v2008.h"
+#include "../nullsend_driver.h"
 #include "../util.h"
 
 #ifndef WIN32
@@ -815,6 +816,87 @@ BOOST_AUTO_TEST_CASE(a_silent_proxy_cannot_hold_the_dial_open)
                         "the dial took " << nElapsed << " ms against a " << nBudget
                         << " ms budget, so the handshake is not bounded by it");
     BOOST_CHECK(proxy.GreetingSeen());
+}
+
+// The readiness probe offers the one method the dialer offers, reads the choice and closes: it
+// never authenticates or names a destination.
+BOOST_AUTO_TEST_CASE(the_proxy_probe_names_no_destination)
+{
+    {
+        ScriptedProxy proxy(0x02, 0x00);
+        BOOST_REQUIRE(proxy.Start());
+        CMixProxyStatus status;
+        BOOST_CHECK(ProbeMixProxy(CService("127.0.0.1", (unsigned short)proxy.Port()), 2000, status));
+        BOOST_CHECK(status.fReachable && status.fSocks5 && status.fIsolation && status.Ready());
+        BOOST_CHECK(status.nLatencyMs >= 0);
+        BOOST_CHECK_MESSAGE(status.strError.empty(), status.strError);
+        MilliSleep(100);
+        BOOST_CHECK(proxy.GreetingSeen());
+        const unsigned char pchExpected[3] = { 0x05, 0x01, 0x02 };
+        BOOST_CHECK(proxy.Greeting() == std::vector<unsigned char>(pchExpected, pchExpected + 3));
+        BOOST_CHECK(!proxy.AuthSeen());
+        BOOST_CHECK(!proxy.ConnectSeen());
+    }
+    {
+        // A SOCKS5 proxy that will not take credentials cannot carry a mix exchange.
+        ScriptedProxy proxy(0xFF, 0x00);
+        BOOST_REQUIRE(proxy.Start());
+        CMixProxyStatus status;
+        BOOST_CHECK(!ProbeMixProxy(CService("127.0.0.1", (unsigned short)proxy.Port()), 2000, status));
+        BOOST_CHECK(status.fReachable && status.fSocks5);
+        BOOST_CHECK(!status.fIsolation);
+        BOOST_CHECK(!status.strError.empty());
+    }
+    {
+        // Something that answers, but not as SOCKS5.
+        int hListen = socket(AF_INET, SOCK_STREAM, 0);
+        BOOST_REQUIRE(hListen >= 0);
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        BOOST_REQUIRE(::bind(hListen, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+        BOOST_REQUIRE(::listen(hListen, 1) == 0);
+        socklen_t len = sizeof(addr);
+        BOOST_REQUIRE(getsockname(hListen, (struct sockaddr*)&addr, &len) == 0);
+        boost::thread server([hListen]() {
+            const int hSocket = accept(hListen, NULL, NULL);
+            if (hSocket < 0)
+                return;
+            char buf[3];
+            if (recv(hSocket, buf, sizeof(buf), 0) > 0)
+                send(hSocket, "HT", 2, 0);
+            MilliSleep(200);
+            close(hSocket);
+        });
+        CMixProxyStatus status;
+        BOOST_CHECK(!ProbeMixProxy(CService("127.0.0.1", ntohs(addr.sin_port)), 2000, status));
+        BOOST_CHECK(status.fReachable);
+        BOOST_CHECK(!status.fSocks5);
+        BOOST_CHECK(!status.fIsolation);
+        BOOST_CHECK(status.strError.find("SOCKS5") != std::string::npos);
+        server.join();
+        close(hListen);
+    }
+    {
+        // Nothing listening: a port bound and released.
+        int hListen = socket(AF_INET, SOCK_STREAM, 0);
+        BOOST_REQUIRE(hListen >= 0);
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        BOOST_REQUIRE(::bind(hListen, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        BOOST_REQUIRE(getsockname(hListen, (struct sockaddr*)&addr, &len) == 0);
+        const unsigned short nPort = ntohs(addr.sin_port);
+        close(hListen);
+        CMixProxyStatus status;
+        BOOST_CHECK(!ProbeMixProxy(CService("127.0.0.1", nPort), 1000, status));
+        BOOST_CHECK(!status.fReachable);
+        BOOST_CHECK(!status.fSocks5);
+        BOOST_CHECK(!status.strError.empty());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

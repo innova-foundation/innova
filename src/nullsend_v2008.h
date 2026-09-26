@@ -252,7 +252,9 @@ enum MixFrameType
     MIX_FRAME_ANNOUNCE_PUT    = 20,  // coordinator -> directory: a signed announcement
     MIX_FRAME_ANNOUNCE_GET    = 21,  // anyone -> directory: an identity and a slot
     MIX_FRAME_ANNOUNCE_LIST   = 22,  // directory -> anyone: what it holds for them
-    MIX_FRAME_TYPE_MAX        = 22,
+    MIX_FRAME_ANNOUNCE_INDEX  = 23,  // anyone -> directory: every round still open to join
+    MIX_FRAME_ANNOUNCE_INDEX_LIST = 24,  // directory -> anyone: the reply to it
+    MIX_FRAME_TYPE_MAX        = 24,
 };
 
 enum MixFrameDecode
@@ -1225,6 +1227,8 @@ static const int64_t MIX_DIRECTORY_AHEAD_SLOTS = 2;
 /** Requests a directory answers in one second, whoever sends them: over Tor nothing tells two
  *  callers apart, so the ceiling is the directory's. An upload costs a key recovery. */
 static const int MIX_DIRECTORY_REQUESTS_PER_SECOND = 64;
+/** Rounds one INDEX reply carries, soonest first: about 25 KB at the most. */
+static const size_t MIX_DIRECTORY_INDEX_MAX = 64;
 
 bool EncodeMixAnnouncement(const CMixRoundAnnouncement& announce,
                            std::vector<unsigned char>& vchOut);
@@ -1243,6 +1247,13 @@ bool BuildMixAnnounceListBody(const std::vector<std::vector<unsigned char> >& vA
                               std::vector<unsigned char>& vchOut);
 bool ReadMixAnnounceListBody(const std::vector<unsigned char>& vchIn,
                              std::vector<std::vector<unsigned char> >& vAnnouncementsOut);
+
+/** INDEX_LIST: a two-byte count, then each encoded announcement with a two-byte length.
+ *  The INDEX request has an empty body, so it says nothing about who asks or what for. */
+bool BuildMixAnnounceIndexBody(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                               std::vector<unsigned char>& vchOut);
+bool ReadMixAnnounceIndexBody(const std::vector<unsigned char>& vchIn,
+                              std::vector<std::vector<unsigned char> >& vAnnouncementsOut);
 
 /** The one announcement in a directory's answer that this slot's record authorises, or
  *  false. Every candidate is decoded strictly and checked in full; a directory that answers
@@ -1346,6 +1357,12 @@ bool FetchMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEnd
                           const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
                           std::string* pstrError = NULL);
 
+/** Ask one directory, on its own circuit, for every round still open to join. Returns only
+ *  strictly decoded, validly signed announcements; false if unreachable or no INDEX support. */
+bool FetchMixRoundIndex(CMixDialer& dialer, const CMixDirectoryEndpoint& directory,
+                        std::vector<CMixRoundAnnouncement>& vOut, std::string* pstrError = NULL,
+                        int nTimeoutMs = 0);
+
 /** Answer one connection: read one frame within the deadline, hand it to the service, write
  *  its reply if it has one, and drop the connection. nNow zero reads the clock once the
  *  request has arrived. */
@@ -1384,11 +1401,14 @@ public:
     /** Every announcement held for this identity and slot, in the order they arrived. */
     void Get(const CPubKey& pubkeyCoordinator, int64_t nSlot,
              std::vector<std::vector<unsigned char> >& vOut) const;
+    /** Rounds whose join window has not closed, by start time then round id, at most
+     *  MIX_DIRECTORY_INDEX_MAX: every caller at one instant gets the same answer. */
+    void Index(int64_t nNow, std::vector<std::vector<unsigned char> >& vOut) const;
     void Expire(int64_t nNow);
     size_t Size() const;
 
-    /** PUT answers ACK, GET answers LIST; anything else, or anything past the second's
-     *  request budget, gets no reply. */
+    /** PUT answers ACK, GET answers LIST, INDEX answers INDEX_LIST; anything else, or
+     *  anything past the second's request budget, gets no reply. */
     bool Serve(MixFrameType nType, const std::vector<unsigned char>& vchPayload, int64_t nNow,
                MixFrameType& nReplyTypeOut, std::vector<unsigned char>& vchReplyOut);
 
@@ -1399,6 +1419,8 @@ private:
     struct Entry
     {
         uint256 hashRound;
+        int64_t nTime;
+        int64_t nJoinCloses;
         int64_t nEnds;
         std::vector<unsigned char> vchAnnouncement;
     };

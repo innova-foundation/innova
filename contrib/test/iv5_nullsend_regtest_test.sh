@@ -2,48 +2,33 @@
 # Copyright (c) 2026 The Innova developers
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#
-# One NullSend v2008 round, end to end, on a three-node regtest fleet.
-#
-# node0 mines, runs the directory and coordinates; node1 and node2 each prepare a note and
-# take a seat. Every piece runs as the node runs it: the coordinator plans in its publishing
-# window, publishes its rendezvous record from shielded funds, uploads its announcement to
-# the directory once the record is mined, and serves the round; each seat waits for the
-# record slot to settle on the deterministic finalized chain, fetches the announcement,
-# checks it against the record and takes every step inside its window.
-#
-# By default there is no Tor. Mix endpoints must be onion names and every exchange is dialed
-# through SOCKS5, so contrib/test/mix_socks_stub.py answers the handshake and forwards to
-# the local port asked for. Names are made up; nothing is anonymous.
-#
-# With IV5_NULLSEND_TOR=<tor binary> the round runs over the Tor network: node0 runs its
-# bundled tor (-nativetor), which hosts the directory and coordinator onion services, and the
-# seats dial through a separate tor client started from that binary. Needs a USE_NATIVETOR
-# build, outbound access to Tor, and port 9089 free on the host.
-#
-# A round runs on wall-clock slots of 600 s: the record is published in one slot and the
-# round starts 120 s into the next, so a run takes 30 to 45 minutes. The chain is mined at
-# about one block a second through the round, and the two seat nodes vote so finality
-# keeps up, which is what lets a seat read the record in time.
-#
-# Stops only its own daemons, by datadir. Never kills anything by name.
+
+# One NullSend v2008 round on three regtest nodes (node0 coordinates, node1/node2 seat) over
+# the SOCKS stub, or real Tor with IV5_NULLSEND_TOR=<tor binary>. Takes 30-45 minutes.
 
 set -u
 
-INNOVA_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 STUB="$INNOVA_ROOT/contrib/test/mix_socks_stub.py"
-TEST_DIR="${IV5_NULLSEND_TEST_DIR:-/tmp/innova_iv5_nullsend_$$}"
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_nullsend_regtest_test || exit 1
+TEST_DIR="${IV5_NULLSEND_TEST_DIR:-$(iv5_test_dir /tmp/innova_iv5_nullsend_$$)}"
 NUM_NODES=3
-BASE_PORT="${IV5_NULLSEND_BASE_PORT:-27650}"
-BASE_RPC="${IV5_NULLSEND_BASE_RPC:-27700}"
-STUB_PORT=$(( BASE_RPC + 90 ))
-COORD_PORT=$(( BASE_RPC + 91 ))
-DIR_PORT=$(( BASE_RPC + 92 ))
+BASE_PORT="${IV5_NULLSEND_BASE_PORT:-$(iv5_port 0 27650)}"
+BASE_RPC="${IV5_NULLSEND_BASE_RPC:-$(iv5_port 10 27700)}"
+STUB_PORT="$(iv5_port 20 27790)"
+COORD_PORT="$(iv5_port 21 27791)"
+DIR_PORT="$(iv5_port 22 27792)"
+# Nothing ever listens here: the proxy and directory a seat must report as unreachable.
+DEAD_PORT="$(iv5_port 24 27794)"
+DEAD_ONION="deadaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion"
 COORD_ONION="coordaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion"
 DIR_ONION="directoryaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion"
 TOR_BIN="${IV5_NULLSEND_TOR:-}"
-TOR_SOCKS_PORT=$(( BASE_RPC + 93 ))
+TOR_SOCKS_PORT="$(iv5_port 23 27793)"
 RPCUSER=nullsend
 RPCPASS=nullsendpass
 WALLETPASS=nullsendwallet
@@ -76,6 +61,13 @@ try:
     for k in sys.argv[2].split("."):
         v=v[int(k)] if isinstance(v,list) else v[k]
     print(v)
+except Exception:
+    print("")' "$1" "$2"; }
+# A Python expression over the parsed reply d.
+jpy() { python3 -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1])
+    print(eval(sys.argv[2]))
 except Exception:
     print("")' "$1" "$2"; }
 height() { rpc "$1" getblockcount 2>/dev/null | tr -d '"[:space:]'; }
@@ -166,6 +158,7 @@ cleanup() {
     for ((n=0; n<NUM_NODES; n++)); do stop_node "$n"; done
     [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null
     [ -n "$TOR_PID" ] && kill "$TOR_PID" 2>/dev/null
+    iv5_ports_release
     echo
     echo "passed: $PASSED  failed: $FAILED"
     if [ "$FAILED" -eq 0 ] && [ "${KEEP_DIR:-0}" != "1" ]; then
@@ -223,7 +216,15 @@ advance_epochs() {
 
 header "NullSend v2008 regtest round"
 [ -x "$INNOVAD" ] || { fail "innovad not found at $INNOVAD"; exit 1; }
+iv5_require_free_ports $(for ((n=0; n<NUM_NODES; n++)); do echo "$(node_port "$n") $(node_rpc "$n")"; done) \
+    "$STUB_PORT" "$COORD_PORT" "$DIR_PORT" "$DEAD_PORT" || exit 1
 rm -rf "$TEST_DIR"; mkdir -p "$TEST_DIR"
+HELP="$("$INNOVAD" -? 2>&1)"
+missing=""
+for opt in -mixdir= -mixproxy= -mixcoordinatorport= -mixdirectoryport= -mixonion=; do
+    echo "$HELP" | grep -q -- "$opt" || missing="$missing $opt"
+done
+[ -z "$missing" ] && success "-help documents every mix setting" || fail "-help does not document:$missing"
 
 if [ -n "$TOR_BIN" ]; then
     [ -x "$TOR_BIN" ] || { fail "tor not found at $TOR_BIN"; exit 1; }
@@ -307,6 +308,44 @@ for n in 1 2; do
     log "node$n: $(rpc "$n" z_getshieldedinfo | python3 -c 'import json,sys; d=json.load(sys.stdin); print("balance", d.get("privacy_vnext_balance"), "held", d.get("privacy_vnext_held_balance"))')"
 done
 
+header "2b. Settings, proxy readiness, notes and cancel from RPC"
+S="$(rpc 1 mixsettings 2>&1)"
+[ "$(jpy "$S" 'd["current"]["directories"] == ["'"$DIR_ONION:$DIR_PORT"'"]')" = "True" ] && \
+    [ "$(jget "$S" current.proxy_source)" = "config" ] && [ "$(jget "$S" running)" = "True" ] && \
+    success "mixsettings: the running service reads its directory and proxy from innova.conf" || \
+    fail "mixsettings: $S"
+PS="$(rpc 2 mixproxystatus 2>&1)"
+[ "$(jget "$PS" ready)" = "True" ] && [ "$(jget "$PS" isolation)" = "True" ] && \
+    success "mixproxystatus: the configured proxy is ready ($(jget "$PS" proxy), $(jget "$PS" latency_ms) ms)" || \
+    fail "mixproxystatus on the live proxy: $PS"
+SET="$(rpc 2 mixsetsetting mixproxy "127.0.0.1:$DEAD_PORT" 2>&1)"
+PS="$(rpc 2 mixproxystatus 2>&1)"
+[ "$(jget "$SET" applied)" = "now" ] && [ "$(jget "$PS" reachable)" = "False" ] && \
+    [ "$(jget "$PS" ready)" = "False" ] && [ "$(jget "$PS" proxy)" = "127.0.0.1:$DEAD_PORT" ] && \
+    [ "$(jget "$PS" source)" = "settings file" ] && \
+    success "mixsetsetting moves the proxy at once and mixproxystatus reports the dead one: $(jget "$PS" error)" || \
+    fail "a dead proxy: set $SET status $PS"
+SETFILE="$(jget "$(rpc 2 mixsettings)" settings_file)"
+grep -q "mixproxy=127.0.0.1:$DEAD_PORT" "$SETFILE" 2>/dev/null && \
+    success "the proxy change is kept in $SETFILE" || fail "mixsettings.conf: $SETFILE: $(cat "$SETFILE" 2>&1)"
+rpc 2 mixsetsetting mixproxy "" >/dev/null 2>&1
+PS="$(rpc 2 mixproxystatus 2>&1)"
+[ "$(jget "$PS" ready)" = "True" ] && [ "$(jget "$PS" source)" = "config" ] && \
+    success "an empty value returns the proxy to innova.conf" || fail "proxy restore: $PS"
+BAD="$(rpc 2 mixsetsetting mixdir "example.com:80" 2>&1)"
+echo "$BAD" | grep -q "onion" && success "mixsetsetting refuses a directory that is not an onion" || fail "bad mixdir accepted: $BAD"
+SET="$(rpc 1 mixsetsetting mixcoordinatorport 4444 2>&1)"
+[ "$(jget "$SET" restart_required)" = "True" ] && [ "$(jget "$(rpc 1 mixsettings)" restart_required)" = "True" ] && \
+    success "a port change is kept for the next start and says so" || fail "port change: $SET"
+rpc 1 mixsetsetting mixcoordinatorport "" >/dev/null 2>&1
+[ "$(jget "$(rpc 1 mixsettings)" restart_required)" = "False" ] && success "removing it clears the restart" || fail "restart flag stuck: $(rpc 1 mixsettings)"
+for n in 1 2; do
+    N="$(rpc "$n" mixnotes 2>&1)"
+    [ "$(jpy "$N" 'sum(1 for x in d["notes"] if x["prepared"] and x["usable"] and x["eligible_height"] > 0)')" -ge 1 ] 2>/dev/null && \
+        success "node$n mixnotes: a prepared, usable note, a round's anchor covers it from height $(jpy "$N" 'min(x["eligible_height"] for x in d["notes"] if x["prepared"])') (tip $(jget "$N" tip))" || \
+        fail "node$n mixnotes: $N"
+done
+
 header "3. A round on the clock"
 # About one block a second from here on; the voters keep finality current on their own.
 ( while :; do rpc 0 setgenerate true 1 1 >/dev/null 2>&1; sleep 1; done ) &
@@ -328,6 +367,59 @@ for _ in $(seq 1 90); do
     sleep 10
 done
 is_int "$SLOT" && [ "$SLOT" -gt 0 ] && success "the coordinator planned its round for record slot $SLOT" || { fail "the coordinator never planned: $(jget "$(rpc 0 mixstatus)" jobs.0.status)"; exit 1; }
+# A seat for a slot far ahead waits to find its round; cancelling it costs nothing.
+J="$(rpc 1 mixjoin "$PUBKEY" $(( SLOT + 50 )) 2>&1)"
+DECOY="$(jget "$J" id)"
+if is_int "$DECOY"; then
+    C="$(rpc 1 mixcancel "$DECOY" 2>&1)"
+    M="$(rpc 1 mixstatus 2>&1)"
+    [ "$(jget "$C" cancelled)" = "True" ] && [ "$(jget "$M" jobs.0.cancelled)" = "True" ] && \
+        [ "$(jget "$M" jobs.0.finished)" = "True" ] && is_int "$(jget "$M" jobs.0.started)" && \
+        [ "$(jget "$M" jobs.0.updated)" -ge "$(jget "$M" jobs.0.started)" ] && \
+        success "mixcancel stops a seat still finding its round: $(jget "$M" jobs.0.status)" || \
+        fail "mixcancel on a finding seat: $C / $M"
+    AGAIN="$(rpc 1 mixcancel "$DECOY" 2>&1)"
+    echo "$AGAIN" | grep -q "ended" && success "a finished seat cannot be cancelled again" || fail "second cancel: $AGAIN"
+    CL="$(rpc 1 mixclear 2>&1)"
+    [ "$(jget "$CL" cleared)" = "1" ] && [ "$(jpy "$(rpc 1 mixstatus)" 'len(d["jobs"])')" = "0" ] && \
+        success "mixclear removes the cancelled seat" || fail "mixclear: $CL / $(rpc 1 mixstatus)"
+else
+    fail "decoy mixjoin: $J"
+fi
+
+# The round, found through the directory rather than handed over.
+ROUND=""
+for _ in $(seq 1 36); do
+    L="$(rpc 1 mixlistrounds 2>&1)"
+    ROUND="$(jpy "$L" '[r["round"] for r in d["rounds"] if r["coordinator"] == "'"$PUBKEY"'" and r["recordslot"] == '"$SLOT"'][0]')"
+    [ -n "$ROUND" ] && break
+    sleep 10
+done
+if [ -n "$ROUND" ]; then
+    ROW="$(jpy "$L" '[r for r in d["rounds"] if r["round"] == "'"$ROUND"'"][0]')"
+    success "mixlistrounds finds the round through the directory: $ROW"
+    [ "$(jpy "$L" '[r for r in d["rounds"] if r["round"] == "'"$ROUND"'"][0]["seats"]')" = "$SEATS" ] && \
+        [ "$(jpy "$L" '[r for r in d["rounds"] if r["round"] == "'"$ROUND"'"][0]["record"] in ("pending", "settled")')" = "True" ] && \
+        [ "$(jpy "$L" 'len(d["failed"])')" = "0" ] && \
+        success "the listed round names its seats and this chain's record for it is pending or settled" || \
+        fail "listed round fields: $ROW / failed $(jpy "$L" 'd["failed"]')"
+    for n in 1 2; do
+        rpc "$n" mixlistrounds >/dev/null 2>&1
+        N="$(rpc "$n" mixnotes "$ROUND" 2>&1)"
+        [ "$(jpy "$N" 'any(x.get("eligible") for x in d["notes"])')" = "True" ] && \
+            success "node$n mixnotes: a note can take a seat in the listed round" || \
+            fail "node$n has no note eligible for the round: $N"
+    done
+else
+    fail "mixlistrounds never listed the round: $L"
+fi
+# A directory that does not answer is reported, not fatal; the live list follows the setting.
+rpc 2 mixsetsetting mixdir "$DEAD_ONION:$DEAD_PORT" >/dev/null 2>&1
+L2="$(rpc 2 mixlistrounds 2>&1)"
+echo "$L2" | grep -q "$DEAD_ONION" && success "mixlistrounds reports a directory that does not answer" || fail "dead directory: $L2"
+rpc 2 mixsetsetting mixdir "" >/dev/null 2>&1
+[ "$(jpy "$(rpc 2 mixsettings)" 'd["current"]["directories"] == ["'"$DIR_ONION:$DIR_PORT"'"]')" = "True" ] && \
+    success "the directory list returns to innova.conf at once" || fail "mixdir restore: $(rpc 2 mixsettings)"
 for n in 1 2; do
     J="$(rpc "$n" mixjoin "$PUBKEY" "$SLOT" 2>&1)"
     [ -n "$(jget "$J" runs)" ] && success "node$n joins the round that runs at $(jget "$J" runs)" || { fail "node$n mixjoin: $J"; exit 1; }
@@ -356,6 +448,18 @@ case "$(jget "$(rpc 0 mixstatus)" jobs.0.status)" in
 esac
 [ "$S1" = "12" ] && success "seat 1 completed the round" || fail "seat 1 ended in state $S1: $(jget "$(rpc 1 mixstatus)" jobs.0.status)"
 [ "$S2" = "12" ] && success "seat 2 completed the round" || fail "seat 2 ended in state $S2: $(jget "$(rpc 2 mixstatus)" jobs.0.status)"
+
+header "5. Finished seats"
+M="$(rpc 1 mixstatus 2>&1)"
+[ "$(jget "$M" jobs.0.finished)" = "True" ] && [ "$(jget "$M" jobs.0.updated)" -ge "$(jget "$M" jobs.0.started)" ] 2>/dev/null && \
+    success "mixstatus: the seat finished, started $(jget "$M" jobs.0.started), updated $(jget "$M" jobs.0.updated)" || fail "mixstatus timestamps: $M"
+C="$(rpc 1 mixcancel "$(jget "$M" jobs.0.id)" 2>&1)"
+echo "$C" | grep -q "ended" && success "a finished seat is not cancelled" || fail "cancel after the round: $C"
+for n in 1 2; do
+    CL="$(rpc "$n" mixclear 2>&1)"
+    [ "$(jget "$CL" cleared)" = "1" ] && [ "$(jpy "$(rpc "$n" mixstatus)" 'len(d["jobs"])')" = "0" ] && \
+        success "node$n mixclear removes its finished seat" || fail "node$n mixclear: $CL"
+done
 
 sleep 30
 for n in 1 2; do

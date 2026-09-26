@@ -90,13 +90,20 @@ struct PoolSnapshot
 // One job from mixstatus.
 struct MixJob
 {
-    MixJob() : nRecordSlot(0) {}
+    MixJob() : nId(0), nRecordSlot(0), nStarted(0), nUpdated(0), fFinished(false),
+               fCancelled(false), fCancelPending(false) {}
 
+    qint64 nId;
     QString strRole;
     QString strState;
     QString strStatus;
     QString strRound;
     qint64 nRecordSlot;
+    qint64 nStarted;
+    qint64 nUpdated;
+    bool fFinished;
+    bool fCancelled;
+    bool fCancelPending;
 
     bool Terminal() const;
     QString StateName() const;
@@ -104,11 +111,89 @@ struct MixJob
 
 struct MixSnapshot
 {
-    MixSnapshot() : nDirectoryEntries(0), nRecords(0) {}
+    MixSnapshot() : nDirectoryEntries(0), nRecords(0), fRunning(false), nDirectories(0) {}
 
     QList<MixJob> vJobs;
     int nDirectoryEntries;
     int nRecords;
+    bool fRunning;
+    int nDirectories;
+    QString strProxy;
+    QString strProxySource;
+};
+
+// mixsettings: what runs now and what the next start uses.
+struct MixSettingsView
+{
+    MixSettingsView() : fRunning(false), fRestartRequired(false) {}
+
+    bool fRunning;
+    QStringList vDirectories;
+    QString strProxy;
+    QString strProxySource;
+    QStringList vNextDirectories;
+    QString strNextProxy;
+    QString strSettingsFile;
+    bool fRestartRequired;
+};
+
+// mixproxystatus.
+struct MixProxyView
+{
+    MixProxyView() : fReachable(false), fSocks5(false), fIsolation(false), fReady(false),
+                     nLatencyMs(-1) {}
+
+    QString strProxy;
+    QString strSource;
+    bool fReachable;
+    bool fSocks5;
+    bool fIsolation;
+    bool fReady;
+    qint64 nLatencyMs;
+    QString strError;
+};
+
+// One row of mixlistrounds.
+struct MixRoundRow
+{
+    MixRoundRow() : nRecordSlot(0), dDenomination(0), dNoteAmount(0), nSeats(0), nStarts(0),
+                    nJoinCloses(0), nEnds(0), fJoinable(false), nEligibleNotes(0) {}
+
+    QString strRound;
+    QString strCoordinator;
+    qint64 nRecordSlot;
+    double dDenomination;
+    double dNoteAmount;
+    int nSeats;
+    qint64 nStarts;
+    qint64 nJoinCloses;
+    qint64 nEnds;
+    QString strRecord;
+    bool fJoinable;
+    int nEligibleNotes;
+    QStringList vDirectories;
+};
+
+// One row of mixnotes.
+struct MixNoteRow
+{
+    MixNoteRow() : dAmount(0), nHeight(0), fPrepared(false), fInTree(false), fUsable(false),
+                   nEligibleHeight(-1), nEligibleInBlocks(-1), nEligibleTime(0),
+                   fHaveRound(false), fEligible(false) {}
+
+    QString strNote;
+    double dAmount;
+    int nHeight;
+    bool fPrepared;
+    bool fInTree;
+    bool fUsable;
+    QString strReason;
+    int nEligibleHeight;
+    int nEligibleInBlocks;
+    qint64 nEligibleTime;
+    bool fHaveRound;
+    bool fEligible;
+    QString strRoundReason;
 };
 
 // One row of z_listiv5holds.
@@ -131,11 +216,16 @@ struct MixTier
 
 QList<MixTier> MixTiers();
 QString FormatInn(qint64 nAmount);
-// Count of -mixdir entries; a seat has nothing to fetch from without one.
+// Directories the running mix service fetches from; a seat has nothing to fetch from without one.
 int MixDirectoriesConfigured();
 
 bool FetchFinality(FinalitySnapshot& out, QString& errorOut);
 bool FetchMix(MixSnapshot& out, QString& errorOut);
+bool FetchMixSettings(MixSettingsView& out, QString& errorOut);
+bool FetchMixProxy(MixProxyView& out, QString& errorOut);
+bool FetchMixRounds(QList<MixRoundRow>& out, QStringList& failuresOut, QString& errorOut);
+// strRound empty: no round; otherwise a round id from the last FetchMixRounds.
+bool FetchMixNotes(const QString& strRound, QList<MixNoteRow>& out, QString& errorOut);
 bool FetchHolds(QList<HeldNote>& out, QString& errorOut);
 bool FetchPool(PoolSnapshot& out, QString& errorOut);
 

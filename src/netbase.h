@@ -203,6 +203,11 @@ bool BuildSocks5AuthRequest(const ProxyCredentials& auth, std::vector<unsigned c
 /** Dial strDest:port through SOCKS5 by hostname: never resolved locally, no direct fallback.
  *  With credentials only username/password is offered, so a non-isolating proxy fails. */
 bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, int port, SOCKET& hSocketRet, int nTimeout, const ProxyCredentials* pAuth = NULL);
+/** Connect to a SOCKS5 proxy, offer only the username/password method and read the choice,
+ *  then close. No destination is named. False when the TCP connect fails; fSocks5Out and
+ *  fAuthOut say what the proxy answered. */
+bool ProbeSocks5Proxy(const CService& addrProxy, int nTimeout, bool& fSocks5Out, bool& fAuthOut,
+                      std::string& strError);
 /** Return readable error string for a network error code */
 std::string NetworkErrorString(int err);
 /** Close socket and set hSocket to INVALID_SOCKET */

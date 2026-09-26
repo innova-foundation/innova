@@ -287,6 +287,13 @@ extern json_spirit::Value mixprepare(const json_spirit::Array& params, bool fHel
 extern json_spirit::Value mixcoordinate(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value mixjoin(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value mixstatus(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixsettings(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixsetsetting(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixproxystatus(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixlistrounds(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixnotes(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixcancel(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value mixclear(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value podverify(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getfinalityinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp

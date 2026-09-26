@@ -590,15 +590,19 @@ Value mixjoin(const Array& params, bool fHelp)
             HelpRequiringPassphrase() + "\n"
             "\nArguments:\n"
             "1. \"coordinator\" (string, required) the coordinator's public key, hex\n"
-            "2. recordslot    (numeric, required) the slot the coordinator's record names\n");
+            "2. recordslot    (numeric, required) the slot the coordinator's record names\n"
+            "\nResult:\n"
+            "{ \"id\": n (the seat in mixstatus and mixcancel), \"recordslot\": n, \"runs\": t }\n");
     EnsureWalletIsUnlocked();
     const std::vector<unsigned char> vchKey = ParseHex(params[0].get_str());
     const CPubKey pubkey(vchKey);
     const int64_t nRecordSlot = params[1].get_int64();
     std::string strError;
-    if (!MixStartSeat(pubkey, nRecordSlot, strError))
+    int64_t nId = 0;
+    if (!MixStartSeat(pubkey, nRecordSlot, strError, &nId))
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
     Object result;
+    result.push_back(Pair("id", nId));
     result.push_back(Pair("recordslot", nRecordSlot));
     result.push_back(Pair("runs", (int64_t)((nRecordSlot + 1) * MIX_RENDEZVOUS_SLOT_SECONDS +
                                             MIX_RENDEZVOUS_MIN_START_SLACK)));
@@ -611,7 +615,8 @@ Value mixstatus(const Array& params, bool fHelp)
         throw std::runtime_error(
             "mixstatus\n"
             "\nThe NullSend rounds this node is running or taking part in, and what its "
-            "directory holds.\n");
+            "directory holds. Each job carries an id (mixcancel), when it started and when its "
+            "state or status last changed (unix time), and whether it has finished.\n");
     std::vector<CMixJobStatus> vJobs;
     size_t nEntries = 0, nRecords = 0;
     GetMixServiceStatus(vJobs, nEntries, nRecords);
@@ -619,17 +624,438 @@ Value mixstatus(const Array& params, bool fHelp)
     for (size_t i = 0; i < vJobs.size(); i++)
     {
         Object job;
+        job.push_back(Pair("id", vJobs[i].nId));
         job.push_back(Pair("role", vJobs[i].strRole));
         job.push_back(Pair("state", vJobs[i].strState));
         job.push_back(Pair("status", vJobs[i].strStatus));
         job.push_back(Pair("round", vJobs[i].strRound));
         job.push_back(Pair("recordslot", vJobs[i].nRecordSlot));
+        if (vJobs[i].strRole == "seat")
+        {
+            job.push_back(Pair("started", vJobs[i].nStarted));
+            job.push_back(Pair("updated", vJobs[i].nUpdated));
+            job.push_back(Pair("cancelled", vJobs[i].fCancelled));
+            job.push_back(Pair("cancel_pending", vJobs[i].fCancelPending));
+        }
+        job.push_back(Pair("finished", vJobs[i].fFinished));
         jobs.push_back(job);
     }
+    CMixSettings running;
+    bool fRunning = false;
+    GetRunningMixSettings(running, fRunning);
     Object result;
     result.push_back(Pair("jobs", jobs));
     result.push_back(Pair("directoryentries", (int64_t)nEntries));
     result.push_back(Pair("records", (int64_t)nRecords));
+    result.push_back(Pair("running", fRunning));
+    result.push_back(Pair("directories", (int64_t)running.vDirectories.size()));
+    result.push_back(Pair("proxy", running.strProxy));
+    result.push_back(Pair("proxy_source", running.strProxySource));
+    return result;
+}
+
+static Object MixSettingsObject(const CMixSettings& settings)
+{
+    Object obj;
+    Array dirs;
+    for (size_t i = 0; i < settings.vDirectories.size(); i++)
+        dirs.push_back(strprintf("%s:%d", settings.vDirectories[i].strHost.c_str(),
+                                 settings.vDirectories[i].nPort));
+    obj.push_back(Pair("directories", dirs));
+    obj.push_back(Pair("proxy", settings.strProxy));
+    obj.push_back(Pair("proxy_source", settings.strProxySource));
+    obj.push_back(Pair("onion", settings.strOnion));
+    obj.push_back(Pair("coordinatorport", settings.nCoordinatorPort));
+    obj.push_back(Pair("directoryport", settings.nDirectoryPort));
+    return obj;
+}
+
+static bool MixDirectoryListsEqual(const std::vector<CMixDirectoryEndpoint>& a,
+                                   const std::vector<CMixDirectoryEndpoint>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); i++)
+        if (a[i].strHost != b[i].strHost || a[i].nPort != b[i].nPort)
+            return false;
+    return true;
+}
+
+Value mixsettings(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw std::runtime_error(
+            "mixsettings\n"
+            "\nThe NullSend settings the running service uses, and those the next start will "
+            "use. A key set with mixsetsetting is kept in the mix settings file and takes "
+            "precedence over innova.conf.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"running\": true|false,\n"
+            "  \"current\": { directories, proxy, proxy_source, onion, coordinatorport, directoryport },\n"
+            "  \"next_start\": { the same, from the settings file, innova.conf and the command line },\n"
+            "  \"settings_file\": \"path\",\n"
+            "  \"overridden\": [ keys the settings file sets ],\n"
+            "  \"restart_required\": true|false  (a port or the onion name differs until a restart)\n"
+            "}\n");
+    CMixSettings running, next;
+    bool fRunning = false;
+    GetRunningMixSettings(running, fRunning);
+    std::string strError;
+    const bool fResolved = ResolveMixSettings(next, strError);
+    Object result;
+    result.push_back(Pair("running", fRunning));
+    result.push_back(Pair("current", MixSettingsObject(running)));
+    if (fResolved)
+        result.push_back(Pair("next_start", MixSettingsObject(next)));
+    else
+        result.push_back(Pair("next_start_error", strError));
+    result.push_back(Pair("settings_file", GetMixSettingsPath().string()));
+    Array overridden;
+    for (size_t i = 0; i < next.vOverridden.size(); i++)
+        overridden.push_back(next.vOverridden[i]);
+    result.push_back(Pair("overridden", overridden));
+    const bool fRestart = fResolved && fRunning &&
+                          (running.strOnion != next.strOnion ||
+                           running.nCoordinatorPort != next.nCoordinatorPort ||
+                           running.nDirectoryPort != next.nDirectoryPort ||
+                           running.strProxy != next.strProxy ||
+                           !MixDirectoryListsEqual(running.vDirectories, next.vDirectories));
+    result.push_back(Pair("restart_required", fRestart));
+    return result;
+}
+
+Value mixsetsetting(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw std::runtime_error(
+            "mixsetsetting \"name\" \"value\"\n"
+            "\nChange one NullSend setting and keep it in the mix settings file, which takes "
+            "precedence over innova.conf. mixdir and mixproxy apply at once to seats started "
+            "from now on (a seat already running keeps what it started with); mixonion, "
+            "mixcoordinatorport and mixdirectoryport take effect at the next start. An empty "
+            "value removes the override, returning the setting to innova.conf or its default.\n"
+            "\nArguments:\n"
+            "1. \"name\"   (string, required) mixdir, mixproxy, mixonion, mixcoordinatorport or mixdirectoryport\n"
+            "2. \"value\"  (string, required) mixdir: <onion>:<port>[,<onion>:<port>...]; "
+            "mixproxy: <ip>:<port>; mixonion: a v3 onion name; ports: 0 (off) to 65535\n"
+            "\nResult:\n"
+            "{ \"setting\", \"value\", \"applied\": \"now\"|\"next start\", \"restart_required\": true|false }\n");
+    const std::string strName = params[0].get_str();
+    const std::string strValue = params[1].get_str();
+    bool fRestart = false;
+    std::string strError;
+    if (!MixSetSetting(strName, strValue, fRestart, strError))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+    Object result;
+    result.push_back(Pair("setting", strName));
+    result.push_back(Pair("value", strValue));
+    result.push_back(Pair("applied", MixSettingIsLive(strName) && !fRestart ? "now"
+                                                                              : "next start"));
+    result.push_back(Pair("restart_required", fRestart));
+    if (strName == "mixproxy" && !strValue.empty())
+    {
+        CService addr;
+        if (ParseMixProxy(strValue, addr, strError) && !addr.IsLocal())
+            result.push_back(Pair("warning", "the proxy is not on this host: the path to it "
+                                             "carries every mix destination in the clear"));
+    }
+    return result;
+}
+
+Value mixproxystatus(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw std::runtime_error(
+            "mixproxystatus\n"
+            "\nWhether the SOCKS proxy mix exchanges go through is ready: a TCP connect to it and "
+            "the SOCKS5 method greeting the dialer sends, then the connection is closed. No "
+            "destination is named, so the probe reaches nothing past the proxy. Bounded to 5 s.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"proxy\": \"ip:port\",\n"
+            "  \"source\": \"nativetor\"|\"default\"|\"config\"|\"settings file\",\n"
+            "  \"reachable\": true|false,  (the TCP connect succeeded)\n"
+            "  \"socks5\": true|false,     (it answered as SOCKS5)\n"
+            "  \"isolation\": true|false,  (it takes per-exchange credentials, which every mix exchange uses)\n"
+            "  \"ready\": true|false,\n"
+            "  \"latency_ms\": n,\n"
+            "  \"error\": \"...\"\n"
+            "}\n");
+    CMixProxyStatus status;
+    GetMixProxyStatus(5000, status);
+    Object result;
+    result.push_back(Pair("proxy", status.strProxy));
+    result.push_back(Pair("source", status.strSource));
+    result.push_back(Pair("reachable", status.fReachable));
+    result.push_back(Pair("socks5", status.fSocks5));
+    result.push_back(Pair("isolation", status.fIsolation));
+    result.push_back(Pair("ready", status.Ready()));
+    result.push_back(Pair("latency_ms", status.nLatencyMs));
+    if (!status.strError.empty())
+        result.push_back(Pair("error", status.strError));
+    return result;
+}
+
+// Seconds per block over the recent chain, or -1 when there is too little of it.
+static double MixRecentBlockSeconds(int& nTipOut)
+{
+    LOCK(cs_main);
+    nTipOut = pindexBest ? pindexBest->nHeight : -1;
+    if (!pindexBest)
+        return -1;
+    const int nSpan = std::min(pindexBest->nHeight, 240);
+    if (nSpan <= 0)
+        return -1;
+    const CBlockIndex* pOld = pindexBest->GetAncestor(pindexBest->nHeight - nSpan);
+    if (!pOld)
+        return -1;
+    return std::max(0.001, (double)(pindexBest->GetBlockTime() - pOld->GetBlockTime()) / nSpan);
+}
+
+static std::vector<uint64_t> MixTierNoteAmounts()
+{
+    const CMixPolicy policy = CMixPolicy::Standard();
+    std::vector<uint64_t> v;
+    for (size_t i = 0; i < policy.vDenominations.size(); i++)
+        v.push_back(policy.vDenominations[i] + policy.nFeeSharePerSeat);
+    return v;
+}
+
+static void ReadMixNoteFacts(std::vector<CMixNoteFacts>& vOut)
+{
+    vOut.clear();
+    if (!pwalletMain)
+        return;
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    CTxDB txdb("r");
+    pwalletMain->ListPrivacyVNextMixNoteFacts(txdb, MixTierNoteAmounts(), nBestHeight + 1, vOut);
+}
+
+Value mixlistrounds(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw std::runtime_error(
+            "mixlistrounds ( \"directory\" )\n"
+            "\nAsk the configured mix directories, or only the one named, for every round still "
+            "open to join. Each directory is asked once, on a Tor circuit of its own, with a "
+            "request that carries nothing: the reply is the same for every caller, so a "
+            "directory learns only that someone asked. A listing is untrusted; the seat takes "
+            "only the round the coordinator's record authorises, and \"record\" says what this "
+            "node's chain shows now.\n"
+            "\nArguments:\n"
+            "1. \"directory\"  (string, optional) <onion>:<port>; default every -mixdir\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"rounds\": [ { \"round\", \"coordinator\", \"recordslot\", \"denomination\", "
+            "\"note_amount\", \"seats\", \"fee\", \"starts\", \"join_closes\", \"ends\", "
+            "\"schedule\", \"endpoint\", \"anchor_tree_size\", \"record\" (settled|pending|none|"
+            "another round|unreadable), \"joinable\", \"eligible_notes\", \"directories\" } ],\n"
+            "  \"failed\": [ { \"directory\", \"error\" } ]\n"
+            "}\n");
+    const std::string strOnly = params.size() > 0 ? params[0].get_str() : std::string();
+    std::vector<CMixListedRound> vRounds;
+    std::vector<std::pair<std::string, std::string> > vFailures;
+    std::string strError;
+    const bool fListed = MixListRounds(strOnly, vRounds, vFailures, strError);
+    if (!fListed && vFailures.empty())
+        throw JSONRPCError(RPC_MISC_ERROR, strError);
+    std::vector<CMixNoteFacts> vNotes;
+    ReadMixNoteFacts(vNotes);
+    const int64_t nNow = GetTime();
+    Array rounds;
+    for (size_t i = 0; i < vRounds.size(); i++)
+    {
+        const CMixRoundAnnouncement& a = vRounds[i].announce;
+        const int64_t nSlot = MixRendezvousRecordSlot(a.nTime);
+        Object row;
+        row.push_back(Pair("round", a.hashRound.ToString()));
+        row.push_back(Pair("coordinator", HexStr(a.pubkeyCoordinator.begin(),
+                                                 a.pubkeyCoordinator.end())));
+        row.push_back(Pair("recordslot", nSlot));
+        row.push_back(Pair("denomination", ValueFromAmount((int64_t)a.nDenomination)));
+        const uint64_t nShare = a.nParticipants > 0 ? a.nFee / (uint64_t)a.nParticipants : 0;
+        row.push_back(Pair("note_amount", ValueFromAmount((int64_t)(a.nDenomination + nShare))));
+        row.push_back(Pair("seats", a.nParticipants));
+        row.push_back(Pair("fee", ValueFromAmount((int64_t)a.nFee)));
+        row.push_back(Pair("starts", a.nTime));
+        row.push_back(Pair("join_closes", a.JoinCloses()));
+        row.push_back(Pair("ends", a.Ends()));
+        Object schedule;
+        schedule.push_back(Pair("join", (int)a.nJoinSecs));
+        schedule.push_back(Pair("view", (int)a.nViewSecs));
+        schedule.push_back(Pair("token", (int)a.nTokenSecs));
+        schedule.push_back(Pair("output", (int)a.nOutputSecs));
+        schedule.push_back(Pair("approve", (int)a.nApproveSecs));
+        schedule.push_back(Pair("nonce", (int)a.nNonceSecs));
+        schedule.push_back(Pair("response", (int)a.nResponseSecs));
+        schedule.push_back(Pair("terminal", (int)a.nTerminalSecs));
+        row.push_back(Pair("schedule", schedule));
+        row.push_back(Pair("endpoint", strprintf("%s:%d", a.strEndpoint.c_str(), a.nPort)));
+        row.push_back(Pair("anchor_tree_size", (int64_t)a.nFinalizedTreeSize));
+        CMixRendezvous rendezvous;
+        bool fPending = false;
+        std::string strRecord;
+        std::string strRecordState;
+        if (ReadSettledMixRendezvous(a.pubkeyCoordinator, nSlot, rendezvous, fPending, strRecord))
+        {
+            if (rendezvous.IsNull())
+                strRecordState = "none";
+            else if (MixAnnouncementMatchesRendezvous(a, rendezvous))
+                strRecordState = "settled";
+            else
+                strRecordState = "another round";
+        }
+        else
+            strRecordState = fPending ? "pending" : "unreadable";
+        row.push_back(Pair("record", strRecordState));
+        // Joinable from here: the seat still checks everything itself.
+        const bool fJoinable = nNow < a.JoinCloses() &&
+                               (strRecordState == "settled" || strRecordState == "pending");
+        row.push_back(Pair("joinable", fJoinable));
+        int nEligible = 0;
+        for (size_t k = 0; k < vNotes.size(); k++)
+            if (MixNoteIneligibility(vNotes[k], a).empty())
+                nEligible++;
+        row.push_back(Pair("eligible_notes", nEligible));
+        Array dirs;
+        for (size_t k = 0; k < vRounds[i].vDirectories.size(); k++)
+            dirs.push_back(vRounds[i].vDirectories[k]);
+        row.push_back(Pair("directories", dirs));
+        rounds.push_back(row);
+    }
+    Array failed;
+    for (size_t i = 0; i < vFailures.size(); i++)
+    {
+        Object f;
+        f.push_back(Pair("directory", vFailures[i].first));
+        f.push_back(Pair("error", vFailures[i].second));
+        failed.push_back(f);
+    }
+    Object result;
+    result.push_back(Pair("rounds", rounds));
+    result.push_back(Pair("failed", failed));
+    return result;
+}
+
+Value mixnotes(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw std::runtime_error(
+            "mixnotes ( \"round\" )\n"
+            "\nEvery unspent note of a tier's size, whether it can take a seat, and from which "
+            "height a round's anchor can cover it. With a round id from mixlistrounds, whether "
+            "each note can join that round and why not. The height is a chain fact; the time "
+            "is an estimate from the recent block rate, and a round must also be planned after "
+            "it.\n"
+            "\nArguments:\n"
+            "1. \"round\"  (string, optional) a round id the last mixlistrounds returned\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"tip\": n, \"block_seconds\": x,\n"
+            "  \"round\": \"id\" (when given),\n"
+            "  \"notes\": [ { \"note\": \"txid:n\", \"amount\", \"height\", \"prepared\", "
+            "\"in_tree\", \"usable\", \"reason\", \"eligible_height\", \"eligible_in_blocks\", "
+            "\"eligible_time\", \"eligible\" (for the round), \"round_reason\" } ]\n"
+            "}\n");
+    CMixRoundAnnouncement announce;
+    bool fRound = false;
+    if (params.size() > 0 && !params[0].get_str().empty())
+    {
+        uint256 hashRound;
+        hashRound.SetHex(params[0].get_str());
+        if (!MixCachedRound(hashRound, announce))
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "that round is not in the last listing: run mixlistrounds first");
+        fRound = true;
+    }
+    int nTip = -1;
+    const double dBlockSecs = MixRecentBlockSeconds(nTip);
+    std::vector<CMixNoteFacts> vNotes;
+    ReadMixNoteFacts(vNotes);
+    const int64_t nNow = GetTime();
+    Array notes;
+    for (size_t i = 0; i < vNotes.size(); i++)
+    {
+        const CMixNoteFacts& n = vNotes[i];
+        Object row;
+        row.push_back(Pair("note", strprintf("%s:%u", n.txhash.GetHex().c_str(), n.nOutputIndex)));
+        row.push_back(Pair("amount", ValueFromAmount((int64_t)n.nAmount)));
+        row.push_back(Pair("height", n.nHeight));
+        row.push_back(Pair("prepared", n.fPrepared));
+        row.push_back(Pair("in_tree", n.fLeafIndexKnown));
+        row.push_back(Pair("usable", n.strUnusable.empty()));
+        if (!n.strUnusable.empty())
+            row.push_back(Pair("reason", n.strUnusable));
+        const int nEligibleHeight = MixNoteEligibleHeight(n.nHeight);
+        row.push_back(Pair("eligible_height", nEligibleHeight));
+        if (nEligibleHeight >= 0 && nTip >= 0)
+        {
+            const int nBlocks = std::max(0, nEligibleHeight - nTip);
+            row.push_back(Pair("eligible_in_blocks", nBlocks));
+            if (dBlockSecs > 0)
+                row.push_back(Pair("eligible_time", nNow + (int64_t)(nBlocks * dBlockSecs)));
+        }
+        if (fRound)
+        {
+            const std::string strWhy = MixNoteIneligibility(n, announce);
+            row.push_back(Pair("eligible", strWhy.empty()));
+            if (!strWhy.empty())
+                row.push_back(Pair("round_reason", strWhy));
+        }
+        notes.push_back(row);
+    }
+    Object result;
+    result.push_back(Pair("tip", nTip));
+    result.push_back(Pair("block_seconds", dBlockSecs));
+    if (fRound)
+        result.push_back(Pair("round", announce.hashRound.ToString()));
+    result.push_back(Pair("notes", notes));
+    return result;
+}
+
+Value mixcancel(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw std::runtime_error(
+            "mixcancel id ( force )\n"
+            "\nCancel a running seat by its mixstatus id. Before its key image has gone to the "
+            "coordinator a cancel costs nothing and the note goes back to held. After that it "
+            "needs force: it does not take the key image back, and the round then ends for "
+            "every seat, as a seat that drops out does. After the final share has left a seat "
+            "cannot be cancelled: the note is committed and a transaction spending it may still "
+            "be published, so the attempt runs to the round's end.\n"
+            "\nArguments:\n"
+            "1. id      (numeric, required) the seat's id in mixstatus\n"
+            "2. force   (boolean, optional, default=false) cancel after the key image has gone out\n"
+            "\nResult:\n"
+            "{ \"id\", \"cancelled\": true|false, \"pending\": true|false, \"status\" }\n");
+    const int64_t nId = params[0].get_int64();
+    const bool fForce = params.size() > 1 && params[1].get_bool();
+    bool fApplied = false;
+    std::string strResult, strError;
+    if (!MixCancelSeat(nId, fForce, 3000, fApplied, strResult, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    Object result;
+    result.push_back(Pair("id", nId));
+    result.push_back(Pair("cancelled", fApplied));
+    result.push_back(Pair("pending", !fApplied));
+    result.push_back(Pair("status", strResult));
+    return result;
+}
+
+Value mixclear(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw std::runtime_error(
+            "mixclear\n"
+            "\nRemove every finished seat (done, failed or cancelled) from mixstatus. Running "
+            "seats and the coordinator's round are kept. A note whose final share left stays "
+            "committed in the wallet whatever is cleared here.\n"
+            "\nResult:\n"
+            "{ \"cleared\": n }\n");
+    Object result;
+    result.push_back(Pair("cleared", (int64_t)MixClearFinishedSeats()));
     return result;
 }
 

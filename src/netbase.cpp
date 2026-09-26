@@ -687,6 +687,52 @@ bool ConnectSocks5ByName(const CService &addrProxy, const std::string& strDest, 
     return true;
 }
 
+bool ProbeSocks5Proxy(const CService& addrProxy, int nTimeout, bool& fSocks5Out, bool& fAuthOut,
+                      std::string& strError)
+{
+    fSocks5Out = false;
+    fAuthOut = false;
+    strError.clear();
+    if (!addrProxy.IsValid())
+    {
+        strError = "invalid proxy endpoint";
+        return false;
+    }
+    const int64_t nDeadline = GetTimeMillis() + (nTimeout > 0 ? nTimeout : 0);
+    SOCKET hSocket = INVALID_SOCKET;
+    if (!ConnectSocketDirectly(addrProxy, hSocket, nTimeout))
+    {
+        strError = "the proxy refused or did not answer the connection";
+        return false;
+    }
+    // The method greeting and nothing after it: no destination is named.
+    const char pchInit[3] = { 0x05, 0x01, 0x02 };
+    if (send(hSocket, pchInit, sizeof(pchInit), MSG_NOSIGNAL) != (ssize_t)sizeof(pchInit))
+    {
+        closesocket(hSocket);
+        strError = "the proxy closed the connection";
+        return true;
+    }
+    char pchRet[2];
+    if (!Socks5Recv(hSocket, pchRet, 2, nDeadline))
+    {
+        closesocket(hSocket);
+        strError = "the proxy did not answer the SOCKS5 greeting";
+        return true;
+    }
+    closesocket(hSocket);
+    if (pchRet[0] != 0x05)
+    {
+        strError = "the proxy does not speak SOCKS5";
+        return true;
+    }
+    fSocks5Out = true;
+    fAuthOut = (unsigned char)pchRet[1] == 0x02;
+    if (!fAuthOut)
+        strError = "the proxy refuses per-exchange credentials, so it cannot isolate streams";
+    return true;
+}
+
 void CNetAddr::Init()
 {
     memset(ip, 0, 16);

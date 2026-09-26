@@ -8,6 +8,7 @@
 // NullSend v2008 round jobs: a coordinator that plans, publishes and serves a round, and a
 // seat that finds, joins and completes one. Clock-stepped behind an environment interface.
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -180,6 +181,11 @@ public:
     bool FinalShareSent() const;
     const CTransaction& Result() const { return txResult; }
 
+    /** Stop the attempt at the user's request, from the stepping thread. Refused after the
+     *  final share has left, and without fForce after the key image has gone out. */
+    bool Cancel(bool fForce, std::string& strWhyNot);
+    bool Cancelled() const { return fCancelled; }
+
     /** How often an exchange that failed or was refused is tried again inside its window. */
     static const int64_t RETRY_SECS = 8;
 
@@ -219,6 +225,7 @@ private:
         vchRegistration, vchPrefixSig, vchProof, vchNonce, vchResponse;
     bool fKeyImageRevealed;
     bool fFinalShareSent;
+    bool fCancelled;
     CTransaction txResult;
 };
 
@@ -244,28 +251,163 @@ static const int MIX_CONNECTION_TIMEOUT_MS = 8000;
  *  the node's P2P onion would tie the coordinator or directory to that node. */
 boost::filesystem::path GetMixOnionServiceDir(const std::string& strRole);
 
-/** Read -mixcoordinatorport, -mixdirectoryport, -mixdir, -mixproxy and -mixonion, open the
- *  listeners the configured roles need and start the service thread. False only for a setting
- *  that cannot work. */
+// Settings. -mixdir, -mixproxy, -mixonion, -mixcoordinatorport and -mixdirectoryport come
+// from innova.conf or the command line; a key set in the mix settings file (written by the
+// mixsetsetting RPC) takes precedence over them.
+
+/** Names the settings file accepts, without the leading dash. */
+const std::vector<std::string>& MixSettingNames();
+/** Whether a setting takes effect without a restart: the directory list and the proxy apply
+ *  to every seat started after the change. */
+bool MixSettingIsLive(const std::string& strName);
+
+bool ParseMixDirectories(const std::vector<std::string>& vIn,
+                         std::vector<CMixDirectoryEndpoint>& vOut, std::string& strError);
+bool ParseMixProxy(const std::string& str, CService& addrOut, std::string& strError);
+/** Validate one value for a setting. An empty value is valid: it removes the override. */
+bool CheckMixSettingValue(const std::string& strName, const std::string& strValue,
+                          std::string& strError);
+/** One key=value per line, keys from MixSettingNames(); mixdir may repeat. Blank lines and
+ *  lines starting with # are skipped. */
+bool ParseMixSettingsText(const std::string& strText,
+                          std::map<std::string, std::vector<std::string> >& mapOut,
+                          std::string& strError);
+std::string FormatMixSettingsText(const std::map<std::string, std::vector<std::string> >& mapIn);
+
+boost::filesystem::path GetMixSettingsPath();
+
+struct CMixSettings
+{
+    std::vector<CMixDirectoryEndpoint> vDirectories;
+    std::string strProxy;
+    // "nativetor", "default", "config" or "settings file".
+    std::string strProxySource;
+    std::string strOnion;
+    int nCoordinatorPort;
+    int nDirectoryPort;
+    // Keys the settings file sets.
+    std::vector<std::string> vOverridden;
+    CMixSettings() : nCoordinatorPort(0), nDirectoryPort(0) {}
+};
+
+/** What the next start will use. False, with the reason, for a value that cannot work. */
+bool ResolveMixSettings(CMixSettings& out, std::string& strError);
+/** What the running service uses now. */
+void GetRunningMixSettings(CMixSettings& out, bool& fRunningOut);
+/** Change one setting and persist it. A live setting also applies at once to seats started
+ *  from now on; any other sets fRestartOut. An empty value removes the override. */
+bool MixSetSetting(const std::string& strName, const std::string& strValue, bool& fRestartOut,
+                   std::string& strError);
+
+/** Read the settings, open the listeners the configured roles need and start the service
+ *  threads. False only for a setting that cannot work. */
 bool StartMixService(CWallet* pwallet, std::string& strError);
 void StopMixService();
+
+// Proxy readiness.
+
+struct CMixProxyStatus
+{
+    std::string strProxy;
+    std::string strSource;
+    bool fReachable;
+    bool fSocks5;
+    // Takes per-exchange credentials, which every mix exchange offers and nothing else.
+    bool fIsolation;
+    int64_t nLatencyMs;
+    std::string strError;
+    CMixProxyStatus() : fReachable(false), fSocks5(false), fIsolation(false), nLatencyMs(-1) {}
+    bool Ready() const { return fReachable && fSocks5 && fIsolation; }
+};
+
+/** Connect to the proxy, offer the SOCKS5 methods the dialer offers and read the choice, then
+ *  close. No destination is named and nothing else is sent, so the probe dials nowhere. */
+bool ProbeMixProxy(const CService& addrProxy, int nTimeoutMs, CMixProxyStatus& statusOut);
+/** Probe the proxy seats started now would use. */
+void GetMixProxyStatus(int nTimeoutMs, CMixProxyStatus& statusOut);
+
+// Round discovery.
+
+struct CMixListedRound
+{
+    CMixRoundAnnouncement announce;
+    std::vector<std::string> vDirectories;   // host:port of every directory that listed it
+};
+
+/** Ask every configured directory, or only strOnly (host:port) when set, for the rounds open
+ *  to join, each on a circuit of its own. Rounds for another chain are dropped. Listed rounds
+ *  are remembered for MixCachedRound. False only when no directory could be asked. */
+bool MixListRounds(const std::string& strOnly, std::vector<CMixListedRound>& vOut,
+                   std::vector<std::pair<std::string, std::string> >& vFailuresOut,
+                   std::string& strError);
+/** A round the last listing returned. */
+bool MixCachedRound(const uint256& hashRound, CMixRoundAnnouncement& announceOut);
+
+/** The record this identity published for nSlot, read at the deterministic latch the seat
+ *  uses. fPendingOut when the slot is not settled yet. */
+bool ReadSettledMixRendezvous(const CPubKey& pubkeyCoordinator, int64_t nSlot,
+                              CMixRendezvous& rendezvousOut, bool& fPendingOut,
+                              std::string& strError);
+
+// Note eligibility.
+
+/** One note as the wallet holds it, for deciding whether it can take a seat. */
+struct CMixNoteFacts
+{
+    uint256 txhash;
+    uint32_t nOutputIndex;
+    uint64_t nAmount;
+    int nHeight;
+    bool fLeafIndexKnown;
+    uint64_t nLeafIndex;
+    bool fPrepared;
+    // Empty when nothing but the round's own terms stands in the way.
+    std::string strUnusable;
+    CMixNoteFacts()
+        : txhash(0), nOutputIndex(0), nAmount(0), nHeight(0), fLeafIndexKnown(false),
+          nLeafIndex(0), fPrepared(false) {}
+};
+
+/** The tip height from which a round's anchor can cover a note mined at nNoteHeight: the end
+ *  of the note's epoch plus the depth an anchor needs at JOIN. -1 for no height. */
+int MixNoteEligibleHeight(int nNoteHeight);
+/** Why this note cannot take a seat in this round, or empty when it can. */
+std::string MixNoteIneligibility(const CMixNoteFacts& note, const CMixRoundAnnouncement& announce);
 
 /** One coordinator round at a time, under this key, from the next publishing window on. */
 bool MixStartCoordinator(const CKey& keyCoordinator, uint64_t nDenomination, int nSeats,
                          std::string& strError);
-/** One attempt at the round this coordinator's record for nRecordSlot authorises. */
-bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::string& strError);
+/** One attempt at the round this coordinator's record for nRecordSlot authorises. nIdOut is
+ *  the seat's id in mixstatus. */
+bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::string& strError,
+                  int64_t* pnIdOut = NULL);
 
 struct CMixJobStatus
 {
+    int64_t nId;
     std::string strRole;
     std::string strState;
     std::string strStatus;
     std::string strRound;
     int64_t nRecordSlot;
-    CMixJobStatus() : nRecordSlot(0) {}
+    int64_t nStarted;
+    int64_t nUpdated;
+    bool fFinished;
+    bool fCancelled;
+    bool fCancelPending;
+    CMixJobStatus()
+        : nId(0), nRecordSlot(0), nStarted(0), nUpdated(0), fFinished(false), fCancelled(false),
+          fCancelPending(false) {}
 };
 void GetMixServiceStatus(std::vector<CMixJobStatus>& vJobsOut, size_t& nDirectoryEntriesOut,
                          size_t& nRecordsOut);
+
+/** Ask the seats thread to cancel seat nId. It is applied between steps, so an exchange in
+ *  flight finishes first; this waits up to nWaitMs for the outcome. fAppliedOut false with no
+ *  error means it is still queued. */
+bool MixCancelSeat(int64_t nId, bool fForce, int nWaitMs, bool& fAppliedOut,
+                   std::string& strResult, std::string& strError);
+/** Remove every seat that is done, failed or cancelled; the count removed. */
+size_t MixClearFinishedSeats();
 
 #endif // INN_NULLSEND_DRIVER_H

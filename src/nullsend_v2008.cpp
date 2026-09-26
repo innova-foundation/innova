@@ -3590,6 +3590,54 @@ bool ReadMixAnnounceListBody(const std::vector<unsigned char>& vchIn,
     return true;
 }
 
+bool BuildMixAnnounceIndexBody(const std::vector<std::vector<unsigned char> >& vAnnouncements,
+                               std::vector<unsigned char>& vchOut)
+{
+    vchOut.clear();
+    if (vAnnouncements.size() > MIX_DIRECTORY_INDEX_MAX)
+        return false;
+    vchOut.push_back((unsigned char)(vAnnouncements.size() & 0xFF));
+    vchOut.push_back((unsigned char)((vAnnouncements.size() >> 8) & 0xFF));
+    for (size_t i = 0; i < vAnnouncements.size(); i++)
+    {
+        const std::vector<unsigned char>& vch = vAnnouncements[i];
+        if (vch.empty() || vch.size() > MIX_ANNOUNCEMENT_MAX_BYTES)
+            return false;
+        vchOut.push_back((unsigned char)(vch.size() & 0xFF));
+        vchOut.push_back((unsigned char)((vch.size() >> 8) & 0xFF));
+        vchOut.insert(vchOut.end(), vch.begin(), vch.end());
+    }
+    return true;
+}
+
+bool ReadMixAnnounceIndexBody(const std::vector<unsigned char>& vchIn,
+                              std::vector<std::vector<unsigned char> >& vAnnouncementsOut)
+{
+    vAnnouncementsOut.clear();
+    if (vchIn.size() < 2)
+        return false;
+    const size_t nCount = (size_t)vchIn[0] | ((size_t)vchIn[1] << 8);
+    if (nCount > MIX_DIRECTORY_INDEX_MAX)
+        return false;
+    size_t nAt = 2;
+    std::vector<std::vector<unsigned char> > vOut;
+    for (size_t i = 0; i < nCount; i++)
+    {
+        if (vchIn.size() - nAt < 2)
+            return false;
+        const size_t nLen = (size_t)vchIn[nAt] | ((size_t)vchIn[nAt + 1] << 8);
+        nAt += 2;
+        if (nLen == 0 || nLen > MIX_ANNOUNCEMENT_MAX_BYTES || vchIn.size() - nAt < nLen)
+            return false;
+        vOut.push_back(std::vector<unsigned char>(vchIn.begin() + nAt, vchIn.begin() + nAt + nLen));
+        nAt += nLen;
+    }
+    if (nAt != vchIn.size())
+        return false;
+    vAnnouncementsOut.swap(vOut);
+    return true;
+}
+
 bool PickMixAnnouncement(const std::vector<std::vector<unsigned char> >& vAnnouncements,
                          const CMixRendezvous& rendezvous, CMixRoundAnnouncement& announceOut,
                          std::string* pstrError)
@@ -3873,6 +3921,41 @@ bool FetchMixAnnouncement(CMixDialer& dialer, const std::vector<CMixDirectoryEnd
     return false;
 }
 
+bool FetchMixRoundIndex(CMixDialer& dialer, const CMixDirectoryEndpoint& directory,
+                        std::vector<CMixRoundAnnouncement>& vOut, std::string* pstrError,
+                        int nTimeoutMs)
+{
+    vOut.clear();
+    MixFrameType nReply = MIX_FRAME_NONE;
+    std::vector<unsigned char> vchReply;
+    std::string strError;
+    // Unauthenticated, so on a circuit of its own; the body is empty.
+    if (!dialer.Exchange(directory.strHost, directory.nPort, MIX_FRAME_ANNOUNCE_INDEX,
+                         std::vector<unsigned char>(), nReply, vchReply, &strError, nTimeoutMs))
+    {
+        if (pstrError)
+            *pstrError = strError;
+        return false;
+    }
+    std::vector<std::vector<unsigned char> > vHeld;
+    if (nReply != MIX_FRAME_ANNOUNCE_INDEX_LIST || !ReadMixAnnounceIndexBody(vchReply, vHeld))
+    {
+        if (pstrError)
+            *pstrError = "the directory did not answer with a round index";
+        return false;
+    }
+    std::set<uint256> setSeen;
+    for (size_t i = 0; i < vHeld.size(); i++)
+    {
+        CMixRoundAnnouncement announce;
+        if (!DecodeMixAnnouncement(vHeld[i], announce) || !announce.IsValidBasic() ||
+            !setSeen.insert(announce.hashRound).second)
+            continue;
+        vOut.push_back(announce);
+    }
+    return true;
+}
+
 bool ServeMixConnection(CMixStream& stream, MixServeFn fnServe, void* pService, int64_t nNow,
                         int nTimeoutMs)
 {
@@ -3988,6 +4071,8 @@ bool CMixDirectory::Put(const std::vector<unsigned char>& vchAnnouncement, int64
         FAIL("this identity already has as many rounds as a slot holds");
     Entry entry;
     entry.hashRound = announce.hashRound;
+    entry.nTime = announce.nTime;
+    entry.nJoinCloses = announce.JoinCloses();
     entry.nEnds = announce.Ends();
     entry.vchAnnouncement = vchAnnouncement;
     v.push_back(entry);
@@ -4007,6 +4092,23 @@ void CMixDirectory::Get(const CPubKey& pubkeyCoordinator, int64_t nSlot,
         return;
     for (size_t i = 0; i < it->second.size(); i++)
         vOut.push_back(it->second[i].vchAnnouncement);
+}
+
+void CMixDirectory::Index(int64_t nNow, std::vector<std::vector<unsigned char> >& vOut) const
+{
+    vOut.clear();
+    std::vector<std::pair<std::pair<int64_t, uint256>, const std::vector<unsigned char>*> > vOpen;
+    LOCK(cs);
+    for (std::map<uint256, std::vector<Entry> >::const_iterator it = mapByIdSlot.begin();
+         it != mapByIdSlot.end(); ++it)
+        for (size_t i = 0; i < it->second.size(); i++)
+            if (it->second[i].nJoinCloses > nNow)
+                vOpen.push_back(std::make_pair(
+                    std::make_pair(it->second[i].nTime, it->second[i].hashRound),
+                    &it->second[i].vchAnnouncement));
+    std::sort(vOpen.begin(), vOpen.end());
+    for (size_t i = 0; i < vOpen.size() && vOut.size() < MIX_DIRECTORY_INDEX_MAX; i++)
+        vOut.push_back(*vOpen[i].second);
 }
 
 void CMixDirectory::Expire(int64_t nNow)
@@ -4059,10 +4161,22 @@ bool CMixDirectory::Serve(MixFrameType nType, const std::vector<unsigned char>& 
 {
     nReplyTypeOut = MIX_FRAME_NONE;
     vchReplyOut.clear();
-    if (nType != MIX_FRAME_ANNOUNCE_PUT && nType != MIX_FRAME_ANNOUNCE_GET)
+    if (nType != MIX_FRAME_ANNOUNCE_PUT && nType != MIX_FRAME_ANNOUNCE_GET &&
+        nType != MIX_FRAME_ANNOUNCE_INDEX)
         return false;
     if (!SpendRequestBudget(nNow))
         return false;
+    if (nType == MIX_FRAME_ANNOUNCE_INDEX)
+    {
+        if (!vchPayload.empty())
+            return false;
+        std::vector<std::vector<unsigned char> > vOpen;
+        Index(nNow, vOpen);
+        if (!BuildMixAnnounceIndexBody(vOpen, vchReplyOut))
+            return false;
+        nReplyTypeOut = MIX_FRAME_ANNOUNCE_INDEX_LIST;
+        return true;
+    }
     if (nType == MIX_FRAME_ANNOUNCE_PUT)
     {
         const bool fAccepted = Put(vchPayload, nNow);

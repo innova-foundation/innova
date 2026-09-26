@@ -13,6 +13,7 @@
 #include "hdroot.h"
 #include "wallet.h"
 #include "nullsend_v2008.h"
+#include "nullsend_driver.h"
 #include "subsidy.h"
 #include "privacy_vnext_builder.h"
 #include "privacy_vnext_store.h"
@@ -12486,6 +12487,62 @@ size_t CWallet::CountPrivacyVNextMixNotes(CTxDB& txdb, uint64_t nRequired,
         nCount++;
     }
     return nCount;
+}
+
+void CWallet::ListPrivacyVNextMixNoteFacts(CTxDB& txdb, const std::vector<uint64_t>& vAmounts,
+                                           int nSpendHeight,
+                                           std::vector<CMixNoteFacts>& vOut) const
+{
+    vOut.clear();
+    LOCK(cs_shielded);
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (note.fSpent ||
+            std::find(vAmounts.begin(), vAmounts.end(), note.nAmount) == vAmounts.end())
+            continue;
+        const std::pair<uint256, uint32_t> outpoint(note.txhash, note.nOutputIndex);
+        CMixNoteFacts facts;
+        facts.txhash = note.txhash;
+        facts.nOutputIndex = note.nOutputIndex;
+        facts.nAmount = note.nAmount;
+        facts.nHeight = note.nHeight;
+        facts.fLeafIndexKnown = note.fLeafIndexKnown;
+        facts.nLeafIndex = note.nLeafIndex;
+        facts.fPrepared = setPrivacyVNextMixPrepared.count(outpoint) > 0;
+        // The same order of checks SelectPrivacyVNextMixNote applies.
+        uint256 keyImage;
+        if (!note.IsComplete() || note.nHeight <= 0 || !PrivacyVNextNoteKeyImage(note, keyImage))
+            facts.strUnusable = "the note is not complete in this wallet";
+        else if (nSpendHeight - note.nHeight < MIN_SHIELDED_SPEND_DEPTH)
+            facts.strUnusable = strprintf("the note needs %d confirmations",
+                                          MIN_SHIELDED_SPEND_DEPTH);
+        else if (mapPrivacyVNextMixCommitted.count(outpoint))
+            facts.strUnusable = "a round's final share for this note has left; it is out of "
+                                "rounds until that transaction is mined or it is released by hand";
+        else if (setPrivacyVNextMixInUse.count(outpoint))
+            facts.strUnusable = "a seat is using this note now";
+        else if (IsPrivacyVNextNoteHeld(note) && !facts.fPrepared)
+            facts.strUnusable = "the note is held by hand and was not prepared for mixing";
+        else if (setPrivacyVNextInFlight.count(keyImage))
+            facts.strUnusable = "a transaction being built is spending this note";
+        else if (mapPrivacyVNextCollateral.count(keyImage))
+            facts.strUnusable = "the note is registered collateral";
+        else
+        {
+            CPrivacyVNextNullifierSpent spent;
+            if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
+                facts.strUnusable = "the note is spent on chain";
+            else
+            {
+                LOCK(mempool.cs);
+                if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
+                    mempool.mapPrivacyVNextAttestation.count(keyImage))
+                    facts.strUnusable = "a transaction in the mempool spends this note";
+            }
+        }
+        vOut.push_back(facts);
+    }
 }
 
 bool CWallet::PreparePrivacyVNextMixNote(const CMixPolicy& policy, uint64_t nDenomination,

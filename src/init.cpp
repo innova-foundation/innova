@@ -624,6 +624,12 @@ std::string HelpMessage()
         "  -spvutxocachesize=<n> " + _("Maximum SPV UTXO cache entries (default: 10000, Pi: 1000)") + "\n" +
         "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
         "  -mixingpoolsize=<n>   " + _("NullSend mixing pool size (2-16, default: 5)") + "\n" +
+        "  -mixdir=<onion:port>   " + _("A NullSend v2008 announcement directory; may be given more than once. Seats fetch rounds from these and coordinators upload to them") + "\n" +
+        "  -mixproxy=<ip:port>    " + _("SOCKS5 proxy every NullSend v2008 exchange goes through; it must accept per-exchange credentials (default: the bundled tor's with -nativetor, else 127.0.0.1:9050)") + "\n" +
+        "  -mixcoordinatorport=<n> " + _("Run a NullSend v2008 coordinator listening on this local port, for an onion service of its own (default: 0, off)") + "\n" +
+        "  -mixdirectoryport=<n>  " + _("Run a NullSend v2008 announcement directory listening on this local port, for an onion service of its own (default: 0, off)") + "\n" +
+        "  -mixonion=<name>       " + _("The v3 onion name seats dial for this node's coordinator, under an external tor (default: read from the bundled tor's service)") + "\n" +
+        "                         " + _("mixsetsetting changes these at runtime and keeps them in mixsettings.conf in the data directory, which takes precedence over innova.conf") + "\n" +
         "  -rpcratelimit=<n>     " + _("RPC requests per second per IP (0=disabled, default: 100)") + "\n" +
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
