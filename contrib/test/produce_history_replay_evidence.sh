@@ -55,6 +55,7 @@ BYTES="$(find "$BLOCKS" -maxdepth 1 -type f -name 'blk*.dat' -exec cat {} + 2>/d
     evidence_die "no blk*.dat under $BLOCKS, so there is no history to replay"
 
 evidence_toolchain "$("$ROOT/src/innovad" -datadir="$EV_DIR" --help 2>/dev/null | head -1)"
+evidence_require_binary_commit "$EV_TOOLCHAIN"
 evidence_observe innovad_sha256 \
     "$( { sha256sum "$ROOT/src/innovad" 2>/dev/null || shasum -a 256 "$ROOT/src/innovad"; } | awk '{print $1}')"
 evidence_observe network "$NETWORK"

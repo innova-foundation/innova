@@ -89,6 +89,17 @@ evidence_toolchain() {
     EV_TOOLCHAIN="$*"
 }
 
+# A producer that drives a prebuilt binary answers for that binary, so the binary
+# has to be the tree's own: its version line carries "-commit-<hash>" from
+# share/genbuild.sh, and that hash must be the commit the document records.
+evidence_require_binary_commit() {
+    local line="$1" built
+    built="$(printf '%s\n' "$line" | sed -n 's/.*-commit-\([0-9a-f]\{40\}\).*/\1/p' | head -1)"
+    [ -n "$built" ] || evidence_die "the binary reports no build commit (version: '$line'); rebuild it from this tree"
+    [ "$built" = "$EV_COMMIT" ] || \
+        evidence_die "the binary was built from $built but the tree is at $EV_COMMIT; rebuild it before producing $EV_FIELD"
+}
+
 # --- the run ----------------------------------------------------------------
 
 # A scratch copy, so a sanitizer or Qt build never leaves its objects, its

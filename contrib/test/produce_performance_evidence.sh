@@ -34,6 +34,7 @@ probe_version() {
     head -1 "$VERSION_PROBE/version.txt" 2>/dev/null
 }
 evidence_toolchain "$(probe_version)"
+evidence_require_binary_commit "$EV_TOOLCHAIN"
 evidence_observe innovad_sha256 \
     "$( { sha256sum "$ROOT/src/innovad" 2>/dev/null || shasum -a 256 "$ROOT/src/innovad"; } | awk '{print $1}')"
 evidence_observe baseline "${BASELINE#$ROOT/}"
