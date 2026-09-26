@@ -864,8 +864,9 @@ void BitcoinGUI::createTrayIcon()
     trayIcon->setContextMenu(trayIconMenu);
     trayIcon->setToolTip(tr("Innova client"));
     trayIcon->setIcon(QIcon(":/icons/toolbar"));
-    connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
-            this, SLOT(trayIconActivated(QSystemTrayIcon::ActivationReason)));
+    // Checked at compile time: the string form resolved against moc's slot table, which
+    // did not carry this platform-conditional slot, so the tray click was never delivered.
+    connect(trayIcon, &QSystemTrayIcon::activated, this, &BitcoinGUI::trayIconActivated);
     trayIcon->show();
 #else
     // Note: On Mac, the dock icon is used to provide the tray's functionality.
