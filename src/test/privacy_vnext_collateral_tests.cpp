@@ -1,6 +1,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <fcntl.h>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
 #include <set>
 #include <vector>
 
@@ -77,6 +81,52 @@ uint256 AsUint256(const PrivacyVNextDigest& d)
     std::memcpy(out.begin(), d.data(), d.size());
     return out;
 }
+
+// Routes error() output to a file for the duration of one validation call.
+class CLogCapture
+{
+public:
+    CLogCapture() : nSavedFd(-1), fSavedConsole(fPrintToConsole), fSavedDebugger(fPrintToDebugger)
+    {
+        strPath = (GetDataDir() / "collateral-capture.log").string();
+        fPrintToConsole = true;
+        fPrintToDebugger = false;
+        fflush(stdout);
+        nSavedFd = dup(STDOUT_FILENO);
+        int fd = ::open(strPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+        if (fd >= 0)
+        {
+            dup2(fd, STDOUT_FILENO);
+            ::close(fd);
+        }
+    }
+
+    ~CLogCapture() { Release(); }
+
+    std::string Release()
+    {
+        if (nSavedFd < 0)
+            return strCaptured;
+        fflush(stdout);
+        dup2(nSavedFd, STDOUT_FILENO);
+        ::close(nSavedFd);
+        nSavedFd = -1;
+        fPrintToConsole = fSavedConsole;
+        fPrintToDebugger = fSavedDebugger;
+        std::ifstream in(strPath.c_str(), std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        strCaptured = ss.str();
+        return strCaptured;
+    }
+
+private:
+    int nSavedFd;
+    bool fSavedConsole;
+    bool fSavedDebugger;
+    std::string strPath;
+    std::string strCaptured;
+};
 
 // One note of a chosen amount, placed in a fresh tree and reopened by its owner, with the
 // membership witness a proof over it needs.
@@ -1120,15 +1170,9 @@ BOOST_AUTO_TEST_CASE(a_spend_and_an_attestation_of_one_note_never_wait_together)
     mempool.clear();
 }
 
-// The registry's whole point: the key other voters seal their tally shares to has to
-// survive the payload, the decoder and the index byte for byte. Nothing can be encrypted
-// to a digest, so a member registration that arrived as a hash would be a committee seat
-// nobody could reach.
-//
-// Mutation proving this: drop `member_key` from PayloadEffects::encode in payload.rs, or
-// stop copying it in ExtractPrivacyVNextPayloadEffectsUncached, or drop vchMemberKey from
-// the row the connect path writes -- each fails a different assertion below.
-BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload_and_the_index)
+// Operation 9's member key must survive the decoder byte for byte; the consensus
+// refusal keys on it (PayloadEffects::encode, ExtractPrivacyVNextPayloadEffectsUncached).
+BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload)
 {
     ScopedNoteVoteHeight fork(0);
     CTxDB txdb("r+");
@@ -1176,33 +1220,6 @@ BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload_and_the_index)
     BOOST_CHECK(std::equal(effects.memberKey.begin(), effects.memberKey.end(),
                            vchMember.begin()));
 
-    const uint256 watched = AsUint256(keyImage);
-    const CTransaction tx = CarryingTx(payload, 1500000030);
-    std::set<uint256> setBlock;
-    bool fLocalFailure = false;
-    BOOST_REQUIRE_MESSAGE(
-        ConnectPrivacyVNextAttestations(txdb, tx, effects, 950, false, setBlock,
-                                        fLocalFailure, error),
-        error);
-
-    // And unchanged again through the index.
-    CPrivacyVNextCollateralAttestation attested;
-    BOOST_REQUIRE_EQUAL(txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-                        TXDB_READ_FOUND);
-    BOOST_CHECK(attested.IsFinalityMember());
-    BOOST_CHECK(attested.vchMemberKey == vchMember);
-    BOOST_CHECK(attested.contextDigest == AsUint256(context));
-    BOOST_CHECK_EQUAL(attested.nHeight, 950);
-    CPrivacyVNextNullifierSpent spent;
-    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(watched, spent),
-                      TXDB_READ_NOT_FOUND);
-
-    // Exact inverse: the row and the key go together, and nothing is left behind.
-    BOOST_REQUIRE_MESSAGE(
-        DisconnectPrivacyVNextAttestations(txdb, tx, effects, error), error);
-    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-                      TXDB_READ_NOT_FOUND);
-
     // The key is bound inside the signing hash, so it cannot be swapped after the
     // collateral was proved.
     std::vector<unsigned char>::iterator at =
@@ -1218,111 +1235,14 @@ BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload_and_the_index)
         "a member key must not be replaceable after the proof is made");
 }
 
-// One quantum of collateral buys one service slot. A note registered either way can never
-// be registered again, in either direction, because a second registration would let one
-// 25000 INN note hold two seats.
+// Operation 9 is refused at connect and at mempool acceptance at every height: below
+// the note-vote height (where it was already refused), at it and above it. A
+// collateralnode attestation (operation 8) of the same note still connects.
 //
-// Mutation proving this: drop the prior-row check in ConnectPrivacyVNextAttestations, or
-// key the row on anything but the key image -- either lets the second registration land.
-BOOST_AUTO_TEST_CASE(a_note_holds_one_registration_across_both_operations)
-{
-    ScopedNoteVoteHeight fork(0);
-    CTxDB txdb("r+");
-    std::string error;
-
-    FundedNote note;
-    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xd5, kTier, note, error), error);
-    const std::vector<unsigned char> vchMember = MemberKey();
-
-    std::vector<unsigned char> collateralPayload;
-    PrivacyVNextDigest collateralKeyImage;
-    BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextCollateralAttestationPayload(
-            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
-            NoTransparentSide(), CollateralDigest(0xd6), note.spend,
-            collateralPayload, collateralKeyImage, error),
-        error);
-    std::vector<unsigned char> memberPayload;
-    PrivacyVNextDigest memberKeyImage;
-    BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextFinalityMemberRegistrationPayload(
-            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
-            NoTransparentSide(), CollateralDigest(0xd7), vchMember, note.spend,
-            memberPayload, memberKeyImage, error),
-        error);
-    // One note, so one key image whichever way it registers: that is what makes the
-    // two operations compete for the same slot.
-    BOOST_REQUIRE(collateralKeyImage == memberKeyImage);
-
-    PrivacyVNextStateEffects collateralEffects;
-    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
-                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
-                      collateralPayload, collateralEffects)
-                      .IsValid());
-    PrivacyVNextStateEffects memberEffects;
-    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
-                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, memberPayload,
-                      memberEffects)
-                      .IsValid());
-    BOOST_CHECK(!collateralEffects.HasMemberKey());
-    BOOST_CHECK(memberEffects.HasMemberKey());
-
-    const uint256 watched = AsUint256(memberKeyImage);
-    const CTransaction collateralTx = CarryingTx(collateralPayload, 1500000040);
-    const CTransaction memberTx = CarryingTx(memberPayload, 1500000041);
-    bool fLocalFailure = false;
-
-    // Member first, then the collateralnode attestation is refused.
-    {
-        std::set<uint256> setBlock;
-        BOOST_REQUIRE(ConnectPrivacyVNextAttestations(
-            txdb, memberTx, memberEffects, 960, false, setBlock, fLocalFailure,
-            error));
-    }
-    {
-        std::set<uint256> setBlock;
-        BOOST_CHECK(!ConnectPrivacyVNextAttestations(
-            txdb, collateralTx, collateralEffects, 961, false, setBlock,
-            fLocalFailure, error));
-        BOOST_CHECK(!fLocalFailure);
-    }
-    // The refusal changed nothing: the member row is still the one on record.
-    CPrivacyVNextCollateralAttestation attested;
-    BOOST_REQUIRE_EQUAL(txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-                        TXDB_READ_FOUND);
-    BOOST_CHECK(attested.vchMemberKey == vchMember);
-    BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(txdb, memberTx,
-                                                     memberEffects, error));
-
-    // And the other way round.
-    {
-        std::set<uint256> setBlock;
-        BOOST_REQUIRE(ConnectPrivacyVNextAttestations(
-            txdb, collateralTx, collateralEffects, 962, false, setBlock,
-            fLocalFailure, error));
-    }
-    {
-        std::set<uint256> setBlock;
-        BOOST_CHECK(!ConnectPrivacyVNextAttestations(
-            txdb, memberTx, memberEffects, 963, false, setBlock, fLocalFailure,
-            error));
-    }
-    BOOST_REQUIRE_EQUAL(txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-                        TXDB_READ_FOUND);
-    BOOST_CHECK(!attested.IsFinalityMember());
-    BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(txdb, collateralTx,
-                                                     collateralEffects, error));
-    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-                      TXDB_READ_NOT_FOUND);
-}
-
-// The registry rides note-weighted finality and nothing reaches chain state below it. A
-// collateralnode attestation is untouched by that height, because it is not what the
-// committee draws from.
-//
-// Mutation proving this: delete the IsIV5NoteVoteActiveAtHeight guard in
-// ConnectPrivacyVNextAttestations and the below-fork registrations start connecting.
-BOOST_AUTO_TEST_CASE(a_member_registration_is_unreachable_below_its_fork)
+// Mutation proving this: make CheckPrivacyVNextNoMemberRegistration return true, or drop
+// its call from ConnectPrivacyVNextAttestations (connect arms fail) or from
+// CTxMemPool::accept (mempool arms fail).
+BOOST_AUTO_TEST_CASE(a_member_registration_is_refused_at_every_height)
 {
     CTxDB txdb("r+");
     std::string error;
@@ -1333,67 +1253,20 @@ BOOST_AUTO_TEST_CASE(a_member_registration_is_unreachable_below_its_fork)
 
     std::vector<unsigned char> payload;
     PrivacyVNextDigest keyImage;
-    {
-        ScopedNoteVoteHeight fork(0);
-        BOOST_REQUIRE_MESSAGE(
-            BuildPrivacyVNextFinalityMemberRegistrationPayload(
-                LocalNetwork(), LocalGenesis(), note.finalizedRoot,
-                note.nTreeSize, NoTransparentSide(), CollateralDigest(0xe6),
-                vchMember, note.spend, payload, keyImage, error),
-            error);
-    }
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextFinalityMemberRegistrationPayload(
+            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
+            NoTransparentSide(), CollateralDigest(0xe6), vchMember, note.spend,
+            payload, keyImage, error),
+        error);
     PrivacyVNextStateEffects effects;
     BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
                       INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects)
                       .IsValid());
+    BOOST_REQUIRE(effects.HasMemberKey());
     const uint256 watched = AsUint256(keyImage);
     const CTransaction tx = CarryingTx(payload, 1500000050);
-    bool fLocalFailure = false;
 
-    // The unset case, which regtest still reaches and which every public-network block
-    // below the note-vote height is judged under.
-    {
-        ScopedNoteVoteHeight fork(PRIVACY_VNEXT_HEIGHT_UNSET);
-        BOOST_REQUIRE(!IsIV5NoteVoteConfigured());
-        std::set<uint256> setBlock;
-        BOOST_CHECK_MESSAGE(
-            !ConnectPrivacyVNextAttestations(txdb, tx, effects, 970, false,
-                                             setBlock, fLocalFailure, error),
-            "a member registration must be unreachable where the fork is unset");
-        BOOST_CHECK(!fLocalFailure);
-        CPrivacyVNextCollateralAttestation unwritten;
-        BOOST_CHECK_EQUAL(
-            txdb.ReadPrivacyVNextCollateralStatus(watched, unwritten),
-            TXDB_READ_NOT_FOUND);
-    }
-
-    // Configured, but one block short of it.
-    {
-        ScopedNoteVoteHeight fork(971);
-        std::set<uint256> setBlock;
-        BOOST_CHECK(!ConnectPrivacyVNextAttestations(txdb, tx, effects, 970,
-                                                     false, setBlock,
-                                                     fLocalFailure, error));
-        CPrivacyVNextCollateralAttestation attested;
-        BOOST_CHECK_EQUAL(
-            txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
-            TXDB_READ_NOT_FOUND);
-    }
-
-    // At the fork height itself it connects.
-    {
-        ScopedNoteVoteHeight fork(971);
-        std::set<uint256> setBlock;
-        BOOST_REQUIRE_MESSAGE(
-            ConnectPrivacyVNextAttestations(txdb, tx, effects, 971, false,
-                                            setBlock, fLocalFailure, error),
-            error);
-        BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(txdb, tx, effects,
-                                                         error));
-    }
-
-    // A collateralnode attestation of the same note is not gated by that height: it
-    // backs a service the committee draw does not read.
     std::vector<unsigned char> collateralPayload;
     PrivacyVNextDigest collateralKeyImage;
     BOOST_REQUIRE_MESSAGE(
@@ -1407,168 +1280,109 @@ BOOST_AUTO_TEST_CASE(a_member_registration_is_unreachable_below_its_fork)
                       INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
                       collateralPayload, collateralEffects)
                       .IsValid());
+    BOOST_REQUIRE(!collateralEffects.HasMemberKey());
+    BOOST_REQUIRE(collateralKeyImage == keyImage);
+    const CTransaction collateralTx = CarryingTx(collateralPayload, 1500000051);
+
+    struct Arm
     {
-        ScopedNoteVoteHeight fork(PRIVACY_VNEXT_HEIGHT_UNSET);
-        std::set<uint256> setBlock;
-        BOOST_REQUIRE(ConnectPrivacyVNextAttestations(
-            txdb, CarryingTx(collateralPayload, 1500000051), collateralEffects,
-            970, false, setBlock, fLocalFailure, error));
-        BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(
-            txdb, CarryingTx(collateralPayload, 1500000051), collateralEffects,
-            error));
-    }
-}
-
-// The snapshot the committee draw will consume. It answers from the two indexes and the
-// height it is handed, and from nothing the node happens to have seen: an anchor taken
-// from live node state is what splits a chain.
-//
-// Mutation proving this: drop the `nHeight > nAnchorHeight` filter and a registration
-// made after the anchor appears in it; drop the spent-index consultation and a spent
-// collateral keeps its seat; drop the sort and the sequence follows leveldb.
-BOOST_AUTO_TEST_CASE(a_registry_snapshot_is_anchored_and_ordered)
-{
-    ScopedNoteVoteHeight fork(0);
-    CTxDB txdb("r+");
-    std::string error;
-    bool fLocalFailure = false;
-
-    // Anything an earlier case left behind is not this case's to reason about.
-    std::vector<CPrivacyVNextRegistryEntry> vPrior;
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(
-        txdb, std::numeric_limits<int>::max(), false, vPrior, fLocalFailure,
-        error));
-    const size_t nPriorAll = vPrior.size();
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(
-        txdb, std::numeric_limits<int>::max(), true, vPrior, fLocalFailure,
-        error));
-    const size_t nPriorMembers = vPrior.size();
-
-    // Two members and one collateralnode, at three separate heights.
-    struct Registered
-    {
-        uint256 watched;
-        CTransaction tx;
-        PrivacyVNextStateEffects effects;
+        int nFork;
+        int nHeight;
     };
-    std::vector<Registered> vMade;
-    std::vector<unsigned char> vchFirstMember;
-    for (int i = 0; i < 3; ++i)
+    const Arm arms[] = {
+        {PRIVACY_VNEXT_HEIGHT_UNSET, 970},   // fork unset
+        {971, 970},                          // one block below the fork
+        {971, 971},                          // at the fork
+        {971, 5000},                         // above the fork
+    };
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); ++i)
     {
-        FundedNote note;
-        BOOST_REQUIRE_MESSAGE(
-            FundNote(txdb, (unsigned char)(0xf0 + i), kTier, note, error),
-            error);
-        const bool fMember = i < 2;
-        const std::vector<unsigned char> vchMember =
-            fMember ? MemberKey()
-                    : std::vector<unsigned char>();
-        if (i == 0)
-            vchFirstMember = vchMember;
-        std::vector<unsigned char> payload;
-        PrivacyVNextDigest keyImage;
-        const bool fBuilt =
-            fMember
-                ? BuildPrivacyVNextFinalityMemberRegistrationPayload(
-                      LocalNetwork(), LocalGenesis(), note.finalizedRoot,
-                      note.nTreeSize, NoTransparentSide(),
-                      CollateralDigest((unsigned char)(0x20 + i)), vchMember,
-                      note.spend, payload, keyImage, error)
-                : BuildPrivacyVNextCollateralAttestationPayload(
-                      LocalNetwork(), LocalGenesis(), note.finalizedRoot,
-                      note.nTreeSize, NoTransparentSide(),
-                      CollateralDigest((unsigned char)(0x20 + i)), note.spend,
-                      payload, keyImage, error);
-        BOOST_REQUIRE_MESSAGE(fBuilt, error);
+        ScopedNoteVoteHeight fork(arms[i].nFork);
+        BOOST_CHECK_EQUAL(IsIV5NoteVoteActiveAtHeight(arms[i].nHeight),
+                          i >= 2);
 
-        Registered made;
-        BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
-                          INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload,
-                          made.effects)
-                          .IsValid());
-        made.watched = AsUint256(keyImage);
-        made.tx = CarryingTx(payload, 1500000060 + i);
-        std::set<uint256> setBlock;
-        BOOST_REQUIRE_MESSAGE(
-            ConnectPrivacyVNextAttestations(txdb, made.tx, made.effects,
-                                            1000 + i, false, setBlock,
-                                            fLocalFailure, error),
-            error);
-        vMade.push_back(made);
-    }
-
-    std::vector<CPrivacyVNextRegistryEntry> vEntries;
-    // The anchor bounds by the height a registration was recorded at, not by the tip.
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 999, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers);
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1000, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers + 1);
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1001, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers + 2);
-
-    // The collateralnode is a registration but not a committee member.
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers + 2);
-    std::vector<CPrivacyVNextRegistryEntry> vAll;
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, false, vAll,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vAll.size(), nPriorAll + 3);
-
-    // Every member row carries a usable key and the height it was recorded at.
-    for (size_t i = 0; i < vEntries.size(); ++i)
-    {
-        BOOST_CHECK(vEntries[i].IsFinalityMember());
-        BOOST_CHECK(IsPrivacyVNextMemberKeyOnCurve(&vEntries[i].vchMemberKey[0],
-                                                   vEntries[i].vchMemberKey.size()));
-        BOOST_CHECK(vEntries[i].nHeight <= 1002);
-    }
-    // Key-image order, so the draw that consumes this reads one sequence everywhere.
-    for (size_t i = 1; i < vEntries.size(); ++i)
-        BOOST_CHECK(vEntries[i - 1].keyImage < vEntries[i].keyImage);
-
-    // A member whose collateral is spent loses the seat, with nothing erased for it.
-    CPrivacyVNextNullifierSpent spent;
-    spent.txnHash = uint256(31);
-    spent.nIndex = 0;
-    spent.nHeight = 900;
-    BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(vMade[0].watched, spent));
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers + 1);
-    for (size_t i = 0; i < vEntries.size(); ++i)
-        BOOST_CHECK(vEntries[i].keyImage != vMade[0].watched);
-    // Disconnecting the spend restores it: nothing about the registration changed.
-    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(vMade[0].watched));
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, true, vEntries,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vEntries.size(), nPriorMembers + 2);
-    bool fFoundFirst = false;
-    for (size_t i = 0; i < vEntries.size(); ++i)
-        if (vEntries[i].keyImage == vMade[0].watched)
+        bool fLocalFailure = false;
         {
-            fFoundFirst = true;
-            BOOST_CHECK(vEntries[i].vchMemberKey == vchFirstMember);
+            std::set<uint256> setBlock;
+            BOOST_CHECK_MESSAGE(
+                !ConnectPrivacyVNextAttestations(txdb, tx, effects,
+                                                 arms[i].nHeight, false, setBlock,
+                                                 fLocalFailure, error),
+                "operation 9 connected at arm " << i);
+            BOOST_CHECK(!fLocalFailure);
+            BOOST_CHECK(setBlock.empty());
+            std::set<uint256> setCheck;
+            BOOST_CHECK(!ConnectPrivacyVNextAttestations(txdb, tx, effects,
+                                                         arms[i].nHeight, true,
+                                                         setCheck, fLocalFailure,
+                                                         error));
+            CPrivacyVNextCollateralAttestation unwritten;
+            BOOST_CHECK_EQUAL(
+                txdb.ReadPrivacyVNextCollateralStatus(watched, unwritten),
+                TXDB_READ_NOT_FOUND);
         }
-    BOOST_CHECK(fFoundFirst);
 
-    for (size_t i = vMade.size(); i > 0; --i)
-        BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(
-            txdb, vMade[i - 1].tx, vMade[i - 1].effects, error));
-    BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, false, vAll,
-                                                    fLocalFailure, error));
-    BOOST_CHECK_EQUAL(vAll.size(), nPriorAll);
+        // Operation 8 of the same note still connects, with no member key on the row.
+        {
+            std::set<uint256> setBlock;
+            BOOST_REQUIRE_MESSAGE(
+                ConnectPrivacyVNextAttestations(txdb, collateralTx,
+                                                collateralEffects,
+                                                arms[i].nHeight, false, setBlock,
+                                                fLocalFailure, error),
+                error);
+            CPrivacyVNextCollateralAttestation attested;
+            BOOST_REQUIRE_EQUAL(
+                txdb.ReadPrivacyVNextCollateralStatus(watched, attested),
+                TXDB_READ_FOUND);
+            BOOST_CHECK(attested.vchMemberKey.empty());
+            BOOST_CHECK_EQUAL(attested.nHeight, arms[i].nHeight);
+            BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(
+                txdb, collateralTx, collateralEffects, error));
+        }
+    }
+
+    std::string strShared;
+    BOOST_CHECK(!CheckPrivacyVNextNoMemberRegistration(effects, strShared));
+    BOOST_CHECK(CheckPrivacyVNextNoMemberRegistration(collateralEffects, strShared));
+
+    // Mempool acceptance, below and at the fork. The refusal is the first IV5 rule after
+    // the payload decodes, so the captured log names it.
+    const bool fSavedRegTest = fRegTest;
+    const int nSavedBoundaryB = nRegtestBoundaryBHeight;
+    fRegTest = true;
+    nRegtestBoundaryBHeight = 0;
+    const int forks[] = {PRIVACY_VNEXT_HEIGHT_UNSET, 0};
+    for (size_t i = 0; i < sizeof(forks) / sizeof(forks[0]); ++i)
+    {
+        ScopedNoteVoteHeight fork(forks[i]);
+        CTransaction relayed = tx;
+        CTxMemPool isolatedPool;
+        bool fMissingInputs = false;
+        bool fAccepted = true;
+        std::string strLog;
+        {
+            LOCK(cs_main);
+            CTxDB txdbRead("r");
+            CLogCapture capture;
+            fAccepted = isolatedPool.accept(txdbRead, relayed, false,
+                                            &fMissingInputs, true);
+            strLog = capture.Release();
+        }
+        BOOST_CHECK(!fAccepted);
+        BOOST_CHECK_EQUAL(isolatedPool.size(), 0U);
+        BOOST_CHECK_MESSAGE(
+            strLog.find("CTxMemPool::accept() : IV5 finality member registration "
+                        "is not a valid operation") != std::string::npos,
+            "mempool arm " << i << " log: " << strLog.substr(0, 600));
+    }
+    nRegtestBoundaryBHeight = nSavedBoundaryB;
+    fRegTest = fSavedRegTest;
+    BOOST_CHECK(!fRequestShutdown);
 }
 
-// A key that names no point on secp256k1 cannot be encrypted to, so a registration
-// carrying one is a committee seat its holder could never serve. The Rust decoder proves
-// the encoding is canonical and stops there; the on-curve test is the caller's.
-//
-// Mutation proving this: delete the IsPrivacyVNextMemberKeyOnCurve call in
-// ConnectPrivacyVNextAttestations and the off-curve registration connects.
+// The builder refuses an off-curve member key and the decoder refuses a non-canonical
+// one. Consensus refuses the operation outright, whatever key it names.
 BOOST_AUTO_TEST_CASE(a_member_key_off_the_curve_is_refused)
 {
     ScopedNoteVoteHeight fork(0);

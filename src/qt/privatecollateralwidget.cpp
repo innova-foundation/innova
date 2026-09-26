@@ -87,52 +87,16 @@ PrivateCollateralWidget::PrivateCollateralWidget(QWidget *parent) :
     nodeForm->addRow(QString(), nodeButtons);
     layout->addWidget(nodeGroup);
 
-    // --- finality member registration ---
-    QGroupBox *memberGroup = new QGroupBox(tr("Register as a finality-committee member"));
-    QFormLayout *memberForm = new QFormLayout(memberGroup);
-    QLabel *memberHint = new QLabel(tr(
-        "The committee is drawn from these registrations; nothing is configured. The "
-        "seats go to the first distinct member keys in the draw order, so registering "
-        "several notes under one key claims one seat, not several. Registering a key "
-        "whose private half this wallet does not hold seats a member that cannot sign."));
-    memberHint->setWordWrap(true);
-    memberHint->setStyleSheet("color: #888;");
-    memberForm->addRow(memberHint);
-    memberKeyEdit = new QLineEdit();
-    memberKeyEdit->setPlaceholderText(tr("member pubkey hex, or 'new' for a fresh wallet key"));
-    memberNoteEdit = new QLineEdit();
-    memberNoteEdit->setPlaceholderText(tr("optional txhash:index to pin a specific note"));
-    memberForm->addRow(tr("Member key:"), memberKeyEdit);
-    memberForm->addRow(tr("Note:"), memberNoteEdit);
-    QHBoxLayout *memberButtons = new QHBoxLayout();
-    memberPreviewButton = new QPushButton(tr("Preview"));
-    memberRegisterButton = new QPushButton(tr("Register"));
-    memberButtons->addWidget(memberPreviewButton);
-    memberButtons->addWidget(memberRegisterButton);
-    memberButtons->addStretch();
-    memberForm->addRow(QString(), memberButtons);
-    layout->addWidget(memberGroup);
-
     // --- status and lifecycle ---
     QGroupBox *statusGroup = new QGroupBox(tr("Status and lifecycle"));
     QVBoxLayout *statusLayout = new QVBoxLayout(statusGroup);
     QHBoxLayout *statusButtons = new QHBoxLayout();
     statusButton = new QPushButton(tr("Node status"));
-    finalityStatusButton = new QPushButton(tr("Member status"));
     announceButton = new QPushButton(tr("Announce"));
     statusButtons->addWidget(statusButton);
-    statusButtons->addWidget(finalityStatusButton);
     statusButtons->addWidget(announceButton);
     statusButtons->addStretch();
     statusLayout->addLayout(statusButtons);
-
-    QHBoxLayout *registryLayout = new QHBoxLayout();
-    registryHeightEdit = new QLineEdit();
-    registryHeightEdit->setPlaceholderText(tr("anchor height (blank for the tip)"));
-    finalityRegistryButton = new QPushButton(tr("Member registry at height"));
-    registryLayout->addWidget(registryHeightEdit, 1);
-    registryLayout->addWidget(finalityRegistryButton);
-    statusLayout->addLayout(registryLayout);
 
     QHBoxLayout *releaseLayout = new QHBoxLayout();
     releaseKeyImageEdit = new QLineEdit();
@@ -151,12 +115,8 @@ PrivateCollateralWidget::PrivateCollateralWidget(QWidget *parent) :
     connect(listNotesButton, SIGNAL(clicked()), this, SLOT(onListNotes()));
     connect(nodePreviewButton, SIGNAL(clicked()), this, SLOT(onNodePreview()));
     connect(nodeRegisterButton, SIGNAL(clicked()), this, SLOT(onNodeRegister()));
-    connect(memberPreviewButton, SIGNAL(clicked()), this, SLOT(onMemberPreview()));
-    connect(memberRegisterButton, SIGNAL(clicked()), this, SLOT(onMemberRegister()));
     connect(announceButton, SIGNAL(clicked()), this, SLOT(onAnnounce()));
     connect(statusButton, SIGNAL(clicked()), this, SLOT(onStatusPrivate()));
-    connect(finalityStatusButton, SIGNAL(clicked()), this, SLOT(onFinalityStatus()));
-    connect(finalityRegistryButton, SIGNAL(clicked()), this, SLOT(onFinalityRegistry()));
     connect(releaseButton, SIGNAL(clicked()), this, SLOT(onRelease()));
 }
 
@@ -378,47 +338,6 @@ void PrivateCollateralWidget::onNodeRegister()
     run(args, true);
 }
 
-bool PrivateCollateralWidget::memberArgs(bool fConfirm, QStringList& argsOut)
-{
-    argsOut << "finality-register";
-    const QString key = memberKeyEdit->text().trimmed();
-    if (!key.isEmpty())
-        argsOut << key;
-    const QString note = memberNoteEdit->text().trimmed();
-    if (!note.isEmpty())
-        argsOut << note;
-    if (fConfirm)
-        argsOut << "confirm";
-    return true;
-}
-
-void PrivateCollateralWidget::onMemberPreview()
-{
-    QStringList args;
-    if (memberArgs(false, args))
-        run(args, true);
-}
-
-void PrivateCollateralWidget::onMemberRegister()
-{
-    QStringList args;
-    if (!memberArgs(true, args))
-        return;
-
-    const QMessageBox::StandardButton reply = QMessageBox::question(
-        this, tr("Register as a committee member"),
-        tr("This publishes the note's key image permanently and enters this key in "
-           "the draw the chain runs at the next term boundary.\n\n"
-           "A seat is only useful if this wallet holds the private half of the "
-           "member key: a seated member that cannot sign stalls the private "
-           "certificate for the whole term. Register now?"),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (reply != QMessageBox::Yes)
-        return;
-
-    run(args, true);
-}
-
 void PrivateCollateralWidget::onAnnounce()
 {
     run(QStringList() << "announceprivate", true);
@@ -427,21 +346,6 @@ void PrivateCollateralWidget::onAnnounce()
 void PrivateCollateralWidget::onStatusPrivate()
 {
     run(QStringList() << "statusprivate", false);
-}
-
-void PrivateCollateralWidget::onFinalityStatus()
-{
-    run(QStringList() << "finality-status", false);
-}
-
-void PrivateCollateralWidget::onFinalityRegistry()
-{
-    QStringList args;
-    args << "finality-registry";
-    const QString height = registryHeightEdit->text().trimmed();
-    if (!height.isEmpty())
-        args << height;
-    run(args, false);
 }
 
 void PrivateCollateralWidget::onRelease()

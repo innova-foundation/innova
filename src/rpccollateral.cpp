@@ -111,26 +111,9 @@ const char* kNoCandidateRemedy =
     "identified coins permanently. Fund the pool with amounts other than 25000, let them "
     "settle, then carve the collateral note.";
 
-// What a finality-member registration stores in place of a collateralnode endpoint.
-//
-// One held-note list serves both registrations, because both take a note out of ordinary
-// spending for the same reason; this is what tells the collateralnode verbs which records
-// are not theirs.
+// strAddr of a held record written by the retired finality-member verb. Such a
+// record has no endpoint, so the collateralnode verbs skip it.
 const char* kFinalityMemberMarker = "iv5-finality-member";
-
-// A finality-member registration's context digest.
-//
-// Derived from the member key rather than configured beside it: the context is inside the
-// signed prefix, so deriving it makes the registration self-consistent by construction and
-// leaves nothing that can drift out of step with the key it names.
-uint256 GetPrivacyVNextFinalityMemberContext(
-    const std::vector<unsigned char>& vchMemberKey)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/IV5/FinalityMemberRegistrationContext/v1");
-    ss << vchMemberKey;
-    return ss.GetHash();
-}
 
 void RequirePrivacyVNextReady()
 {
@@ -237,8 +220,7 @@ Value collateralnode(const Array& params, bool fHelp)
     if (fHelp  ||
         (strCommand != "start" && strCommand != "start-alias" && strCommand != "start-many" && strCommand != "stop" && strCommand != "stop-alias" && strCommand != "stop-many" && strCommand != "list" && strCommand != "list-conf" && strCommand != "count"  && strCommand != "enforce"
             && strCommand != "debug" && strCommand != "current" && strCommand != "winners" && strCommand != "genkey" && strCommand != "connect" && strCommand != "outputs" && strCommand != "status"
-            && strCommand != "collateral-notes" && strCommand != "registerprivate" && strCommand != "announceprivate" && strCommand != "releaseprivate" && strCommand != "statusprivate"
-            && strCommand != "finality-register" && strCommand != "finality-status" && strCommand != "finality-registry"))
+            && strCommand != "collateral-notes" && strCommand != "registerprivate" && strCommand != "announceprivate" && strCommand != "releaseprivate" && strCommand != "statusprivate"))
 		throw runtime_error(
 			"collateralnode \"command\"... ( \"passphrase\" )\n"
 			"Set of commands to execute collateralnode related actions\n"
@@ -267,9 +249,6 @@ Value collateralnode(const Array& params, bool fHelp)
 			"  announceprivate   - Announce a confirmed private registration to peers\n"
 			"  releaseprivate    - Release a held collateral note back to ordinary spending\n"
 			"  statusprivate     - Chain, local-list and payment view of a private registration\n"
-			"  finality-register - Register a 25000 INN IV5 note as a finality-committee member (dry run unless confirmed)\n"
-			"  finality-status   - This wallet's finality-member registrations and their chain status\n"
-			"  finality-registry - Every finality-member registration active at a height\n"
 			//"  vote-many    - Vote on a Innova initiative\n"
 			//"  vote         - Vote on a Innova initiative\n"
             );
@@ -900,8 +879,7 @@ Value collateralnode(const Array& params, bool fHelp)
 
         CWalletTx wtx;
         uint256 keyImage = 0;
-        // Empty: this verb registers a collateralnode, which publishes no
-        // tally-encryption key. 'finality-register' is the verb that does.
+        // Empty: a collateralnode registration publishes no member key.
         const std::vector<unsigned char> vchMemberKey;
         if (!pwalletMain->CreatePrivacyVNextCollateralAttestation(
                 pChosen->note, hashContext, vchMemberKey, false, wtx, keyImage,
@@ -966,322 +944,6 @@ Value collateralnode(const Array& params, bool fHelp)
         return obj;
     }
 
-    // A finality-member registration is the collateral attestation plus the long-lived
-    // key other voters seal their tally shares to. It carries no endpoint and no payout:
-    // a committee member is reached through the chain, not through collateralnode gossip.
-    if (strCommand == "finality-register")
-    {
-        if (params.size() > 4)
-            throw runtime_error(
-                "collateralnode finality-register [pubkeyhex|new] [txhash:index] "
-                "[confirm]\n"
-                "Registers one 25000 INN IV5 note as a finality-committee member.\n"
-                "With no key, or the word 'new', a fresh wallet key is drawn and its "
-                "private half stays in this wallet.\n"
-                "Prints a preview and changes nothing unless the last argument is "
-                "the literal word 'confirm'.");
-
-        RequirePrivacyVNextReady();
-        if (pwalletMain->IsLocked())
-            throw runtime_error("the wallet is locked; run walletpassphrase first");
-        if (!pwalletMain->HasPrivacyVNextSeed())
-            throw runtime_error("this wallet has no IV5 seed; run z_createiv5seed");
-        if (!pwalletMain->IsPrivacyVNextSeedUnlocked())
-            throw runtime_error("the IV5 seed is locked; run walletpassphrase first");
-
-        std::string strChosen;
-        std::string strKeyArg;
-        bool fConfirm = false;
-        for (size_t i = 1; i < params.size(); ++i)
-        {
-            const std::string strArg = params[i].get_str();
-            if (strArg == "confirm")
-                fConfirm = true;
-            else if (strArg.find(':') != std::string::npos)
-                strChosen = strArg;
-            else
-                strKeyArg = strArg;
-        }
-
-        // The decryption half must be recoverable from a wallet backup, so a supplied
-        // key is accepted only when this wallet already holds its private half.
-        CPubKey pubkeyMember;
-        if (strKeyArg.empty() || strKeyArg == "new")
-        {
-            if (!pwalletMain->GetKeyFromPool(pubkeyMember, false))
-                throw runtime_error("the key pool is empty; run keypoolrefill");
-        }
-        else
-        {
-            if (!IsHex(strKeyArg))
-                throw runtime_error("the member key must be compressed secp256k1 hex");
-            const std::vector<unsigned char> vchGiven = ParseHex(strKeyArg);
-            pubkeyMember = CPubKey(vchGiven);
-        }
-        const std::vector<unsigned char> vchMemberKey = pubkeyMember.Raw();
-        if (vchMemberKey.size() != iv5::FINALITY_MEMBER_KEY_BYTES)
-            throw runtime_error(
-                "a finality member key is 33 compressed secp256k1 bytes; an "
-                "uncompressed key cannot be registered");
-        if (!IsPrivacyVNextMemberKeyOnCurve(&vchMemberKey[0], vchMemberKey.size()))
-            throw runtime_error("that key is not a point on secp256k1");
-        CKey keyMember;
-        if (!pwalletMain->GetKey(pubkeyMember.GetID(), keyMember))
-            throw runtime_error(
-                "this wallet does not hold the private half of that key; a "
-                "registration whose key cannot be decrypted to is a committee seat "
-                "nobody can serve");
-
-        std::vector<CPrivacyVNextCollateralCandidate> vCandidates;
-        std::string strError;
-        if (!pwalletMain->ListPrivacyVNextCollateralCandidates(vCandidates,
-                                                               strError))
-            throw runtime_error(strError + "\n" + kNoCandidateRemedy);
-        if (vCandidates.empty())
-            throw runtime_error(kNoCandidateRemedy);
-
-        const CPrivacyVNextCollateralCandidate* pChosen = NULL;
-        if (!strChosen.empty())
-        {
-            for (size_t i = 0; i < vCandidates.size(); ++i)
-            {
-                const std::string strName =
-                    vCandidates[i].note.txhash.ToString() + ":" +
-                    boost::lexical_cast<std::string>(
-                        (int)vCandidates[i].note.nOutputIndex);
-                if (strName == strChosen)
-                    pChosen = &vCandidates[i];
-            }
-            if (pChosen == NULL)
-                throw runtime_error(
-                    "no attestable 25000 INN note matches " + strChosen +
-                    "; 'collateralnode collateral-notes' lists the candidates");
-        }
-        else
-        {
-            if (vCandidates[0].nProvenance == IV5_NOTE_SHIELD_FUNDED)
-                throw runtime_error(
-                    std::string("Every attestable note here is shield-funded. ") +
-                    PrivacyVNextProvenanceCaveat(IV5_NOTE_SHIELD_FUNDED) + ".\n" +
-                    kNoCandidateRemedy +
-                    "\nTo use a shield-funded note anyway, name it explicitly as "
-                    "<txhash>:<index>.");
-            pChosen = &vCandidates[0];
-        }
-
-        const uint256 hashContext =
-            GetPrivacyVNextFinalityMemberContext(vchMemberKey);
-
-        Object obj;
-        obj.push_back(Pair("member_pubkey", HexStr(vchMemberKey)));
-        obj.push_back(Pair("context_digest", hashContext.ToString()));
-        obj.push_back(Pair("chosen_note", PrivacyVNextCandidateObject(*pChosen)));
-        obj.push_back(Pair("override_syntax",
-                           "pass <txhash>:<index> to name a different note"));
-        Array warnings;
-        warnings.push_back(std::string(
-            "the key image this publishes is public forever, and the chain keeps its "
-            "watch record even after the note is spent: this note can be registered "
-            "exactly once, ever, as a collateralnode or as a committee member and "
-            "never as both"));
-        warnings.push_back(std::string(
-            "the member key is bound into the registration and can never change for "
-            "this note; rotating it means spending this note, carving a fresh one and "
-            "registering again"));
-        warnings.push_back(std::string(
-            "back this wallet up before confirming: losing the private half of the "
-            "member key leaves a committee seat nobody can decrypt shares for"));
-        warnings.push_back(std::string(
-            PrivacyVNextProvenanceCaveat(pChosen->nProvenance)));
-        obj.push_back(Pair("warnings", warnings));
-
-        if (!fConfirm)
-        {
-            obj.push_back(Pair("dry_run", true));
-            obj.push_back(Pair("to_proceed",
-                               "re-run with 'confirm' as the last argument"));
-            return obj;
-        }
-
-        CWalletTx wtx;
-        uint256 keyImage = 0;
-        if (!pwalletMain->CreatePrivacyVNextCollateralAttestation(
-                pChosen->note, hashContext, vchMemberKey, false, wtx, keyImage,
-                strError))
-            throw runtime_error(strError);
-
-        // Proving took seconds. Anything that retired the note in the meantime makes
-        // this transaction unconnectable, so re-read all four sources before broadcast.
-        {
-            CTxDB txdb("r");
-            CPrivacyVNextNullifierSpent spent;
-            if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) !=
-                TXDB_READ_NOT_FOUND)
-                throw runtime_error("the note was spent while the proof was being "
-                                    "built; nothing was broadcast");
-            CPrivacyVNextCollateralAttestation attested;
-            if (txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested) !=
-                TXDB_READ_NOT_FOUND)
-                throw runtime_error("this note was registered while the proof was "
-                                    "being built; nothing was broadcast");
-            LOCK(mempool.cs);
-            if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
-                mempool.mapPrivacyVNextAttestation.count(keyImage))
-                throw runtime_error("a transaction naming this note is already in the "
-                                    "mempool; nothing was broadcast");
-        }
-
-        // The same held-note list a collateralnode registration uses, so one place
-        // decides which notes are off limits to an ordinary spend. strAddr carries the
-        // marker instead of an endpoint, which is what tells the collateralnode verbs
-        // this record is not theirs.
-        CPrivacyVNextCollateralRegistration record;
-        record.keyImage = keyImage;
-        record.fundingTxHash = pChosen->note.txhash;
-        record.nFundingOutputIndex = pChosen->note.nOutputIndex;
-        record.hashContext = hashContext;
-        record.vchCollateralPubKey = vchMemberKey;
-        record.announceKeyId = pubkeyMember.GetID();
-        record.strAddr = kFinalityMemberMarker;
-        record.strPoolPayout.clear();
-        record.nTimeCreated = GetAdjustedTime();
-        if (!pwalletMain->AddPrivacyVNextCollateralRegistration(record, strError))
-            throw runtime_error(strError);
-
-        CReserveKey reservekey(pwalletMain);
-        if (!pwalletMain->CommitTransaction(wtx, reservekey))
-        {
-            std::string strReleaseError;
-            pwalletMain->ReleasePrivacyVNextCollateralRegistration(keyImage,
-                                                                   strReleaseError);
-            throw runtime_error("the registration was built but could not be "
-                                "committed");
-        }
-        if (!pwalletMain->SetPrivacyVNextCollateralAttestationTx(
-                keyImage, wtx.GetHash(), strError))
-            throw runtime_error(strError);
-
-        obj.push_back(Pair("dry_run", false));
-        obj.push_back(Pair("key_image", keyImage.ToString()));
-        obj.push_back(Pair("registration_txid", wtx.GetHash().ToString()));
-        obj.push_back(Pair("next",
-                           "the seat takes effect at the first committee draw whose "
-                           "anchor is at or after this registration's height"));
-        return obj;
-    }
-
-    if (strCommand == "finality-status")
-    {
-        std::vector<CPrivacyVNextCollateralRegistration> vRecords;
-        pwalletMain->ListPrivacyVNextCollateralRegistrations(vRecords);
-
-        CTxDB txdb("r");
-        Array arr;
-        for (size_t i = 0; i < vRecords.size(); ++i)
-        {
-            const CPrivacyVNextCollateralRegistration& record = vRecords[i];
-            if (record.strAddr != kFinalityMemberMarker)
-                continue;
-            Object one;
-            one.push_back(Pair("key_image", record.keyImage.ToString()));
-            one.push_back(Pair("member_pubkey", HexStr(record.vchCollateralPubKey)));
-            one.push_back(Pair("registration_txid",
-                               record.attestationTxHash.ToString()));
-            one.push_back(Pair("holds_private_key",
-                               pwalletMain->HaveKey(CKeyID(record.announceKeyId))));
-
-            CPrivacyVNextCollateralAttestation attested;
-            bool fLocalFailure = false;
-            if (!IsPrivacyVNextCollateralRegistered(txdb, record.keyImage, attested,
-                                                    fLocalFailure))
-            {
-                one.push_back(Pair("status",
-                                   fLocalFailure
-                                       ? "the local collateral index cannot be read; "
-                                         "-reindex/resync required"
-                                       : "not registered on chain yet, or already "
-                                         "spent"));
-                arr.push_back(one);
-                continue;
-            }
-            one.push_back(Pair("registered_height", (int)attested.nHeight));
-            one.push_back(Pair("confirmations", nBestHeight - attested.nHeight + 1));
-            // The chain's copy, not the wallet's: a mismatch means this wallet would
-            // try to decrypt shares nobody sealed to it.
-            one.push_back(Pair("chain_member_pubkey",
-                               HexStr(attested.vchMemberKey)));
-            one.push_back(Pair("status",
-                               attested.IsFinalityMember() &&
-                                       attested.vchMemberKey ==
-                                           record.vchCollateralPubKey
-                                   ? "registered"
-                                   : "on chain under a different key"));
-            arr.push_back(one);
-        }
-
-        Object obj;
-        obj.push_back(Pair("registrations", arr));
-        if (arr.empty())
-            obj.push_back(Pair("remedy",
-                               "run 'collateralnode finality-register' to register a "
-                               "25000 INN note as a committee member"));
-        return obj;
-    }
-
-    if (strCommand == "finality-registry")
-    {
-        // The height is the caller's, exactly as it is for the committee draw: the
-        // snapshot never picks one from live node state.
-        int nAnchorHeight = nBestHeight;
-        if (params.size() >= 2)
-        {
-            // 'collateralnode' takes a different argument list per subcommand, so the
-            // client's conversion table cannot type this one and the height arrives as
-            // whatever the caller typed.
-            if (params[1].type() == int_type)
-                nAnchorHeight = params[1].get_int();
-            else
-            {
-                const std::string strHeight = params[1].get_str();
-                if (strHeight.empty() ||
-                    strHeight.find_first_not_of("0123456789") != std::string::npos)
-                    throw runtime_error("the anchor height must be a whole number");
-                nAnchorHeight = (int)atoi64(strHeight);
-            }
-        }
-        if (nAnchorHeight < 0)
-            throw runtime_error("the anchor height cannot be negative");
-
-        CTxDB txdb("r");
-        std::vector<CPrivacyVNextRegistryEntry> vEntries;
-        bool fLocalFailure = false;
-        std::string strError;
-        if (!GetPrivacyVNextCollateralSnapshot(txdb, nAnchorHeight, true, vEntries,
-                                               fLocalFailure, strError))
-            throw runtime_error(strError);
-
-        Array arr;
-        for (size_t i = 0; i < vEntries.size(); ++i)
-        {
-            Object one;
-            one.push_back(Pair("key_image", vEntries[i].keyImage.ToString()));
-            one.push_back(Pair("member_pubkey", HexStr(vEntries[i].vchMemberKey)));
-            one.push_back(Pair("context_digest",
-                               vEntries[i].contextDigest.ToString()));
-            one.push_back(Pair("height", (int)vEntries[i].nHeight));
-            arr.push_back(one);
-        }
-
-        Object obj;
-        obj.push_back(Pair("anchor_height", nAnchorHeight));
-        obj.push_back(Pair("members", arr));
-        obj.push_back(Pair("count", (int)vEntries.size()));
-        obj.push_back(Pair("note",
-                           "the set the term draw at this anchor reads; "
-                           "'getfinalityinfo' reports the seats it produced"));
-        return obj;
-    }
-
     if (strCommand == "announceprivate")
     {
         RequirePrivacyVNextReady();
@@ -1297,8 +959,6 @@ Value collateralnode(const Array& params, bool fHelp)
         for (size_t i = 0; i < vRecords.size(); ++i)
         {
             const CPrivacyVNextCollateralRegistration& record = vRecords[i];
-            // A committee member has no endpoint to announce; 'finality-status'
-            // reports those.
             if (record.strAddr == kFinalityMemberMarker)
                 continue;
             Object one;

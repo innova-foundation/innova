@@ -689,14 +689,9 @@ inline int GetForkHeightIV5NoteVote()
     extern bool fRegTest;
     if (fRegTest)
         return nRegtestIV5NoteVoteHeight;
-    // Scheduled on both value networks. What kept this at the sentinel was that a vote did
-    // not prove its note unspent, so one note self-transferred voted once per transfer and
-    // was paid each time. The vote now spends its note as an operation-10 payload, so a
-    // second vote of the same note is a double spend the one spent-key path refuses.
-    //
-    // The same height turns on member-key registration and the minimum-weight floor on
-    // transparent votes: they are one flag day because each is consensus-visible and
-    // none can be retrofitted separately.
+    // The vote spends its note as an op-10 payload, so a repeat vote is a double spend.
+    // Also activates the minimum-weight floor on transparent votes; transparent votes
+    // remain valid on both sides of this height.
     return DeriveIV5NoteVoteHeight(GetForkHeightBoundaryB());
 }
 #define FORK_HEIGHT_IV5_NOTE_VOTE (GetForkHeightIV5NoteVote())
@@ -1477,6 +1472,11 @@ bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError);
 
+/** Refuse an operation-9 (finality member registration) payload at every height.
+ *  Shared by ConnectPrivacyVNextAttestations and mempool acceptance. */
+bool CheckPrivacyVNextNoMemberRegistration(const PrivacyVNextStateEffects& effects,
+                                           std::string& strError);
+
 /** Apply one payload's collateral attestations to the watch set; the only writer of
  *  that index. An attestation's key image must never reach the spent-key index.
  *  `setBlockAttestations` catches repeats within the block. */
@@ -1502,55 +1502,6 @@ bool IsPrivacyVNextCollateralRegistered(
     const uint256& keyImage,
     CPrivacyVNextCollateralAttestation& attestedOut,
     bool& fLocalFailure);
-
-/** One active registration in a height-anchored snapshot of the registry. */
-struct CPrivacyVNextRegistryEntry
-{
-    uint256 keyImage;
-    uint256 contextDigest;
-    uint256 txnHash;
-    int32_t nHeight;
-    /** 33 bytes for a finality-committee member, empty for a collateralnode. */
-    std::vector<unsigned char> vchMemberKey;
-
-    CPrivacyVNextRegistryEntry()
-        : keyImage(0), contextDigest(0), txnHash(0), nHeight(-1) {}
-
-    bool IsFinalityMember() const
-    {
-        return vchMemberKey.size() == iv5::FINALITY_MEMBER_KEY_BYTES;
-    }
-
-    /** Key-image order, which is what makes a snapshot's sequence node independent. */
-    bool operator<(const CPrivacyVNextRegistryEntry& other) const
-    {
-        return keyImage < other.keyImage;
-    }
-};
-
-/** Registrations active as of nAnchorHeight, in key-image order.
- *
- *  Reads only the two indexes, which are exact functions of the ancestry connected
- *  so far, and never nBestHeight, pindexBest, the mempool or a live finality height:
- *  an anchor taken from what a node has seen rather than from what the block being
- *  validated descends from is what splits a chain.
- *
- *  Needs a CTxDB with no open write batch: an iterator cannot see pending writes and
- *  would answer differently from the point reads beside it. A finalized anchor wants
- *  committed state, so this is a constraint on the caller, not a limitation.
- *
- *  The caller owns the anchor, and must take it at or below the finalized depth so every
- *  row this reads is committed rather than staged in someone's batch.
- *
- *  The spend filter is NOT anchored: a registration whose collateral was spent at any
- *  height up to the reading block drops out. That is deterministic per block. */
-bool GetPrivacyVNextCollateralSnapshot(
-    CTxDB& txdb,
-    int nAnchorHeight,
-    bool fMembersOnly,
-    std::vector<CPrivacyVNextRegistryEntry>& vOut,
-    bool& fLocalFailure,
-    std::string& strError);
 
 /** Refuse a payload declaring pool value leaving to the transparent side, from
  *  FORK_HEIGHT_IV5_FEE_NOTE on. Keyed on the declared balance, never the pool delta. */

@@ -642,22 +642,8 @@ public:
 };
 
 
-// One collateral attestation, keyed in txdb on the key image it published.
-//
-// The context digest is what the attestation bound into its signing hash, so the node
-// list can hold an announcement to the identity, endpoint and payout address the chain
-// already accepted, without re-reading the registering transaction for every gossip
-// message. It carries no value and never reaches the spent-key index.
-//
-// vchMemberKey is the tally-encryption key a finality-member registration published, and
-// is empty for a collateralnode-only attestation. One row for both operations, because
-// they compete for one slot: a note is registered once for ever, so the collateral buys
-// exactly one service and the key is what says which.
-//
-// The row gained that field after the operations shipped, so a record written before it
-// no longer decodes and reads back as a corrupt index. That is fail-closed and asks for
-// the -reindex it needs; both operations are reachable only where Boundary B is set,
-// which is regtest alone.
+// One collateral attestation keyed on its key image; the context digest is the one in its
+// signing hash. vchMemberKey is always empty but kept for the row encoding.
 class CPrivacyVNextCollateralAttestation
 {
 public:
@@ -680,25 +666,6 @@ public:
         txnHash = txnHashIn;
         contextDigest = contextDigestIn;
         nHeight = nHeightIn;
-    }
-
-    CPrivacyVNextCollateralAttestation(
-        const uint256& txnHashIn,
-        const uint256& contextDigestIn,
-        int32_t nHeightIn,
-        const std::vector<unsigned char>& vchMemberKeyIn)
-    {
-        txnHash = txnHashIn;
-        contextDigest = contextDigestIn;
-        nHeight = nHeightIn;
-        vchMemberKey = vchMemberKeyIn;
-    }
-
-    // Whether this registration claims a finality-committee seat rather than only
-    // proving collateral.
-    bool IsFinalityMember() const
-    {
-        return vchMemberKey.size() == iv5::FINALITY_MEMBER_KEY_BYTES;
     }
 
     IMPLEMENT_SERIALIZE
