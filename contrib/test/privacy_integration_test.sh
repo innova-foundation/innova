@@ -456,18 +456,22 @@ test_phase5_dandelion() {
     fi
 
     local addr3=$(rpc3 getnewaddress 2>/dev/null)
-    local txid=$(rpc1 sendtoaddress "$addr3" 1.0 2>/dev/null)
-    if [ -n "$txid" ]; then
-        sleep 5
-        local mempool3=$(rpc3 getrawmempool 2>/dev/null)
-        if echo "$mempool3" | grep -q "$txid"; then
-            success "Transaction propagated via Dandelion++ to Node 3"
-        else
-            warn "TX not yet in Node 3 mempool (stem phase)"
-            success "Dandelion++ stem phase may be active (expected behavior)"
-        fi
+    local txid=$(rpc1 sendtoaddress "$addr3" 1.0 2>/dev/null | tr -d '"[:space:]')
+    if [ ${#txid} -ne 64 ]; then
+        fail "Could not send the Dandelion++ test transaction"
+        return
+    fi
+    # A stem-phase transaction reaches the rest of the network once it fluffs or its
+    # embargo expires; wait for that rather than passing on its absence.
+    local seen=0
+    for _ in $(seq 1 90); do
+        if rpc3 getrawmempool 2>/dev/null | grep -q "$txid"; then seen=1; break; fi
+        sleep 1
+    done
+    if [ "$seen" -eq 1 ]; then
+        success "Transaction propagated via Dandelion++ to Node 3"
     else
-        warn "Could not send test transaction for Dandelion++ test"
+        fail "Transaction ${txid:0:16} never reached Node 3's mempool within 90s"
     fi
 }
 
