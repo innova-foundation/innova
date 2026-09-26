@@ -879,11 +879,8 @@ Value collateralnode(const Array& params, bool fHelp)
 
         CWalletTx wtx;
         uint256 keyImage = 0;
-        // Empty: a collateralnode registration publishes no member key.
-        const std::vector<unsigned char> vchMemberKey;
         if (!pwalletMain->CreatePrivacyVNextCollateralAttestation(
-                pChosen->note, hashContext, vchMemberKey, false, wtx, keyImage,
-                strError))
+                pChosen->note, hashContext, false, wtx, keyImage, strError))
             throw runtime_error(strError);
 
         // Proving took seconds. Anything that retired the note in the meantime makes
