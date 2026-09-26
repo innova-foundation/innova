@@ -403,52 +403,6 @@ inline bool IsEpochBoundaryHeight(int nHeight)
  *  -1 when no epoch ends that early. */
 int GetFinalizedEpochForHeight(int nFinalizedHeight);
 
-// ---------------------------------------------------------------------------
-// Stake-derived finality committee
-// ---------------------------------------------------------------------------
-//
-// Seats are drawn from the IV5 collateral registrations that published a tally key
-// (NOTE_FINALITY_MEMBER_REGISTER). Nothing about a seat is granted: a registration
-// buys a lottery ticket, the chain's own entropy draws the winners, and the draw is
-// redone from scratch every term, so no seat-holder has any say in who follows it.
-
-/** Seats in one committee. */
-static const int FINALITY_COMMITTEE_SEATS = 32;
-/** Signatures a certificate needs. Just over 2N/3: below that a colluding third of
- *  the seats certifies on its own, above it a silent third stops certification. */
-static const int FINALITY_COMMITTEE_THRESHOLD_M = 22;
-/** Epochs one committee serves. 288 post-DAG epochs is about a day.
- *  Every draw is a chance for an attacker to land a majority, so the draw rate is
- *  the attack rate: drawing per epoch would run 288 of those lotteries a day
- *  against one registry instead of one. */
-static const int FINALITY_COMMITTEE_TERM_EPOCHS = 288;
-/** Epochs between the registration snapshot and the term it seats.
- *  Registration closes at the start of epoch (term - LAG) and the seed is that same
- *  epoch's block hashes, which do not exist yet, so a registrant cannot grind a key
- *  image against a known seed. The seed is fixed once the epoch ends and the snapshot
- *  is already closed by then, so a producer grinding block hashes cannot add rows. */
-static const int FINALITY_COMMITTEE_DRAW_LAG_EPOCHS = 2;
-/** Registry rows required per seat before any committee is seated. A committee drawn
- *  from a registry barely bigger than itself is a committee everyone can enumerate
- *  and nearly everyone is on; seat nothing and let the epoch certify transparent-only
- *  rather than pretend that is privacy. */
-static const int FINALITY_COMMITTEE_MIN_REGISTRY_MULTIPLE = 2;
-
-/** Regtest runs the same machinery on a committee three nodes can actually staff.
- *  Only the shape changes; the draw, the gates and the term boundary do not. */
-int GetFinalityCommitteeSeats();
-int GetFinalityCommitteeThresholdM();
-int GetFinalityCommitteeTermEpochs();
-
-/** First epoch of the term containing nEpoch. */
-inline int GetFinalityCommitteeTermEpoch(int nEpoch)
-{
-    if (nEpoch < 0)
-        return -1;
-    const int nTerm = GetFinalityCommitteeTermEpochs();
-    return (nEpoch / nTerm) * nTerm;
-}
-
 // Per-epoch finality-reward settlement.
 //
 // A vote is COUNTED once per epoch (keyed by nullifier) but may legitimately be
@@ -834,75 +788,12 @@ bool VerifyMofNCommitteeSignatures(const std::vector<CPubKey>& vCommitteePubKeys
 
 class CFinalityTallyCertificate;
 
-/** One term's drawn committee. Seat order is the member index every voter shares
- *  against and every signer signs at, so it is part of the result, not a detail. */
-struct CFinalityCommitteeDraw
-{
-    int nTermEpoch;
-    int nAnchorEpoch;
-    int nAnchorHeight;
-    uint256 seed;
-    std::vector<CPubKey> vSeats;            // seat i == member index i
-    std::vector<uint256> vSeatKeyImages;    // the registration behind each seat
-    int nThresholdM;
-    uint256 setHash;
-    size_t nRegistrySize;                   // rows the draw ran over
-    bool fSeated;
-
-    CFinalityCommitteeDraw()
-        : nTermEpoch(-1), nAnchorEpoch(-1), nAnchorHeight(-1), seed(0),
-          nThresholdM(0), setHash(0), nRegistrySize(0), fSeated(false) {}
-};
-
-/** Draw the committee for the term beginning at nTermEpoch.
- *
- *  Reads exactly two things, both functions of the connected ancestry: the epoch
- *  state of epoch (nTermEpoch - LAG), for the seed, and the collateral registry as
- *  of that epoch's first height, for the candidates. Nothing here consults
- *  nBestHeight, pindexBest, the mempool, the live finality streak or any local
- *  configuration, so two nodes on the same chain draw the same committee.
- *
- *  txdbEpoch may carry an active write batch (the epoch-state read is a point read
- *  and must see staged records). txdbRegistry must NOT: the registry enumeration is
- *  an iterator, which cannot see pending writes, and would then disagree with the
- *  spent-index point reads beside it. Reading the anchor epoch's record through both
- *  is what proves the batch does not reach the rows being enumerated.
- *
- *  Returns false only on a local failure (fLocalFailureOut set), which includes a
- *  transaction that is itself rebuilding the anchor epoch. A registry too thin to draw
- *  from is a consensus outcome: drawOut.fSeated stays false and the caller seats
- *  nothing. */
-bool DrawFinalityCommitteeForTerm(CTxDB& txdbEpoch, CTxDB& txdbRegistry,
-                                  int nTermEpoch,
-                                  CFinalityCommitteeDraw& drawOut,
-                                  bool& fLocalFailureOut,
-                                  std::string& strError);
-
-/** Resolve the committee that governs nEpoch, from the connected chain.
- *
- *  The set is drawn once per term and carried by the epoch state of the epoch that
- *  ends immediately before the term. Reading it back rather than redrawing is what
- *  makes the committee fixed for the whole term even though registrations keep
- *  arriving and collateral keeps being spent.
- *
- *  Returns false when nEpoch's term seated nothing (no committee, so the signer-set
- *  rule is inert and the epoch certifies transparent-only). pfLocalFailure, when
- *  given, separates "this node cannot read its own epoch state" from that. */
+/** The committee governing nEpoch. No committee is drawn, so this always answers none;
+ *  it remains only for the legacy v3 private-certificate path. */
 bool GetCanonicalFinalityCommittee(CTxDB& txdb, int nEpoch,
                                    std::vector<CPubKey>& vCommitteeOut,
                                    int& nMOut,
-                                   uint256& setHashOut,
-                                   bool* pfLocalFailure = NULL);
-
-struct CEpochState;
-
-/** Fill in the drawn committee an epoch state carries, if it is the epoch that ends a
- *  term's lead-in. Called once per epoch state as it is built, inside the caller's
- *  best-chain transaction, so the record that is written and the record every other
- *  node writes for the same epoch are the same bytes. A no-op below
- *  FORK_HEIGHT_IV5_NOTE_VOTE and for every epoch that does not lead a term. */
-bool SeatFinalityCommitteeForEpochState(CTxDB& txdb, CEpochState& state,
-                                        bool& fLocalFailureOut, std::string& strError);
+                                   uint256& setHashOut);
 
 /** D2: verify a v3 tally certificate carries >= M canonical-committee signatures
  *  over its GetSignatureDigest(). Pure (no chain state) so it is unit-testable
@@ -1540,11 +1431,6 @@ public:
      *  transaction aborts. Memory-only relay objects are discarded. */
     bool RestoreCommittedStateAfterAbort();
 
-    // Resolve the committee governing nEpoch out of the connected chain's epoch
-    // state. Returns false when that term seated nothing.
-    bool GetCommitteeForEpoch(CTxDB& txdb, int nEpoch, std::vector<CPubKey>& vOut,
-                              int& nMOut, uint256& setHashOut,
-                              bool* pfLocalFailure = NULL) const;
     // 2c-4b: collect a committee member's signature over a candidate certificate;
     // when M distinct valid signatures are gathered for the same candidate, the
     // complete certificate is assembled into *pAssembledOut (pfAssembled=true).

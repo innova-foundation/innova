@@ -347,7 +347,7 @@ bool CFinalityTracker::AddCertSignature(const CFinalityCertSignature& msg, CTxDB
 
     // Resolve the committee that must authorize this epoch, then verify the signature.
     std::vector<CPubKey> vCommittee; int nM = 0; uint256 setHash;
-    if (!GetCommitteeForEpoch(txdb, cand.nEpoch, vCommittee, nM, setHash))
+    if (!GetCanonicalFinalityCommittee(txdb, cand.nEpoch, vCommittee, nM, setHash))
         return reject("no canonical committee for candidate epoch");
     if (cand.committeeSetHash != setHash)
         return reject("cert-signature candidate committee-set mismatch");
@@ -386,287 +386,17 @@ bool CFinalityTracker::AddCertSignature(const CFinalityCertSignature& msg, CTxDB
 }
 
 
-// ---------------------------------------------------------------------------
-// Stake-derived finality committee
-// ---------------------------------------------------------------------------
-
-int GetFinalityCommitteeSeats()
-{
-    extern bool fRegTest;
-    return fRegTest ? 3 : FINALITY_COMMITTEE_SEATS;
-}
-
-int GetFinalityCommitteeThresholdM()
-{
-    extern bool fRegTest;
-    return fRegTest ? 2 : FINALITY_COMMITTEE_THRESHOLD_M;
-}
-
-int GetFinalityCommitteeTermEpochs()
-{
-    extern bool fRegTest;
-    return fRegTest ? 2 : FINALITY_COMMITTEE_TERM_EPOCHS;
-}
-
-// The seed for one term's draw.
-//
-// Binds the shape as well as the entropy: a build that changed the seat count or the
-// threshold would otherwise draw from the same seed as one that did not, and the two
-// would disagree about a committee while agreeing about the seed that produced it.
-//
-// The entropy is the anchor epoch's canonical end block alone. It cannot come earlier
-// than the registration cutoff: a seed already public by then is one a registrant
-// grinds a key image against offline, without bound. So the last word belongs to some
-// producer after the cutoff either way, and the only question is how many.
-//
-// vBlockHashes made that many. It is the epoch's whole DAG order, including merge and
-// sibling blocks, which never had to win a height race -- so a miner could hold one,
-// evaluate the seed it would produce, and release it only if favourable. The end block
-// carries the same entropy over one block at one height, and the order is derived from
-// it anyway. Grinding is reduced, not removed: that block's producer can still resample
-// by discarding a solution it could have published.
-static uint256 FinalityCommitteeDrawSeed(int nTermEpoch, int nSeats, int nThresholdM,
-                                         const CEpochState& anchorState)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/Finality/CommitteeDraw/v2");
-    ss << nTermEpoch;
-    ss << nSeats;
-    ss << nThresholdM;
-    ss << anchorState.nEpoch;
-    ss << anchorState.hashBoundaryBlock;
-    return ss.GetHash();
-}
-
-// A registration's position in the draw. Keyed on the key image, which is the one
-// part of a registration its holder cannot choose after the fact.
-static uint256 FinalityCommitteeSeatOrder(const uint256& seed, const uint256& keyImage)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/Finality/CommitteeSeat/v1");
-    ss << seed;
-    ss << keyImage;
-    return ss.GetHash();
-}
-
-bool DrawFinalityCommitteeForTerm(CTxDB& txdbEpoch, CTxDB& txdbRegistry,
-                                  int nTermEpoch,
-                                  CFinalityCommitteeDraw& drawOut,
-                                  bool& fLocalFailureOut,
-                                  std::string& strError)
-{
-    drawOut = CFinalityCommitteeDraw();
-    fLocalFailureOut = false;
-    strError.clear();
-
-    const int nSeats = GetFinalityCommitteeSeats();
-    const int nThresholdM = GetFinalityCommitteeThresholdM();
-    const int nAnchorEpoch = nTermEpoch - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS;
-
-    drawOut.nTermEpoch = nTermEpoch;
-    drawOut.nAnchorEpoch = nAnchorEpoch;
-    drawOut.nThresholdM = nThresholdM;
-
-    if (nTermEpoch < 0 || nAnchorEpoch < 0)
-        return true;   // no chain behind the term yet; seat nothing
-
-    const int nAnchorHeight = GetEpochBoundaryHeight(nAnchorEpoch, 0);
-    drawOut.nAnchorHeight = nAnchorHeight;
-
-    // The seed's entropy. Read through the caller's handle so a staged record is
-    // visible: the epoch that carries the draw is built in the same batch.
-    CEpochState anchorState;
-    if (!txdbEpoch.ReadEpochState(nAnchorEpoch, anchorState) ||
-        anchorState.nEpoch != nAnchorEpoch)
-        return true;   // the chain has not produced that epoch's state; seat nothing
-
-    // An epoch record with no end block never named the block the seed is taken from,
-    // and seeding from zero would hand every such term one predictable draw. Seating
-    // nothing is the answer every node reaches, because the field is part of the
-    // record's digest and so is the same on all of them.
-    if (anchorState.hashBoundaryBlock == 0)
-        return true;
-
-    // What makes the registry read below safe to take from a batch-free handle.
-    //
-    // The registry enumeration cannot see an in-flight write batch, so it is only the
-    // right answer if no in-flight batch is adding to or rolling back a registration
-    // at or below the anchor height. Reading the anchor epoch's record through both
-    // handles decides exactly that: if the caller's transaction had rebuilt any part
-    // of the anchor epoch -- which is what a reorg reaching down to the anchor height
-    // necessarily does -- the staged record would differ from the committed one. Equal
-    // records mean the transaction's fork point is past the anchor epoch's end, so
-    // every row this reads was committed before the transaction opened and is the same
-    // row on every node.
-    //
-    // A disagreement is reported as a local failure, never as "seat nothing": seating
-    // a different committee than a peer is a split, whereas refusing the transaction
-    // leaves this node on its current chain to try again a block at a time.
-    CEpochState anchorCommitted;
-    if (!txdbRegistry.ReadEpochState(nAnchorEpoch, anchorCommitted) ||
-        anchorCommitted.GetDigest() != anchorState.GetDigest())
-    {
-        fLocalFailureOut = true;
-        strError = strprintf(
-            "epoch %d is being rebuilt in this transaction, so its committee draw "
-            "cannot read a settled registration snapshot", nAnchorEpoch);
-        return false;
-    }
-
-    drawOut.seed = FinalityCommitteeDrawSeed(nTermEpoch, nSeats, nThresholdM, anchorState);
-
-    std::vector<CPrivacyVNextRegistryEntry> vRegistry;
-    bool fRegistryLocalFailure = false;
-    std::string strRegistryError;
-    if (!GetPrivacyVNextCollateralSnapshot(txdbRegistry, nAnchorHeight, true /* members only */,
-                                           vRegistry, fRegistryLocalFailure, strRegistryError))
-    {
-        fLocalFailureOut = fRegistryLocalFailure;
-        strError = strRegistryError;
-        return false;
-    }
-    drawOut.nRegistrySize = vRegistry.size();
-
-    // Thin-registry rule. Seating a committee that is most of the registry tells
-    // everyone who the members are and leaves almost no one to have been a candidate.
-    if ((int)vRegistry.size() < nSeats * FINALITY_COMMITTEE_MIN_REGISTRY_MULTIPLE)
-        return true;
-
-    std::vector<std::pair<std::pair<uint256, uint256>, size_t> > vOrder;
-    vOrder.reserve(vRegistry.size());
-    for (size_t i = 0; i < vRegistry.size(); ++i)
-    {
-        // The key image is the tie-break, and it is unique per row, so the order is
-        // total without appealing to the input sequence.
-        vOrder.push_back(std::make_pair(
-            std::make_pair(FinalityCommitteeSeatOrder(drawOut.seed, vRegistry[i].keyImage),
-                           vRegistry[i].keyImage),
-            i));
-    }
-    std::sort(vOrder.begin(), vOrder.end());
-
-    // One seat per member key. Two seats behind one key would seal two Shamir shares
-    // to the same recipient, which is one share for threshold purposes while counting
-    // as two, so M-of-N would open on fewer parties than it names.
-    std::set<std::vector<unsigned char> > setSeated;
-    for (size_t i = 0; i < vOrder.size() && (int)drawOut.vSeats.size() < nSeats; ++i)
-    {
-        const CPrivacyVNextRegistryEntry& entry = vRegistry[vOrder[i].second];
-        if (!setSeated.insert(entry.vchMemberKey).second)
-            continue;
-        CPubKey pubkey(entry.vchMemberKey);
-        if (!pubkey.IsValid() || !pubkey.IsFullyValid() || !pubkey.IsCompressed())
-            continue;   // the registration decoder already refused these; belt and braces
-        drawOut.vSeats.push_back(pubkey);
-        drawOut.vSeatKeyImages.push_back(entry.keyImage);
-    }
-
-    if ((int)drawOut.vSeats.size() < nSeats)
-        return true;   // too few distinct member keys to fill the seats
-
-    drawOut.setHash = ComputeFinalityTallyCommitteeHash(nThresholdM, drawOut.vSeats);
-    drawOut.fSeated = true;
-    return true;
-}
-
-bool SeatFinalityCommitteeForEpochState(CTxDB& txdb, CEpochState& state,
-                                        bool& fLocalFailureOut, std::string& strError)
-{
-    fLocalFailureOut = false;
-    strError.clear();
-    state.vFinalityCommittee.clear();
-    state.nFinalityCommitteeM = 0;
-
-    if (state.nSerVersion < EPOCHSTATE_SER_VERSION_V6)
-        return true;   // the record cannot carry a committee
-
-    // Exactly one epoch per term carries the draw: the one that ends immediately
-    // before it. Drawing here rather than on demand is what makes the committee a
-    // term constant — registrations keep arriving and collateral keeps being spent,
-    // and a resolver that redrew per block would answer differently as they did.
-    const int nTermEpoch = state.nEpoch + 1;
-    if (nTermEpoch != GetFinalityCommitteeTermEpoch(nTermEpoch))
-        return true;
-
-    // A batch-free handle for the registry iterator. The block being connected owns
-    // txdb's write batch; an iterator cannot see it, and the snapshot's spent-index
-    // point reads beside it would answer from committed state anyway, so mixing the
-    // two is what would make the two halves disagree.
-    CTxDB txdbRegistry("r");
-    CFinalityCommitteeDraw draw;
-    if (!DrawFinalityCommitteeForTerm(txdb, txdbRegistry, nTermEpoch, draw,
-                                      fLocalFailureOut, strError))
-        return false;
-    if (!draw.fSeated)
-        return true;
-
-    for (size_t i = 0; i < draw.vSeats.size(); ++i)
-        state.vFinalityCommittee.push_back(
-            std::vector<unsigned char>(draw.vSeats[i].begin(), draw.vSeats[i].end()));
-    state.nFinalityCommitteeM = draw.nThresholdM;
-    return true;
-}
-
-bool CFinalityTracker::GetCommitteeForEpoch(CTxDB& txdb, int nEpoch,
-                                            std::vector<CPubKey>& vOut,
-                                            int& nMOut, uint256& setHashOut,
-                                            bool* pfLocalFailure) const
-{
-    if (pfLocalFailure)
-        *pfLocalFailure = false;
-    vOut.clear();
-    nMOut = 0;
-    setHashOut = 0;
-
-    const int nTermEpoch = GetFinalityCommitteeTermEpoch(nEpoch);
-    if (nTermEpoch <= 0)
-        return false;   // the first term has no epoch behind it to carry a draw
-
-    // The draw lives in the epoch state that ends the term's lead-in. Reading it back
-    // makes the committee a pure function of a record every node on this chain holds
-    // byte-identically, rather than of whatever each node's registry looks like now.
-    CEpochState carrier;
-    if (!txdb.ReadEpochState(nTermEpoch - 1, carrier) || carrier.nEpoch != nTermEpoch - 1)
-        return false;
-    if (carrier.vFinalityCommittee.empty() || carrier.nFinalityCommitteeM <= 0)
-        return false;   // that term seated nothing: transparent-only certification
-
-    std::vector<CPubKey> vSeats;
-    for (size_t i = 0; i < carrier.vFinalityCommittee.size(); ++i)
-    {
-        CPubKey pubkey(carrier.vFinalityCommittee[i]);
-        if (!pubkey.IsValid() || !pubkey.IsFullyValid() || !pubkey.IsCompressed())
-        {
-            // A record this node cannot decode is this node's problem, not the
-            // chain's: calling it a consensus outcome would reject blocks every
-            // healthy peer accepts.
-            if (pfLocalFailure)
-                *pfLocalFailure = true;
-            return false;
-        }
-        vSeats.push_back(pubkey);
-    }
-    if (carrier.nFinalityCommitteeM > (int)vSeats.size())
-    {
-        if (pfLocalFailure)
-            *pfLocalFailure = true;
-        return false;
-    }
-
-    vOut = vSeats;
-    nMOut = carrier.nFinalityCommitteeM;
-    setHashOut = ComputeFinalityTallyCommitteeHash(nMOut, vOut);
-    return true;
-}
-
 bool GetCanonicalFinalityCommittee(CTxDB& txdb, int nEpoch,
                                    std::vector<CPubKey>& vCommitteeOut,
                                    int& nMOut,
-                                   uint256& setHashOut,
-                                   bool* pfLocalFailure)
+                                   uint256& setHashOut)
 {
-    return g_finalityTracker.GetCommitteeForEpoch(txdb, nEpoch, vCommitteeOut, nMOut,
-                                                  setHashOut, pfLocalFailure);
+    (void)txdb;
+    (void)nEpoch;
+    vCommitteeOut.clear();
+    nMOut = 0;
+    setHashOut = 0;
+    return false;
 }
 
 // A committee signature is part of a certificate's identity, so an unenforced
@@ -5191,16 +4921,10 @@ bool CFinalityTracker::CheckTallyCertificate(
         std::vector<CPubKey> vCommittee;
         int nM = 0;
         uint256 setHash;
-        bool fCommitteeLocalFailure = false;
-        if (!GetCanonicalFinalityCommittee(txdb, cert.nEpoch, vCommittee, nM, setHash,
-                                           &fCommitteeLocalFailure))
+        if (!GetCanonicalFinalityCommittee(txdb, cert.nEpoch, vCommittee, nM, setHash))
         {
-            // No committee is seated for this epoch's term, so the epoch certifies
-            // transparent-only and a certificate claiming committee authorization has
-            // none to claim. A record this node cannot read is a different thing and
-            // must not become a verdict on the peer's certificate.
-            if (fCommitteeLocalFailure)
-                return localState("finality committee record cannot be read; -reindex/resync required");
+            // No committee is seated, so a certificate claiming committee
+            // authorization has none to claim.
             if (nContextHeight >= 0)
                 return reject("no finality committee is seated for this certificate's term");
         }

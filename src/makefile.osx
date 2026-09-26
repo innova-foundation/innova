@@ -295,7 +295,6 @@ TEST_OBJS= \
     obj/test/reorg_finality_anchor_tests.o \
     obj/test/dagknight_anchor_cache_tests.o \
     obj/test/dag_privacy_interaction_tests.o \
-    obj/test/finality_committee_draw_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/finality_vote_schedule_tests.o \
     obj/test/name_index_recovery_tests.o \

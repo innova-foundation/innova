@@ -472,7 +472,7 @@ struct HiddenEpochRecords
 BOOST_AUTO_TEST_CASE(the_guard_reads_the_iv5_finalized_anchor)
 {
     RegTestNetwork net;
-    BOOST_CHECK_EQUAL((int)EPOCHSTATE_SER_VERSION, (int)EPOCHSTATE_SER_VERSION_V6);
+    BOOST_CHECK_EQUAL((int)EPOCHSTATE_SER_VERSION, (int)EPOCHSTATE_SER_VERSION_V5);
 
     CSyntheticChain chain(0xA5C20000U);
     CBlockIndex* pEnd = chain.Linear(EpochEnd(AS_OF_EPOCH));

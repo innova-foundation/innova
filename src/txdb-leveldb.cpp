@@ -1750,17 +1750,6 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
                     ssValue >> state.nVNextPoolBalance;
                 ssValue >> state.vVNextActiveTxIds;
                 ssValue >> state.hashVNextActiveTxSet;
-                if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V6)
-                {
-                    ssValue >> state.vFinalityCommittee;
-                    ssValue >> state.nFinalityCommitteeM;
-                    if (state.vFinalityCommittee.size() > EPOCHSTATE_MAX_COMMITTEE_SEATS)
-                        throw std::ios_base::failure("epoch-state committee is oversized");
-                    for (size_t i = 0; i < state.vFinalityCommittee.size(); i++)
-                        if (state.vFinalityCommittee[i].size() != 33)
-                            throw std::ios_base::failure(
-                                "epoch-state committee seat is not a compressed key");
-                }
                 if (state.vchVNextTreeState.size() !=
                         EPOCHSTATE_VNEXT_TREE_STATE_SIZE ||
                     state.vchVNextRoot.size() !=

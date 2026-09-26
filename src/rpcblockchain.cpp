@@ -2248,48 +2248,6 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("tally_committee_set_hash", tallyConfig.committeeSetHash.GetHex()));
     result.push_back(Pair("tally_local_committee_index", tallyConfig.nLocalCommitteeIndex));
     result.push_back(Pair("tally_encrypted_shares_ready", tallyConfig.fEncryptedTallyReady));
-    {
-        // The committee governing the current epoch, as the chain resolves it. Nothing
-        // here is configured: the seats come out of the collateral registry draw.
-        CTxDB txdbCommittee("r");
-        std::vector<CPubKey> vSeats; int nSeatM = 0; uint256 seatSetHash;
-        const bool fSeated = GetCanonicalFinalityCommittee(txdbCommittee, nCurrentEpoch,
-                                                           vSeats, nSeatM, seatSetHash);
-        result.push_back(Pair("committee_source", std::string("collateral_registry_draw")));
-        result.push_back(Pair("committee_term_epoch", GetFinalityCommitteeTermEpoch(nCurrentEpoch)));
-        result.push_back(Pair("committee_term_epochs", GetFinalityCommitteeTermEpochs()));
-        result.push_back(Pair("committee_seated", fSeated));
-        result.push_back(Pair("committee_set_hash", fSeated ? seatSetHash.GetHex() : std::string("")));
-        result.push_back(Pair("committee_threshold_m", nSeatM));
-        result.push_back(Pair("committee_seat_count", (int)vSeats.size()));
-        Array seatArray;
-        for (size_t i = 0; i < vSeats.size(); i++)
-            seatArray.push_back(HexStr(vSeats[i].Raw()));
-        result.push_back(Pair("committee_seats", seatArray));
-
-        // The draw for the term the next epoch would open, so an operator can see a
-        // thin registry coming rather than discover it at the boundary.
-        CFinalityCommitteeDraw draw;
-        bool fDrawLocalFailure = false;
-        std::string strDrawError;
-        const int nNextTerm = GetFinalityCommitteeTermEpoch(nCurrentEpoch) +
-                              GetFinalityCommitteeTermEpochs();
-        if (DrawFinalityCommitteeForTerm(txdbCommittee, txdbCommittee, nNextTerm, draw,
-                                          fDrawLocalFailure, strDrawError))
-        {
-            Object next;
-            next.push_back(Pair("term_epoch", draw.nTermEpoch));
-            next.push_back(Pair("anchor_epoch", draw.nAnchorEpoch));
-            next.push_back(Pair("anchor_height", draw.nAnchorHeight));
-            next.push_back(Pair("registry_rows", (int)draw.nRegistrySize));
-            next.push_back(Pair("rows_required",
-                                GetFinalityCommitteeSeats() *
-                                    FINALITY_COMMITTEE_MIN_REGISTRY_MULTIPLE));
-            next.push_back(Pair("seated", draw.fSeated));
-            next.push_back(Pair("set_hash", draw.fSeated ? draw.setHash.GetHex() : std::string("")));
-            result.push_back(Pair("committee_next_term_draw", next));
-        }
-    }
     int nDecryptableTallyShares = CountDecryptableFinalityTallyShares(nCurrentEpoch);
     int nTallyAggregatePartials = g_finalityTracker.GetEpochTallyAggregatePartialCount(nCurrentEpoch);
     result.push_back(Pair("tally_decryptable_shares", nDecryptableTallyShares));

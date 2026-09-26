@@ -2508,12 +2508,10 @@ bool IsPrivacyVNextCollateralRegistered(
 // finality split, and it is not repeated here.
 //
 // nAnchorHeight bounds the registrations by when they were recorded. The caller supplies
-// it and owns the choice: the committee draw that follows this increment anchors it to the
-// deterministic finalized height its epoch state carries, which is settled and cannot be
-// reorged out from under a snapshot.
+// it and owns the choice.
 //
-// fMembersOnly selects registrations that published a tally-encryption key -- the
-// committee-eligible set. Without it the result is every collateral registration.
+// fMembersOnly selects registrations that published a tally-encryption key. Without it
+// the result is every collateral registration.
 bool GetPrivacyVNextCollateralSnapshot(
     CTxDB& txdb,
     int nAnchorHeight,
@@ -12122,17 +12120,6 @@ static bool StageEpochStateRange(CTxDB& txdb, CBlockIndex* pTip,
                                           pBoundary, state, tree, strError,
                                           pPrevState, pPrevTree))
             return false;
-        // The epoch that ends a term's lead-in carries that term's drawn committee.
-        // Seated here, in the same transaction that writes the record, so the draw
-        // happens exactly once per term on every node instead of once per validation.
-        bool fCommitteeLocalFailure = false;
-        if (!SeatFinalityCommitteeForEpochState(txdb, state, fCommitteeLocalFailure,
-                                                strError))
-        {
-            strError = strprintf("committee draw for epoch %d failed: %s", nEpoch,
-                                 strError.c_str());
-            return false;
-        }
         if (!g_dagManager.WriteEpochState(txdb, state, tree))
         {
             strError = strprintf("state/tree write failed for epoch %d", nEpoch);
