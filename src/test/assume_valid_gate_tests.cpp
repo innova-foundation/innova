@@ -128,11 +128,14 @@ BOOST_AUTO_TEST_CASE(an_unknown_or_disabled_hash_keeps_the_gate_shut)
 // at or above FORK_HEIGHT_DAG on any network.
 BOOST_AUTO_TEST_CASE(no_checkpoint_sits_at_or_above_the_dag_fork)
 {
-    // Both sides read mainnet on purpose. GetTotalBlocksEstimate() takes the mainnet map
-    // unless fTestNet, and the suite runs under regtest, whose own DAG fork is height 11 --
-    // comparing against that would assert nothing about the list this ships with.
+    // Reads mainnet on purpose: the regtest map holds only genesis.
     const int nMainnetDagFork = ShiftMainnetV5Activation(7950000);
+    const bool fWasRegTest = fRegTest, fWasTestNet = fTestNet;
+    fRegTest = false;
+    fTestNet = false;
     const int nLastCheckpoint = Checkpoints::GetTotalBlocksEstimate();
+    fRegTest = fWasRegTest;
+    fTestNet = fWasTestNet;
     BOOST_REQUIRE(nMainnetDagFork > 0);
     BOOST_REQUIRE(nLastCheckpoint > 0);
     BOOST_CHECK_MESSAGE(

@@ -166,14 +166,12 @@ namespace Checkpoints
         return hash == i->second;
     }
 
-    // Deliberately NOT ActiveCheckpoints(): this feeds IsInitialBlockDownload and the
-    // sync-progress estimate, and regtest has always read the mainnet number there.
-    // Changing it would move IBD-gated behaviour (signature-check skipping, mempool
-    // resurrection on reorg) on every regtest run, which is a separate change from
-    // stopping mainnet checkpoints rejecting regtest blocks.
+    // The network's own map. Regtest read the mainnet height here, which is above any
+    // regtest chain, so every regtest block skipped script verification and a reorg
+    // never returned disconnected transactions to the mempool.
     int GetTotalBlocksEstimate()
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
+        MapCheckpoints& checkpoints = ActiveCheckpoints();
 
         if (checkpoints.empty())
             return 0;

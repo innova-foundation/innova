@@ -58,6 +58,27 @@ BOOST_AUTO_TEST_CASE(sanity)
     BOOST_CHECK_EQUAL(Checkpoints::GetTotalBlocksEstimate(), last->first);
 }
 
+// The estimate gates script verification (skipped below it) and mempool resurrection on
+// reorg (above it only); regtest must not read the mainnet height.
+BOOST_AUTO_TEST_CASE(the_block_estimate_is_the_active_networks_own)
+{
+    {
+        ScopedNetwork regtest(true, false);
+        BOOST_CHECK_EQUAL(Checkpoints::GetTotalBlocksEstimate(), 0);
+    }
+    {
+        ScopedNetwork testnet(false, true);
+        BOOST_REQUIRE(!Checkpoints::mapCheckpointsTestnet.empty());
+        BOOST_CHECK_EQUAL(Checkpoints::GetTotalBlocksEstimate(),
+                          Checkpoints::mapCheckpointsTestnet.rbegin()->first);
+    }
+    {
+        ScopedNetwork mainnet(false, false);
+        BOOST_CHECK_EQUAL(Checkpoints::GetTotalBlocksEstimate(),
+                          Checkpoints::mapCheckpoints.rbegin()->first);
+    }
+}
+
 // Regtest chains are fresh per run, so regtest must not use the mainnet checkpoint map
 // (it would refuse a regtest block at mainnet checkpoint heights, e.g. 2000).
 BOOST_AUTO_TEST_CASE(regtest_is_not_bound_by_mainnet_checkpoints)
