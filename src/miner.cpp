@@ -1435,8 +1435,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 // be connected or embedded in this same block. Certificates
                 // depending on local pending relay state would make the block
                 // invalid on nodes that have not seen those votes.
+                // Anchored to the template parent: connect binds the named boundary
+                // block to the carrier's ancestors, so a certificate naming a sibling
+                // branch's block would make this node reject its own block.
                 std::string strCertError;
-                if (!g_finalityTracker.CheckTallyCertificate(cert, txdb, &strCertError, &vVotesEmbedded, false, nHeight))
+                if (!g_finalityTracker.CheckTallyCertificate(cert, txdb, &strCertError, &vVotesEmbedded, false, nHeight,
+                                                             false, NULL, pindexPrev))
                 {
                     printf("CreateNewBlock: excluding finality tally certificate %s: %s\n",
                            cert.GetHash().ToString().substr(0,20).c_str(), strCertError.c_str());

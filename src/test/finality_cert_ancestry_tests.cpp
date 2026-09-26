@@ -4,15 +4,22 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "../bignum.h"
 #include "../finality.h"
 #include "../hash.h"
+#include "../init.h"
 #include "../key.h"
 #include "../main.h"
+#include "../miner.h"
 #include "../txdb.h"
 #include "../uint256.h"
+#include "../wallet.h"
 #include "synthetic_chain.h"
 
 extern bool fRegTest;
@@ -276,6 +283,148 @@ BOOST_AUTO_TEST_CASE(connect_derives_the_carrier_from_the_block_hash_it_is_given
     txdb.TxnAbort();
     txdb.EraseFinalityTallyCertificate(cert.GetHash());
     txdb.EraseFinalityConnectedCertBlock(hashCarrierB);
+}
+
+namespace {
+
+bool SolveBlock(CBlock* pblock)
+{
+    CBigNum target;
+    target.SetCompact(pblock->nBits);
+    const uint256 hashTarget = target.getuint256();
+    unsigned int nHashes = 0;
+    while (pblock->GetPoWHash() > hashTarget)
+    {
+        ++pblock->nNonce;
+        if (pblock->nNonce == 0)
+            ++pblock->nTime;
+        if (++nHashes > 4000000U)
+            return false;
+    }
+    return true;
+}
+
+CBlockIndex* TemplateParent(const CBlock& block)
+{
+    LOCK(cs_main);
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
+    BOOST_REQUIRE(mi != mapBlockIndex.end());
+    return mi->second;
+}
+
+void MineOnTemplate()
+{
+    unsigned int nExtraNonce = 0;
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    IncrementExtraNonce(pblock.get(), TemplateParent(*pblock), nExtraNonce);
+    BOOST_REQUIRE(SolveBlock(pblock.get()));
+    BOOST_REQUIRE(ProcessBlock(NULL, pblock.get()));
+}
+
+bool CoinbaseCarries(const CBlock& block, const CScript& script)
+{
+    const std::vector<CTxOut>& vout = block.vtx[0].vout;
+    for (size_t i = 0; i < vout.size(); i++)
+        if (vout[i].scriptPubKey == script)
+            return true;
+    return false;
+}
+
+// Discards the in-memory votes and pending certificates a case injected.
+struct GlobalFinalityRestore
+{
+    int nFinalizedBefore;
+    GlobalFinalityRestore() : nFinalizedBefore(g_finalityTracker.GetFinalizedHeight()) {}
+    ~GlobalFinalityRestore()
+    {
+        BOOST_CHECK(g_finalityTracker.RestoreCommittedStateAfterAbort());
+        BOOST_CHECK_EQUAL(g_finalityTracker.GetFinalizedHeight(), nFinalizedBefore);
+    }
+};
+
+} // namespace
+
+// The template's certificate filter must apply the same binding as connect. Two pending
+// certificates for consecutive epochs differ only in whether the named boundary block is
+// an ancestor of the template parent; only that one may be embedded.
+BOOST_AUTO_TEST_CASE(the_miner_does_not_embed_a_certificate_naming_a_sibling_boundary_block)
+{
+    // Two post-Boundary-A epochs whose vote-inclusion windows have closed at the
+    // template height.
+    CBlockIndex* pindexPrev = NULL;
+    int nHeight = 0;
+    int nEpochSibling = 0;
+    for (int nMined = 0;; nMined++)
+    {
+        BOOST_REQUIRE(nMined < 2000);
+        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        pindexPrev = TemplateParent(*pblock);
+        nHeight = pindexPrev->nHeight + 1;
+        int nEpochClosed = GetEpochForHeight(nHeight);
+        if (nHeight < GetEpochBoundaryHeight(nEpochClosed, nHeight) + FINALITY_VOTE_INCLUSION_WINDOW)
+            nEpochClosed--;
+        nEpochSibling = nEpochClosed - 1;
+        if (IsBoundaryAActiveAtHeight(nHeight) &&
+            GetEpochBoundaryHeight(nEpochSibling, nHeight) >= FORK_HEIGHT_BOUNDARY_A)
+            break;
+        MineOnTemplate();
+    }
+    const int nEpochCanonical = nEpochSibling + 1;
+    const int nBoundarySibling = GetEpochBoundaryHeight(nEpochSibling, nHeight);
+    const int nBoundaryCanonical = GetEpochBoundaryHeight(nEpochCanonical, nHeight);
+
+    const CBlockIndex* pCanonical =
+        GetFinalityAncestorOnChain(pindexPrev, nBoundaryCanonical, FINALITY_ANCESTOR_MAX_WALK);
+    const CBlockIndex* pOwnSiblingEpoch =
+        GetFinalityAncestorOnChain(pindexPrev, nBoundarySibling, FINALITY_ANCESTOR_MAX_WALK);
+    BOOST_REQUIRE(pCanonical != NULL && pCanonical->IsProofOfWork());
+    BOOST_REQUIRE(pOwnSiblingEpoch != NULL);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(nEpochSibling), 0);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(nEpochCanonical), 0);
+    BOOST_REQUIRE(g_finalityTracker.GetEpochTallyCertificates(nEpochSibling).empty());
+    BOOST_REQUIRE(g_finalityTracker.GetEpochTallyCertificates(nEpochCanonical).empty());
+
+    CertAncestryRegtest network;
+    CSyntheticChain branch(0xCC000001);
+    CBlockIndex* pSibling = branch.Add(NULL, nBoundarySibling);
+    BOOST_REQUIRE(pSibling != NULL && pSibling->IsProofOfWork());
+    BOOST_REQUIRE(pSibling != pOwnSiblingEpoch);
+
+    GlobalFinalityRestore restore;
+    const CFinalityTallyCertificate certSibling = CanonicalCertificate(
+        ConnectVotesNaming(g_finalityTracker, nEpochSibling, nBoundarySibling,
+                           pSibling->GetBlockHash()));
+    const CFinalityTallyCertificate certCanonical = CanonicalCertificate(
+        ConnectVotesNaming(g_finalityTracker, nEpochCanonical, nBoundaryCanonical,
+                           pCanonical->GetBlockHash()));
+    BOOST_REQUIRE_EQUAL(certSibling.nTier, (int)FINALITY_HARD);
+    BOOST_REQUIRE_EQUAL(certCanonical.nTier, (int)FINALITY_HARD);
+
+    // Both pass every check that holds no carrier.
+    {
+        CTxDB txdb("r");
+        BOOST_REQUIRE(Judge(g_finalityTracker, certSibling, txdb, nHeight, NULL).fOk);
+        BOOST_REQUIRE(Judge(g_finalityTracker, certCanonical, txdb, nHeight, NULL).fOk);
+    }
+    BOOST_REQUIRE(g_finalityTracker.AddTallyCertificate(certSibling, false));
+    BOOST_REQUIRE(g_finalityTracker.AddTallyCertificate(certCanonical, false));
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight).size(), 2U);
+
+    CScript scriptSibling;
+    CScript scriptCanonical;
+    BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(certSibling, nHeight, scriptSibling));
+    BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(certCanonical, nHeight,
+                                                               scriptCanonical));
+
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    BOOST_REQUIRE(TemplateParent(*pblock) == pindexPrev);
+    BOOST_CHECK_MESSAGE(CoinbaseCarries(*pblock, scriptCanonical),
+                        "canonical-boundary certificate not embedded");
+    BOOST_CHECK_MESSAGE(!CoinbaseCarries(*pblock, scriptSibling),
+                        "sibling-boundary certificate embedded");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
