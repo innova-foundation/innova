@@ -1,38 +1,7 @@
 #!/bin/bash
 # Copyright (c) 2026 The Innova developers
-# Every v5 feature live on one regtest fleet at the same time.
-#
-# Nothing else in contrib/test runs more than two of the regtest feature switches
-# at once. This runs all of them on one chain and requires the features to
-# compose: IDAG ordering with DAGKnight, the FCMP++ pool at Boundary B, every
-# disclosure mask, IV5 note finality voting, the IDNS name reset, the IV5 coinbase
-# fee note, the total-supply cap, and private collateralnode registration -- plus
-# a proof-of-data stamp, which is reachable on regtest and cheap to carry along.
-#
-# What a combined run can settle that the single-feature harnesses cannot:
-#   - one coinbase carrying an IDAG parent commitment, a note-vote envelope and an
-#     IV5 fee-note payload has to be built, connected and accepted fleet-wide.
-#     The miner builds the fee-note payload over the FINAL coinbase output vector,
-#     which the vote envelopes have already been appended to, so the two features
-#     share one object and either binding could be computed over the wrong bytes
-#   - a masked transfer's fee under the fee-note fork must leave the pool balance
-#     unchanged: the fee comes out of the spent note and comes back as the
-#     coinbase note. Pre-fork the same transfer moves it to the miner
-#   - the supply cap has to clamp issuance while the finality settlement, the fee
-#     note and the collateralnode split are all live in the same coinbase
-#   - the IDNS reset guard and the pool have to coexist: they share a wallet
-#
-# Layout. Regtest activates the DAG at 11 and DAGKnight at 13, epochs are 300
-# blocks, so epoch E covers [11 + 300*(E-1), 310 + 300*(E-1)] and Boundary B sits
-# at 311, the epoch-state V3 height. The committee schedule below is derived, not
-# written out: registrations have to confirm at or below the term's draw anchor
-# and the term has to sit on the chain's own term grid.
-#
-# The negative phase runs FIRST and on its own datadir. It builds the same pool
-# state with -regtestiv5holdleafindex, which leaves received notes without a tree
-# position and so unspendable, and then runs the SAME predicate the positive path
-# asserts with. A harness whose detector cannot report a failure is not measuring
-# anything, so that predicate returning "spendable" there is a hard failure here.
+# Every v5 feature live on one regtest fleet: IDAG/DAGKnight, the FCMP++ pool, masks,
+# note votes, IDNS reset, fee note, note certificate, supply cap, private CN, PoD stamp.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,14 +11,21 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_combined_fleet_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_COMBINED_TEST_DIR:-${TEST_DIR:-/tmp/innova_iv5_combined_$$}}"
 NUM_NODES=3
-BASE_PORT="${IV5_COMBINED_BASE_PORT:-26650}"
-BASE_RPC="${IV5_COMBINED_BASE_RPC:-26700}"
-BASE_IDNS="${IV5_COMBINED_BASE_IDNS:-6650}"
+BASE_PORT="${IV5_COMBINED_BASE_PORT:-$(iv5_port 0 26650)}"
+BASE_RPC="${IV5_COMBINED_BASE_RPC:-$(iv5_port 16 26700)}"
+BASE_IDNS="${IV5_COMBINED_BASE_IDNS:-$(iv5_port 32 6650)}"
+# Init-refusal probes. Inside the window, clear of every node slot.
+PREFLIGHT_PORT="$(iv5_port 48 26740)"
+PREFLIGHT_RPC="$(iv5_port 49 26790)"
 RPCUSER="iv5combined"
 RPCPASS="iv5combinedpass"
 WALLETPASS="iv5combinedwallet"
@@ -120,62 +96,23 @@ epoch_start() { echo $(( 11 + ($1 - 1) * 300 )); }
 epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 
 # ---------------------------------------------------------------------------
-# The committee schedule.
-#
-# Regtest draws 3 seats at M=2 over a 2-epoch term, refuses a registry smaller
-# than 2N, and anchors the draw 2 epochs back. Transparent value is shielded in
-# the funding epoch, the collateral notes are carved out of it, and they are
-# registered; every registration must confirm at or below the term's anchor height,
-# and the term itself has to sit on the chain's own term grid.
-#
-# A note made in epoch E is first spendable in E+2. At a height in E+1 the spend
-# anchor is the newest epoch the E record calls finalized, which is at most E-1, and
-# E itself is under EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH deep. Only the E+1
-# record, written as E+2 opens, carries a finalized height that covers E.
-# ---------------------------------------------------------------------------
+# Pool schedule: shield, carve the collateral note, register the private CN. A note
+# made in epoch E is first spendable in E+2 (EPOCHSTATE_VNEXT_MIN_UNFINALIZED_ANCHOR_DEPTH).
 POOL_FUND_EPOCH=9
 CARVE_EPOCH=$(( POOL_FUND_EPOCH + 2 ))
 REGISTER_EPOCH=$(( CARVE_EPOCH + 2 ))
-# Above the anchor, so nothing here moves the registry the draw reads.
 MASK_EPOCH=$(( REGISTER_EPOCH + 1 ))
 
-COMMITTEE_TERM_EPOCHS=2
-COMMITTEE_TERM_EPOCH=$(( ((REGISTER_EPOCH + 3 + COMMITTEE_TERM_EPOCHS - 1) / COMMITTEE_TERM_EPOCHS) * COMMITTEE_TERM_EPOCHS ))
-COMMITTEE_ANCHOR_EPOCH=$(( COMMITTEE_TERM_EPOCH - 2 ))
-COMMITTEE_CARRIER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 1 ))
-COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
-COMMITTEE_SEATED_HEIGHT=$(( $(epoch_end "$COMMITTEE_CARRIER_EPOCH") + 1 ))
-
-# The term before the one this run seats. Its anchor sits below every
-# registration, which is the harness's only discriminator between a committee
-# drawn from the collateral registry and a fixed set: the three member keys are
-# 1G/2G/3G, which every other observation here would accept from a fixed set too.
-PRE_TERM_EPOCH=$(( COMMITTEE_TERM_EPOCH - COMMITTEE_TERM_EPOCHS ))
-PRE_TERM_ANCHOR_EPOCH=$(( PRE_TERM_EPOCH - 2 ))
-PRE_TERM_ANCHOR_HEIGHT="$(epoch_start "$PRE_TERM_ANCHOR_EPOCH")"
-
-COMMITTEE_SEAT_COUNT=3
-COMMITTEE_THRESHOLD_M=2
-
-# Six rows is the committee floor: 3 seats x the 2N registry minimum, two rows per
-# member key so the draw seats exactly the three node keys whichever rows win. One
-# more note funds the private collateralnode registration, which is a different
-# verb over the same kind of note.
-COLLATERAL_ROWS=$(( COMMITTEE_SEAT_COUNT * 2 ))
+# One note funds the private collateralnode registration.
 PRIVATE_CN_ROWS=1
-REGISTER_ROWS=$(( COLLATERAL_ROWS + PRIVATE_CN_ROWS ))
-# Each carve holds its collateral output as it is created. node0 note-votes, and the
-# epoch the carved notes become spendable is the epoch they are registered in; without
-# the hold its voter could spend one at that boundary, before registration names it.
+REGISTER_ROWS="$PRIVATE_CN_ROWS"
+# Each carve holds its collateral output; otherwise node0's note vote could
+# spend it at the boundary before registration names it.
 CARVE_ROWS="$REGISTER_ROWS"
 COLLATERAL_VALUE=25000
 
-# Funding the pool. A shield splits its value across two notes at a uniformly
-# random point, so no amount shielded in one step can be made to land as a single
-# 25000 INN note: the collateral notes are carved by in-pool transfer. Selection is
-# largest-first and every carve strands whatever it over-selected, so many smaller
-# shields keep the strand small. Seven carves need 175000; the rest is strand
-# headroom and the notes the mask section spends.
+# A shield splits value across two notes at a random point, so the 25000 INN
+# collateral note is carved by in-pool transfer.
 POOL_SHIELD_ROWS=24
 POOL_SHIELD_VALUE=11500
 POOL_SHIELD_TOTAL=$(( POOL_SHIELD_ROWS * POOL_SHIELD_VALUE ))
@@ -189,41 +126,24 @@ CARVE_HEIGHT="$(epoch_start "$CARVE_EPOCH")"
 REGISTER_HEIGHT="$(epoch_start "$REGISTER_EPOCH")"
 MASK_HEIGHT="$(epoch_start "$MASK_EPOCH")"
 
-# Boundaries observed for note votes: both epochs of the term the draw seats.
-NOTE_VOTE_EPOCHS="$COMMITTEE_TERM_EPOCH $(( COMMITTEE_TERM_EPOCH + 1 ))"
+# Boundaries observed for note votes: the two epochs after the mask epoch.
+NOTE_VOTE_EPOCHS="$(( MASK_EPOCH + 1 )) $(( MASK_EPOCH + 2 ))"
 NOTE_VOTE_WINDOW=10
 # FINALITY_VOTE_INCLUSION_WINDOW: an epoch-E vote connects only in [H_E, H_E + 24).
 FINALITY_VOTE_WINDOW_BLOCKS=24
 NOTE_VOTE_SETTLE=30
-
-# One member secret per node. These are NOT a committee: nothing is pinned. A node
-# holds a seat only if some IV5 collateral registration published the matching
-# pubkey and that registration wins the term's draw. Scalars 1/2/3, the well-known
-# secp256k1 test points.
-COMMITTEE_PRIVKEYS=(
-    "0000000000000000000000000000000000000000000000000000000000000001"
-    "0000000000000000000000000000000000000000000000000000000000000002"
-    "0000000000000000000000000000000000000000000000000000000000000003"
-)
-# The same three secrets in wallet-import form (regtest secret prefix 230), so the
-# wallet that registers a note holds the private half of the member key it
-# publishes -- finality-register refuses a key it cannot decrypt to.
-COMMITTEE_WIFS=(
-    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4LhmdmxgjPn"
-    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4Lhn8iV52zc"
-    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4LhndY5atD1"
-)
-COMMITTEE_PUBKEYS=(
-    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
-    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
-)
 
 # OP_RETURN payload tags of the three coinbase envelopes this run reads.
 NOTE_VOTE_OPERATION=10          # a note vote is an operation-10 transaction
 TALLY_CERT_TAG_HEX="49464343"   # IFCC, a canonical tally certificate
 IDAG_TAG_HEX="49444147"         # IDAG, the DAG parent commitment
 
+# A committee-free note certificate: version 4, no signers, zero committee set hash.
+NOTE_CERT_VERSION=4
+ZERO_HASH="0000000000000000000000000000000000000000000000000000000000000000"
+
+# The certificate for epoch E is built once tip >= H_E + 24 and counts for E's tier
+# only when a block of E itself carries it.
 TALLY_EPOCH="${NOTE_VOTE_EPOCHS%% *}"
 TALLY_WINDOW_CLOSE=$(( 11 + (TALLY_EPOCH - 1) * 300 + 24 ))
 TALLY_CARRY_HEIGHT=$(( TALLY_WINDOW_CLOSE + 40 ))
@@ -1000,6 +920,125 @@ reorg_count() {
     if is_int "$c"; then echo "$c"; else echo 0; fi
 }
 
+# Every canonical tally certificate a block's coinbase carries, off the script bytes:
+# "<cert version> <epoch> <tier> <signers> <note count> <note root> <committee set hash>"
+# per IFCC envelope, hashes in RPC byte order. getblock reports neither note field.
+cert_envelopes() {
+    local cb raw
+    cb="$(coinbase_txid "$1" "$2")"
+    [ ${#cb} -eq 64 ] || return 1
+    raw="$(rpc "$1" getrawtransaction "$cb" 2>/dev/null | tr -d '"[:space:]')"
+    [ -n "$raw" ] || return 1
+    RAW="$raw" python3 -c '
+import os, sys
+b = bytes.fromhex(os.environ["RAW"]); i = 0
+def take(n):
+    global i
+    if i + n > len(b): raise ValueError("short")
+    v = b[i:i+n]; i += n; return v
+def u(n): return int.from_bytes(take(n), "little")
+def s(n): return int.from_bytes(take(n), "little", signed=True)
+def cs():
+    n = u(1)
+    return n if n < 253 else u({253: 2, 254: 4, 255: 8}[n])
+try:
+    u(4); u(4)
+    for _ in range(cs()): take(36); take(cs()); u(4)
+    scripts = []
+    for _ in range(cs()): u(8); scripts.append(take(cs()))
+except Exception:
+    sys.exit(1)
+for sc in scripts:
+    if len(sc) < 2 or sc[0] != 0x6a: continue
+    op, j = sc[1], 2
+    if op <= 75: n = op
+    elif op == 0x4c: n = sc[j]; j += 1
+    elif op == 0x4d: n = int.from_bytes(sc[j:j+2], "little"); j += 2
+    else: continue
+    d = sc[j:j+n]
+    if d[:4] != b"IFCC": continue
+    b, i = d[4:], 0
+    try:
+        # CCanonicalFinalityTallyCertificateEnvelope, finality.h
+        lv = u(4); cv = s(4); ep = s(4); take(32); s(4); tier = s(4); s(4)
+        take(32); take(32); csh = take(32); take(24)
+        for _ in range(cs()): take(32)
+        signers, cnt, root = 0, 0, bytes(32)
+        if lv >= 2:
+            signers = cs(); take(2 * signers)
+            for _ in range(cs()): take(cs())
+            root = take(32); cnt = u(4)
+        if i != len(b): raise ValueError("trailing bytes")
+        print(cv, ep, tier, signers, cnt, root[::-1].hex(), csh[::-1].hex())
+    except Exception:
+        print("undecodable")
+'
+}
+
+# ComputeNoteVoteSetRoot over RPC-order tags: sorted, domain-separated double-SHA256
+# leaves and nodes, an odd tail promoted rather than duplicated.
+note_set_root() {
+    TAGS="$*" python3 -c '
+import hashlib, os
+def h(x): return hashlib.sha256(hashlib.sha256(x).digest()).digest()
+def ser(s): return bytes([len(s)]) + s
+tags = sorted(t for t in os.environ["TAGS"].split() if t)
+if not tags:
+    print("0" * 64); raise SystemExit
+lv = [h(ser(b"Innova/Finality/NoteVoteLeaf/v1") + bytes.fromhex(t)[::-1]) for t in tags]
+while len(lv) > 1:
+    nx = [h(ser(b"Innova/Finality/NoteVoteNode/v1") + lv[k] + lv[k + 1])
+          for k in range(0, len(lv) - 1, 2)]
+    if len(lv) % 2: nx.append(lv[-1])
+    lv = nx
+print(lv[0][::-1].hex())
+'
+}
+
+# The note_vote_tags array of a getepochinfo result, space separated.
+epoch_note_tags() {
+    python3 -c '
+import json, sys
+try: print(" ".join(json.load(sys.stdin).get("note_vote_tags") or []))
+except Exception: pass
+' <<< "$1" 2>/dev/null
+}
+
+# getblock's finality_tally_certificates for EPOCH at HEIGHT:
+# "<hash> <version> <signer_count> <tier> <committee_set_hash>" per entry.
+block_tally_certs() {
+    local node="$1" h="$2" epoch="$3"
+    block_json "$node" "$h" | E="$epoch" python3 -c '
+import json, os, sys
+try: certs = json.load(sys.stdin).get("finality_tally_certificates") or []
+except Exception: certs = []
+for c in certs:
+    if c.get("epoch") != int(os.environ["E"]): continue
+    print(c.get("hash", ""), c.get("version", ""), c.get("signer_count", ""),
+          c.get("tier", ""), c.get("committee_set_hash", ""))
+' 2>/dev/null
+}
+
+# First block in [from, to] carrying a v4 certificate for EPOCH. Sets CARRY_H and
+# CARRY_FIELDS ("<hash> <version> <signer_count> <tier> <committee_set_hash>").
+# With WANT_HASH set, only that certificate matches.
+CARRY_H=""; CARRY_FIELDS=""
+find_note_cert_carrier() {
+    local node="$1" epoch="$2" from="$3" to="$4" want="${5:-}" h line
+    CARRY_H=""; CARRY_FIELDS=""
+    for ((h=from; h<=to; h++)); do
+        while read -r line; do
+            [ -n "$line" ] || continue
+            set -- $line
+            [ "${2:-}" = "$NOTE_CERT_VERSION" ] || continue
+            [ -z "$want" ] || [ "${1:-}" = "$want" ] || continue
+            CARRY_H="$h"; CARRY_FIELDS="$line"
+            return 0
+        done < <(block_tally_certs "$node" "$h" "$epoch")
+    done
+    return 1
+}
+
 # Consensus pool balance, identical on every node that connected the same chain.
 pool_value()   { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_pool_value; }
 # Total issued value, the cap's measure. Pool value is included: ConnectBlock
@@ -1091,23 +1130,6 @@ for c in doc.get("candidates", []):
 '
 }
 
-committee_seats() {
-    rpc "$1" getfinalityinfo 2>/dev/null | python3 -c '
-import json, sys
-try:
-    doc = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for k in ("committee", "committee_seats", "committee_members", "committee_pubkeys"):
-    v = doc.get(k)
-    if isinstance(v, list):
-        for s in v:
-            print(s if not isinstance(s, dict)
-                  else (s.get("pubkey") or s.get("member_pubkey") or ""))
-        break
-'
-}
-
 # ------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------
@@ -1152,10 +1174,6 @@ write_config() {
         echo "regtestidnsreset=$IDNS_RESET_HEIGHT"
         echo "regtestsupplycapheight=$SUPPLY_CAP_HEIGHT"
         echo "regtestsupplycap=$SUPPLY_CAP"
-        # No committee is configured anywhere: the canonical set is drawn from the
-        # IV5 collateral registry and carried by the chain's own epoch state. A node
-        # is told only the secret it would serve a seat with.
-        [ "$node" -lt "$NUM_NODES" ] && echo "finalitytallyprivkey=${COMMITTEE_PRIVKEYS[$node]}"
         # Every producer gate log is behind fDebug, and -debug deliberately does
         # NOT imply -debugnet, which carries the peer-side receive line.
         echo "debug=1"
@@ -1194,6 +1212,7 @@ cleanup() {
         rm -rf "$TEST_DIR"
     fi
     [ "$RESULTS_PRINTED" = "1" ] || print_results
+    iv5_ports_release
 }
 trap cleanup EXIT
 
@@ -1286,7 +1305,7 @@ preflight_refusal() {
     out="$(
         $PREFLIGHT_TIMEOUT "$INNOVAD" -datadir="$dir" -regtest -listen=0 \
             -dnsseed=0 -nobootstrap=1 -nosmsg=1 -rpcuser=x -rpcpassword=y \
-            -rpcport=$((BASE_RPC + 90)) -port=$((BASE_PORT + 90)) \
+            -rpcport="$PREFLIGHT_RPC" -port="$PREFLIGHT_PORT" \
             -regtestboundaryb="$BOUNDARY_B" "$@" 2>&1 | head -20
     )"
     rm -rf "$dir"
@@ -1442,47 +1461,6 @@ if [ "$SWITCH_OK" -eq 1 ]; then
     success "every node reports all five height switches and none holds leaf-index assignment"
 else
     fail "a node did not report the switch set:$SWITCH_WHY"
-    exit 1
-fi
-
-# The pinned-committee path is not gone from the daemon, but it is unused here:
-# no node is given those inputs and every node reports back that it holds none.
-PINNED=0
-for ((n=0; n<NUM_NODES; n++)); do
-    grep -qE '^[[:space:]]*(finalitytallypubkey|finalitytallythreshold)[[:space:]]*=' \
-        "$(node_dir "$n")/innova.conf" && PINNED=1
-done
-CONFIG_OK=1
-CONFIG_WHY=""
-for ((n=0; n<NUM_NODES; n++)); do
-    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
-    [ "$(jget "$FI" tally_pubkey_configured)" = "false" ] || \
-        { CONFIG_OK=0; CONFIG_WHY="node$n reports a configured committee pubkey"; }
-    [ "$(jget "$FI" tally_committee_valid)" = "false" ] || \
-        { CONFIG_OK=0; CONFIG_WHY="node$n reports a valid CONFIGURED committee"; }
-    is_zero_hex "$(jget "$FI" tally_committee_set_hash)" || \
-        { CONFIG_OK=0; CONFIG_WHY="node$n has a non-zero CONFIGURED committee set hash"; }
-    [ "$(jget "$FI" tally_privkey_valid)" = "true" ] || \
-        { CONFIG_OK=0; CONFIG_WHY="node$n did not load its member secret"; }
-done
-if [ "$PINNED" -eq 0 ] && [ "$CONFIG_OK" -eq 1 ]; then
-    success "no committee is pinned: every node holds only its own member secret"
-else
-    fail "the pinned-committee path is in play (config files carry it: $PINNED; $CONFIG_WHY)"
-    exit 1
-fi
-
-# The term this run schedules has to be a term the chain recognises. A term epoch
-# off the grid is carried and then never resolved, and the seating stage is
-# thousands of blocks away, so it is checked here rather than found there.
-NODE_TERM_LEN="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_term_epochs)"
-if [ "$NODE_TERM_LEN" = "$COMMITTEE_TERM_EPOCHS" ] && \
-   [ $(( COMMITTEE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ] && \
-   [ $(( PRE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ] && \
-   [ "$PRE_TERM_ANCHOR_HEIGHT" -le "$REGISTER_HEIGHT" ]; then
-    success "term $COMMITTEE_TERM_EPOCH is on the chain's $NODE_TERM_LEN-epoch grid (anchor $COMMITTEE_ANCHOR_EPOCH at $COMMITTEE_ANCHOR_HEIGHT, carrier $COMMITTEE_CARRIER_EPOCH, seated at $COMMITTEE_SEATED_HEIGHT); the previous term $PRE_TERM_EPOCH anchors at $PRE_TERM_ANCHOR_HEIGHT"
-else
-    fail "the committee schedule is off the grid: term $COMMITTEE_TERM_EPOCH / previous $PRE_TERM_EPOCH against a chain term length of $NODE_TERM_LEN, previous anchor $PRE_TERM_ANCHOR_HEIGHT vs registration height $REGISTER_HEIGHT"
     exit 1
 fi
 
@@ -1964,22 +1942,7 @@ for e in 2 3; do
 done
 
 # ============================================================
-header "10. node0 holds the private half of every member key"
-# ============================================================
-
-IMPORT_OK=1
-for ((k=0; k<NUM_NODES; k++)); do
-    IMP="$(rpc 0 importprivkey "${COMMITTEE_WIFS[$k]}" "member$k" false 2>&1)"
-    if echo "$IMP" | grep -qiE "error|invalid"; then
-        fail "importing member key $k failed: $(echo "$IMP" | head -2)"
-        IMPORT_OK=0
-    fi
-done
-[ "$IMPORT_OK" -eq 1 ] || exit 1
-success "node0 imported the private half of all $NUM_NODES member keys"
-
-# ============================================================
-header "11. The pool is funded for seven collateral notes"
+header "11. The pool is funded for the collateral note and the mask spends"
 # ============================================================
 
 advance_through_epochs 5 "$POOL_FUND_EPOCH" || { fail "the epoch 5-$POOL_FUND_EPOCH vote rounds failed"; exit 1; }
@@ -2048,7 +2011,7 @@ else
 fi
 
 # ============================================================
-header "12. Seven 25000 INN collateral notes are carved and held in the pool"
+header "12. The 25000 INN collateral note is carved and held in the pool"
 # ============================================================
 
 advance_through_epochs "$CARVE_EPOCH" "$CARVE_EPOCH" || { fail "the epoch $CARVE_EPOCH vote round failed"; exit 1; }
@@ -2098,7 +2061,7 @@ else
 fi
 
 # ============================================================
-header "13. Six committee registrations and one private collateralnode"
+header "13. The private collateralnode registers"
 # ============================================================
 
 advance_through_epochs "$REGISTER_EPOCH" "$REGISTER_EPOCH" || { fail "the epoch $REGISTER_EPOCH vote round failed"; exit 1; }
@@ -2115,9 +2078,8 @@ else
     exit 1
 fi
 
-# The private collateralnode first, on note 0, so it cannot collide with the six
-# rows the draw reads. registerprivate binds endpoint, collateralnodeprivkey and
-# pool payout into the attestation and they can never change for that note.
+# registerprivate binds endpoint, collateralnodeprivkey and pool payout into the
+# attestation and they can never change for that note.
 PRIVATE_PAYOUT="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
 if [ ${#PRIVATE_PAYOUT} -ge 20 ]; then
     success "node0 issued an IV5 pool payout address for the private collateralnode"
@@ -2146,58 +2108,6 @@ if [ ${#CN_ATTEST_TXID} -eq 64 ]; then
     else
         fail "the private collateralnode attestation did not confirm to a readable height"
     fi
-fi
-
-# Two rows per member key across the remaining six notes. Three distinct keys and
-# one seat per key means the draw seats exactly these three whichever rows win.
-REGISTERED=0
-REG_KEYIMAGES=()
-for ((r=0; r<COLLATERAL_ROWS; r++)); do
-    KEYIDX=$(( r % NUM_NODES ))
-    REG="$(rpc 0 collateralnode finality-register "${COMMITTEE_PUBKEYS[$KEYIDX]}" \
-              "${NOTE_IDS[$((r + PRIVATE_CN_ROWS))]}" confirm 2>&1)"
-    REG_TXID="$(jget "$REG" registration_txid)"
-    if [ ${#REG_TXID} -ne 64 ]; then
-        fail "registration $r (key $KEYIDX) failed: $(echo "$REG" | head -4)"
-        break
-    fi
-    KI="$(jget "$REG" key_image)"
-    [ -n "$KI" ] && REG_KEYIMAGES+=("$KI")
-    confirm_on 3 || { fail "could not confirm registration $r"; break; }
-    REGISTERED=$((REGISTERED + 1))
-done
-if [ "$REGISTERED" -eq "$COLLATERAL_ROWS" ]; then
-    success "$REGISTERED finality-member registrations confirmed"
-else
-    fail "only $REGISTERED of $COLLATERAL_ROWS registrations confirmed"
-    exit 1
-fi
-
-REG_TIP="$(height 0)"
-if [ "$REG_TIP" -le "$COMMITTEE_ANCHOR_HEIGHT" ]; then
-    success "every registration confirmed at height $REG_TIP, at or below the anchor height $COMMITTEE_ANCHOR_HEIGHT"
-else
-    fail "registrations ran past the anchor height ($REG_TIP > $COMMITTEE_ANCHOR_HEIGHT): they cannot be drawn for term $COMMITTEE_TERM_EPOCH"
-    exit 1
-fi
-
-REGISTRY_N="$(jget "$(rpc 0 collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
-if is_int "${REGISTRY_N:-x}" && [ "${REGISTRY_N:-0}" -ge "$COLLATERAL_ROWS" ]; then
-    success "the registry holds $REGISTRY_N member rows at the anchor height"
-else
-    fail "the registry holds '$REGISTRY_N' rows at height $COMMITTEE_ANCHOR_HEIGHT, expected >= $COLLATERAL_ROWS"
-    exit 1
-fi
-
-# The same snapshot at the PREVIOUS term's anchor height. Every registration above
-# confirmed after this height, so a draw that reads the registry can seat nothing
-# for that term -- which is what section 15 then requires.
-PRE_REGISTRY_N="$(jget "$(rpc 0 collateralnode finality-registry "$PRE_TERM_ANCHOR_HEIGHT" 2>&1)" count)"
-if [ "$PRE_REGISTRY_N" = "0" ]; then
-    success "the registry is empty at term $PRE_TERM_EPOCH's anchor height $PRE_TERM_ANCHOR_HEIGHT, so a registry-drawn committee cannot seat for that term"
-else
-    fail "the registry already holds '$PRE_REGISTRY_N' row(s) at height $PRE_TERM_ANCHOR_HEIGHT; the discriminator in section 15 would be worthless"
-    exit 1
 fi
 
 # ============================================================
@@ -2476,87 +2386,48 @@ else
 fi
 
 # ============================================================
-header "16. The chain draws its committee from that registry"
+header "16. No committee exists or is needed"
 # ============================================================
 
-advance_through_epochs $(( MASK_EPOCH + 1 )) "$COMMITTEE_CARRIER_EPOCH" || { fail "the epoch $(( MASK_EPOCH + 1 ))-$COMMITTEE_CARRIER_EPOCH vote rounds failed"; exit 1; }
-
-# THE DISCRIMINATOR. The chain is now inside term PRE_TERM_EPOCH, whose anchor
-# registry section 13 proved is empty. Every other observable here -- the seat
-# identities, the set hash, the fleet agreement, the certificate -- is equally
-# produced by an implementation that ignores the registry and seats the three
-# configured member keys every term, because those keys ARE 1G/2G/3G. This is the
-# only check that separates the two.
-PRE_SEAT_HEIGHT="$(height 0)"
-PRE_SEAT_OK=1
-PRE_SEAT_WHY=""
+# No node is given committee inputs, none reports any, and getfinalityinfo carries
+# no committee_* field. The note certificate in section 19 is built without them.
+NOCOMM_OK=1
+NOCOMM_WHY=""
 for ((n=0; n<NUM_NODES; n++)); do
+    if grep -qE '^[[:space:]]*(finalitytallyprivkey|finalitytallypubkey|finalitytallythreshold)[[:space:]]*=' \
+            "$(node_dir "$n")/innova.conf"; then
+        NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n config carries a tally key or threshold;"
+    fi
     FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
-    [ "$(jget "$FI" committee_term_epoch)" = "$PRE_TERM_EPOCH" ] || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n is in term '$(jget "$FI" committee_term_epoch)', not $PRE_TERM_EPOCH"; }
-    [ "$(jget "$FI" committee_seated)" = "false" ]              || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n reports committee_seated=$(jget "$FI" committee_seated)"; }
-    [ "$(jget "$FI" committee_seat_count)" = "0" ]              || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n reports $(jget "$FI" committee_seat_count) seat(s)"; }
+    [ -n "$FI" ] || { NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n getfinalityinfo failed;"; continue; }
+    CKEYS="$(python3 -c '
+import json, sys
+try: print(" ".join(k for k in json.load(sys.stdin) if k.startswith("committee")))
+except Exception: print("unreadable")
+' <<< "$FI" 2>/dev/null)"
+    [ -z "$CKEYS" ] || { NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n reports [$CKEYS];"; }
+    [ "$(jget "$FI" tally_configured_pubkeys)" = "0" ] || \
+        { NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n tally_configured_pubkeys=$(jget "$FI" tally_configured_pubkeys);"; }
+    [ "$(jget "$FI" tally_privkey_configured)" = "false" ] || \
+        { NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n tally_privkey_configured=$(jget "$FI" tally_privkey_configured);"; }
+    [ "$(jget "$FI" tally_pubkey_configured)" = "false" ] || \
+        { NOCOMM_OK=0; NOCOMM_WHY="$NOCOMM_WHY node$n tally_pubkey_configured=$(jget "$FI" tally_pubkey_configured);"; }
 done
-if [ "$PRE_SEAT_OK" -eq 1 ]; then
-    success "at height $PRE_SEAT_HEIGHT the chain is in term $PRE_TERM_EPOCH and seats nothing, because that term's anchor registry was empty"
+if [ "$NOCOMM_OK" -eq 1 ]; then
+    success "no node configures or reports a committee: no committee_* field, no tally key, no pinned pubkey"
 else
-    fail "the seats do not come from the collateral registry: $PRE_SEAT_WHY, while term $PRE_TERM_EPOCH's anchor height $PRE_TERM_ANCHOR_HEIGHT held $PRE_REGISTRY_N registry rows"
-    exit 1
+    fail "committee state is still present:$NOCOMM_WHY"
 fi
 
-FI0="$(rpc 0 getfinalityinfo 2>/dev/null)"
-NEXT_TERM="$(jget2 "$FI0" committee_next_term_draw term_epoch)"
-NEXT_ANCHOR_H="$(jget2 "$FI0" committee_next_term_draw anchor_height)"
-NEXT_ROWS="$(jget2 "$FI0" committee_next_term_draw registry_rows)"
-NEXT_SEATED="$(jget2 "$FI0" committee_next_term_draw seated)"
-if [ "$NEXT_TERM" = "$COMMITTEE_TERM_EPOCH" ] && [ "$NEXT_ANCHOR_H" = "$COMMITTEE_ANCHOR_HEIGHT" ] && \
-   is_int "${NEXT_ROWS:-x}" && [ "${NEXT_ROWS:-0}" -ge "$COLLATERAL_ROWS" ] && [ "$NEXT_SEATED" = "true" ]; then
-    success "the term $COMMITTEE_TERM_EPOCH draw reads $NEXT_ROWS registry rows at anchor height $NEXT_ANCHOR_H and will seat"
-else
-    fail "the term $COMMITTEE_TERM_EPOCH draw does not read the registrations (term=$NEXT_TERM anchor=$NEXT_ANCHOR_H rows=$NEXT_ROWS seated=$NEXT_SEATED)"
-fi
-
-log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
-mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
-wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
-
-SEAT_OK=1
-SEAT_WHY=""
-for ((n=0; n<NUM_NODES; n++)); do
-    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
-    [ "$(jget "$FI" committee_seated)" = "true" ]                     || { SEAT_OK=0; SEAT_WHY="node$n committee_seated=$(jget "$FI" committee_seated)"; }
-    [ "$(jget "$FI" committee_term_epoch)" = "$COMMITTEE_TERM_EPOCH" ] || { SEAT_OK=0; SEAT_WHY="node$n is in term '$(jget "$FI" committee_term_epoch)'"; }
-    [ "$(jget "$FI" committee_threshold_m)" = "$COMMITTEE_THRESHOLD_M" ] || { SEAT_OK=0; SEAT_WHY="node$n threshold M='$(jget "$FI" committee_threshold_m)'"; }
-    [ "$(jget "$FI" committee_seat_count)" = "$COMMITTEE_SEAT_COUNT" ] || { SEAT_OK=0; SEAT_WHY="node$n seat count='$(jget "$FI" committee_seat_count)'"; }
+# The member-registration verbs are gone: each falls through to the usage text.
+for VERB in finality-register finality-registry finality-status; do
+    OUT="$(rpc 0 collateralnode "$VERB" 2>&1)"
+    if echo "$OUT" | grep -qF "Set of commands to execute collateralnode related actions"; then
+        success "collateralnode $VERB is not a verb: it returns the usage text"
+    else
+        fail "collateralnode $VERB did not return the usage text: $(echo "$OUT" | head -3)"
+    fi
 done
-if [ "$SEAT_OK" -eq 1 ]; then
-    success "every node seats term $COMMITTEE_TERM_EPOCH's committee at exactly $COMMITTEE_SEAT_COUNT seats and M=$COMMITTEE_THRESHOLD_M"
-else
-    fail "the committee did not seat as drawn on every node: $SEAT_WHY"
-    exit 1
-fi
-
-SEATS0="$(committee_seats 0 | sort | tr '\n' ' ')"
-EXPECTED_SEATS="$(printf '%s\n' "${COMMITTEE_PUBKEYS[@]}" | sort | tr '\n' ' ')"
-if [ "$SEATS0" = "$EXPECTED_SEATS" ]; then
-    success "the drawn seats are exactly the three registered member keys"
-else
-    fail "drawn seats [$SEATS0] are not the registered keys [$EXPECTED_SEATS]"
-fi
-
-SEATS_AGREE=1
-SEATS_WHY=""
-for ((n=0; n<NUM_NODES; n++)); do
-    SN="$(committee_seats "$n" | count_lines)"
-    [ "$SN" -eq "$COMMITTEE_SEAT_COUNT" ] || { SEATS_AGREE=0; SEATS_WHY="node$n lists $SN seat(s)"; }
-    [ "$(committee_seats "$n" | tr '\n' ' ')" = "$(committee_seats 0 | tr '\n' ' ')" ] || \
-        { SEATS_AGREE=0; SEATS_WHY="node$n resolves a different seat list from node0"; }
-done
-if [ "$SEATS_AGREE" -eq 1 ]; then
-    success "all $NUM_NODES nodes resolve the identical $COMMITTEE_SEAT_COUNT-seat committee in the identical seat order"
-else
-    fail "the nodes disagree about the drawn committee: $SEATS_WHY"
-    exit 1
-fi
 
 # ============================================================
 header "17. Note finality votes over the finalized chain"
@@ -2571,7 +2442,7 @@ for E in $NOTE_VOTE_EPOCHS; do
         log "epoch $E: mining to the vote-inclusion window close at $TALLY_WINDOW_CLOSE"
         mine_to 0 "$TALLY_WINDOW_CLOSE" || { fail "epoch $E did not reach the freeze point"; exit 1; }
         wait_sync "$TALLY_WINDOW_CLOSE" || { fail "fleet did not sync to the freeze point"; exit 1; }
-        log "epoch $E: resting ${TALLY_SETTLE}s for the note tally committee"
+        log "epoch $E: resting ${TALLY_SETTLE}s for the note certificate to be built"
         sleep "$TALLY_SETTLE"
         log "epoch $E: mining to $TALLY_CARRY_HEIGHT so an own-epoch block can carry the certificate"
         mine_to 0 "$TALLY_CARRY_HEIGHT" || { fail "epoch $E did not reach the carry height"; exit 1; }
@@ -2770,79 +2641,112 @@ else
 fi
 
 # ============================================================
-header "19. The note tally committee and its certificate"
+header "19. The note certificate is built without a committee"
 # ============================================================
 
+TALLY_EI="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+TALLY_COUNTED="$(jget "$TALLY_EI" note_votes_counted)"
+TALLY_TAGS="$(epoch_note_tags "$TALLY_EI")"
+
+# ProduceNoteTallyCertificateEpoch needs no key: any node builds the certificate
+# from its connected view once the inclusion window has closed.
 TALLY_LINE=""
 TALLY_NODE=""
 for ((n=0; n<NUM_NODES; n++)); do
-    L="$(grep -F "ProcessNoteTallyCommitteeEpoch: epoch $TALLY_EPOCH tier=" "$(node_log "$n")" 2>/dev/null | tail -1)"
+    L="$(grep -aF "ProduceNoteTallyCertificateEpoch: epoch $TALLY_EPOCH tier=" "$(node_log "$n")" 2>/dev/null | tail -1)"
     if [ -n "$L" ]; then TALLY_LINE="$L"; TALLY_NODE="$n"; break; fi
 done
+P_TIER="$(echo "$TALLY_LINE" | sed -n 's/.* tier=\([0-9]*\).*/\1/p')"
+P_NOTES="$(echo "$TALLY_LINE" | sed -n 's/.* note_votes=\([0-9]*\).*/\1/p')"
 if [ -n "$TALLY_LINE" ]; then
-    success "node$TALLY_NODE ran the note tally for epoch $TALLY_EPOCH"
-    log "  $TALLY_LINE"
+    log "  node$TALLY_NODE: $TALLY_LINE"
 else
-    fail "no node ran the note tally committee pass for epoch $TALLY_EPOCH"
+    fail "no node logged ProduceNoteTallyCertificateEpoch for epoch $TALLY_EPOCH"
+fi
+# FinalityTier: HARD is 3.
+if [ "$P_TIER" = "3" ] && is_int "${TALLY_COUNTED:-x}" && [ "$TALLY_COUNTED" -ge 1 ] && \
+   [ "$P_NOTES" = "$TALLY_COUNTED" ]; then
+    success "node$TALLY_NODE built the epoch $TALLY_EPOCH note certificate at tier 3 over $P_NOTES note vote(s), the counted set"
+else
+    fail "the epoch $TALLY_EPOCH producer line reports tier='$P_TIER' note_votes='$P_NOTES', counted='$TALLY_COUNTED'"
 fi
 
-# The tally counts votes; it opens no weight. note_votes is what the epoch connected and
-# note_winners how many of those back the winning boundary.
-NOTE_VOTES="$(echo "$TALLY_LINE" | sed -n 's/.* note_votes=\([0-9]*\).*/\1/p')"
-NOTE_WINNERS="$(echo "$TALLY_LINE" | sed -n 's/.* note_winners=\([0-9]*\).*/\1/p')"
-if is_int "${NOTE_VOTES:-x}" && is_int "${NOTE_WINNERS:-x}" && \
-   [ "${NOTE_WINNERS:-0}" -gt 0 ] && [ "${NOTE_WINNERS:-0}" -le "${NOTE_VOTES:-0}" ]; then
-    success "the note tally counted $NOTE_WINNERS of $NOTE_VOTES note vote(s) for the winning boundary"
-else
-    fail "the note tally counted no note vote for the winner (note_votes='$NOTE_VOTES' note_winners='$NOTE_WINNERS')"
-fi
-
+# Every note certificate a node admitted, and none of them signed.
 NOTE_CERT_HASHES=""
+SIGNED_LINE=""
 for ((n=0; n<NUM_NODES; n++)); do
     while read -r L; do
         [ -n "$L" ] || continue
         H="$(echo "$L" | sed -n 's/.*note certificate \([0-9a-f]\{64\}\).*/\1/p')"
         [ -n "$H" ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
-    done < <(grep -F "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " "$(node_log "$n")" 2>/dev/null)
+        echo "$L" | grep -qE ' signers=0$' || SIGNED_LINE="node$n: $L"
+    done < <(grep -aF "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " "$(node_log "$n")" 2>/dev/null)
 done
 NOTE_CERT_HASHES="$(echo "$NOTE_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
-if [ -n "$NOTE_CERT_HASHES" ]; then
-    success "the committee assembled $(echo "$NOTE_CERT_HASHES" | wc -w | tr -d ' ') note certificate(s) for epoch $TALLY_EPOCH"
+if [ -n "$NOTE_CERT_HASHES" ] && [ -z "$SIGNED_LINE" ]; then
+    success "$(echo "$NOTE_CERT_HASHES" | wc -w | tr -d ' ') note certificate(s) assembled for epoch $TALLY_EPOCH, each with signers=0"
+elif [ -n "$SIGNED_LINE" ]; then
+    fail "a note certificate was assembled with signers: $SIGNED_LINE"
 else
-    fail "no M-of-N note certificate was assembled for epoch $TALLY_EPOCH"
+    fail "no note certificate was assembled for epoch $TALLY_EPOCH"
 fi
 
-CERT_CARRY_HEIGHT=""
-for ((h=TALLY_WINDOW_CLOSE; h<=TALLY_CARRY_HEIGHT + 20; h++)); do
-    if [ -n "$(tagged_scripts 0 "$h" "$TALLY_CERT_TAG_HEX")" ]; then CERT_CARRY_HEIGHT="$h"; break; fi
-done
+# Carried by a block of the tally epoch's own span.
+CARRY_TO=$(( TALLY_CARRY_HEIGHT + 20 ))
+[ "$CARRY_TO" -gt "$(epoch_end "$TALLY_EPOCH")" ] && CARRY_TO="$(epoch_end "$TALLY_EPOCH")"
+find_note_cert_carrier 0 "$TALLY_EPOCH" "$TALLY_WINDOW_CLOSE" "$CARRY_TO"
+CERT_CARRY_HEIGHT="$CARRY_H"
+read -r C_HASH C_VER C_SIGNERS C_TIER C_CSH <<< "$CARRY_FIELDS"
 if [ -n "$CERT_CARRY_HEIGHT" ]; then
-    success "a tally certificate envelope is carried at height $CERT_CARRY_HEIGHT, inside epoch $TALLY_EPOCH"
+    success "a v$NOTE_CERT_VERSION certificate for epoch $TALLY_EPOCH is carried at height $CERT_CARRY_HEIGHT, inside the epoch"
+    assert_converged "the note certificate carrier" "$CERT_CARRY_HEIGHT"
 else
-    fail "no tally certificate envelope was carried inside epoch $TALLY_EPOCH"
+    fail "no v$NOTE_CERT_VERSION certificate for epoch $TALLY_EPOCH was carried in [$TALLY_WINDOW_CLOSE, $CARRY_TO]"
+fi
+if [ "$C_SIGNERS" = "0" ] && [ "$C_CSH" = "$ZERO_HASH" ] && [ "$C_TIER" = "hard" ]; then
+    success "the carried certificate ${C_HASH:0:16} has signer_count 0, a zero committee set hash and tier hard"
+else
+    fail "the carried certificate reports signer_count='$C_SIGNERS' committee_set_hash='$C_CSH' tier='$C_TIER'"
 fi
 
-TALLY_EI="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+# The same certificate off the coinbase bytes: it commits the counted set.
+E_FIELDS=""
+if [ -n "$CERT_CARRY_HEIGHT" ]; then
+    while read -r L; do
+        read -r F_VER F_EPOCH _ <<< "$L"
+        if [ "${F_VER:-}" = "$NOTE_CERT_VERSION" ] && [ "${F_EPOCH:-}" = "$TALLY_EPOCH" ]; then
+            E_FIELDS="$L"; break
+        fi
+    done < <(cert_envelopes 0 "$CERT_CARRY_HEIGHT")
+fi
+read -r E_VER E_EPOCH E_TIER E_SIGNERS E_COUNT E_ROOT E_CSH <<< "$E_FIELDS"
+ROOT_FROM_TAGS="$(note_set_root $TALLY_TAGS)"
+if is_real_hash "$E_ROOT" && [ "$E_COUNT" = "$TALLY_COUNTED" ] && [ "$E_ROOT" = "$ROOT_FROM_TAGS" ] && \
+   [ "$E_SIGNERS" = "0" ] && [ "$E_CSH" = "$ZERO_HASH" ] && [ "$E_TIER" = "3" ]; then
+    success "the envelope commits count=$E_COUNT and root ${E_ROOT:0:16}, the root of the counted tags, with no signer and no committee"
+else
+    fail "the envelope does not commit the counted set: '$E_FIELDS' (counted=$TALLY_COUNTED tag_root=$ROOT_FROM_TAGS)"
+fi
+
 TALLY_CERT="$(jget "$TALLY_EI" finality_certificate)"
 TALLY_TIER="$(jget "$TALLY_EI" finality_tier)"
 TALLY_ROOT="$(jget "$TALLY_EI" vote_set_root)"
 TALLY_DIGEST="$(jget "$TALLY_EI" epoch_state_digest)"
-if [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT" && \
+if is_real_hash "$TALLY_CERT" && [ "$TALLY_CERT" = "$C_HASH" ] && \
    echo " $NOTE_CERT_HASHES " | grep -qF " $TALLY_CERT "; then
-    success "epoch $TALLY_EPOCH selected the note certificate ${TALLY_CERT:0:16} (tier=$TALLY_TIER)"
-elif [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT"; then
-    fail "epoch $TALLY_EPOCH selected certificate ${TALLY_CERT:0:16}, which is not one of the assembled note certificates"
+    success "epoch $TALLY_EPOCH selected the carried note certificate ${TALLY_CERT:0:16}"
 else
-    fail "epoch $TALLY_EPOCH selected no certificate at all"
+    fail "epoch $TALLY_EPOCH selected '${TALLY_CERT:0:16}', expected the carried certificate '${C_HASH:0:16}' (assembled:$NOTE_CERT_HASHES)"
 fi
 if [ "$TALLY_TIER" = "hard" ]; then
-    success "epoch $TALLY_EPOCH is tier=$TALLY_TIER under the note-weighted certificate"
+    success "epoch $TALLY_EPOCH is tier=$TALLY_TIER under the committee-free certificate"
 else
     fail "epoch $TALLY_EPOCH is tier=$TALLY_TIER"
 fi
 
 EPOCH_AGREE=1
 EPOCH_WHY=""
+is_real_hash "$TALLY_CERT"   || { EPOCH_AGREE=0; EPOCH_WHY="node0's certificate is '$TALLY_CERT'"; }
 is_real_hash "$TALLY_ROOT"   || { EPOCH_AGREE=0; EPOCH_WHY="node0's vote-set root is '$TALLY_ROOT'"; }
 is_real_hash "$TALLY_DIGEST" || { EPOCH_AGREE=0; EPOCH_WHY="node0's epoch state digest is '$TALLY_DIGEST'"; }
 for ((n=1; n<NUM_NODES; n++)); do
@@ -2862,7 +2766,11 @@ fi
 # supply-cap section so emission is still the ordinary schedule.
 SOAK_MINUTES="${IV5_COMBINED_SOAK_MINUTES:-0}"
 if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
-    header "19b. Soak: $SOAK_MINUTES minutes of consecutive epochs"
+    # At least three epochs, so the reorg lands in one with an epoch on either side.
+    SOAK_MIN_EPOCHS=3
+    SOAK_REORG_OURS=6
+    SOAK_REORG_THEIRS=12
+    header "19b. Soak: $SOAK_MINUTES minutes of consecutive epochs (at least $SOAK_MIN_EPOCHS)"
 
     # Anything a healthy fleet never logs. Counted fleet-wide and compared per epoch, so one
     # occurrence anywhere fails the epoch it appeared in.
@@ -2877,20 +2785,143 @@ if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
         echo "$total"
     }
 
+    # Every node's tip hash is the same.
+    fleet_one_tip() {
+        local n h bh bh0=""
+        for ((n=0; n<NUM_NODES; n++)); do
+            h="$(height "$n")"
+            is_int "${h:-x}" || return 1
+            bh="$(block_hash "$n" "$h")"
+            [ ${#bh} -eq 64 ] || return 1
+            [ -z "$bh0" ] && bh0="$bh"
+            [ "$bh" = "$bh0" ] || return 1
+        done
+        return 0
+    }
+
+    # Partition node2, extend both sides, node2's longer, rejoin. Must stay below
+    # NEXT_B so the reorg is inside the epoch whose record is built afterwards.
+    SOAK_REORG_WHY=""
+    soak_reorg() {
+        local next_b="$1" fork before after parted=0 p x1 y1 now1 converged=0
+        SOAK_REORG_WHY=""
+        fork="$(height 0)"
+        is_int "${fork:-x}" || { SOAK_REORG_WHY=" reorg_no_tip"; return 1; }
+        if [ $(( fork + SOAK_REORG_THEIRS + 2 )) -ge "$next_b" ]; then
+            SOAK_REORG_WHY=" reorg_would_cross_boundary(fork=$fork next=$next_b)"
+            return 1
+        fi
+        before="$(reorg_count 0)"
+        # Every node carries the others as addnode, so one disconnect round races the
+        # reconnect timer; retry until node2 is alone.
+        for _ in $(seq 1 10); do
+            for ((p=0; p<NUM_NODES; p++)); do
+                [ "$p" -eq 2 ] && continue
+                rpc 2 disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
+                rpc "$p" disconnectnode "127.0.0.1:$(node_port 2)" >/dev/null 2>&1 || true
+            done
+            sleep 3
+            [ "$(peer_count 2)" = "0" ] && { parted=1; break; }
+        done
+        if [ "$parted" -ne 1 ]; then
+            SOAK_REORG_WHY=" reorg_partition_failed(peers=$(peer_count 2))"
+            connect_mesh
+            return 1
+        fi
+        # mine_chunk, not mine_to: mine_to waits for the partitioned node.
+        mine_chunk 0 $(( fork + SOAK_REORG_OURS )) || SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_branch_x_stalled"
+        mine_chunk 2 $(( fork + SOAK_REORG_THEIRS )) || SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_branch_y_stalled"
+        x1="$(block_hash 0 $(( fork + 1 )))"
+        y1="$(block_hash 2 $(( fork + 1 )))"
+        if [ ${#x1} -ne 64 ] || [ ${#y1} -ne 64 ] || [ "$x1" = "$y1" ]; then
+            SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_no_divergence"
+        fi
+        connect_mesh
+        wait_peers >/dev/null 2>&1 || true
+        for _ in $(seq 1 240); do
+            fleet_one_tip && { converged=1; break; }
+            sleep 1
+        done
+        [ "$converged" -eq 1 ] || SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_no_convergence"
+        now1="$(block_hash 0 $(( fork + 1 )))"
+        [ ${#y1} -eq 64 ] && [ "$now1" = "$y1" ] || SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_node0_kept_own_branch"
+        after="$(reorg_count 0)"
+        [ "$after" -gt "$before" ] || SOAK_REORG_WHY="$SOAK_REORG_WHY reorg_not_logged($before->$after)"
+        log "  reorg: fork $fork, branch X to $(( fork + SOAK_REORG_OURS )), branch Y to $(( fork + SOAK_REORG_THEIRS )); node0 at $(( fork + 1 )) ${x1:0:16} -> ${now1:0:16}, REORGANIZE $before -> $after"
+        [ -z "$SOAK_REORG_WHY" ]
+    }
+
+    # Epoch E's record, read once E+1 has opened. Sets REC_WHY, REC_TIER,
+    # REC_CERTVER and REC_DIV (fields on which a peer differs from node0).
+    soak_check_record() {
+        local e="$1" ei tier cert digest root counted n
+        local c_hash c_ver c_signers c_tier c_csh
+        REC_WHY=""; REC_DIV=0; REC_TIER="?"; REC_CERTVER="-"
+        ei="$(rpc 0 getepochinfo "$e" 2>/dev/null)"
+        tier="$(jget "$ei" finality_tier)"
+        cert="$(jget "$ei" finality_certificate)"
+        digest="$(jget "$ei" epoch_state_digest)"
+        root="$(jget "$ei" vote_set_root)"
+        REC_TIER="${tier:-?}"
+        [ "$tier" = "hard" ]     || REC_WHY="$REC_WHY tier=${tier:-?}"
+        is_real_hash "$cert"     || REC_WHY="$REC_WHY certificate=${cert:-none}"
+        is_real_hash "$digest"   || REC_WHY="$REC_WHY digest=${digest:-none}"
+        is_real_hash "$root"     || REC_WHY="$REC_WHY vote_set_root=${root:-none}"
+        for ((n=0; n<NUM_NODES; n++)); do
+            [ "$n" -eq 0 ] || ei="$(rpc "$n" getepochinfo "$e" 2>/dev/null)"
+            counted="$(jget "$ei" note_votes_counted)"
+            { is_int "${counted:-x}" && [ "$counted" -ge 1 ]; } || REC_WHY="$REC_WHY node${n}_note_votes_counted=${counted:-?}"
+            [ "$n" -eq 0 ] && continue
+            [ "$(jget "$ei" finality_certificate)" = "$cert" ] || { REC_DIV=$((REC_DIV + 1)); REC_WHY="$REC_WHY node${n}_certificate_differs"; }
+            [ "$(jget "$ei" epoch_state_digest)" = "$digest" ] || { REC_DIV=$((REC_DIV + 1)); REC_WHY="$REC_WHY node${n}_digest_differs"; }
+            [ "$(jget "$ei" vote_set_root)" = "$root" ]        || { REC_DIV=$((REC_DIV + 1)); REC_WHY="$REC_WHY node${n}_vote_set_root_differs"; }
+            [ "$(jget "$ei" finality_tier)" = "$tier" ]        || { REC_DIV=$((REC_DIV + 1)); REC_WHY="$REC_WHY node${n}_tier_differs"; }
+        done
+        is_real_hash "$cert" || return 0
+        if find_note_cert_carrier 0 "$e" $(( $(epoch_start "$e") + FINALITY_VOTE_WINDOW_BLOCKS )) "$(epoch_end "$e")" "$cert"; then
+            read -r c_hash c_ver c_signers c_tier c_csh <<< "$CARRY_FIELDS"
+            REC_CERTVER="$c_ver"
+            [ "$c_signers" = "0" ]       || REC_WHY="$REC_WHY cert_signer_count=$c_signers"
+            [ "$c_csh" = "$ZERO_HASH" ]  || REC_WHY="$REC_WHY cert_committee_set_hash=$c_csh"
+        else
+            REC_WHY="$REC_WHY certificate_${cert:0:16}_not_carried_in_epoch"
+        fi
+    }
+
     SOAK_END=$(( $(date +%s) + SOAK_MINUTES * 60 ))
     SOAK_EPOCHS=0
     SOAK_BAD_EPOCHS=0
+    SOAK_DIVERGENCES=0
+    SOAK_REORGS=0
+    SOAK_REORG_TRIED=0
+    SOAK_ROWS=()
+    SOAK_TIERS=""
+    SOAK_AT_BOUNDARY=0
     SOAK_E=$(( ( $(height 0) - 11 ) / 300 + 2 ))
-    while [ "$(date +%s)" -lt "$SOAK_END" ]; do
+    SOAK_FIRST="$SOAK_E"
+    while [ "$(date +%s)" -lt "$SOAK_END" ] || [ "$SOAK_EPOCHS" -lt "$SOAK_MIN_EPOCHS" ]; do
         E="$SOAK_E"
         B="$(epoch_start "$E")"
+        NEXT_B="$(epoch_start $(( E + 1 )))"
+        CLOSE=$(( B + FINALITY_VOTE_WINDOW_BLOCKS ))
+        CARRY=$(( CLOSE + 40 ))
         BAD_BEFORE="$(soak_bad_count)"
-        vote_round "$B" || { fail "soak: the epoch $E vote round failed"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
-        TOP=$(( B + FINALITY_VOTE_WINDOW_BLOCKS + 6 ))
-        mine_to 0 "$TOP" || { fail "soak: could not mine past epoch $E's window"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
-        wait_sync "$TOP" || { fail "soak: the fleet did not sync past epoch $E's window"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
-
         WHY=""
+        DIV=0
+        if [ "$SOAK_AT_BOUNDARY" -ne 1 ]; then
+            vote_round "$B" || { fail "soak: the epoch $E vote round failed"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        fi
+
+        # Stop at the window close so the certificate is built, then carry it in E.
+        { mine_to 0 "$CLOSE" && wait_sync "$CLOSE"; } || { fail "soak: epoch $E did not reach its window close"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        sleep "$TALLY_SETTLE"
+        { mine_to 0 "$CARRY" && wait_sync "$CARRY"; } || { fail "soak: epoch $E did not reach its carry height"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        if ! find_note_cert_carrier 0 "$E" "$CLOSE" "$CARRY"; then
+            sleep 20
+            { mine_to 0 $(( CARRY + 20 )) && wait_sync $(( CARRY + 20 )); } || { fail "soak: epoch $E did not extend past its carry height"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        fi
+        TOP="$(height 0)"
+
         TV="$(votes_in_range 0 "$B" $(( B + FINALITY_VOTE_WINDOW_BLOCKS - 1 )))"
         { is_int "${TV:-x}" && [ "$TV" -ge 2 ]; } || WHY="$WHY transparent_votes=${TV:-?}"
 
@@ -2916,28 +2947,59 @@ if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
 
         BH0="$(block_hash 0 "$TOP")"
         for ((n=1; n<NUM_NODES; n++)); do
-            [ ${#BH0} -eq 64 ] && [ "$(block_hash "$n" "$TOP")" = "$BH0" ] || WHY="$WHY node${n}_diverged"
+            if [ ${#BH0} -ne 64 ] || [ "$(block_hash "$n" "$TOP")" != "$BH0" ]; then
+                WHY="$WHY node${n}_diverged_at_$TOP"
+                DIV=$((DIV + 1))
+            fi
         done
 
         MP="$(rpc 0 getrawmempool 2>/dev/null | grep -c '"')"
         { is_int "${MP:-x}" && [ "$MP" -le 20 ]; } || WHY="$WHY mempool=${MP:-?}"
 
+        # Once, in the second soak epoch: the certificate is carried and the tip is
+        # still inside E, so E's record is built over the reorganised chain.
+        if [ "$SOAK_REORG_TRIED" -eq 0 ] && [ "$SOAK_EPOCHS" -ge 1 ]; then
+            SOAK_REORG_TRIED=1
+            if soak_reorg "$NEXT_B"; then
+                SOAK_REORGS=$((SOAK_REORGS + 1))
+            else
+                WHY="$WHY$SOAK_REORG_WHY"
+            fi
+        fi
+
+        # Crossing into E+1 builds E's record.
+        vote_round "$NEXT_B" || { fail "soak: the epoch $((E + 1)) vote round failed"; SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1)); break; }
+        SOAK_AT_BOUNDARY=1
+        soak_check_record "$E"
+        WHY="$WHY$REC_WHY"
+        DIV=$((DIV + REC_DIV))
+
         BAD_AFTER="$(soak_bad_count)"
         [ "$BAD_AFTER" = "$BAD_BEFORE" ] || WHY="$WHY bad_log_lines=$((BAD_AFTER - BAD_BEFORE))"
 
         SOAK_EPOCHS=$((SOAK_EPOCHS + 1))
+        SOAK_DIVERGENCES=$((SOAK_DIVERGENCES + DIV))
+        SOAK_ROWS+=("$E $REC_TIER $REC_CERTVER $DIV")
+        SOAK_TIERS="$SOAK_TIERS $REC_TIER"
         if [ -z "$WHY" ]; then
-            log "  soak epoch $E: transparent_votes=$TV note_vote_at=$NV_H finalized_as_of=$FIN_AS_OF converged"
+            log "  soak epoch $E: tier=$REC_TIER cert_v$REC_CERTVER transparent_votes=$TV note_vote_at=$NV_H finalized_as_of=$FIN_AS_OF converged"
         else
             fail "soak epoch $E:$WHY"
             SOAK_BAD_EPOCHS=$((SOAK_BAD_EPOCHS + 1))
         fi
         SOAK_E=$((SOAK_E + 1))
     done
-    if [ "$SOAK_EPOCHS" -gt 0 ] && [ "$SOAK_BAD_EPOCHS" -eq 0 ]; then
-        success "soak: $SOAK_EPOCHS consecutive epochs over $SOAK_MINUTES minutes, each with two transparent votes, a mined note vote, finality keeping pace, one chain and no conservation or record error"
+
+    log "  soak per-epoch (epoch tier cert_version divergences):"
+    for ROW in "${SOAK_ROWS[@]}"; do log "    $ROW"; done
+    SOAK_HIST="$(echo "$SOAK_TIERS" | tr ' ' '\n' | grep . | sort | uniq -c | awk '{printf "%s%s=%s", s, $2, $1; s=","}')"
+    SOAK_LAST=$(( SOAK_FIRST + SOAK_EPOCHS - 1 ))
+    log "soak summary: epochs=$SOAK_EPOCHS range=$SOAK_FIRST..$SOAK_LAST tiers={${SOAK_HIST}} divergences=$SOAK_DIVERGENCES reorgs=$SOAK_REORGS failed=$SOAK_BAD_EPOCHS"
+    if [ "$SOAK_EPOCHS" -ge "$SOAK_MIN_EPOCHS" ] && [ "$SOAK_BAD_EPOCHS" -eq 0 ] && \
+       [ "$SOAK_REORGS" -ge 1 ] && [ "$SOAK_DIVERGENCES" -eq 0 ]; then
+        success "soak: $SOAK_EPOCHS consecutive epochs ($SOAK_FIRST..$SOAK_LAST) over $SOAK_MINUTES minutes, each HARD under a carried committee-free v$NOTE_CERT_VERSION certificate, $SOAK_REORGS reorg, 0 divergences"
     else
-        fail "soak: $SOAK_BAD_EPOCHS of $SOAK_EPOCHS epochs failed"
+        fail "soak: $SOAK_BAD_EPOCHS of $SOAK_EPOCHS epochs failed, $SOAK_REORGS reorg(s), $SOAK_DIVERGENCES divergence(s)"
     fi
 fi
 
@@ -3091,7 +3153,8 @@ header "Features live simultaneously"
 echo "  1. IDAG ordering + DAGKnight        section 4"
 echo "  2. FCMP++ pool (Boundary B)         sections 5, 9"
 echo "  3. Disclosure masks 0-7             section 14"
-echo "  4. Note finality voting             sections 17, 19"
+echo "  4. Note finality voting             section 17"
+echo "     + committee-free note certificate sections 16, 19 (v4, no signers, zero committee set hash)"
 echo "  5. IDNS reset + name resolution     section 7"
 echo "  6. IV5 coinbase fee note            sections 6, 14, 18"
 echo "  7. Total-supply cap                 sections 20, 21"
