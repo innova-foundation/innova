@@ -362,21 +362,7 @@ test_phase3_shielded() {
         success "Blocks for spend maturity synced"
     fi
 
-    log "Unshielding 10 INN on Node 1..."
-    local unshield_txid=$(rpc1 z_unshield "$zaddr1" "$taddr1" 10.0 2>/dev/null)
-    if [ -n "$unshield_txid" ]; then
-        success "z_unshield TX created: ${unshield_txid:0:16}..."
-
-        rpc1 setgenerate true 1 >/dev/null 2>&1 || true
-        sleep 3
-
-        local ztotal2=$(rpc1 z_gettotalbalance 2>/dev/null)
-        log "Post-unshield balance: $ztotal2"
-        success "z_unshield completed and confirmed"
-    else
-        warn "z_unshield returned empty (may need more confirmations or insufficient shielded balance)"
-        skip "z_unshield test skipped"
-    fi
+    # z_unshield is retired in v5 (mask 0 is the transparent transaction).
 
     local zunspent=$(rpc1 z_listunspent 2>/dev/null)
     if [ -n "$zunspent" ]; then
@@ -529,19 +515,6 @@ test_phase6_security() {
             warn "z_shield(overflow) returned: $result"
         fi
     fi
-
-    log "Testing z_unshield with overflow amount..."
-    local zaddr1=$(rpc1 z_getnewaddress 2>/dev/null)
-    result=$(rpc1 z_unshield "$zaddr1" "$taddr1" 99999999999 2>&1)
-    if echo "$result" | grep -qi "error\|invalid\|exceed\|range\|money"; then
-        success "z_unshield(overflow) correctly rejected"
-    else
-        if [ -z "$result" ]; then
-            success "z_unshield(overflow) returned empty (rejected)"
-        else
-            warn "z_unshield(overflow) returned: $result"
-        fi
-    fi
 }
 
 # ============================================================
@@ -562,7 +535,7 @@ print_summary() {
         echo -e "${GREEN}ALL TESTS PASSED!${NC}"
         echo ""
         echo -e "  ${GREEN}✓${NC} Transparent (BTC-style) transactions work"
-        echo -e "  ${GREEN}✓${NC} Shielded (XMR-style) z_shield / z_unshield work"
+        echo -e "  ${GREEN}✓${NC} Shielded (XMR-style) z_shield works"
         echo -e "  ${GREEN}✓${NC} Cross-node shielded payments work"
         echo -e "  ${GREEN}✓${NC} Key export/import works"
         echo -e "  ${GREEN}✓${NC} No-shielded-staking enforcement verified"
