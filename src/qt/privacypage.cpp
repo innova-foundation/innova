@@ -5,6 +5,7 @@
 #include "finalitystatuswidget.h"
 #include "guiconstants.h"
 #include "iv5rpcbridge.h"
+#include "nullsendmixwidget.h"
 #include "optionsmodel.h"
 #include "privatecollateralwidget.h"
 #include "walletmodel.h"
@@ -101,6 +102,9 @@ void PrivacyPage::setupUI()
 
     collateralWidget = new PrivateCollateralWidget();
     tabs->addTab(ScrollableTab(collateralWidget), tr("Collateralnode"));
+
+    mixWidget = new NullSendMixWidget();
+    tabs->addTab(ScrollableTab(mixWidget), tr("NullSend"));
 
     finalityWidget = new FinalityStatusWidget();
     tabs->addTab(ScrollableTab(finalityWidget), tr("Finality"));
@@ -281,6 +285,7 @@ void PrivacyPage::setModel(WalletModel *modelIn)
 {
     model = modelIn;
     collateralWidget->setModel(modelIn);
+    mixWidget->setModel(modelIn);
     refreshBalances();
 }
 

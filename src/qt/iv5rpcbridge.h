@@ -1,6 +1,7 @@
 #ifndef IV5RPCBRIDGE_H
 #define IV5RPCBRIDGE_H
 
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -86,7 +87,56 @@ struct PoolSnapshot
     bool UnshieldRetirementScheduled() const;
 };
 
+// One job from mixstatus.
+struct MixJob
+{
+    MixJob() : nRecordSlot(0) {}
+
+    QString strRole;
+    QString strState;
+    QString strStatus;
+    QString strRound;
+    qint64 nRecordSlot;
+
+    bool Terminal() const;
+    QString StateName() const;
+};
+
+struct MixSnapshot
+{
+    MixSnapshot() : nDirectoryEntries(0), nRecords(0) {}
+
+    QList<MixJob> vJobs;
+    int nDirectoryEntries;
+    int nRecords;
+};
+
+// One row of z_listiv5holds.
+struct HeldNote
+{
+    HeldNote() : fHaveAmount(false), dAmount(0), fSpent(false) {}
+
+    QString strNote;
+    bool fHaveAmount;
+    double dAmount;
+    bool fSpent;
+};
+
+// The client's mix ladder: the tier and the note a seat at it spends.
+struct MixTier
+{
+    qint64 nDenomination;
+    qint64 nNoteAmount;
+};
+
+QList<MixTier> MixTiers();
+QString FormatInn(qint64 nAmount);
+// Count of -mixdir entries; a seat has nothing to fetch from without one.
+int MixDirectoriesConfigured();
+
 bool FetchFinality(FinalitySnapshot& out, QString& errorOut);
+bool FetchMix(MixSnapshot& out, QString& errorOut);
+bool FetchHolds(QList<HeldNote>& out, QString& errorOut);
 bool FetchPool(PoolSnapshot& out, QString& errorOut);
 
 // Whitelisted call. On success resultOut holds the pretty-printed reply.

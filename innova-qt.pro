@@ -394,6 +394,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/disclosuremaskwidget.h \
     src/qt/finalitystatuswidget.h \
     src/qt/privatecollateralwidget.h \
+    src/qt/nullsendmixwidget.h \
     src/qt/chatwidget.h \
     src/qt/emojipicker.h \
     src/qt/walletworker.h \
@@ -578,6 +579,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/disclosuremaskwidget.cpp \
     src/qt/finalitystatuswidget.cpp \
     src/qt/privatecollateralwidget.cpp \
+    src/qt/nullsendmixwidget.cpp \
     src/qt/chatwidget.cpp \
     src/qt/emojipicker.cpp \
     src/qt/walletworker.cpp \

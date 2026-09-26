@@ -12,11 +12,12 @@ class QPushButton;
 class QTabWidget;
 class DisclosureMaskWidget;
 class FinalityStatusWidget;
+class NullSendMixWidget;
 class PrivateCollateralWidget;
 class WalletModel;
 
 /** The v2008 privacy surface: what a transaction discloses, migration into the
- *  pool, private collateralnode registration, and finality status.
+ *  pool, NullSend mixing, private collateralnode registration, and finality status.
  */
 class PrivacyPage : public QWidget
 {
@@ -76,6 +77,7 @@ private:
 
     PrivateCollateralWidget *collateralWidget;
     FinalityStatusWidget *finalityWidget;
+    NullSendMixWidget *mixWidget;
 
     QLabel *statusLabel;
 };

@@ -2,7 +2,9 @@
 
 #include "innovarpc.h"
 #include "main.h"
+#include "nullsend_driver.h"
 #include "privacy_vnext/iv5_protocol.h"
+#include "util.h"
 
 #include "json/json_spirit_value.h"
 #include "json/json_spirit_writer_template.h"
@@ -31,6 +33,11 @@ const char* kAllowedMethods[] = {
     "collateralnode",
     "name_rendezvous",
     "name_rendezvous_encode",
+    "mixprepare",
+    "mixjoin",
+    "mixstatus",
+    "z_listiv5holds",
+    "z_holdiv5note",
     NULL
 };
 
@@ -321,6 +328,152 @@ bool FetchPool(PoolSnapshot& out, QString& errorOut)
     ReadBool(obj, "privacy_vnext_fee_note_active", out.fUnshieldRetired);
     ReadInt(obj, "privacy_vnext_fee_note_height", out.nUnshieldRetirementHeight);
     return true;
+}
+
+QList<MixTier> MixTiers()
+{
+    const CMixPolicy policy = CMixPolicy::Standard();
+    QList<MixTier> out;
+    for (size_t i = 0; i < policy.vDenominations.size(); i++)
+    {
+        MixTier tier;
+        tier.nDenomination = (qint64)policy.vDenominations[i];
+        tier.nNoteAmount = (qint64)(policy.vDenominations[i] + policy.nFeeSharePerSeat);
+        out << tier;
+    }
+    return out;
+}
+
+QString FormatInn(qint64 nAmount)
+{
+    return QString::fromStdString(FormatMoney(nAmount));
+}
+
+int MixDirectoriesConfigured()
+{
+    std::map<std::string, std::vector<std::string> >::const_iterator it =
+        mapMultiArgs.find("-mixdir");
+    return it == mapMultiArgs.end() ? 0 : (int)it->second.size();
+}
+
+bool FetchMix(MixSnapshot& out, QString& errorOut)
+{
+    out = MixSnapshot();
+    if (fShutdown)
+    {
+        errorOut = QObject::tr("The node is shutting down.");
+        return false;
+    }
+    json_spirit::Value value;
+    if (!Execute("mixstatus", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("mixstatus did not return an object");
+        return false;
+    }
+    const json_spirit::Object& obj = value.get_obj();
+    ReadInt(obj, "directoryentries", out.nDirectoryEntries);
+    ReadInt(obj, "records", out.nRecords);
+    const json_spirit::Value* jobs = Find(obj, "jobs");
+    if (jobs != NULL && jobs->type() == json_spirit::array_type)
+    {
+        const json_spirit::Array& arr = jobs->get_array();
+        for (size_t i = 0; i < arr.size(); i++)
+        {
+            if (arr[i].type() != json_spirit::obj_type)
+                continue;
+            const json_spirit::Object& o = arr[i].get_obj();
+            MixJob job;
+            ReadStr(o, "role", job.strRole);
+            ReadStr(o, "state", job.strState);
+            ReadStr(o, "status", job.strStatus);
+            ReadStr(o, "round", job.strRound);
+            const json_spirit::Value* slot = Find(o, "recordslot");
+            if (slot != NULL && slot->type() == json_spirit::int_type)
+                job.nRecordSlot = slot->get_int64();
+            out.vJobs << job;
+        }
+    }
+    return true;
+}
+
+bool FetchHolds(QList<HeldNote>& out, QString& errorOut)
+{
+    out.clear();
+    if (fShutdown)
+    {
+        errorOut = QObject::tr("The node is shutting down.");
+        return false;
+    }
+    json_spirit::Value value;
+    if (!Execute("z_listiv5holds", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::array_type)
+    {
+        errorOut = QObject::tr("z_listiv5holds did not return an array");
+        return false;
+    }
+    const json_spirit::Array& arr = value.get_array();
+    for (size_t i = 0; i < arr.size(); i++)
+    {
+        if (arr[i].type() != json_spirit::obj_type)
+            continue;
+        const json_spirit::Object& o = arr[i].get_obj();
+        HeldNote note;
+        ReadStr(o, "note", note.strNote);
+        ReadReal(o, "amount", note.dAmount, note.fHaveAmount);
+        ReadBool(o, "spent", note.fSpent);
+        out << note;
+    }
+    return true;
+}
+
+bool MixJob::Terminal() const
+{
+    const int n = strState.toInt();
+    if (strRole == "seat")
+        return !strState.isEmpty() && (n == MIX_SEAT_DONE || n == MIX_SEAT_FAILED);
+    return !strState.isEmpty() && (n == MIX_COORD_DONE || n == MIX_COORD_FAILED);
+}
+
+QString MixJob::StateName() const
+{
+    if (strState.isEmpty())
+        return QObject::tr("starting");
+    const int n = strState.toInt();
+    if (strRole == "seat")
+    {
+        switch (n)
+        {
+        case MIX_SEAT_FINDING:     return QObject::tr("finding the round");
+        case MIX_SEAT_READY:       return QObject::tr("announcement checked");
+        case MIX_SEAT_BEGUN:       return QObject::tr("proved");
+        case MIX_SEAT_JOINED:      return QObject::tr("joined");
+        case MIX_SEAT_VIEWED:      return QObject::tr("view signed");
+        case MIX_SEAT_CONSTRUCTED: return QObject::tr("output built");
+        case MIX_SEAT_TOKENED:     return QObject::tr("token received");
+        case MIX_SEAT_REGISTERED:  return QObject::tr("output registered");
+        case MIX_SEAT_APPROVED:    return QObject::tr("prefix approved");
+        case MIX_SEAT_PROVED:      return QObject::tr("balance proof sent");
+        case MIX_SEAT_NONCED:      return QObject::tr("nonce sent");
+        case MIX_SEAT_RESPONDED:   return QObject::tr("final share sent");
+        case MIX_SEAT_DONE:        return QObject::tr("done");
+        case MIX_SEAT_FAILED:      return QObject::tr("failed");
+        }
+    }
+    else
+    {
+        switch (n)
+        {
+        case MIX_COORD_WAITING:   return QObject::tr("waiting to plan");
+        case MIX_COORD_PUBLISHED: return QObject::tr("record published");
+        case MIX_COORD_UPLOADED:  return QObject::tr("round open");
+        case MIX_COORD_DONE:      return QObject::tr("done");
+        case MIX_COORD_FAILED:    return QObject::tr("failed");
+        }
+    }
+    return QObject::tr("state %1").arg(strState);
 }
 
 bool Call(const QString& method, const QStringList& params,
