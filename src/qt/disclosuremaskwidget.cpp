@@ -112,7 +112,9 @@ void DisclosureMaskWidget::refreshExplanation()
             "belong to that output, so anyone reading the chain now or in ten years "
             "learns which address received it. It cannot be withdrawn, and it "
             "forecloses ever disclosing the sender of a spend of that output without "
-            "exposing the same link."));
+            "exposing the same link. Spending that output through a NullSend round "
+            "breaks the link going forward: the round's inputs stay public, but which "
+            "of its outputs is yours does not."));
     else
         receiverWarningLabel->setText(QString());
 }
@@ -125,7 +127,9 @@ QString DisclosureMaskWidget::confirmationText() const
                        .arg(Iv5Rpc::MaskDetail(nMask));
     if (Iv5Rpc::MaskDisclosesReceiver(nMask))
         text += tr("\n\nThis publishes the recipient's address permanently. That cannot "
-                   "be undone later.");
+                   "be undone later, and whoever spends that output later can be identified "
+                   "from chain data. Spending it through NullSend breaks the link going "
+                   "forward.");
     if (!isDefaultMask())
         text += tr("\n\nThis is not the wallet default (mask %1); a rare mask is itself "
                    "identifying.")

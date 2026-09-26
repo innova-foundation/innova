@@ -808,7 +808,7 @@ disclosed_transfer() {
         return 1
     fi
 
-    result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
+    result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" false true 2>&1)"
     txid="$(jget "$result" txid)"
     if [ ${#txid} -ne 64 ]; then
         # Running out of positioned notes is this harness reaching its own limit,
@@ -894,6 +894,16 @@ mask_bit_flags() {
     local m="$1"
     echo "$(( (m & 1) == 0 ))|$(( (m & 2) == 0 ))|$(( (m & 4) == 0 ))"
 }
+
+# A receiver-disclosing mask is permanent and exposes whoever later spends that
+# output, so the RPC refuses it without an explicit acknowledgement.
+UNACKED_ADDR="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
+UNACKED="$(rpc 0 z_iv5transfer "$UNACKED_ADDR" "$DISCLOSED_AMOUNT" 5 2>&1)"
+if echo "$UNACKED" | grep -q "acknowledge_receiver_disclosure" && [ -z "$(jget "$UNACKED" txid)" ]; then
+    success "a receiver-disclosing mask is refused without acknowledge_receiver_disclosure"
+else
+    fail "mask 5 without acknowledgement was not refused: $(echo "$UNACKED" | head -2)"
+fi
 
 MASKS_EXERCISED=0
 for MASK in 0 1 2 3 4 5 6 7; do

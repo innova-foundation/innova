@@ -2270,7 +2270,7 @@ disclosed_transfer() {
         fail "mask $mask: the tip moved while the opening pool balance was read"
         return 1
     fi
-    result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
+    result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" false true 2>&1)"
     txid="$(jget "$result" txid)"
     if [ ${#txid} -ne 64 ]; then
         if echo "$result" | grep -q "insufficient spendable shielded balance"; then

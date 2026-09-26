@@ -400,6 +400,9 @@ void PrivacyPage::onSendClicked()
 
     QStringList params;
     params << to << amount << QString::number(nMask);
+    // The receiver-disclosure warning was shown and confirmed above; say so to the RPC.
+    if (Iv5Rpc::MaskDisclosesReceiver(nMask))
+        params << "false" << "true";
     QString result;
     QString error;
     if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))
@@ -509,7 +512,11 @@ void PrivacyPage::onSendManyClicked()
         QStringList params;
         params << vAddresses.at(i) << vAmounts.at(i);
         if (nMask >= 0)
+        {
             params << QString::number(nMask);
+            if (Iv5Rpc::MaskDisclosesReceiver(nMask))
+                params << "false" << "true";
+        }
 
         QString result;
         if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))

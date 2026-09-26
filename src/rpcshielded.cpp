@@ -2279,9 +2279,9 @@ Value z_migratetopool(const Array& params, bool fHelp)
 
 Value z_iv5transfer(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 2 || params.size() > 4)
+    if (fHelp || params.size() < 2 || params.size() > 5)
         throw runtime_error(
-            "z_iv5transfer <toaddress> <amount> [disclosure] [hold]\n"
+            "z_iv5transfer <toaddress> <amount> [disclosure] [hold] [acknowledge_receiver_disclosure]\n"
             "Spends shielded notes to another IV5 address.\n"
             "\nNothing crosses the transparent boundary, so the transaction has no\n"
             "transparent input or output. Change returns to this wallet as a second\n"
@@ -2292,6 +2292,12 @@ Value z_iv5transfer(const Array& params, bool fHelp)
             "each output, and bit 4 the amount of each output. Everything published\n"
             "is proved against what the transaction already commits to, so a\n"
             "disclosure cannot name a different address or amount.\n"
+            "\nRecipient disclosure (bit 2 clear) is permanent and retroactive: the\n"
+            "recipient address is written in the clear, and whoever later spends that\n"
+            "output has their spending authority computable from chain data. A mask with\n"
+            "bit 2 clear is refused unless <acknowledge_receiver_disclosure> is true.\n"
+            "Spending such an output through a NullSend round breaks the link going\n"
+            "forward: the round's inputs remain public, but which output is yours does not.\n"
             "\n<hold> true places a hold on the recipient's output before the transfer is\n"
             "committed, for a note paid to this wallet and set aside: no spend and no\n"
             "note vote selects a held note, and only a registration that names it takes\n"
@@ -2333,6 +2339,14 @@ Value z_iv5transfer(const Array& params, bool fHelp)
     }
     const uint8_t nMask = (uint8_t)nDisclosure;
     const bool fHold = params.size() > 3 && params[3].get_bool();
+    const bool fAckReceiver = params.size() > 4 && params[4].get_bool();
+    if ((nMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0 && !fAckReceiver)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "disclosure mask publishes the recipient address, which is permanent "
+                           "and makes the spending authority of whoever later spends that output "
+                           "computable from chain data; pass acknowledge_receiver_disclosure=true "
+                           "to proceed (spending such an output through NullSend breaks the link "
+                           "going forward)");
 
     CWalletTx wtx;
     int64_t nFee = 0;
