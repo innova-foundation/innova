@@ -3102,6 +3102,51 @@ BOOST_AUTO_TEST_CASE(a_template_without_a_received_certificate_carries_the_self_
     }
 }
 
+// Early in the next epoch, before its window closes, the template still builds the
+// previous epoch's certificate.
+BOOST_AUTO_TEST_CASE(a_template_in_the_next_epoch_carries_the_previous_epochs_self_built_one)
+{
+    ScopedFinalityRegtest network;
+    ScopedNoteVoteForkAt scopedNoteVoteFork(1);
+
+    const int nEpoch = GetEpochForHeight(FORK_HEIGHT_BOUNDARY_A) + 5;
+    const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+    const int nNextBoundary = GetEpochBoundaryHeight(nEpoch + 1, FORK_HEIGHT_DAG);
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nNextBoundary), nEpoch + 1);
+    // Tip is the next epoch's boundary block.
+    const int nBlockHeight = nNextBoundary + 1;
+    BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nBlockHeight));
+
+    ScopedIndexChain chain(0xE3000000u, nTargetHeight, nNextBoundary - nTargetHeight + 1);
+    const uint256 hashTarget = chain.HashAt(0);
+    const CBlockIndex* pindexPrev = chain.Tip();
+    BOOST_REQUIRE_EQUAL(pindexPrev->nHeight + 1, nBlockHeight);
+    BOOST_REQUIRE(!IsFinalityVoteWindowClosedForTip(nEpoch + 1, pindexPrev->nHeight));
+
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+    ScopedFinalityCertDbCleanup cleanup(txdb);
+    ScopedCountedNoteVotes counted(tracker, txdb, uint256(0xE301), nEpoch, nTargetHeight,
+                                   hashTarget, 2, 0xA1);
+    BOOST_REQUIRE_EQUAL(tracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+
+    const std::vector<CFinalityTallyCertificate> vProduced =
+        BuildConnectedTallyCertificates(tracker, nEpoch, pindexPrev->nHeight);
+    BOOST_REQUIRE_EQUAL(vProduced.size(), 1U);
+    BOOST_REQUIRE(vProduced[0].HasNoteWeight());
+    BOOST_REQUIRE_EQUAL(vProduced[0].nEpoch, nEpoch);
+
+    const std::vector<CFinalityTallyCertificate> vSelf =
+        tracker.GetSelfBuiltTallyCertificatesForBlock(nBlockHeight);
+    BOOST_REQUIRE_EQUAL(vSelf.size(), 1U);
+    BOOST_CHECK(vSelf[0].GetHash() == vProduced[0].GetHash());
+
+    const std::vector<CFinalityTallyCertificate> vSelected =
+        tracker.SelectTallyCertificatesForTemplate(txdb, nBlockHeight, NULL, pindexPrev);
+    BOOST_REQUIRE_EQUAL(vSelected.size(), 1U);
+    BOOST_CHECK(vSelected[0].GetHash() == vProduced[0].GetHash());
+}
+
 // After a disconnect the pending set is re-checked on the current branch: a certificate
 // over note votes the branch no longer counts is dropped at the next prune.
 // MUTATION: skip the re-check in PrunePendingTallyCertificates and it stays pending.

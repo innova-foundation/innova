@@ -1283,6 +1283,7 @@ public:
         hashPendingFinalized = 0;
         nFinalitySummaryDirtyFromEpoch = -1;
         fPendingCertsNeedRecheck = false;
+        nPendingCertsDisconnects = 0;
     }
 
     /** Add a vote to the tracker. Returns true if vote was accepted. */
@@ -1333,8 +1334,9 @@ public:
      *  Kept only so getfinalityinfo's "tally_partials" field still compiles; delete it
      *  and that field together. */
 
-    /** Add a pending or connected tally certificate. */
-    bool AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck = true, bool fRecordFinality = false);
+    /** Add a pending or connected tally certificate. *pfDuplicate: refused as already known. */
+    bool AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck = true,
+                             bool fRecordFinality = false, bool* pfDuplicate = NULL);
 
     /** Return pending votes miners may include in the next PoW block. */
     std::vector<CFinalityVote> GetPendingVotesForBlock(int nBlockHeight, unsigned int nMaxVotes = FINALITY_MAX_BLOCK_VOTES) const;
@@ -1576,6 +1578,8 @@ private:
     std::map<uint256, CFinalityTallyCertificate> mapPendingTallyCertificates;
     // Set by a vote disconnect; the next prune re-checks the pending set.
     bool fPendingCertsNeedRecheck;
+    // Vote disconnects so far. An add whose checks straddle one re-sets the flag.
+    uint64_t nPendingCertsDisconnects;
     std::vector<CFinalityTallyCertificate> SelectValidTallyCertificates(
         CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
         const CBlockIndex* pindexPrev, unsigned int nMaxCerts,

@@ -5451,10 +5451,19 @@ static bool PendingCertificateRanksBelow(int nScoreA, const CFinalityTallyCertif
     return FinalityCertificateOutranks(b, a);
 }
 
-bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck, bool fRecordFinality)
+bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck,
+                                           bool fRecordFinality, bool* pfDuplicate)
 {
+    if (pfDuplicate)
+        *pfDuplicate = false;
     const uint256 hashContext =
         FinalityCertificateAutomationContextHash(cert);
+    uint64_t nDisconnectsAtStart = 0;
+    if (!fRecordFinality)
+    {
+        LOCK(cs_finality);
+        nDisconnectsAtStart = nPendingCertsDisconnects;
+    }
     // Relay-DoS mitigation: on the relay path, reject an already-known certificate (by hash or by
     // automation-context) BEFORE the expensive CheckTallyCertificate (which runs the uncached bulletproof
     // threshold+budget verification). Otherwise a replayed cert forces a full verification on every
@@ -5468,7 +5477,11 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
             mapConnectedTallyCertificates.count(hashKnown) ||
             FinalityTallyCertificateContextExists(cert, mapPendingTallyCertificates, hashCtx) ||
             mapConnectedTallyCertificateByContext.count(hashContext))
+        {
+            if (pfDuplicate)
+                *pfDuplicate = true;
             return false;
+        }
     }
 
     if (fCheck)
@@ -5528,6 +5541,8 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
             if (GetBoolArg("-debugfinalityrelay", false))
                 printf("FINALITY relay-duplicate ftcert=%s\n",
                        hashCert.ToString().substr(0, 10).c_str());
+            if (pfDuplicate)
+                *pfDuplicate = true;
             return false;
         }
 
@@ -5545,9 +5560,15 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
                 printf("FINALITY relay-duplicate-context ftcert=%s existing=%s\n",
                        hashCert.ToString().substr(0, 10).c_str(),
                        hashExisting.ToString().substr(0, 10).c_str());
+            if (pfDuplicate)
+                *pfDuplicate = true;
             return false;
         }
         mapPendingTallyCertificates[hashCert] = cert;
+        // Checked against a branch a disconnect has since left: a prune may already
+        // have taken its snapshot without this certificate.
+        if (nPendingCertsDisconnects != nDisconnectsAtStart)
+            fPendingCertsNeedRecheck = true;
 
         const auto scoreOf = [&](const uint256& hash) -> int {
             std::map<uint256, int>::const_iterator it = mapPendingScores.find(hash);
@@ -6391,12 +6412,14 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::SelectTallyCertificates
     const std::vector<CFinalityTallyCertificate> vSelected =
         SelectValidTallyCertificates(txdb, nBlockHeight, pvBlockVotes, pindexPrev, nMaxCerts,
                                      vCandidates);
-    for (const CFinalityTallyCertificate& cert : vSelected)
-        if (setSelfOnly.count(cert.GetHash()))
-            printf("CreateNewBlock: self-built tally certificate %s epoch %d version %d "
-                   "tier=%d note_votes=%u\n",
-                   cert.GetHash().ToString().c_str(), cert.nEpoch, cert.nVersion, cert.nTier,
-                   (unsigned int)cert.nNoteVoteCount);
+    if (fDebug)
+        for (const CFinalityTallyCertificate& cert : vSelected)
+            if (setSelfOnly.count(cert.GetHash()))
+                printf("CreateNewBlock: self-built tally certificate %s epoch %d version %d "
+                       "tier=%d note_votes=%u signers=%u\n",
+                       cert.GetHash().ToString().c_str(), cert.nEpoch, cert.nVersion,
+                       cert.nTier, (unsigned int)cert.nNoteVoteCount,
+                       (unsigned int)cert.vSignerIndexes.size());
     return vSelected;
 }
 
@@ -6486,8 +6509,8 @@ void CFinalityTracker::PrunePendingTallyCertificates(int nNextHeight)
             vRecheck.push_back(pair.second);
     }
 
-    // After a disconnect, coverage held from the abandoned branch must not outrank the
-    // current branch's certificate: drop what the relay check now refuses.
+    // After a vote disconnect, re-run the relay check on the current branch and drop what it
+    // refuses.
     CTxDB txdb("r");
     std::vector<uint256> vDrop;
     for (const CFinalityTallyCertificate& cert : vRecheck)
@@ -6626,6 +6649,7 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
 
     LOCK(cs_finality);
     fPendingCertsNeedRecheck = true;
+    nPendingCertsDisconnects++;
     for (const CFinalityVote& vote : vVotes)
     {
         // A vote may be carried by several connected blocks but is recorded once; tear
@@ -6937,7 +6961,10 @@ bool CFinalityTracker::DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hash
     // an empty list, so RecomputeNoteVoteCounting never counts a disconnected block.
     const bool fHadEntry = mapBlockConnectedNoteVotes.count(hashBlock) != 0;
     if (fHadEntry)
+    {
         fPendingCertsNeedRecheck = true;
+        nPendingCertsDisconnects++;
+    }
     mapBlockConnectedNoteVotes.erase(hashBlock);
     if (fHadEntry && !txdb.EraseFinalityConnectedNoteVoteBlock(hashBlock))
         return false;

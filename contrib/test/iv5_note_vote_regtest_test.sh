@@ -1495,29 +1495,38 @@ done
 [ "$PROD_OK" -eq 1 ] && \
     success "every held epoch's certificate was built by the nodes themselves at tier HARD over $NOTE_VOTERS note votes and the expected transparent count"
 
-# The assembled line names the certificate and its signer count; a template's self-built
-# line names the certificate only.
+# A producer's admitted certificate and a template's self-built one each log their hash and
+# signer count. Both must name zero signers; they are tallied apart so a producer count
+# comes only from producer lines. The carried check below accepts either.
 ASM_OK=1
 declare -A ASSEMBLED=()
+declare -A PRODUCED_HASHES=()
+declare -A SELFBUILT_HASHES=()
 for E in $NOTE_VOTE_EPOCHS; do
     for ((n=0; n<NUM_NODES; n++)); do
         while read -r L; do
             [ -n "$L" ] || continue
             H="$(echo "$L" | sed -n 's/.*note certificate \([0-9a-f]\{64\}\).*/\1/p')"
-            [ -n "$H" ] && ASSEMBLED[$E]="${ASSEMBLED[$E]} $H"
-            echo "$L" | grep -qE ' signers=0$' || { ASM_OK=0; fail "epoch $E: node$n assembled a certificate with signers: $L"; }
+            [ -n "$H" ] && PRODUCED_HASHES[$E]="${PRODUCED_HASHES[$E]} $H"
+            echo "$L" | grep -qE ' signers=0$' || { ASM_OK=0; fail "epoch $E: node$n produced a certificate with signers: $L"; }
         done < <(grep -aF "FinalityNoteTally: epoch $E note certificate " "$(node_log "$n")" 2>/dev/null)
-        # A template builds the same certificate from its own view; once a block carries
-        # it, the producer's pending add is a duplicate and logs nothing.
-        while read -r H; do
-            [ ${#H} -eq 64 ] && ASSEMBLED[$E]="${ASSEMBLED[$E]} $H"
+        # Once a block carries the template's certificate, the producer's add is a
+        # duplicate and logs nothing.
+        while read -r L; do
+            [ -n "$L" ] || continue
+            H="$(echo "$L" | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')"
+            [ ${#H} -eq 64 ] && SELFBUILT_HASHES[$E]="${SELFBUILT_HASHES[$E]} $H"
+            echo "$L" | grep -qE ' signers=0$' || { ASM_OK=0; fail "epoch $E: node$n self-built a certificate with signers: $L"; }
         done < <(grep -a "CreateNewBlock: self-built tally certificate [0-9a-f]\{64\} epoch $E version $NOTE_CERT_VERSION " \
-                     "$(node_log "$n")" 2>/dev/null | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')
+                     "$(node_log "$n")" 2>/dev/null)
     done
-    ASSEMBLED[$E]="$(echo "${ASSEMBLED[$E]}" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
-    [ -n "${ASSEMBLED[$E]}" ] || { ASM_OK=0; fail "epoch $E: no node logged an assembled note certificate"; }
+    PRODUCED_HASHES[$E]="$(echo "${PRODUCED_HASHES[$E]}" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+    SELFBUILT_HASHES[$E]="$(echo "${SELFBUILT_HASHES[$E]}" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+    ASSEMBLED[$E]="$(echo "${PRODUCED_HASHES[$E]} ${SELFBUILT_HASHES[$E]}" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+    [ -n "${ASSEMBLED[$E]}" ] || { ASM_OK=0; fail "epoch $E: no node logged a produced or self-built note certificate"; }
+    log "  epoch $E: producer-admitted $(echo "${PRODUCED_HASHES[$E]}" | wc -w | tr -d ' '), template-built $(echo "${SELFBUILT_HASHES[$E]}" | wc -w | tr -d ' ')"
 done
-[ "$ASM_OK" -eq 1 ] && success "every assembled note certificate names zero signers"
+[ "$ASM_OK" -eq 1 ] && success "every produced and self-built note certificate names zero signers"
 
 # ============================================================
 header "13. The v4 certificate is carried in its own epoch and commits the counted set"

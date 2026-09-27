@@ -832,4 +832,81 @@ BOOST_AUTO_TEST_CASE(a_template_with_no_received_certificate_embeds_the_self_bui
     BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
 }
 
+// A template whose parent is not pindexBest carries no certificate (the tracker holds
+// pindexBest's branch).
+BOOST_AUTO_TEST_CASE(a_template_off_the_tip_carries_no_certificate)
+{
+    CBlockIndex* pindexPrev = MineUntil([](int nHeight) {
+        const int nEpoch = GetEpochForHeight(nHeight);
+        const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+        return IsBoundaryAActiveAtHeight(nHeight) && nBoundary >= FORK_HEIGHT_BOUNDARY_A &&
+               nHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW;
+    });
+    BOOST_REQUIRE(pindexPrev == pindexBest);
+    const int nHeight = pindexPrev->nHeight + 1;
+    const int nEpoch = GetEpochForHeight(nHeight);
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+    const CBlockIndex* pBoundary =
+        GetFinalityAncestorOnChain(pindexPrev, nBoundary, FINALITY_ANCESTOR_MAX_WALK);
+    BOOST_REQUIRE(pBoundary != NULL);
+
+    CertAncestryRegtest network;
+    GlobalFinalityRestore restore;
+    ScopedNoteVoteHeight noteVoteHeight(1);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(nEpoch), 0);
+    CountedNoteVotes notes(uint256(0xCE000003), nEpoch, nBoundary, pBoundary->GetBlockHash(),
+                           2, 0x81);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+
+    const std::vector<CFinalityTallyCertificate> vProduced =
+        BuildConnectedTallyCertificates(g_finalityTracker, nEpoch, pindexPrev->nHeight);
+    BOOST_REQUIRE_EQUAL(vProduced.size(), 1U);
+    CScript scriptProduced;
+    BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(vProduced[0], nHeight,
+                                                               scriptProduced));
+
+    // On the tip the template carries it.
+    {
+        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        BOOST_REQUIRE(TemplateParent(*pblock) == pindexPrev);
+        BOOST_REQUIRE_MESSAGE(CoinbaseCarries(*pblock, scriptProduced),
+                              "on-tip template did not carry the certificate");
+    }
+
+    std::unique_ptr<CBlock> pblock;
+    {
+        struct HoldBest
+        {
+            CBlockIndex* pSaved;
+            explicit HoldBest(CBlockIndex* p)
+            {
+                LOCK(cs_main);
+                pSaved = pindexBest;
+                pindexBest = p;
+            }
+            ~HoldBest()
+            {
+                LOCK(cs_main);
+                pindexBest = pSaved;
+            }
+        } hold(pindexPrev->pprev);
+        pblock.reset(CreateNewBlock(pwalletMain));
+    }
+    BOOST_REQUIRE(pindexBest == pindexPrev);
+    BOOST_REQUIRE(pblock.get() != NULL);
+    BOOST_REQUIRE_MESSAGE(TemplateParent(*pblock) == pindexPrev,
+                          "parent selection did not pick the block above pindexBest");
+    BOOST_CHECK_MESSAGE(!CoinbaseCarries(*pblock, scriptProduced),
+                        "off-tip template carried the certificate");
+    const std::vector<CTxOut>& vout = pblock->vtx[0].vout;
+    for (size_t i = 0; i < vout.size(); i++)
+    {
+        CFinalityTallyCertificate carried;
+        BOOST_CHECK(ExtractFinalityTallyCertificateForHeight(vout[i].scriptPubKey, nHeight,
+                                                             carried) !=
+                    FINALITY_ENVELOPE_VALID);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

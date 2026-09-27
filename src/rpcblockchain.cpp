@@ -2472,14 +2472,15 @@ Value submitfinalitytallycert(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INVALID_PARAMETER,
                            "finality tally certificate is invalid for the next block");
 
-    bool fAdded = g_finalityTracker.AddTallyCertificate(cert);
+    bool fDuplicate = false;
+    bool fAdded = g_finalityTracker.AddTallyCertificate(cert, true, false, &fDuplicate);
     uint256 hashCert = cert.GetHash();
     if (fAdded)
         RelayFinalityTallyCertificate(cert);
 
     Object result;
     result.push_back(Pair("accepted", fAdded));
-    result.push_back(Pair("duplicate", !fAdded));
+    result.push_back(Pair("duplicate", fDuplicate));
     result.push_back(Pair("hash", hashCert.GetHex()));
     result.push_back(Pair("epoch", cert.nEpoch));
     result.push_back(Pair("version", cert.nVersion));

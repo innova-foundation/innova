@@ -1424,13 +1424,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nShareCommitSize + 16;
             }
 
-            // Pending plus self-built from the connected view, validated in this block's
-            // context (votes connected or embedded here, named boundary an ancestor of
-            // the template parent) before the cap.
-            std::vector<CFinalityTallyCertificate> vFinalityCerts =
-                g_finalityTracker.SelectTallyCertificatesForTemplate(txdb, nHeight,
-                                                                     &vVotesEmbedded,
-                                                                     pindexPrev);
+            // Pending plus self-built, validated in this block's context before the cap.
+            // The tracker holds pindexBest's branch; other parents carry none.
+            std::vector<CFinalityTallyCertificate> vFinalityCerts;
+            if (pindexPrev == pindexBest)
+                vFinalityCerts = g_finalityTracker.SelectTallyCertificatesForTemplate(
+                    txdb, nHeight, &vVotesEmbedded, pindexPrev);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
                 CScript certScript;
