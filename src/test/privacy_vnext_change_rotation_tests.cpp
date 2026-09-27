@@ -1,6 +1,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <limits>
 #include <cstring>
 #include <set>
 #include <vector>
@@ -1088,6 +1090,406 @@ BOOST_AUTO_TEST_CASE(the_scan_budget_holds_at_the_issuance_bound)
                                                      vRefused, error));
     BOOST_CHECK(!error.empty());
     BOOST_CHECK(vRefused.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+namespace
+{
+
+uint256 LocalGenesisHash()
+{
+    const PrivacyVNextDigest d = LocalGenesis();
+    uint256 h;
+    std::memcpy(h.begin(), d.data(), 32);
+    return h;
+}
+
+CPrivacyVNextViewKeyEntry ViewEntryFor(unsigned char seedFill, uint32_t nIndex)
+{
+    PrivacyVNextDerivedKeys keys;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(RotationDigest(seedFill), LocalGenesis(),
+                                                 nIndex, LocalNetwork(), 0, keys, error),
+                          error);
+    CPrivacyVNextViewKeyEntry entry;
+    entry.nIndex = nIndex;
+    entry.vchViewSecret.assign(keys.viewSecret.begin(), keys.viewSecret.end());
+    entry.vchSpendPublic.assign(keys.spendPublic.begin(), keys.spendPublic.end());
+    entry.vchViewPublic.assign(keys.viewPublic.begin(), keys.viewPublic.end());
+    return entry;
+}
+
+CPrivacyVNextViewKeyRecord ViewKeyFor(unsigned char seedFill,
+                                      const std::vector<uint32_t>& vIndices)
+{
+    CPrivacyVNextViewKeyRecord record;
+    record.nNetwork = LocalNetwork();
+    record.hashGenesis = LocalGenesisHash();
+    for (size_t i = 0; i < vIndices.size(); ++i)
+        record.vEntries.push_back(ViewEntryFor(seedFill, vIndices[i]));
+    return record;
+}
+
+bool SameEntries(const CPrivacyVNextViewKeyRecord& a, const CPrivacyVNextViewKeyRecord& b)
+{
+    if (a.vEntries.size() != b.vEntries.size() || a.nNetwork != b.nNetwork ||
+        a.hashGenesis != b.hashGenesis || a.nVersion != b.nVersion)
+        return false;
+    for (size_t i = 0; i < a.vEntries.size(); ++i)
+        if (a.vEntries[i].nIndex != b.vEntries[i].nIndex ||
+            a.vEntries[i].vchViewSecret != b.vEntries[i].vchViewSecret ||
+            a.vEntries[i].vchSpendPublic != b.vEntries[i].vchSpendPublic ||
+            a.vEntries[i].vchViewPublic != b.vEntries[i].vchViewPublic)
+            return false;
+    return true;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(privacy_vnext_viewkey_tests)
+
+BOOST_AUTO_TEST_CASE(a_viewing_key_round_trips_and_refuses_corruption)
+{
+    std::vector<uint32_t> vIndices;
+    vIndices.push_back(0);
+    vIndices.push_back(1);
+    vIndices.push_back(4);
+    const CPrivacyVNextViewKeyRecord record = ViewKeyFor(0x81, vIndices);
+    const std::string strKey = EncodePrivacyVNextViewKey(record);
+    const std::string strHrp = PrivacyVNextViewKeyHrp(LocalNetwork());
+    BOOST_REQUIRE_EQUAL(strKey.substr(0, strHrp.size() + 1), strHrp + "1");
+
+    CPrivacyVNextViewKeyRecord decoded;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(DecodePrivacyVNextViewKey(strKey, LocalNetwork(), LocalGenesisHash(),
+                                                    decoded, error),
+                          error);
+    BOOST_CHECK(SameEntries(record, decoded));
+    BOOST_CHECK(PrivacyVNextViewKeyId(record) == PrivacyVNextViewKeyId(decoded));
+    BOOST_CHECK(EncodePrivacyVNextViewKey(decoded) == strKey);
+
+    // Case and whitespace are transport noise, not a different key.
+    std::string strUpper;
+    for (size_t i = 0; i < strKey.size(); ++i)
+        strUpper += (char)toupper(strKey[i]);
+    BOOST_CHECK(DecodePrivacyVNextViewKey(" " + strUpper + "\n", LocalNetwork(),
+                                          LocalGenesisHash(), decoded, error));
+
+    // Checksum: every single-character change in the data part is refused.
+    const char* pszAlphabet = "abcdefghijklmnopqrstuvwxyz234567";
+    size_t nTried = 0;
+    for (size_t pos = strHrp.size() + 1; pos < strKey.size(); pos += 3)
+    {
+        std::string strBad = strKey;
+        const char* p = strchr(pszAlphabet, strBad[pos]);
+        BOOST_REQUIRE(p != NULL);
+        strBad[pos] = pszAlphabet[((p - pszAlphabet) + 1) % 32];
+        CPrivacyVNextViewKeyRecord refused;
+        BOOST_CHECK_MESSAGE(!DecodePrivacyVNextViewKey(strBad, LocalNetwork(),
+                                                       LocalGenesisHash(), refused, error),
+                            strprintf("a key with character %u changed decoded", (unsigned)pos));
+        BOOST_CHECK(refused.vEntries.empty());
+        ++nTried;
+    }
+    BOOST_CHECK(nTried > 100);
+    {
+        // A changed view-secret byte, as a checksum-only difference would carry it.
+        std::string strBad = strKey;
+        const size_t pos = strHrp.size() + 1 + 80;
+        strBad[pos] = strBad[pos] == 'a' ? 'b' : 'a';
+        BOOST_CHECK(!DecodePrivacyVNextViewKey(strBad, LocalNetwork(), LocalGenesisHash(),
+                                               decoded, error));
+        BOOST_CHECK_MESSAGE(error.find("checksum") != std::string::npos, error);
+    }
+
+    // Network tag: the same key on another network, and a prefix swapped onto it.
+    for (uint8_t nOther = 0; nOther <= 2; ++nOther)
+    {
+        if (nOther == LocalNetwork())
+            continue;
+        CPrivacyVNextViewKeyRecord refused;
+        BOOST_CHECK(!DecodePrivacyVNextViewKey(strKey, nOther, LocalGenesisHash(), refused,
+                                               error));
+        BOOST_CHECK_MESSAGE(error.find("network") != std::string::npos, error);
+
+        const std::string strSwapped =
+            PrivacyVNextViewKeyHrp(nOther) + strKey.substr(strHrp.size());
+        BOOST_CHECK(!DecodePrivacyVNextViewKey(strSwapped, LocalNetwork(), LocalGenesisHash(),
+                                               refused, error));
+        BOOST_CHECK(!DecodePrivacyVNextViewKey(strSwapped, nOther, LocalGenesisHash(),
+                                               refused, error));
+    }
+
+    // Another chain's genesis.
+    uint256 otherGenesis = LocalGenesisHash();
+    otherGenesis.begin()[0] ^= 1;
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(strKey, LocalNetwork(), otherGenesis, decoded,
+                                           error));
+
+    // A well-formed key of a version this build does not know.
+    CPrivacyVNextViewKeyRecord future = record;
+    future.nVersion = PRIVACY_VNEXT_VIEWKEY_VERSION + 1;
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(EncodePrivacyVNextViewKey(future), LocalNetwork(),
+                                           LocalGenesisHash(), decoded, error));
+    BOOST_CHECK_MESSAGE(error.find("version") != std::string::npos, error);
+
+    // Self-pay indices and non-canonical order are never in a viewing key.
+    CPrivacyVNextViewKeyRecord selfPay = record;
+    selfPay.vEntries[2].nIndex = PRIVACY_VNEXT_INTERNAL_CHANGE_INDEX;
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(EncodePrivacyVNextViewKey(selfPay), LocalNetwork(),
+                                           LocalGenesisHash(), decoded, error));
+    CPrivacyVNextViewKeyRecord reversed = record;
+    std::swap(reversed.vEntries[0], reversed.vEntries[1]);
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(EncodePrivacyVNextViewKey(reversed), LocalNetwork(),
+                                           LocalGenesisHash(), decoded, error));
+
+    // Truncation and trailing garbage.
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(strKey.substr(0, strKey.size() - 8), LocalNetwork(),
+                                           LocalGenesisHash(), decoded, error));
+    BOOST_CHECK(!DecodePrivacyVNextViewKey(strKey + "q", LocalNetwork(), LocalGenesisHash(),
+                                           decoded, error));
+}
+
+BOOST_AUTO_TEST_CASE(an_import_proves_each_view_secret_opens_its_address)
+{
+    std::string error;
+    BOOST_CHECK_MESSAGE(VerifyPrivacyVNextViewKeyEntry(LocalNetwork(), LocalGenesisHash(),
+                                                       ViewEntryFor(0x82, 3), error),
+                        error);
+
+    // Index 1's view secret against index 0's address: well-formed, and wrong.
+    CPrivacyVNextViewKeyEntry mixed = ViewEntryFor(0x82, 0);
+    mixed.vchViewSecret = ViewEntryFor(0x82, 1).vchViewSecret;
+    BOOST_CHECK(!VerifyPrivacyVNextViewKeyEntry(LocalNetwork(), LocalGenesisHash(), mixed,
+                                                error));
+
+    std::vector<uint32_t> vIndices(1, 0);
+    CPrivacyVNextViewKeyRecord record = ViewKeyFor(0x82, vIndices);
+    record.vEntries[0] = mixed;
+    CWallet wallet;
+    uint256 id;
+    bool fNew = false;
+    BOOST_CHECK(!wallet.ImportPrivacyVNextViewKey(record, id, fNew, error));
+    BOOST_CHECK(wallet.mapPrivacyVNextViewKeys.empty());
+}
+
+BOOST_AUTO_TEST_CASE(an_export_covers_exactly_the_issued_addresses)
+{
+    CWallet wallet;
+    const PrivacyVNextDigest seed = RotationDigest(0x83);
+    wallet.vchPrivacyVNextSeed.assign(seed.begin(), seed.end());
+    wallet.privacyVNextSeedRecord.nGeneration = PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+    wallet.privacyVNextSeedRecord.nNextAddressIndex = 3;
+
+    CPrivacyVNextViewKeyRecord exported;
+    std::vector<std::string> vAddresses;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(wallet.ExportPrivacyVNextViewKey("", exported, vAddresses, error),
+                          error);
+    std::vector<uint32_t> vIssued;
+    vIssued.push_back(0);
+    vIssued.push_back(1);
+    vIssued.push_back(2);
+    BOOST_CHECK(SameEntries(exported, ViewKeyFor(0x83, vIssued)));
+    BOOST_CHECK_EQUAL(vAddresses.size(), 3U);
+
+    // One address: exactly its index, nothing else.
+    std::string strSingle;
+    PrivacyVNextAddressComponents components;
+    components.nNetwork = LocalNetwork();
+    const CPrivacyVNextViewKeyEntry second = ViewEntryFor(0x83, 1);
+    std::memcpy(components.spendPublic.data(), &second.vchSpendPublic[0], 32);
+    std::memcpy(components.viewPublic.data(), &second.vchViewPublic[0], 32);
+    BOOST_REQUIRE_MESSAGE(EncodePrivacyVNextAddress(components, strSingle, error), error);
+    BOOST_REQUIRE_MESSAGE(wallet.ExportPrivacyVNextViewKey(strSingle, exported, vAddresses,
+                                                           error),
+                          error);
+    BOOST_REQUIRE_EQUAL(exported.vEntries.size(), 1U);
+    BOOST_CHECK_EQUAL(exported.vEntries[0].nIndex, 1U);
+    BOOST_REQUIRE_EQUAL(vAddresses.size(), 1U);
+    BOOST_CHECK_EQUAL(vAddresses[0], strSingle);
+
+    // An address above the issued range is not exported.
+    const CPrivacyVNextViewKeyEntry unissued = ViewEntryFor(0x83, 3);
+    std::memcpy(components.spendPublic.data(), &unissued.vchSpendPublic[0], 32);
+    std::memcpy(components.viewPublic.data(), &unissued.vchViewPublic[0], 32);
+    BOOST_REQUIRE_MESSAGE(EncodePrivacyVNextAddress(components, strSingle, error), error);
+    BOOST_CHECK(!wallet.ExportPrivacyVNextViewKey(strSingle, exported, vAddresses, error));
+
+    // No seed, no export.
+    CWallet seedless;
+    BOOST_CHECK(!seedless.ExportPrivacyVNextViewKey("", exported, vAddresses, error));
+}
+
+BOOST_AUTO_TEST_CASE(a_watch_only_wallet_sees_incoming_notes_and_cannot_spend_them)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNotes funded;
+    FundNotes(txdb, 1, funded, 0x84);
+
+    const PrivacyVNextDigest senderSeed = RotationDigest(0x84);
+    const unsigned char payeeFill = 0x85;
+    PrivacyVNextDerivedKeys payee;
+    BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(RotationDigest(payeeFill), funded.genesis, 2,
+                                                 LocalNetwork(), 0, payee, error),
+                          error);
+
+    const uint64_t nPaid = 1500;
+    const uint64_t nFee = 100;
+    const uint64_t nChange = funded.nAmount - nPaid - nFee;
+    const std::vector<PrivacyVNextDigest> vSpent(1, funded.vKeyImages[0]);
+    PrivacyVNextDerivedKeys change;
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildTransferWithChangeAt(funded, 0, senderSeed,
+                                  ChangeIndexForSpendOf(funded.genesis, vSpent), 7, payee,
+                                  nPaid, nFee, change, payload, error),
+        error);
+
+    CBlock block;
+    block.vtx.push_back(CarrierOf(payload));
+    const uint256 hashTx = block.vtx[0].GetHash();
+    CBlockIndex index;
+    index.nHeight = 120;
+    const std::set<uint256> setNoneSkipped;
+
+    // Control: the payee's own wallet opens the payment as an owned note.
+    CWallet owner;
+    const PrivacyVNextDigest payeeSeed = RotationDigest(payeeFill);
+    owner.vchPrivacyVNextSeed.assign(payeeSeed.begin(), payeeSeed.end());
+    owner.privacyVNextSeedRecord.nNextAddressIndex = 3;
+    BOOST_REQUIRE_MESSAGE(owner.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error),
+                          error);
+    BOOST_REQUIRE_EQUAL(owner.vPrivacyVNextNotes.size(), 1U);
+    BOOST_CHECK_EQUAL(owner.vPrivacyVNextNotes[0].nAmount, nPaid);
+
+    // A seedless wallet holding the payee's viewing key and the sender's issued-address
+    // key. The sender's key must not open the rotated change: it derives from the seed.
+    CWallet watcher;
+    std::vector<uint32_t> vPayee;
+    vPayee.push_back(0);
+    vPayee.push_back(1);
+    vPayee.push_back(2);
+    std::vector<uint32_t> vSender(1, 0);
+    uint256 idPayee, idSender;
+    bool fNew = false;
+    BOOST_REQUIRE_MESSAGE(watcher.ImportPrivacyVNextViewKey(ViewKeyFor(payeeFill, vPayee),
+                                                            idPayee, fNew, error),
+                          error);
+    BOOST_CHECK(fNew);
+    BOOST_REQUIRE_MESSAGE(watcher.ImportPrivacyVNextViewKey(ViewKeyFor(0x84, vSender),
+                                                            idSender, fNew, error),
+                          error);
+    BOOST_CHECK(watcher.ImportPrivacyVNextViewKey(ViewKeyFor(payeeFill, vPayee), idPayee, fNew,
+                                                  error));
+    BOOST_CHECK(!fNew);
+    BOOST_CHECK_EQUAL(watcher.mapPrivacyVNextViewKeys.size(), 2U);
+
+    BOOST_REQUIRE_MESSAGE(watcher.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error),
+                          error);
+    // Re-applying the same block credits nothing twice.
+    BOOST_REQUIRE_MESSAGE(watcher.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error),
+                          error);
+    BOOST_REQUIRE_EQUAL(watcher.vPrivacyVNextWatchNotes.size(), 1U);
+    const CPrivacyVNextWatchNote& watch = watcher.vPrivacyVNextWatchNotes[0];
+    BOOST_CHECK(watch.txhash == hashTx);
+    BOOST_CHECK_EQUAL(watch.nAmount, nPaid);
+    BOOST_CHECK_EQUAL(watch.nKeyIndex, 2U);
+    BOOST_CHECK(watch.viewKeyId == idPayee);
+    BOOST_CHECK(watch.nHeight == index.nHeight);
+    BOOST_CHECK(std::memcmp(&watch.vchOwner[0], &owner.vPrivacyVNextNotes[0].vchOwner[0],
+                            32) == 0);
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextWatchOnlyBalance(), (int64_t)nPaid);
+    BOOST_CHECK_MESSAGE(watcher.GetPrivacyVNextWatchOnlyBalance() != (int64_t)(nPaid + nChange),
+                        "a viewing key over issued addresses opened rotated change");
+
+    // Nothing reaches the owned side: no note, no owned balance, nothing to select.
+    BOOST_CHECK_MESSAGE(watcher.vPrivacyVNextNotes.empty(),
+                        "a watch-only note entered the spendable note set");
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextUnconfirmedBalance(
+                          std::numeric_limits<uint64_t>::max()), 0);
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextBalance(std::numeric_limits<uint64_t>::max()), 0);
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextUnplacedBalance(), 0);
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextHeldBalance(), 0);
+    std::vector<CPrivacyVNextWalletNote> vSelected;
+    int64_t nSelected = 0;
+    BOOST_CHECK(!watcher.SelectPrivacyVNextNotes((int64_t)nPaid, 1000000, vSelected, nSelected));
+    BOOST_CHECK(vSelected.empty());
+
+    // The payee's key held by the owner itself is not counted twice.
+    BOOST_REQUIRE(owner.ImportPrivacyVNextViewKey(ViewKeyFor(payeeFill, vPayee), idPayee, fNew,
+                                                  error));
+    BOOST_REQUIRE(owner.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index, error));
+    BOOST_CHECK_EQUAL(owner.vPrivacyVNextWatchNotes.size(), 1U);
+    BOOST_CHECK_EQUAL(owner.GetPrivacyVNextWatchOnlyBalance(), 0);
+
+    // A disconnect takes the watch note back out.
+    BOOST_REQUIRE_MESSAGE(watcher.DisconnectPrivacyVNextBlock(block, setNoneSkipped, &index,
+                                                              error),
+                          error);
+    BOOST_CHECK(watcher.vPrivacyVNextWatchNotes.empty());
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextWatchOnlyBalance(), 0);
+
+    // A skipped transaction created nothing, for a viewing key as for the owner.
+    std::set<uint256> setSkipped;
+    setSkipped.insert(hashTx);
+    BOOST_REQUIRE(watcher.ApplyPrivacyVNextBlock(block, setSkipped, &index, error));
+    BOOST_CHECK(watcher.vPrivacyVNextWatchNotes.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(privacy_vnext_held_balance_tests)
+
+BOOST_AUTO_TEST_CASE(holding_a_note_moves_value_from_owned_figures_to_held)
+{
+    CWallet wallet;
+    CPrivacyVNextWalletNote note;
+    note.txhash = uint256(7);
+    note.nOutputIndex = 1;
+    note.nHeight = 50;
+    note.nAmount = 4200;
+    note.vchOwner.assign(32, 1);
+    note.vchNullifierBase.assign(32, 2);
+    note.vchCommitment.assign(32, 3);
+    note.vchSpendSecret.assign(32, 4);
+    note.vchY.assign(32, 5);
+    note.vchMask.assign(32, 6);
+    note.vchKeyImage.assign(32, 7);
+    CPrivacyVNextWalletNote other = note;
+    other.txhash = uint256(8);
+    other.nAmount = 800;
+    other.vchKeyImage.assign(32, 9);
+    wallet.vPrivacyVNextNotes.push_back(note);
+    wallet.vPrivacyVNextNotes.push_back(other);
+
+    const uint64_t nAll = std::numeric_limits<uint64_t>::max();
+    const int64_t nOwnedBefore = wallet.GetPrivacyVNextBalance(nAll) +
+                                 wallet.GetPrivacyVNextUnconfirmedBalance(nAll) +
+                                 wallet.GetPrivacyVNextCollateralBalance() +
+                                 wallet.GetPrivacyVNextHeldBalance();
+    BOOST_CHECK_EQUAL(nOwnedBefore, 5000);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextHeldBalance(), 0);
+
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(wallet.SetPrivacyVNextHold(note.txhash, note.nOutputIndex, true,
+                                                     error),
+                          error);
+    const int64_t nFree = wallet.GetPrivacyVNextBalance(nAll) +
+                          wallet.GetPrivacyVNextUnconfirmedBalance(nAll);
+    BOOST_CHECK_EQUAL(nFree, 800);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextHeldBalance(), 4200);
+    BOOST_CHECK_EQUAL(nFree + wallet.GetPrivacyVNextCollateralBalance() +
+                          wallet.GetPrivacyVNextHeldBalance(),
+                      nOwnedBefore);
+
+    BOOST_REQUIRE(wallet.SetPrivacyVNextHold(note.txhash, note.nOutputIndex, false, error));
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextHeldBalance(), 0);
+    BOOST_CHECK_EQUAL(wallet.GetPrivacyVNextBalance(nAll) +
+                          wallet.GetPrivacyVNextUnconfirmedBalance(nAll),
+                      5000);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

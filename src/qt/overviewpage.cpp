@@ -386,7 +386,19 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelShieldedCollateral->setVisible(privateCollateral > 0);
     ui->labelShieldedCollateralText->setVisible(privateCollateral > 0);
 
-    totalBalance += privateBalance + privatePending + privateCollateral;
+    // Held by z_holdiv5note: owned, in no figure above.
+    const qint64 privateHeld = model->getPrivateHeldBalance();
+    ui->labelShieldedHeld->setText(BitcoinUnits::formatWithUnit(unit, privateHeld));
+    ui->labelShieldedHeld->setVisible(privateHeld > 0);
+    ui->labelShieldedHeldText->setVisible(privateHeld > 0);
+
+    // Received through imported viewing keys: not owned, not in the total.
+    const qint64 privateWatch = model->getPrivateWatchOnlyBalance();
+    ui->labelShieldedWatch->setText(BitcoinUnits::formatWithUnit(unit, privateWatch));
+    ui->labelShieldedWatch->setVisible(privateWatch > 0);
+    ui->labelShieldedWatchText->setVisible(privateWatch > 0);
+
+    totalBalance += privateBalance + privatePending + privateCollateral + privateHeld;
 
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));

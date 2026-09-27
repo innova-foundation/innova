@@ -405,6 +405,9 @@ extern json_spirit::Value z_migratetopool(const json_spirit::Array& params, bool
 extern json_spirit::Value z_iv5transfer(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_holdiv5note(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listiv5holds(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_exportiv5viewingkey(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_importiv5viewingkey(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_listiv5viewingkeys(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_iv5unshield(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_mintmofncoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_reclaimmofncoldstake(const json_spirit::Array& params, bool fHelp);

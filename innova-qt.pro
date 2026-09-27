@@ -862,7 +862,13 @@ macx:contains(ADHOC_SIGN, 1):QMAKE_POST_LINK += (codesign --force --sign - --tim
 # Set libraries and includes at end, to use platform-defined defaults if not overridden
 INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH $$LIBEVENT_INCLUDE_PATH $$LIBCURL_INCLUDE_PATH
 LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,) $$join(LIBEVENT_LIB_PATH,,-L,) $$join(LIBCURL_LIB_PATH,,-L,)
-LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
+linux {
+    # Static libcurl.a lacks its own dependencies under RELEASE=1; link curl shared.
+    contains(RELEASE, 1): CURL_LINK_MODE = -Wl,-Bstatic
+    LIBS += -Wl,-Bdynamic -lcurl $$CURL_LINK_MODE -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
+} else {
+    LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
+}
 LIBS += -lz -levent
 LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
 

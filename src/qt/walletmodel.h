@@ -97,6 +97,8 @@ public:
     qint64 getPrivateBalance() const;
     qint64 getPrivatePendingBalance() const;
     qint64 getPrivateCollateralBalance() const;
+    qint64 getPrivateHeldBalance() const;
+    qint64 getPrivateWatchOnlyBalance() const;
     QString getNewShieldedAddress();
     QStringList getShieldedAddresses() const;
     /** Execute a whitelisted RPC command and return the result string. Returns empty on error. */
@@ -210,6 +212,8 @@ private:
     qint64 cachedPrivateBalance;
     qint64 cachedPrivatePendingBalance;
     qint64 cachedPrivateCollateralBalance;
+    qint64 cachedPrivateHeldBalance;
+    qint64 cachedPrivateWatchOnlyBalance;
     WalletThread *walletThread;
 
     qint64 cachedNumTransactions;

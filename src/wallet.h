@@ -45,6 +45,19 @@ uint32_t PrivacyVNextChangeIndexFor(
     const PrivacyVNextDigest& transparentBinding,
     const std::vector<PrivacyVNextDigest>& vKeyImages);
 
+// IV5 viewing key text: hrp "1" base32(body || checksum), checksum = Hash(hrp || body)[0..4).
+std::string PrivacyVNextViewKeyHrp(uint8_t nNetwork);
+std::string EncodePrivacyVNextViewKey(const CPrivacyVNextViewKeyRecord& record);
+bool DecodePrivacyVNextViewKey(const std::string& strKey, uint8_t nExpectedNetwork,
+                               const uint256& hashExpectedGenesis,
+                               CPrivacyVNextViewKeyRecord& recordOut,
+                               std::string& strErrorOut);
+uint256 PrivacyVNextViewKeyId(const CPrivacyVNextViewKeyRecord& record);
+// Proves the entry's view secret opens notes paid to its (spend, view) public pair.
+bool VerifyPrivacyVNextViewKeyEntry(uint8_t nNetwork, const uint256& hashGenesis,
+                                    const CPrivacyVNextViewKeyEntry& entry,
+                                    std::string& strErrorOut);
+
 struct CMixSeatMaterial;
 class CMixRoundAnnouncement;
 struct CMixPolicy;
@@ -333,6 +346,10 @@ public:
     mutable CCriticalSection cs_shielded;
 
     std::vector<CPrivacyVNextWalletNote> vPrivacyVNextNotes;
+    // Imported viewing keys by id, and the incoming notes they opened. Watch notes are
+    // never in vPrivacyVNextNotes, so no spend, hold, vote or mix path can reach one.
+    std::map<uint256, CPrivacyVNextViewKeyRecord> mapPrivacyVNextViewKeys;
+    std::vector<CPrivacyVNextWatchNote> vPrivacyVNextWatchNotes;
     // Lowest height whose IV5 payloads this wallet did not process, persisted because an
     // undetected note has no other recovery path. -1 means every connected block was scanned.
     int nPrivacyVNextScanGapHeight;
@@ -491,6 +508,28 @@ public:
     int64_t GetPrivacyVNextUnconfirmedBalance(uint64_t nAnchorTreeSize) const;
     int64_t GetPrivacyVNextCollateralBalance() const;
     int64_t GetPrivacyVNextHeldBalance() const;
+    // Value received through imported viewing keys. Spends are not visible to a viewing
+    // key, so this never falls; it is in no owned total.
+    int64_t GetPrivacyVNextWatchOnlyBalance() const;
+    // strAddress empty exports every issued index; the seed must be unlocked.
+    bool ExportPrivacyVNextViewKey(const std::string& strAddress,
+                                   CPrivacyVNextViewKeyRecord& recordOut,
+                                   std::vector<std::string>& vAddressesOut,
+                                   std::string& strErrorOut) const;
+    bool ImportPrivacyVNextViewKey(const CPrivacyVNextViewKeyRecord& record,
+                                   uint256& idOut, bool& fNewOut,
+                                   std::string& strErrorOut);
+    // cs_shielded held. View-only scan of one block under every imported key.
+    bool ApplyPrivacyVNextWatchBlock(const CBlock& block,
+                                     const std::set<uint256>& setDAGSkippedTxs,
+                                     const CBlockIndex* pindex,
+                                     std::string& strErrorOut);
+    // cs_shielded held. Drops watch notes created by the given transactions.
+    bool DisconnectPrivacyVNextWatchNotes(const std::set<uint256>& setTxHashes,
+                                          std::string& strErrorOut);
+    // Walks the main chain for the viewing keys only; needs no seed.
+    bool RescanPrivacyVNextWatchBlocks(int nFromHeight, int& nBlocksOut,
+                                       std::string& strErrorOut);
     // The part of unconfirmed with no tree position at all yet: detected, but not placed by
     // an epoch build. The rest of unconfirmed is placed and waiting on depth or the anchor.
     int64_t GetPrivacyVNextUnplacedBalance() const;

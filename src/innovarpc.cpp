@@ -492,6 +492,9 @@ static const CRPCCommand vRPCCommands[] =
     { "z_iv5transfer",          &z_iv5transfer,          false,  true },
     { "z_holdiv5note",          &z_holdiv5note,          false,  true },
     { "z_listiv5holds",         &z_listiv5holds,         true,   true },
+    { "z_exportiv5viewingkey",  &z_exportiv5viewingkey,  false,  true },
+    { "z_importiv5viewingkey",  &z_importiv5viewingkey,  false,  true },
+    { "z_listiv5viewingkeys",   &z_listiv5viewingkeys,   true,   true },
     { "z_iv5unshield",          &z_iv5unshield,          false,  true },
     { "z_getnewaddress",        &z_getnewaddress,        false,  true },
     { "z_listaddresses",        &z_listaddresses,        true,   false },
@@ -1701,6 +1704,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_iv5transfer"         && n > 3) ConvertTo<bool>(params[3]);
     if (strMethod == "z_iv5transfer"         && n > 4) ConvertTo<bool>(params[4]);
     if (strMethod == "z_holdiv5note"         && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "z_importiv5viewingkey" && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "z_importiv5viewingkey" && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "z_importiv5seed"       && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "z_importiv5seed"       && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "z_importphrase"        && n > 1) ConvertTo<int64_t>(params[1]);

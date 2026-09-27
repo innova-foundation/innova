@@ -242,6 +242,109 @@ public:
     )
 };
 
+// IV5 viewing key: per-address view secrets, no spend material. Detects and opens
+// incoming notes to issued addresses only; key images (spends) and self-pay outputs
+// (change, shields, fee notes) derive from the seed and stay invisible to it.
+static const unsigned char PRIVACY_VNEXT_VIEWKEY_VERSION = 1;
+static const size_t PRIVACY_VNEXT_VIEWKEY_HEADER_SIZE = 36;   // version, network, genesis, count
+static const size_t PRIVACY_VNEXT_VIEWKEY_ENTRY_SIZE = 100;   // index, view secret, spend/view public
+static const size_t PRIVACY_VNEXT_VIEWKEY_CHECKSUM_SIZE = 4;
+
+class CPrivacyVNextViewKeyEntry
+{
+public:
+    uint32_t nIndex;
+    std::vector<unsigned char> vchViewSecret;
+    std::vector<unsigned char> vchSpendPublic;
+    std::vector<unsigned char> vchViewPublic;
+
+    CPrivacyVNextViewKeyEntry() : nIndex(0) {}
+
+    bool IsWellFormed() const
+    {
+        return vchViewSecret.size() == 32 && vchSpendPublic.size() == 32 &&
+               vchViewPublic.size() == 32;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nIndex);
+        READWRITE(vchViewSecret);
+        READWRITE(vchSpendPublic);
+        READWRITE(vchViewPublic);
+    )
+};
+
+class CPrivacyVNextViewKeyRecord
+{
+public:
+    int nVersion;
+    unsigned char nNetwork;
+    uint256 hashGenesis;
+    std::vector<CPrivacyVNextViewKeyEntry> vEntries;
+    int64_t nTimeImported;
+
+    CPrivacyVNextViewKeyRecord() { SetNull(); }
+
+    void SetNull()
+    {
+        nVersion = PRIVACY_VNEXT_VIEWKEY_VERSION;
+        nNetwork = 0;
+        hashGenesis = 0;
+        vEntries.clear();
+        nTimeImported = 0;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nVersion);
+        READWRITE(nNetwork);
+        READWRITE(hashGenesis);
+        READWRITE(vEntries);
+        READWRITE(nTimeImported);
+    )
+};
+
+// An incoming note seen through a viewing key. Carries no spend secret and no key
+// image, so it can never be spent or marked spent; kept apart from owned notes.
+class CPrivacyVNextWatchNote
+{
+public:
+    uint256 txhash;
+    uint32_t nOutputIndex;
+    int nHeight;
+    uint64_t nAmount;
+    uint32_t nKeyIndex;
+    uint256 viewKeyId;
+    std::vector<unsigned char> vchOwner;
+    std::vector<unsigned char> vchCommitment;
+    std::vector<unsigned char> vchSpendPublic;
+    std::vector<unsigned char> vchViewPublic;
+
+    CPrivacyVNextWatchNote()
+        : txhash(0), nOutputIndex(0), nHeight(0), nAmount(0), nKeyIndex(0), viewKeyId(0) {}
+
+    bool IsWellFormed() const
+    {
+        return vchOwner.size() == 32 && vchCommitment.size() == 32 &&
+               vchSpendPublic.size() == 32 && vchViewPublic.size() == 32;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(txhash);
+        READWRITE(nOutputIndex);
+        READWRITE(nHeight);
+        READWRITE(nAmount);
+        READWRITE(nKeyIndex);
+        READWRITE(viewKeyId);
+        READWRITE(vchOwner);
+        READWRITE(vchCommitment);
+        READWRITE(vchSpendPublic);
+        READWRITE(vchViewPublic);
+    )
+};
+
 class CPrivacyVNextSeedRecord
 {
 public:

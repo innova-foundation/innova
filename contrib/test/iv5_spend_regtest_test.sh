@@ -217,17 +217,18 @@ feq() { [ "$(python3 -c "print(1 if abs($1 - $2) < 1e-8 else 0)" 2>/dev/null)" =
 
 # z_getbalance and z_gettotalbalance on node0 against the value known to be in the
 # pool: spendable must match z_getbalance, the parts must add up to "total", and
-# owned (spendable + pending + collateral) must equal EXPECTED.
+# owned (spendable + pending + collateral + held) must equal EXPECTED.
 assert_owned_balance() {
-    local label="$1" expected="$2" zb tb t s p c tot
+    local label="$1" expected="$2" zb tb t s p c h tot
     zb="$(rpc 0 z_getbalance 2>/dev/null | tr -d '"[:space:]')"
     tb="$(rpc 0 z_gettotalbalance 2>/dev/null)"
     t="$(jget "$tb" transparent)"
     s="$(jget "$tb" shielded)"
     p="$(jget "$tb" shielded_pending)"
     c="$(jget "$tb" shielded_collateral)"
+    h="$(jget "$tb" shielded_held)"
     tot="$(jget "$tb" total)"
-    if [ -z "$zb" ] || [ -z "$s" ] || [ -z "$p" ] || [ -z "$c" ] || [ -z "$tot" ]; then
+    if [ -z "$zb" ] || [ -z "$s" ] || [ -z "$p" ] || [ -z "$c" ] || [ -z "$h" ] || [ -z "$tot" ]; then
         fail "$label: balance RPCs incomplete (z_getbalance=$zb z_gettotalbalance=$(echo "$tb" | tr -d '\n'))"
         return
     fi
@@ -235,17 +236,34 @@ assert_owned_balance() {
         fail "$label: z_getbalance $zb differs from z_gettotalbalance.shielded $s"
         return
     fi
-    if ! feq "$tot" "$(python3 -c "print('%.8f' % ($t + $s + $p + $c))")"; then
-        fail "$label: total $tot is not transparent $t + shielded $s + pending $p + collateral $c"
+    if ! feq "$tot" "$(python3 -c "print('%.8f' % ($t + $s + $p + $c + $h))")"; then
+        fail "$label: total $tot is not transparent $t + shielded $s + pending $p + collateral $c + held $h"
         return
     fi
     local owned
-    owned="$(python3 -c "print('%.8f' % ($s + $p + $c))")"
+    owned="$(python3 -c "print('%.8f' % ($s + $p + $c + $h))")"
     if feq "$owned" "$expected"; then
-        success "$label: owned $owned = spendable $s + pending $p + collateral $c, matches the $expected shielded"
+        success "$label: owned $owned = spendable $s + pending $p + collateral $c + held $h, matches the $expected shielded"
     else
-        fail "$label: owned $owned (spendable $s + pending $p + collateral $c) does not match the $expected shielded"
+        fail "$label: owned $owned (spendable $s + pending $p + collateral $c + held $h) does not match the $expected shielded"
     fi
+}
+
+# The shielded parts of z_gettotalbalance on NODE as "free held owned total transparent":
+# free = spendable + pending, owned = free + collateral + held.
+shielded_parts() {
+    local tb
+    tb="$(rpc "$1" z_gettotalbalance 2>/dev/null)"
+    python3 -c '
+import json, sys
+try:
+    b = json.loads(sys.argv[1])
+    free = b["shielded"] + b["shielded_pending"]
+    owned = free + b["shielded_collateral"] + b["shielded_held"]
+    print("%.8f %.8f %.8f %.8f %.8f" % (free, b["shielded_held"], owned, b["total"], b["transparent"]))
+except Exception:
+    print("")
+' "$tb" 2>/dev/null
 }
 
 # A spend block's coinbase may exceed a plain one by the spend's fee and by
@@ -797,6 +815,31 @@ else
     exit 1
 fi
 
+# A hold moves the recipient note from the free figures to shielded_held and leaves
+# what the wallet owns, and the total, unchanged. Released again before 6b spends.
+XFER_NOTE="$(jget "$XFER" recipient_note)"
+read -r HB_FREE HB_HELD HB_OWNED HB_TOTAL HB_T <<< "$(shielded_parts 0)"
+if [ -n "$HB_OWNED" ] && feq "$HB_HELD" 0 && \
+   [ -n "$(jget "$(rpc 0 z_holdiv5note "$XFER_NOTE" true 2>&1)" held)" ]; then
+    read -r HA_FREE HA_HELD HA_OWNED HA_TOTAL HA_T <<< "$(shielded_parts 0)"
+    if [ -n "$HA_OWNED" ] && feq "$HA_HELD" "$TRANSFER_AMOUNT" && feq "$HA_OWNED" "$HB_OWNED" && \
+       feq "$(python3 -c "print('%.8f' % ($HB_FREE - $HA_FREE))")" "$TRANSFER_AMOUNT" && \
+       feq "$(python3 -c "print('%.8f' % ($HA_TOTAL - $HA_T))")" "$(python3 -c "print('%.8f' % ($HB_TOTAL - $HB_T))")"; then
+        success "a hold moved $TRANSFER_AMOUNT INN from spendable+pending to shielded_held; owned $HA_OWNED and the shielded total are unchanged"
+    else
+        fail "hold accounting: before free=$HB_FREE held=$HB_HELD owned=$HB_OWNED, after free=$HA_FREE held=$HA_HELD owned=$HA_OWNED"
+    fi
+    rpc 0 z_holdiv5note "$XFER_NOTE" false >/dev/null 2>&1
+    read -r HR_FREE HR_HELD HR_OWNED _ _ <<< "$(shielded_parts 0)"
+    if feq "${HR_HELD:-x}" 0 && feq "${HR_FREE:-x}" "$HB_FREE"; then
+        success "releasing the hold returned the note to the free figures"
+    else
+        fail "after release: free=$HR_FREE held=$HR_HELD, expected free=$HB_FREE held=0"
+    fi
+else
+    fail "could not place a hold on the transfer's recipient note '$XFER_NOTE'"
+fi
+
 XFER_HEIGHT="$(jget "$(rpc 0 getblock "$XFER_BLOCK" 2>/dev/null)" height)"
 if [ "$(block_hash 1 "$XFER_HEIGHT")" = "$XFER_BLOCK" ] && \
    [ "$(block_hash 2 "$XFER_HEIGHT")" = "$XFER_BLOCK" ]; then
@@ -974,6 +1017,75 @@ if echo "$BAD_MASK" | grep -qi "three-bit"; then
     success "a mask above 7 is refused"
 else
     fail "a mask above 7 was not refused: $(echo "$BAD_MASK" | head -2)"
+fi
+
+# ============================================================
+header "6c. An IV5 viewing key shows incoming notes and cannot spend them"
+# ============================================================
+
+# node0 exports; node1 (no IV5 seed) and node2 import. A viewing key sees only
+# payments to issued addresses: no change, no shields, no spends.
+VK1_J="$(rpc 0 z_exportiv5viewingkey "$TO_ADDR" 2>&1)"
+VK1="$(jget "$VK1_J" viewingkey)"
+VKALL="$(jget "$(rpc 0 z_exportiv5viewingkey 2>&1)" viewingkey)"
+if [ "${VK1:0:11}" = "iv5viewreg1" ] && [ "${VKALL:0:11}" = "iv5viewreg1" ] && \
+   [ "$(jlen "$VK1_J" addresses)" = "1" ] && echo "$VK1_J" | grep -q "$TO_ADDR"; then
+    success "node0 exported a regtest-tagged viewing key for $TO_ADDR and one for every issued address"
+else
+    fail "z_exportiv5viewingkey failed: $(echo "$VK1_J" | head -3)"
+fi
+
+# One character changed near the end: the checksum refuses it.
+VKBAD="${VK1:0:$(( ${#VK1} - 3 ))}$( [ "${VK1: -3:1}" = "a" ] && echo b || echo a )${VK1: -2}"
+BADIMP="$(rpc 1 z_importiv5viewingkey "$VKBAD" false 2>&1)"
+if echo "$BADIMP" | grep -qi "checksum" && [ -z "$(jget "$BADIMP" id)" ]; then
+    success "a viewing key with one character changed is refused by its checksum"
+else
+    fail "a corrupted viewing key was not refused by its checksum: $(echo "$BADIMP" | head -2)"
+fi
+
+IMP1="$(rpc 1 z_importiv5viewingkey "$VK1" true 0 2>&1)"
+if feq "$(jget "$IMP1" received)" "$TRANSFER_AMOUNT" && [ "$(jget "$IMP1" watch_notes)" = "1" ]; then
+    success "node1 sees the $TRANSFER_AMOUNT INN paid to $TO_ADDR through its viewing key"
+else
+    fail "node1 viewing-key import: $(echo "$IMP1" | tr -d '\n' | head -c 400)"
+fi
+
+TB1="$(rpc 1 z_gettotalbalance 2>/dev/null)"
+if feq "$(jget "$TB1" shielded_watchonly)" "$TRANSFER_AMOUNT" && feq "$(jget "$TB1" shielded)" 0 && \
+   feq "$(jget "$TB1" shielded_pending)" 0 && \
+   feq "$(jget "$TB1" total)" "$(jget "$TB1" transparent)"; then
+    success "node1 reports it as shielded_watchonly, outside every owned figure and the total"
+else
+    fail "node1 balances after the import: $(echo "$TB1" | tr -d '\n')"
+fi
+
+SPEND1="$(rpc 1 z_iv5transfer "$TO_ADDR" 1 2>&1)"
+if [ -z "$(jget "$SPEND1" txid)" ]; then
+    success "node1 cannot spend a watch-only note: $(echo "$SPEND1" | head -1 | cut -c1-120)"
+else
+    fail "node1 spent through a viewing key: $(jget "$SPEND1" txid)"
+fi
+
+IMPALL="$(rpc 2 z_importiv5viewingkey "$VKALL" true 0 2>&1)"
+VK_EXPECT="$(python3 -c "print('%.8f' % ($TRANSFER_AMOUNT + $MASKS_EXERCISED * $DISCLOSED_AMOUNT))")"
+if feq "$(jget "$IMPALL" received)" "$VK_EXPECT"; then
+    success "node2's key for every issued address sees $VK_EXPECT INN received and none of node0's change"
+else
+    fail "node2 received $(jget "$IMPALL" received) through the all-address key, expected $VK_EXPECT"
+fi
+
+# The record survives a restart.
+rpc 1 stop >/dev/null 2>&1
+wait_rpc_down 1 || fail "node1 did not stop"
+start_node 1 || { fail "node1 did not restart"; exit 1; }
+connect_mesh
+wait_peers || fail "node1 did not rejoin the mesh"
+if feq "$(jget "$(rpc 1 z_gettotalbalance 2>/dev/null)" shielded_watchonly)" "$TRANSFER_AMOUNT" && \
+   [ "$(rpc 1 z_listiv5viewingkeys 2>/dev/null | grep -c "$TO_ADDR")" -ge 1 ]; then
+    success "node1's viewing key and watch-only note persist across a restart"
+else
+    fail "node1 lost its viewing key or watch-only note across a restart"
 fi
 
 # ============================================================
@@ -1361,6 +1473,12 @@ if mine_to 0 "$FEE_NOTE_HEIGHT" && wait_sync "$FEE_NOTE_HEIGHT"; then
             POST_XH="$(jget "$(rpc 0 getblock "$POST_BLOCK" 2>/dev/null)" height)"
             if [ -n "$POST_XH" ]; then
                 success "the post-fork transfer confirmed at height $POST_XH"
+                VK_AFTER="$(jget "$(rpc 1 z_gettotalbalance 2>/dev/null)" shielded_watchonly)"
+                if feq "${VK_AFTER:-0}" "$(python3 -c "print('%.8f' % ($TRANSFER_AMOUNT + 1))")"; then
+                    success "node1's viewing key picked up the new payment to $TO_ADDR at connect time"
+                else
+                    fail "node1 watch-only after the post-fork transfer is $VK_AFTER, expected $TRANSFER_AMOUNT + 1"
+                fi
                 POST_VER="$(coinbase_version 0 "$POST_XH")"
                 if [ "$POST_VER" = "2008" ]; then
                     success "its block's coinbase collected the transfer fee as a pool note"

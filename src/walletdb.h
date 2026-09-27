@@ -477,6 +477,29 @@ public:
                                     std::make_pair(txhash, nOutputIndex)));
     }
 
+    // Viewing keys and watch notes. Older builds skip unknown record types on load.
+    bool WritePrivacyVNextViewKey(const uint256& id,
+                                  const CPrivacyVNextViewKeyRecord& record)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5viewkey"), id), record, true);
+    }
+
+    bool WritePrivacyVNextWatchNote(const CPrivacyVNextWatchNote& note)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5watchnote"),
+                                    std::make_pair(note.txhash, note.nOutputIndex)),
+                     note, true);
+    }
+
+    bool ErasePrivacyVNextWatchNote(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5watchnote"),
+                                    std::make_pair(txhash, nOutputIndex)));
+    }
+
     // Keyed by key image: that is what the chain watches and what a spend consumes, so
     // the record and the exclusion it drives cannot drift apart.
     bool WritePrivacyVNextCollateral(

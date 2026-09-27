@@ -641,22 +641,196 @@ Value z_gettotalbalance(const Array& params, bool fHelp)
             "  shielded_pending     owned, but too shallow or still waiting for the\n"
             "                       epoch that gives it a tree position\n"
             "  shielded_collateral  owned, locked against a collateral registration\n"
-            "\"total\" is everything owned, so it counts all three.\n");
+            "  shielded_held        owned, held by z_holdiv5note (not collateral)\n"
+            "\"total\" is everything owned, so it counts all four.\n"
+            "\n\"shielded_watchonly\" is value received through imported IV5 viewing\n"
+            "keys. It is not owned and not in \"total\"; spends are not visible to a\n"
+            "viewing key, so it is value received, not a balance.\n");
 
     const int64_t nTransparent = pwalletMain->GetBalance();
     const int64_t nSpendable = pwalletMain->GetPrivacyVNextBalance() +
                                pwalletMain->GetShieldedBalance();
     const int64_t nPending = pwalletMain->GetPrivacyVNextUnconfirmedBalance();
     const int64_t nCollateral = pwalletMain->GetPrivacyVNextCollateralBalance();
+    const int64_t nHeld = pwalletMain->GetPrivacyVNextHeldBalance();
+    const int64_t nWatchOnly = pwalletMain->GetPrivacyVNextWatchOnlyBalance();
 
     Object obj;
     obj.push_back(Pair("transparent", ValueFromAmount(nTransparent)));
     obj.push_back(Pair("shielded", ValueFromAmount(nSpendable)));
     obj.push_back(Pair("shielded_pending", ValueFromAmount(nPending)));
     obj.push_back(Pair("shielded_collateral", ValueFromAmount(nCollateral)));
+    obj.push_back(Pair("shielded_held", ValueFromAmount(nHeld)));
     obj.push_back(Pair("total", ValueFromAmount(nTransparent + nSpendable +
-                                                nPending + nCollateral)));
+                                                nPending + nCollateral + nHeld)));
+    obj.push_back(Pair("shielded_watchonly", ValueFromAmount(nWatchOnly)));
     return obj;
+}
+
+static const char* PRIVACY_VNEXT_VIEWKEY_WARNING =
+    "an IV5 viewing key reveals every incoming payment and its amount to the covered "
+    "addresses, now and in the future; it cannot spend, and it does not show spends, "
+    "change or any other self-pay output";
+
+Value z_exportiv5viewingkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "z_exportiv5viewingkey [address|\"all\"]\n"
+            "Exports an IV5 viewing key for one issued address, or for every address\n"
+            "this wallet has issued (the default).\n"
+            "\nThe key reveals every incoming payment and its amount to those addresses,\n"
+            "now and in the future. It cannot spend. It does not reveal spends, change,\n"
+            "shields or any other self-pay output: those derive from the seed. Addresses\n"
+            "issued after the export are not covered.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"viewingkey\": \"...\",   (string) versioned, checksummed, network-tagged\n"
+            "  \"addresses\": [...],    (array) the addresses it covers\n"
+            "  \"warning\": \"...\"\n"
+            "}\n");
+
+    EnsureWalletIsUnlocked();
+    std::string strAddress;
+    if (params.size() > 0 && params[0].get_str() != "all")
+        strAddress = params[0].get_str();
+
+    CPrivacyVNextViewKeyRecord record;
+    std::vector<std::string> vAddresses;
+    std::string strError;
+    if (!pwalletMain->ExportPrivacyVNextViewKey(strAddress, record, vAddresses, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Array arrAddresses;
+    for (size_t i = 0; i < vAddresses.size(); ++i)
+        arrAddresses.push_back(vAddresses[i]);
+    Object result;
+    result.push_back(Pair("viewingkey", EncodePrivacyVNextViewKey(record)));
+    result.push_back(Pair("addresses", arrAddresses));
+    result.push_back(Pair("warning", PRIVACY_VNEXT_VIEWKEY_WARNING));
+    for (size_t i = 0; i < record.vEntries.size(); ++i)
+        OPENSSL_cleanse(&record.vEntries[i].vchViewSecret[0], 32);
+    return result;
+}
+
+static void PrivacyVNextWatchNotesToJSON(const uint256& id, Array& arrOut, int64_t& nTotalOut)
+{
+    nTotalOut = 0;
+    for (size_t i = 0; i < pwalletMain->vPrivacyVNextWatchNotes.size(); ++i)
+    {
+        const CPrivacyVNextWatchNote& watch = pwalletMain->vPrivacyVNextWatchNotes[i];
+        if (id != 0 && watch.viewKeyId != id)
+            continue;
+        Object entry;
+        entry.push_back(Pair("note", strprintf("%s:%u", watch.txhash.GetHex().c_str(),
+                                               watch.nOutputIndex)));
+        entry.push_back(Pair("height", watch.nHeight));
+        entry.push_back(Pair("amount", ValueFromAmount((int64_t)watch.nAmount)));
+        entry.push_back(Pair("index", (int64_t)watch.nKeyIndex));
+        entry.push_back(Pair("watchonly", true));
+        entry.push_back(Pair("spendable", false));
+        arrOut.push_back(entry);
+        nTotalOut += (int64_t)watch.nAmount;
+    }
+}
+
+Value z_importiv5viewingkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 3)
+        throw runtime_error(
+            "z_importiv5viewingkey <viewingkey> [rescan=true] [startheight=0]\n"
+            "Imports an IV5 viewing key. Incoming notes to the addresses it covers are\n"
+            "shown as watch-only: never spendable, not in any owned balance, reported as\n"
+            "shielded_watchonly by z_gettotalbalance. Needs no IV5 seed.\n"
+            "\nA viewing key cannot see spends, so the watch-only figure is value received,\n"
+            "not a balance. The rescan reads only the viewing keys.\n");
+
+    const std::string strKey = params[0].get_str();
+    const bool fRescan = params.size() > 1 ? params[1].get_bool() : true;
+    const int nStart = params.size() > 2 ? params[2].get_int() : 0;
+    if (nStart < 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "startheight must not be negative");
+
+    CPrivacyVNextViewKeyRecord record;
+    std::string strError;
+    const uint8_t nNetwork = fRegTest ? 2 : (fTestNet ? 1 : 0);
+    if (!DecodePrivacyVNextViewKey(strKey, nNetwork, GetGenesisBlockHash(), record, strError))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strError);
+
+    uint256 id;
+    bool fNew = false;
+    if (!pwalletMain->ImportPrivacyVNextViewKey(record, id, fNew, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    for (size_t i = 0; i < record.vEntries.size(); ++i)
+        OPENSSL_cleanse(&record.vEntries[i].vchViewSecret[0], 32);
+
+    int nBlocks = 0;
+    if (fRescan && !pwalletMain->RescanPrivacyVNextWatchBlocks(nStart, nBlocks, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, "IV5 viewing key imported; rescan failed: " +
+                                                 strError);
+
+    Object result;
+    result.push_back(Pair("id", id.GetHex()));
+    result.push_back(Pair("new", fNew));
+    result.push_back(Pair("addresses", (int64_t)record.vEntries.size()));
+    result.push_back(Pair("rescanned", fRescan));
+    result.push_back(Pair("rescanned_blocks", nBlocks));
+    {
+        LOCK(pwalletMain->cs_shielded);
+        Array arrNotes;
+        int64_t nReceived = 0;
+        PrivacyVNextWatchNotesToJSON(id, arrNotes, nReceived);
+        result.push_back(Pair("watch_notes", (int64_t)arrNotes.size()));
+        result.push_back(Pair("received", ValueFromAmount(nReceived)));
+    }
+    result.push_back(Pair("warning", "watch-only: received value only, spends are not visible"));
+    return result;
+}
+
+Value z_listiv5viewingkeys(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "z_listiv5viewingkeys\n"
+            "Lists imported IV5 viewing keys, the addresses each covers and the watch-only\n"
+            "notes each has found. Amounts are value received; spends are not visible.\n");
+
+    const uint8_t nNetwork = fRegTest ? 2 : (fTestNet ? 1 : 0);
+    Array arr;
+    LOCK(pwalletMain->cs_shielded);
+    for (std::map<uint256, CPrivacyVNextViewKeyRecord>::const_iterator it =
+             pwalletMain->mapPrivacyVNextViewKeys.begin();
+         it != pwalletMain->mapPrivacyVNextViewKeys.end(); ++it)
+    {
+        Object entry;
+        entry.push_back(Pair("id", it->first.GetHex()));
+        entry.push_back(Pair("imported", (int64_t)it->second.nTimeImported));
+        Array arrAddresses;
+        for (size_t i = 0; i < it->second.vEntries.size(); ++i)
+        {
+            const CPrivacyVNextViewKeyEntry& key = it->second.vEntries[i];
+            PrivacyVNextAddressComponents components;
+            components.nNetwork = nNetwork;
+            components.nAddressType = 0;
+            std::memcpy(components.spendPublic.data(), &key.vchSpendPublic[0], 32);
+            std::memcpy(components.viewPublic.data(), &key.vchViewPublic[0], 32);
+            std::string strAddress, strError;
+            Object a;
+            a.push_back(Pair("index", (int64_t)key.nIndex));
+            a.push_back(Pair("address", EncodePrivacyVNextAddress(components, strAddress,
+                                                                  strError)
+                                            ? strAddress : std::string()));
+            arrAddresses.push_back(a);
+        }
+        entry.push_back(Pair("addresses", arrAddresses));
+        Array arrNotes;
+        int64_t nReceived = 0;
+        PrivacyVNextWatchNotesToJSON(it->first, arrNotes, nReceived);
+        entry.push_back(Pair("notes", arrNotes));
+        entry.push_back(Pair("received", ValueFromAmount(nReceived)));
+        arr.push_back(entry);
+    }
+    return arr;
 }
 
 Value z_shield(const Array& params, bool fHelp)

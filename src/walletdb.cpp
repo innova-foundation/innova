@@ -1527,6 +1527,46 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             LOCK(pwallet->cs_shielded);
             pwallet->mapPrivacyVNextCollateral[keyImage] = record;
         }
+        else if (strType == "iv5viewkey")
+        {
+            uint256 id;
+            ssKey >> id;
+            CPrivacyVNextViewKeyRecord record;
+            ssValue >> record;
+            bool fWellFormed = record.nVersion == PRIVACY_VNEXT_VIEWKEY_VERSION &&
+                               !record.vEntries.empty() &&
+                               PrivacyVNextViewKeyId(record) == id;
+            for (size_t i = 0; fWellFormed && i < record.vEntries.size(); ++i)
+                fWellFormed = record.vEntries[i].IsWellFormed();
+            if (!fWellFormed)
+            {
+                strErr = "Error reading wallet database: malformed IV5 viewing key record";
+                return false;
+            }
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapPrivacyVNextViewKeys[id] = record;
+        }
+        else if (strType == "iv5watchnote")
+        {
+            std::pair<uint256, uint32_t> outpoint;
+            ssKey >> outpoint;
+            CPrivacyVNextWatchNote note;
+            ssValue >> note;
+            if (note.txhash != outpoint.first || note.nOutputIndex != outpoint.second ||
+                !note.IsWellFormed())
+            {
+                strErr = "Error reading wallet database: malformed IV5 watch note record";
+                return false;
+            }
+            LOCK(pwallet->cs_shielded);
+            bool fDuplicate = false;
+            for (size_t i = 0; !fDuplicate && i < pwallet->vPrivacyVNextWatchNotes.size(); ++i)
+                fDuplicate = pwallet->vPrivacyVNextWatchNotes[i].txhash == note.txhash &&
+                             pwallet->vPrivacyVNextWatchNotes[i].nOutputIndex ==
+                                 note.nOutputIndex;
+            if (!fDuplicate)
+                pwallet->vPrivacyVNextWatchNotes.push_back(note);
+        }
         else if (strType == "iv5hold")
         {
             std::pair<uint256, uint32_t> outpoint;

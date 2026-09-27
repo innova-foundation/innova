@@ -14376,6 +14376,14 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     if (!fHasPayload)
         return true;
 
+    // Viewing keys need no seed, so they scan before the seed checks below.
+    {
+        std::string strWatchError;
+        if (!ApplyPrivacyVNextWatchBlock(block, setDAGSkippedTxs, pindex, strWatchError))
+            printf("IV5 watch-only scan at height %d: %s\n", pindex->nHeight,
+                   strWatchError.c_str());
+    }
+
     if (!fSeedUnlocked)
     {
         // A locked wallet cannot trial-decrypt; record the height as a scan gap instead of
@@ -14938,6 +14946,16 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
     LOCK(cs_shielded);
     // Before every early return: a walk compares this count, not the note set.
     ++nPrivacyVNextDisconnectCount;
+    if (!vPrivacyVNextWatchNotes.empty())
+    {
+        std::set<uint256> setWatchTxs;
+        for (unsigned int i = 0; i < block.vtx.size(); ++i)
+            if (block.vtx[i].IsPrivacyVNext() && block.vtx[i].privacyVNext.IsPresent() &&
+                !setDAGSkippedTxs.count(block.vtx[i].GetHash()))
+                setWatchTxs.insert(block.vtx[i].GetHash());
+        if (!DisconnectPrivacyVNextWatchNotes(setWatchTxs, strErrorOut))
+            return false;
+    }
     if (vPrivacyVNextNotes.empty())
         return true;
 
@@ -15600,5 +15618,671 @@ bool CWallet::GenerateNewSilentPaymentKey(CSilentPaymentAddress& addrOut)
     if (!key.GetAddress(addrOut))
         return false;
     AddSilentPaymentKey(std::move(key));
+    return true;
+}
+
+// IV5 viewing keys.
+
+std::string PrivacyVNextViewKeyHrp(uint8_t nNetwork)
+{
+    if (nNetwork == 2)
+        return "iv5viewreg";
+    if (nNetwork == 1)
+        return "iv5viewtest";
+    return "iv5view";
+}
+
+static std::vector<unsigned char> PrivacyVNextViewKeyBody(
+    const CPrivacyVNextViewKeyRecord& record)
+{
+    std::vector<unsigned char> body;
+    body.reserve(PRIVACY_VNEXT_VIEWKEY_HEADER_SIZE +
+                 record.vEntries.size() * PRIVACY_VNEXT_VIEWKEY_ENTRY_SIZE);
+    body.push_back((unsigned char)record.nVersion);
+    body.push_back(record.nNetwork);
+    body.insert(body.end(), record.hashGenesis.begin(), record.hashGenesis.end());
+    const uint16_t nCount = (uint16_t)record.vEntries.size();
+    body.push_back((unsigned char)(nCount & 0xff));
+    body.push_back((unsigned char)(nCount >> 8));
+    for (size_t i = 0; i < record.vEntries.size(); ++i)
+    {
+        const CPrivacyVNextViewKeyEntry& entry = record.vEntries[i];
+        for (int b = 0; b < 4; ++b)
+            body.push_back((unsigned char)((entry.nIndex >> (8 * b)) & 0xff));
+        body.insert(body.end(), entry.vchViewSecret.begin(), entry.vchViewSecret.end());
+        body.insert(body.end(), entry.vchSpendPublic.begin(), entry.vchSpendPublic.end());
+        body.insert(body.end(), entry.vchViewPublic.begin(), entry.vchViewPublic.end());
+    }
+    return body;
+}
+
+static uint256 PrivacyVNextViewKeyChecksum(const std::string& strHrp,
+                                           const std::vector<unsigned char>& body)
+{
+    std::vector<unsigned char> v(strHrp.begin(), strHrp.end());
+    v.insert(v.end(), body.begin(), body.end());
+    return Hash(v.begin(), v.end());
+}
+
+static std::string PrivacyVNextBase32NoPad(const std::vector<unsigned char>& v)
+{
+    std::string s = EncodeBase32(v.empty() ? NULL : &v[0], v.size());
+    const size_t nPad = s.find('=');
+    if (nPad != std::string::npos)
+        s.erase(nPad);
+    return s;
+}
+
+uint256 PrivacyVNextViewKeyId(const CPrivacyVNextViewKeyRecord& record)
+{
+    const std::vector<unsigned char> body = PrivacyVNextViewKeyBody(record);
+    return Hash(body.begin(), body.end());
+}
+
+std::string EncodePrivacyVNextViewKey(const CPrivacyVNextViewKeyRecord& record)
+{
+    const std::string strHrp = PrivacyVNextViewKeyHrp(record.nNetwork);
+    std::vector<unsigned char> body = PrivacyVNextViewKeyBody(record);
+    const uint256 checksum = PrivacyVNextViewKeyChecksum(strHrp, body);
+    body.insert(body.end(), checksum.begin(),
+                checksum.begin() + PRIVACY_VNEXT_VIEWKEY_CHECKSUM_SIZE);
+    const std::string strKey = strHrp + "1" + PrivacyVNextBase32NoPad(body);
+    OPENSSL_cleanse(&body[0], body.size());
+    return strKey;
+}
+
+bool DecodePrivacyVNextViewKey(const std::string& strKeyIn, uint8_t nExpectedNetwork,
+                               const uint256& hashExpectedGenesis,
+                               CPrivacyVNextViewKeyRecord& recordOut,
+                               std::string& strErrorOut)
+{
+    recordOut.SetNull();
+    strErrorOut.clear();
+
+    std::string strKey;
+    for (size_t i = 0; i < strKeyIn.size(); ++i)
+    {
+        const char c = strKeyIn[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+            continue;
+        strKey += (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    const size_t nSep = strKey.rfind('1');
+    if (nSep == std::string::npos || nSep == 0 || nSep + 1 >= strKey.size())
+    {
+        strErrorOut = "not an IV5 viewing key";
+        return false;
+    }
+    const std::string strHrp = strKey.substr(0, nSep);
+    const std::string strData = strKey.substr(nSep + 1);
+    if (strHrp != PrivacyVNextViewKeyHrp(0) && strHrp != PrivacyVNextViewKeyHrp(1) &&
+        strHrp != PrivacyVNextViewKeyHrp(2))
+    {
+        strErrorOut = "not an IV5 viewing key";
+        return false;
+    }
+    if (strData.find_first_not_of("abcdefghijklmnopqrstuvwxyz234567") != std::string::npos)
+    {
+        strErrorOut = "IV5 viewing key has characters outside its alphabet";
+        return false;
+    }
+    bool fInvalid = false;
+    std::vector<unsigned char> vch = DecodeBase32(strData.c_str(), &fInvalid);
+    if (fInvalid || PrivacyVNextBase32NoPad(vch) != strData)
+    {
+        strErrorOut = "IV5 viewing key is not canonically encoded";
+        return false;
+    }
+    if (vch.size() < PRIVACY_VNEXT_VIEWKEY_HEADER_SIZE + PRIVACY_VNEXT_VIEWKEY_ENTRY_SIZE +
+                         PRIVACY_VNEXT_VIEWKEY_CHECKSUM_SIZE)
+    {
+        strErrorOut = "IV5 viewing key is too short";
+        return false;
+    }
+
+    const std::vector<unsigned char> body(vch.begin(),
+                                          vch.end() - PRIVACY_VNEXT_VIEWKEY_CHECKSUM_SIZE);
+    const uint256 checksum = PrivacyVNextViewKeyChecksum(strHrp, body);
+    if (std::memcmp(checksum.begin(), &vch[body.size()],
+                    PRIVACY_VNEXT_VIEWKEY_CHECKSUM_SIZE) != 0)
+    {
+        strErrorOut = "IV5 viewing key checksum does not match";
+        return false;
+    }
+    if (body[0] != PRIVACY_VNEXT_VIEWKEY_VERSION)
+    {
+        strErrorOut = strprintf("unsupported IV5 viewing key version %u", (unsigned)body[0]);
+        return false;
+    }
+    const uint8_t nNetwork = body[1];
+    if (strHrp != PrivacyVNextViewKeyHrp(nNetwork))
+    {
+        strErrorOut = "IV5 viewing key prefix does not match its network";
+        return false;
+    }
+    if (nNetwork != nExpectedNetwork)
+    {
+        strErrorOut = strprintf("IV5 viewing key is for network %u, this node is on %u",
+                                (unsigned)nNetwork, (unsigned)nExpectedNetwork);
+        return false;
+    }
+    uint256 hashGenesis;
+    std::memcpy(hashGenesis.begin(), &body[2], 32);
+    if (hashGenesis != hashExpectedGenesis)
+    {
+        strErrorOut = "IV5 viewing key belongs to another chain";
+        return false;
+    }
+    const size_t nCount = (size_t)body[34] | ((size_t)body[35] << 8);
+    if (nCount == 0 || nCount > PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES ||
+        body.size() != PRIVACY_VNEXT_VIEWKEY_HEADER_SIZE +
+                           nCount * PRIVACY_VNEXT_VIEWKEY_ENTRY_SIZE)
+    {
+        strErrorOut = "IV5 viewing key length does not match its address count";
+        return false;
+    }
+
+    CPrivacyVNextViewKeyRecord record;
+    record.nVersion = body[0];
+    record.nNetwork = nNetwork;
+    record.hashGenesis = hashGenesis;
+    for (size_t i = 0; i < nCount; ++i)
+    {
+        const unsigned char* p = &body[PRIVACY_VNEXT_VIEWKEY_HEADER_SIZE +
+                                       i * PRIVACY_VNEXT_VIEWKEY_ENTRY_SIZE];
+        CPrivacyVNextViewKeyEntry entry;
+        entry.nIndex = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                       ((uint32_t)p[3] << 24);
+        // Issued addresses only, ascending: self-pay is never in a viewing key, and
+        // one encoding per key set keeps the id stable.
+        if (entry.nIndex >= PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES ||
+            (i > 0 && entry.nIndex <= record.vEntries.back().nIndex))
+        {
+            strErrorOut = "IV5 viewing key entries are out of range or out of order";
+            return false;
+        }
+        entry.vchViewSecret.assign(p + 4, p + 36);
+        entry.vchSpendPublic.assign(p + 36, p + 68);
+        entry.vchViewPublic.assign(p + 68, p + 100);
+        record.vEntries.push_back(entry);
+    }
+    OPENSSL_cleanse(&vch[0], vch.size());
+    recordOut = record;
+    return true;
+}
+
+bool VerifyPrivacyVNextViewKeyEntry(uint8_t nNetwork, const uint256& hashGenesis,
+                                    const CPrivacyVNextViewKeyEntry& entry,
+                                    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (!entry.IsWellFormed())
+    {
+        strErrorOut = "IV5 viewing key entry is malformed";
+        return false;
+    }
+    PrivacyVNextDigest genesis, spendPublic, viewPublic, viewSecret, zero;
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    std::memcpy(spendPublic.data(), &entry.vchSpendPublic[0], 32);
+    std::memcpy(viewPublic.data(), &entry.vchViewPublic[0], 32);
+    std::memcpy(viewSecret.data(), &entry.vchViewSecret[0], 32);
+    zero.fill(0);
+    // Small canonical scalars: the probe only has to open, never to be private.
+    PrivacyVNextDigest outgoing, noteEphemeral, tweakEphemeral, y, mask, context;
+    outgoing.fill(0);
+    noteEphemeral.fill(0);
+    tweakEphemeral.fill(0);
+    y.fill(0);
+    mask.fill(0);
+    context.fill(0x5a);
+    outgoing[0] = 11;
+    noteEphemeral[0] = 13;
+    tweakEphemeral[0] = 17;
+    y[0] = 19;
+    mask[0] = 23;
+
+    PrivacyVNextEncryptedOutput probe;
+    std::string strError;
+    if (!EncryptPrivacyVNextNote(nNetwork, 0, 0, genesis, spendPublic, viewPublic, outgoing,
+                                 noteEphemeral, tweakEphemeral, 1, y, mask, context, probe,
+                                 strError))
+    {
+        strErrorOut = strprintf("IV5 viewing key entry %u names an invalid address: %s",
+                                entry.nIndex, strError.c_str());
+        return false;
+    }
+    PrivacyVNextEncryptedNote note;
+    note.nOutputIndex = 0;
+    note.genesis = genesis;
+    note.leafO = probe.leaf.owner;
+    note.leafC = probe.leaf.commitment;
+    note.noteEphemeral = probe.noteEphemeral;
+    note.tweakEphemeral = probe.tweakEphemeral;
+    note.inputContext = context;
+    note.vchCiphertext = probe.vchRecipientCiphertext;
+    PrivacyVNextScannedNote scanned;
+    const bool fOpened = ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_VIEW_ONLY, nNetwork, 0, note,
+                                              viewSecret, zero, scanned, strError);
+    OPENSSL_cleanse(viewSecret.data(), viewSecret.size());
+    if (!fOpened || scanned.nAmount != 1 || scanned.recipientSpend != spendPublic ||
+        scanned.recipientView != viewPublic)
+    {
+        strErrorOut = strprintf("IV5 viewing key entry %u: the view secret does not open "
+                                "notes paid to its address", entry.nIndex);
+        return false;
+    }
+    return true;
+}
+
+bool CWallet::ExportPrivacyVNextViewKey(const std::string& strAddress,
+                                        CPrivacyVNextViewKeyRecord& recordOut,
+                                        std::vector<std::string>& vAddressesOut,
+                                        std::string& strErrorOut) const
+{
+    recordOut.SetNull();
+    vAddressesOut.clear();
+    strErrorOut.clear();
+
+    const uint8_t nNetwork = PrivacyVNextNetworkId();
+    PrivacyVNextAddressComponents wanted;
+    const bool fOne = !strAddress.empty();
+    if (fOne && !DecodePrivacyVNextAddress(strAddress, nNetwork, wanted, strErrorOut))
+    {
+        strErrorOut = "not an IV5 address on this network: " + strErrorOut;
+        return false;
+    }
+
+    PrivacyVNextDigest seed;
+    bool fHasSeedRecord = false;
+    if (!ReadPrivacyVNextScanSeed(seed, fHasSeedRecord))
+    {
+        strErrorOut = fHasSeedRecord ? "the IV5 seed is locked; unlock the wallet first"
+                                     : "this wallet has no IV5 seed";
+        return false;
+    }
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+
+    uint32_t nIssued = GetPrivacyVNextScanIndexCount();
+    if (nIssued > PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
+        nIssued = PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES;
+
+    CPrivacyVNextViewKeyRecord record;
+    record.nNetwork = nNetwork;
+    record.hashGenesis = hashGenesis;
+    bool fOk = true;
+    for (uint32_t i = 0; i < nIssued; ++i)
+    {
+        PrivacyVNextDerivedKeys keys;
+        if (!DerivePrivacyVNextKeys(seed, genesis, i, nNetwork, 0, keys, strErrorOut))
+        {
+            strErrorOut = "IV5 key derivation failed: " + strErrorOut;
+            fOk = false;
+            break;
+        }
+        if (fOne && (keys.spendPublic != wanted.spendPublic ||
+                     keys.viewPublic != wanted.viewPublic))
+            continue;
+        CPrivacyVNextViewKeyEntry entry;
+        entry.nIndex = i;
+        entry.vchViewSecret.assign(keys.viewSecret.begin(), keys.viewSecret.end());
+        entry.vchSpendPublic.assign(keys.spendPublic.begin(), keys.spendPublic.end());
+        entry.vchViewPublic.assign(keys.viewPublic.begin(), keys.viewPublic.end());
+        record.vEntries.push_back(entry);
+        if (fOne)
+            break;
+    }
+    OPENSSL_cleanse(seed.data(), seed.size());
+    if (!fOk)
+        return false;
+    if (record.vEntries.empty())
+    {
+        strErrorOut = "that address was not issued by this wallet's IV5 seed";
+        return false;
+    }
+    for (size_t i = 0; i < record.vEntries.size(); ++i)
+    {
+        PrivacyVNextAddressComponents components;
+        components.nNetwork = nNetwork;
+        components.nAddressType = 0;
+        std::memcpy(components.spendPublic.data(), &record.vEntries[i].vchSpendPublic[0], 32);
+        std::memcpy(components.viewPublic.data(), &record.vEntries[i].vchViewPublic[0], 32);
+        std::string strEncoded;
+        if (!EncodePrivacyVNextAddress(components, strEncoded, strErrorOut))
+            return false;
+        vAddressesOut.push_back(strEncoded);
+    }
+    recordOut = record;
+    return true;
+}
+
+bool CWallet::ImportPrivacyVNextViewKey(const CPrivacyVNextViewKeyRecord& record,
+                                        uint256& idOut, bool& fNewOut,
+                                        std::string& strErrorOut)
+{
+    idOut = 0;
+    fNewOut = false;
+    strErrorOut.clear();
+    if (record.nVersion != PRIVACY_VNEXT_VIEWKEY_VERSION || record.vEntries.empty())
+    {
+        strErrorOut = "IV5 viewing key record is malformed";
+        return false;
+    }
+    for (size_t i = 0; i < record.vEntries.size(); ++i)
+        if (!VerifyPrivacyVNextViewKeyEntry(record.nNetwork, record.hashGenesis,
+                                            record.vEntries[i], strErrorOut))
+            return false;
+
+    const uint256 id = PrivacyVNextViewKeyId(record);
+    LOCK(cs_shielded);
+    idOut = id;
+    if (mapPrivacyVNextViewKeys.count(id))
+        return true;
+    CPrivacyVNextViewKeyRecord stored = record;
+    stored.nTimeImported = GetTime();
+    if (fFileBacked && !CWalletDB(strWalletFile).WritePrivacyVNextViewKey(id, stored))
+    {
+        strErrorOut = "could not write the IV5 viewing key to the wallet";
+        return false;
+    }
+    mapPrivacyVNextViewKeys[id] = stored;
+    fNewOut = true;
+    return true;
+}
+
+int64_t CWallet::GetPrivacyVNextWatchOnlyBalance() const
+{
+    LOCK(cs_shielded);
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < vPrivacyVNextWatchNotes.size(); ++i)
+    {
+        const CPrivacyVNextWatchNote& watch = vPrivacyVNextWatchNotes[i];
+        // A key for this wallet's own addresses: the note is already counted as owned.
+        bool fOwned = false;
+        for (size_t n = 0; !fOwned && n < vPrivacyVNextNotes.size(); ++n)
+            fOwned = vPrivacyVNextNotes[n].txhash == watch.txhash &&
+                     vPrivacyVNextNotes[n].nOutputIndex == watch.nOutputIndex;
+        if (fOwned)
+            continue;
+        if (watch.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+            return std::numeric_limits<int64_t>::max();
+        nTotal += (int64_t)watch.nAmount;
+    }
+    return nTotal;
+}
+
+bool CWallet::ApplyPrivacyVNextWatchBlock(const CBlock& block,
+                                          const std::set<uint256>& setDAGSkippedTxs,
+                                          const CBlockIndex* pindex,
+                                          std::string& strErrorOut)
+{
+    AssertLockHeld(cs_shielded);
+    strErrorOut.clear();
+    if (mapPrivacyVNextViewKeys.empty() || !pindex)
+        return true;
+
+    // One key per distinct address across every imported viewing key.
+    std::vector<PrivacyVNextScanKey> vKeys;
+    std::vector<std::pair<uint256, const CPrivacyVNextViewKeyEntry*> > vOwners;
+    std::set<std::vector<unsigned char> > setSeen;
+    for (std::map<uint256, CPrivacyVNextViewKeyRecord>::const_iterator it =
+             mapPrivacyVNextViewKeys.begin();
+         it != mapPrivacyVNextViewKeys.end(); ++it)
+    {
+        for (size_t i = 0; i < it->second.vEntries.size(); ++i)
+        {
+            const CPrivacyVNextViewKeyEntry& entry = it->second.vEntries[i];
+            if (!entry.IsWellFormed() || !setSeen.insert(entry.vchViewPublic).second)
+                continue;
+            PrivacyVNextScanKey key;
+            std::memcpy(key.scanSecret.data(), &entry.vchViewSecret[0], 32);
+            vKeys.push_back(key);
+            vOwners.push_back(std::make_pair(it->first, &entry));
+        }
+    }
+    if (vKeys.empty())
+        return true;
+
+    const uint8_t nNetwork = PrivacyVNextNetworkId();
+    std::vector<CPrivacyVNextWatchNote> vNew;
+    bool fOk = true;
+    for (unsigned int t = 0; fOk && t < block.vtx.size(); ++t)
+    {
+        const CTransaction& tx = block.vtx[t];
+        if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+        if (setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
+        const uint256 hashTx = tx.GetHash();
+        for (size_t nStart = 0; fOk && nStart < vKeys.size();
+             nStart += PRIVACY_VNEXT_MAX_SCAN_KEYS)
+        {
+            const size_t nEnd = std::min(vKeys.size(),
+                                         nStart + (size_t)PRIVACY_VNEXT_MAX_SCAN_KEYS);
+            const std::vector<PrivacyVNextScanKey> vChunk(vKeys.begin() + nStart,
+                                                          vKeys.begin() + nEnd);
+            std::vector<PrivacyVNextScanMatch> vMatches;
+            std::vector<PrivacyVNextDigest> vKeyImages;
+            uint8_t nOutputCount = 0;
+            std::string strScanError;
+            if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, nNetwork, 0,
+                                         (uint32_t)tx.nVersion, tx.privacyVNext.vchPayload,
+                                         vChunk, vMatches, vKeyImages, nOutputCount,
+                                         strScanError))
+            {
+                strErrorOut = "IV5 watch-only scan failed: " + strScanError;
+                fOk = false;
+                break;
+            }
+            for (size_t m = 0; m < vMatches.size(); ++m)
+            {
+                const size_t k = nStart + vMatches[m].nKeyIndex;
+                if (k >= nEnd)
+                {
+                    strErrorOut = "IV5 watch-only scan returned a key outside its list";
+                    fOk = false;
+                    break;
+                }
+                const std::vector<unsigned char> vchOwner(vMatches[m].leaf.owner.begin(),
+                                                          vMatches[m].leaf.owner.end());
+                bool fDuplicate = false;
+                for (size_t n = 0; !fDuplicate && n < vPrivacyVNextWatchNotes.size(); ++n)
+                    fDuplicate = (vPrivacyVNextWatchNotes[n].txhash == hashTx &&
+                                  vPrivacyVNextWatchNotes[n].nOutputIndex ==
+                                      vMatches[m].nOutputIndex) ||
+                                 vPrivacyVNextWatchNotes[n].vchOwner == vchOwner;
+                for (size_t n = 0; !fDuplicate && n < vNew.size(); ++n)
+                    fDuplicate = (vNew[n].txhash == hashTx &&
+                                  vNew[n].nOutputIndex == vMatches[m].nOutputIndex) ||
+                                 vNew[n].vchOwner == vchOwner;
+                if (fDuplicate)
+                    continue;
+
+                CPrivacyVNextWatchNote watch;
+                watch.txhash = hashTx;
+                watch.nOutputIndex = vMatches[m].nOutputIndex;
+                watch.nHeight = pindex->nHeight;
+                watch.nAmount = vMatches[m].nAmount;
+                watch.nKeyIndex = vOwners[k].second->nIndex;
+                watch.viewKeyId = vOwners[k].first;
+                watch.vchOwner = vchOwner;
+                watch.vchCommitment.assign(vMatches[m].leaf.commitment.begin(),
+                                           vMatches[m].leaf.commitment.end());
+                watch.vchSpendPublic.assign(vMatches[m].recipientSpend.begin(),
+                                            vMatches[m].recipientSpend.end());
+                watch.vchViewPublic.assign(vMatches[m].recipientView.begin(),
+                                           vMatches[m].recipientView.end());
+                vNew.push_back(watch);
+            }
+        }
+    }
+    for (size_t i = 0; i < vKeys.size(); ++i)
+        OPENSSL_cleanse(vKeys[i].scanSecret.data(), vKeys[i].scanSecret.size());
+    if (!fOk)
+        return false;
+    if (vNew.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin the IV5 watch-note transaction";
+            return false;
+        }
+        for (size_t i = 0; i < vNew.size(); ++i)
+        {
+            if (!walletdb.WritePrivacyVNextWatchNote(vNew[i]))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to persist an IV5 watch note";
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit the IV5 watch-note transaction";
+            return false;
+        }
+    }
+    vPrivacyVNextWatchNotes.insert(vPrivacyVNextWatchNotes.end(), vNew.begin(), vNew.end());
+    return true;
+}
+
+bool CWallet::DisconnectPrivacyVNextWatchNotes(const std::set<uint256>& setTxHashes,
+                                               std::string& strErrorOut)
+{
+    AssertLockHeld(cs_shielded);
+    strErrorOut.clear();
+    std::vector<size_t> vDrop;
+    for (size_t n = 0; n < vPrivacyVNextWatchNotes.size(); ++n)
+        if (setTxHashes.count(vPrivacyVNextWatchNotes[n].txhash))
+            vDrop.push_back(n);
+    if (vDrop.empty())
+        return true;
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin the IV5 watch-note disconnect transaction";
+            return false;
+        }
+        for (size_t i = 0; i < vDrop.size(); ++i)
+        {
+            const CPrivacyVNextWatchNote& watch = vPrivacyVNextWatchNotes[vDrop[i]];
+            if (!walletdb.ErasePrivacyVNextWatchNote(watch.txhash, watch.nOutputIndex))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to erase a disconnected IV5 watch note";
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit the IV5 watch-note disconnect transaction";
+            return false;
+        }
+    }
+    for (size_t i = vDrop.size(); i-- > 0;)
+        vPrivacyVNextWatchNotes.erase(vPrivacyVNextWatchNotes.begin() + vDrop[i]);
+    return true;
+}
+
+bool CWallet::RescanPrivacyVNextWatchBlocks(int nFromHeight, int& nBlocksOut,
+                                            std::string& strErrorOut)
+{
+    nBlocksOut = 0;
+    strErrorOut.clear();
+    if (nFromHeight < 0)
+        nFromHeight = 0;
+    {
+        LOCK(cs_shielded);
+        if (mapPrivacyVNextViewKeys.empty())
+            return true;
+    }
+
+    CBlockIndex* pindex = NULL;
+    {
+        LOCK(cs_main);
+        if (!pindexBest)
+        {
+            strErrorOut = "IV5 watch rescan cannot run without a best-chain tip";
+            return false;
+        }
+        pindex = pindexGenesisBlock;
+        while (pindex && pindex->nHeight < nFromHeight)
+            pindex = pindex->pnext;
+    }
+
+    int nStaleRetries = 0;
+    while (pindex && !fShutdown)
+    {
+        uint64_t nDisconnectCount = 0;
+        {
+            LOCK2(cs_main, cs_shielded);
+            if (!pindex->IsInMainChain())
+            {
+                const int nHeight = pindex->nHeight;
+                if (!pindexBest || nHeight > pindexBest->nHeight)
+                {
+                    pindex = NULL;
+                    break;
+                }
+                CBlockIndex* pindexMain = pindexBest;
+                while (pindexMain && pindexMain->nHeight > nHeight)
+                    pindexMain = pindexMain->pprev;
+                pindex = pindexMain;
+                continue;
+            }
+            nDisconnectCount = nPrivacyVNextDisconnectCount;
+        }
+
+        if (pindex->nHeight >= FORK_HEIGHT_SHIELDED &&
+            IsBoundaryBActiveAtHeight(pindex->nHeight))
+        {
+            CBlock block;
+            if (!block.ReadFromDisk(pindex, true) ||
+                block.GetHash() != pindex->GetBlockHash())
+            {
+                strErrorOut = strprintf("IV5 watch rescan could not read block %d",
+                                        pindex->nHeight);
+                return false;
+            }
+            std::set<uint256> setDAGSkippedTxs;
+            if (!ReadConnectTimeDAGSkippedTxs(block, pindex, setDAGSkippedTxs, strErrorOut))
+                return false;
+            {
+                LOCK(cs_shielded);
+                if (nDisconnectCount != nPrivacyVNextDisconnectCount)
+                {
+                    // The block may have left the chain after the check; look again.
+                    if (++nStaleRetries > 64)
+                    {
+                        strErrorOut = strprintf("IV5 watch rescan could not settle block %d",
+                                                pindex->nHeight);
+                        return false;
+                    }
+                    continue;
+                }
+                if (!ApplyPrivacyVNextWatchBlock(block, setDAGSkippedTxs, pindex,
+                                                 strErrorOut))
+                    return false;
+            }
+            nStaleRetries = 0;
+            nBlocksOut++;
+        }
+        {
+            LOCK(cs_main);
+            pindex = pindex->pnext;
+        }
+    }
+    if (fShutdown && pindex)
+    {
+        strErrorOut = "IV5 watch rescan interrupted by shutdown";
+        return false;
+    }
     return true;
 }
