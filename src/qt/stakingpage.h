@@ -72,6 +72,8 @@ private:
     QLineEdit *editDelegateAmount;
     QPushButton *btnDelegate;
     QPushButton *btnRefreshDelegations;
+    QPushButton *btnRevokeDelegation;
+    QLabel *labelColdStatus;
     QTableWidget *tableDelegations;
 
     QWidget *nullstakeColdPanel;

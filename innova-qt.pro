@@ -506,6 +506,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/qvaluecombobox.h \
     src/qt/askpassphrasedialog.h \
     src/qt/recoveryphrasedialog.h \
+    src/qt/iv5seeddialog.h \
+    src/qt/iv5holdswidget.h \
     src/protocol.h \
     src/qt/notificator.h \
     src/qt/qtipcserver.h \
@@ -651,6 +653,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/qvaluecombobox.cpp \
     src/qt/askpassphrasedialog.cpp \
     src/qt/recoveryphrasedialog.cpp \
+    src/qt/iv5seeddialog.cpp \
+    src/qt/iv5holdswidget.cpp \
     src/protocol.cpp \
     src/qt/notificator.cpp \
     src/qt/qtipcserver.cpp \

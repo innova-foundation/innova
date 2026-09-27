@@ -12,6 +12,7 @@ class QPushButton;
 class QTabWidget;
 class DisclosureMaskWidget;
 class FinalityStatusWidget;
+class Iv5HoldsWidget;
 class NullSendMixWidget;
 class PrivateCollateralWidget;
 class WalletModel;
@@ -36,6 +37,7 @@ private slots:
     void onNewAddressClicked();
     void onCopyAddressClicked();
     void onRefreshClicked();
+    void onManageSeedClicked();
 
 private:
     void setupUI();
@@ -78,6 +80,7 @@ private:
     PrivateCollateralWidget *collateralWidget;
     FinalityStatusWidget *finalityWidget;
     NullSendMixWidget *mixWidget;
+    Iv5HoldsWidget *holdsWidget;
 
     QLabel *statusLabel;
 };

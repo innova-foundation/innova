@@ -17,7 +17,7 @@
 namespace
 {
 
-// The v2008 verbs the privacy surfaces are allowed to reach. Everything the GUI
+// The verbs the v5 GUI surfaces are allowed to reach. Everything the GUI
 // can drive is here, so widening the GUI's reach is one edit in one place.
 const char* kAllowedMethods[] = {
     "z_iv5transfer",
@@ -27,8 +27,11 @@ const char* kAllowedMethods[] = {
     "z_getshieldedinfo",
     "z_rescaniv5",
     "z_createiv5seed",
+    "z_exportiv5seed",
+    "z_importiv5seed",
     "z_exportphrase",
     "z_importphrase",
+    "z_adoptphrase",
     "getfinalityinfo",
     "collateralnode",
     "name_rendezvous",
@@ -45,6 +48,10 @@ const char* kAllowedMethods[] = {
     "mixclear",
     "z_listiv5holds",
     "z_holdiv5note",
+    "delegatestake",
+    "listcoldutxos",
+    "getcoldstakinginfo",
+    "revokecoldstaking",
     NULL
 };
 
@@ -231,7 +238,10 @@ PoolSnapshot::PoolSnapshot() :
     fBoundaryBActive(false),
     fTransactionsAccepted(false),
     fUnshieldRetired(false),
-    nUnshieldRetirementHeight(PRIVACY_VNEXT_HEIGHT_UNSET)
+    nUnshieldRetirementHeight(PRIVACY_VNEXT_HEIGHT_UNSET),
+    fSeedPresent(false),
+    fTransparentHd(false),
+    nTransparentKeysNotCovered(-1)
 {
 }
 
@@ -356,6 +366,65 @@ bool FetchPool(PoolSnapshot& out, QString& errorOut)
     ReadBool(obj, "privacy_vnext_transactions_accepted", out.fTransactionsAccepted);
     ReadBool(obj, "privacy_vnext_fee_note_active", out.fUnshieldRetired);
     ReadInt(obj, "privacy_vnext_fee_note_height", out.nUnshieldRetirementHeight);
+    ReadBool(obj, "privacy_vnext_wallet_seed_present", out.fSeedPresent);
+    ReadStr(obj, "privacy_vnext_wallet_key_management_state", out.strKeyState);
+    ReadBool(obj, "privacy_vnext_wallet_transparent_hd", out.fTransparentHd);
+    ReadInt(obj, "privacy_vnext_wallet_transparent_keys_not_covered",
+            out.nTransparentKeysNotCovered);
+    return true;
+}
+
+bool FetchColdStaking(ColdStakingInfo& out, QString& errorOut)
+{
+    out = ColdStakingInfo();
+    json_spirit::Value value;
+    if (!Execute("getcoldstakinginfo", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::obj_type)
+    {
+        errorOut = QObject::tr("getcoldstakinginfo did not return an object");
+        return false;
+    }
+    const json_spirit::Object& obj = value.get_obj();
+    bool fHave = false;
+    ReadBool(obj, "enabled", out.fEnabled);
+    ReadInt(obj, "fork_height", out.nForkHeight);
+    ReadInt(obj, "current_height", out.nHeight);
+    ReadReal(obj, "cold_staking_balance", out.dBalance, fHave);
+    ReadInt(obj, "staker_utxo_count", out.nStakerUtxos);
+    ReadInt(obj, "owner_utxo_count", out.nOwnerUtxos);
+    return true;
+}
+
+bool FetchColdUtxos(QList<ColdUtxo>& out, QString& errorOut)
+{
+    out.clear();
+    json_spirit::Value value;
+    if (!Execute("listcoldutxos", QStringList(), value, errorOut))
+        return false;
+    if (value.type() != json_spirit::array_type)
+    {
+        errorOut = QObject::tr("listcoldutxos did not return an array");
+        return false;
+    }
+    const json_spirit::Array& arr = value.get_array();
+    for (size_t i = 0; i < arr.size(); i++)
+    {
+        if (arr[i].type() != json_spirit::obj_type)
+            continue;
+        const json_spirit::Object& o = arr[i].get_obj();
+        ColdUtxo row;
+        bool fHave = false;
+        ReadStr(o, "txid", row.strTxid);
+        ReadInt(o, "vout", row.nVout);
+        ReadReal(o, "amount", row.dAmount, fHave);
+        ReadStr(o, "staker_address", row.strStaker);
+        ReadStr(o, "owner_address", row.strOwner);
+        ReadBool(o, "is_staker", row.fIsStaker);
+        ReadBool(o, "is_owner", row.fIsOwner);
+        ReadInt(o, "confirmations", row.nConfirmations);
+        out << row;
+    }
     return true;
 }
 

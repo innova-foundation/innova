@@ -33,6 +33,7 @@
 #include "guiconstants.h"
 #include "askpassphrasedialog.h"
 #include "recoveryphrasedialog.h"
+#include "iv5seeddialog.h"
 #include "notificator.h"
 #include "guiutil.h"
 #include "rpcconsole.h"
@@ -143,6 +144,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     encryptWalletAction(0),
     showPhraseAction(0),
     restorePhraseAction(0),
+    iv5SeedAction(0),
     changePassphraseAction(0),
     unlockWalletAction(0),
     lockWalletAction(0),
@@ -568,6 +570,9 @@ void BitcoinGUI::createActions()
     restorePhraseAction = new QAction(QIcon(":/icons/key"), tr("Restore from &Phrase..."), this);
     restorePhraseAction->setToolTip(tr("Rebuild a wallet's shielded identity from its 24 words"));
     restorePhraseAction->setStatusTip(tr("Restore from recovery phrase"));
+    iv5SeedAction = new QAction(QIcon(":/icons/key"), tr("IV5 &Seed..."), this);
+    iv5SeedAction->setToolTip(tr("Create, export or import the IV5 seed; extend the recovery phrase to transparent addresses"));
+    iv5SeedAction->setStatusTip(tr("Manage the IV5 seed"));
     changePassphraseAction = new QAction(QIcon(":/icons/key"), tr("&Change Passphrase..."), this);
     changePassphraseAction->setToolTip(tr("Change the passphrase used for wallet encryption"));
 	changePassphraseAction->setStatusTip(tr("Change your passphrase"));
@@ -608,6 +613,7 @@ void BitcoinGUI::createActions()
     connect(backupWalletAction, SIGNAL(triggered()), this, SLOT(backupWallet()));
     connect(showPhraseAction, SIGNAL(triggered()), this, SLOT(showRecoveryPhrase()));
     connect(restorePhraseAction, SIGNAL(triggered()), this, SLOT(restoreRecoveryPhrase()));
+    connect(iv5SeedAction, SIGNAL(triggered()), this, SLOT(showIv5Seed()));
     connect(changePassphraseAction, SIGNAL(triggered()), this, SLOT(changePassphrase()));
     connect(unlockWalletAction, SIGNAL(triggered()), this, SLOT(unlockWallet()));
     connect(lockWalletAction, SIGNAL(triggered()), this, SLOT(lockWallet()));
@@ -650,6 +656,7 @@ void BitcoinGUI::createMenuBar()
     settings->addAction(backupWalletAction);
     settings->addAction(showPhraseAction);
     settings->addAction(restorePhraseAction);
+    settings->addAction(iv5SeedAction);
     settings->addAction(changePassphraseAction);
     settings->addSeparator();
     settings->addAction(toggleThemeAction);
@@ -1631,6 +1638,13 @@ void BitcoinGUI::showRecoveryPhrase()
 void BitcoinGUI::restoreRecoveryPhrase()
 {
     RecoveryPhraseDialog dlg(RecoveryPhraseDialog::RestoreFromPhrase, this);
+    dlg.setModel(walletModel);
+    dlg.exec();
+}
+
+void BitcoinGUI::showIv5Seed()
+{
+    Iv5SeedDialog dlg(this);
     dlg.setModel(walletModel);
     dlg.exec();
 }

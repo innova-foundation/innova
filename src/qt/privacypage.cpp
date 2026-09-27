@@ -4,7 +4,9 @@
 #include "disclosuremaskwidget.h"
 #include "finalitystatuswidget.h"
 #include "guiconstants.h"
+#include "iv5holdswidget.h"
 #include "iv5rpcbridge.h"
+#include "iv5seeddialog.h"
 #include "nullsendmixwidget.h"
 #include "optionsmodel.h"
 #include "privatecollateralwidget.h"
@@ -91,7 +93,13 @@ void PrivacyPage::setupUI()
     balanceLayout->addRow(tr("IV5 seed:"), labelSeedState);
     balanceLayout->addRow(tr("Scan gap:"), labelScanGap);
     QPushButton *refreshButton = new QPushButton(tr("Refresh"));
-    balanceLayout->addRow(QString(), refreshButton);
+    QPushButton *seedButton = new QPushButton(tr("Manage seed..."));
+    QHBoxLayout *balanceButtons = new QHBoxLayout();
+    balanceButtons->addWidget(refreshButton);
+    balanceButtons->addWidget(seedButton);
+    balanceButtons->addStretch();
+    balanceLayout->addRow(QString(), balanceButtons);
+    connect(seedButton, SIGNAL(clicked()), this, SLOT(onManageSeedClicked()));
     mainLayout->addWidget(balanceGroup);
     connect(refreshButton, SIGNAL(clicked()), this, SLOT(onRefreshClicked()));
 
@@ -105,6 +113,9 @@ void PrivacyPage::setupUI()
 
     mixWidget = new NullSendMixWidget();
     tabs->addTab(ScrollableTab(mixWidget), tr("NullSend"));
+
+    holdsWidget = new Iv5HoldsWidget();
+    tabs->addTab(ScrollableTab(holdsWidget), tr("Holds"));
 
     finalityWidget = new FinalityStatusWidget();
     tabs->addTab(ScrollableTab(finalityWidget), tr("Finality"));
@@ -286,6 +297,15 @@ void PrivacyPage::setModel(WalletModel *modelIn)
     model = modelIn;
     collateralWidget->setModel(modelIn);
     mixWidget->setModel(modelIn);
+    holdsWidget->refresh();
+    refreshBalances();
+}
+
+void PrivacyPage::onManageSeedClicked()
+{
+    Iv5SeedDialog dlg(this);
+    dlg.setModel(model);
+    dlg.exec();
     refreshBalances();
 }
 
@@ -752,5 +772,6 @@ void PrivacyPage::onCopyAddressClicked()
 void PrivacyPage::onRefreshClicked()
 {
     refreshBalances();
+    holdsWidget->refresh();
     statusLabel->setText(tr("Refreshed"));
 }

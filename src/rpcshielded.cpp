@@ -2726,6 +2726,11 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                            ? std::string("not_initialized")
                            : (fVNextSeedUnlocked ? std::string("ready")
                                                  : std::string("locked"))));
+    // Whether the recovery phrase also covers transparent addresses (z_adoptphrase).
+    obj.push_back(Pair("privacy_vnext_wallet_transparent_hd",
+                       pwalletMain != NULL && pwalletMain->HaveHDChain()));
+    obj.push_back(Pair("privacy_vnext_wallet_transparent_keys_not_covered",
+                       pwalletMain ? pwalletMain->CountNonHDKeys() : (int64_t)0));
     obj.push_back(Pair("legacy_privacy_retired",
                        IsLegacyPrivacyPolicyDisabled() ||
                        IsBoundaryAActiveAtHeight(nCurrentHeight)));

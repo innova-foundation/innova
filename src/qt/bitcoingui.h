@@ -162,6 +162,7 @@ private:
     QAction *backupWalletAction;
     QAction *showPhraseAction;
     QAction *restorePhraseAction;
+    QAction *iv5SeedAction;
     QAction *changePassphraseAction;
     QAction *unlockWalletAction;
     QAction *lockWalletAction;
@@ -324,6 +325,8 @@ private slots:
     void showRecoveryPhrase();
     /** Rebuild a wallet's shielded identity from a phrase. */
     void restoreRecoveryPhrase();
+    /** IV5 seed status, create, export/import, phrase coverage. */
+    void showIv5Seed();
     /** Change encrypted wallet passphrase */
     void changePassphrase();
     /** Ask for passphrase to unlock wallet temporarily */

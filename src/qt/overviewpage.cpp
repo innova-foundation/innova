@@ -380,7 +380,13 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
                 : tr("Spendable balance in the private pool"));
     }
 
-    totalBalance += privateBalance + privatePending;
+    // Locked against a collateral registration: owned, in neither figure above.
+    const qint64 privateCollateral = model->getPrivateCollateralBalance();
+    ui->labelShieldedCollateral->setText(BitcoinUnits::formatWithUnit(unit, privateCollateral));
+    ui->labelShieldedCollateral->setVisible(privateCollateral > 0);
+    ui->labelShieldedCollateralText->setVisible(privateCollateral > 0);
+
+    totalBalance += privateBalance + privatePending + privateCollateral;
 
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));

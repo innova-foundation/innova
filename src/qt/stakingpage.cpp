@@ -9,6 +9,7 @@
 #include "init.h"
 #include "privacyuipolicy.h"
 #include "stakinguipolicy.h"
+#include "iv5rpcbridge.h"
 
 #include <QLabel>
 #include <QComboBox>
@@ -261,11 +262,17 @@ void StakingPage::setupColdStakingPanel()
     labelColdBalance->setFont(boldFont);
     activeLayout->addWidget(labelColdBalance);
 
-    tableDelegations = new QTableWidget(0, 4);
+    labelColdStatus = new QLabel();
+    labelColdStatus->setWordWrap(true);
+    activeLayout->addWidget(labelColdStatus);
+
+    tableDelegations = new QTableWidget(0, 5);
     tableDelegations->setHorizontalHeaderLabels(
-        QStringList() << tr("Amount") << tr("Staker Address") << tr("Owner Address") << tr("Confirmations"));
+        QStringList() << tr("Amount") << tr("Staker Address") << tr("Owner Address")
+                      << tr("This Wallet Is") << tr("Confirmations"));
     tableDelegations->horizontalHeader()->setStretchLastSection(true);
     tableDelegations->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableDelegations->setSelectionMode(QAbstractItemView::SingleSelection);
     tableDelegations->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tableDelegations->setMinimumHeight(150);
     activeLayout->addWidget(tableDelegations);
@@ -274,6 +281,10 @@ void StakingPage::setupColdStakingPanel()
     btnRefreshDelegations = new QPushButton(tr("Refresh"));
     connect(btnRefreshDelegations, SIGNAL(clicked()), this, SLOT(onRefreshDelegations()));
     btnRow->addWidget(btnRefreshDelegations);
+    btnRevokeDelegation = new QPushButton(tr("Revoke Selected"));
+    btnRevokeDelegation->setToolTip(tr("Spend the selected delegation back to a new address of this wallet"));
+    connect(btnRevokeDelegation, SIGNAL(clicked()), this, SLOT(onRevokeDelegation()));
+    btnRow->addWidget(btnRevokeDelegation);
     btnRow->addStretch();
     activeLayout->addLayout(btnRow);
 
@@ -394,6 +405,7 @@ void StakingPage::setModel(WalletModel *model)
 
         updateStakingStatus();
         updateBalances();
+        onRefreshDelegations();
     }
 }
 
@@ -729,45 +741,141 @@ void StakingPage::onDelegateClicked()
         WalletModel::UnlockContext ctx(model->requestUnlock());
         if (!ctx.isValid())
             return;
-        bool okRpc = false;
+        QString result, error;
         QStringList args; args << stakerAddr << amountStr;
-        QString result = GUIUtil::executeRpc("delegatestake", args, okRpc);
-        if (okRpc)
+        if (Iv5Rpc::Call("delegatestake", args, result, error))
+        {
+            QString txid, owner;
+            Iv5Rpc::ReadField(result, "txid", txid);
+            Iv5Rpc::ReadField(result, "owner_address", owner);
             QMessageBox::information(this, tr("Delegate Stake"),
-                tr("Cold-staking delegation submitted.\n\n%1").arg(result));
+                tr("Cold-staking delegation submitted.\n\nTransaction: %1\nOwner address: %2")
+                    .arg(txid, owner));
+            editDelegateAmount->clear();
+            onRefreshDelegations();
+        }
         else
             QMessageBox::warning(this, tr("Delegate Stake"),
-                tr("Delegation failed:\n\n%1").arg(result));
+                tr("Delegation failed:\n\n%1").arg(error));
     }
 }
 
 void StakingPage::onRevokeDelegation()
 {
-    QMessageBox::information(this, tr("Revoke Delegation"),
-        tr("To revoke a cold staking delegation, use the Debug Console:\n\n"
-           "  revokecoldstaking <txid> <vout>\n\n"
-           "Use 'listcoldutxos' to see your active delegations."));
-}
-
-void StakingPage::onRefreshDelegations()
-{
-    if (!model || !pwalletMain)
+    if (!model)
         return;
 
-    tableDelegations->setRowCount(0);
+    const int row = tableDelegations->currentRow();
+    QTableWidgetItem *item = row >= 0 ? tableDelegations->item(row, 0) : 0;
+    if (!item)
+    {
+        QMessageBox::warning(this, tr("Revoke Delegation"), tr("Select a delegation first."));
+        return;
+    }
+    const QString txid = item->data(Qt::UserRole).toString();
+    const int vout = item->data(Qt::UserRole + 1).toInt();
+    const bool fOwner = item->data(Qt::UserRole + 2).toBool();
+    if (!fOwner)
+    {
+        QMessageBox::warning(this, tr("Revoke Delegation"),
+            tr("This wallet is only the staker for that delegation. Only the owner's wallet "
+               "can revoke it."));
+        return;
+    }
 
-    int64_t nCold = pwalletMain->GetColdStakingBalance();
     int unit = BitcoinUnits::BTC;
     if (model->getOptionsModel())
         unit = model->getOptionsModel()->getDisplayUnit();
 
-    labelColdBalance->setText(tr("Total Delegated: %1")
-        .arg(BitcoinUnits::formatWithUnit(unit, nCold)));
+    if (QMessageBox::question(this, tr("Revoke Delegation"),
+            tr("Revoke the delegation of %1?\n\nOutput: %2:%3\n\n"
+               "The full amount less a %4 fee returns to a new address of this wallet, and "
+               "the staker can no longer stake it.")
+                .arg(item->text(), txid).arg(vout)
+                .arg(BitcoinUnits::formatWithUnit(unit, MIN_TX_FEE)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
 
-    if (nCold == 0)
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+        return;
+
+    QString result, error;
+    if (!Iv5Rpc::Call("revokecoldstaking", QStringList() << txid << QString::number(vout),
+                      result, error))
     {
-        QMessageBox::information(this, tr("Cold Staking"),
-            tr("No active cold staking delegations found.\n\n"
-               "To create a delegation, enter a VPS staking address and amount above."));
+        QMessageBox::warning(this, tr("Revoke Delegation"),
+            tr("Revocation failed:\n\n%1").arg(error));
+        return;
     }
+    QString revokeTxid;
+    Iv5Rpc::ReadField(result, "txid", revokeTxid);
+    QMessageBox::information(this, tr("Revoke Delegation"),
+        tr("Revocation submitted.\n\nTransaction: %1").arg(revokeTxid));
+    onRefreshDelegations();
+}
+
+void StakingPage::onRefreshDelegations()
+{
+    if (!model)
+        return;
+
+    tableDelegations->setRowCount(0);
+
+    int unit = BitcoinUnits::BTC;
+    if (model->getOptionsModel())
+        unit = model->getOptionsModel()->getDisplayUnit();
+
+    QString error;
+    Iv5Rpc::ColdStakingInfo info;
+    if (Iv5Rpc::FetchColdStaking(info, error))
+    {
+        labelColdBalance->setText(tr("Total Delegated: %1")
+            .arg(BitcoinUnits::formatWithUnit(unit, (qint64)(info.dBalance * COIN + 0.5))));
+        QString status = info.fEnabled
+            ? tr("Cold staking is active (from block %1).").arg(info.nForkHeight)
+            : tr("Cold staking activates at block %1; the chain is at block %2.")
+                  .arg(info.nForkHeight).arg(info.nHeight);
+        status += " " + tr("This wallet owns %1 and stakes for %2 delegation output(s).")
+                            .arg(info.nOwnerUtxos).arg(info.nStakerUtxos);
+        labelColdStatus->setText(status);
+        btnDelegate->setEnabled(info.fEnabled);
+    }
+    else
+    {
+        labelColdStatus->setText(tr("getcoldstakinginfo failed: %1").arg(error));
+    }
+
+    QList<Iv5Rpc::ColdUtxo> rows;
+    if (!Iv5Rpc::FetchColdUtxos(rows, error))
+    {
+        labelColdStatus->setText(labelColdStatus->text() + "\n" +
+                                 tr("listcoldutxos failed: %1").arg(error));
+        btnRevokeDelegation->setEnabled(false);
+        return;
+    }
+
+    for (int i = 0; i < rows.size(); i++)
+    {
+        const Iv5Rpc::ColdUtxo& r = rows.at(i);
+        tableDelegations->insertRow(i);
+        QTableWidgetItem *amount = new QTableWidgetItem(
+            BitcoinUnits::formatWithUnit(unit, (qint64)(r.dAmount * COIN + 0.5)));
+        amount->setData(Qt::UserRole, r.strTxid);
+        amount->setData(Qt::UserRole + 1, r.nVout);
+        amount->setData(Qt::UserRole + 2, r.fIsOwner);
+        amount->setToolTip(tr("%1:%2").arg(r.strTxid).arg(r.nVout));
+        tableDelegations->setItem(i, 0, amount);
+        tableDelegations->setItem(i, 1, new QTableWidgetItem(r.strStaker));
+        tableDelegations->setItem(i, 2, new QTableWidgetItem(r.strOwner));
+        QString role = r.fIsOwner && r.fIsStaker ? tr("owner and staker")
+                     : r.fIsOwner ? tr("owner") : tr("staker");
+        tableDelegations->setItem(i, 3, new QTableWidgetItem(role));
+        tableDelegations->setItem(i, 4, new QTableWidgetItem(QString::number(r.nConfirmations)));
+    }
+    tableDelegations->resizeColumnsToContents();
+    btnRevokeDelegation->setEnabled(!rows.isEmpty());
+    if (rows.isEmpty())
+        labelColdStatus->setText(labelColdStatus->text() + " " +
+                                 tr("No delegation outputs in this wallet."));
 }

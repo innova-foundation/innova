@@ -47,7 +47,11 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    iv5_kill_daemons "cold_stake_test" TERM 2>/dev/null || true
+    rpc_owner stop >/dev/null 2>&1 || true
+    rpc_staker stop >/dev/null 2>&1 || true
+    rpc_validator stop >/dev/null 2>&1 || true
+    iv5_stop_daemons "-datadir=$TEST_DIR/" 20 2>/dev/null || true
+    iv5_ports_release
     sleep 2
     rm -rf "$TEST_DIR"
 }
@@ -387,14 +391,35 @@ test_revokecoldstaking_rpc() {
     rpc_owner setgenerate true 2 2>/dev/null || true
     sleep 2
 
-    local revoke_result=$(rpc_owner revokecoldstaking "$txid" 1 2>&1 || echo "")
-    if echo "$revoke_result" | grep -q '[a-f0-9]\{64\}'; then
-        success "revokecoldstaking RPC returned txid"
+    # The delegation's output index, as listcoldutxos reports it.
+    local vout
+    vout=$(rpc_owner listcoldutxos 2>/dev/null | TXID="$txid" python3 -c '
+import json, os, sys
+try:
+    for u in json.load(sys.stdin):
+        if u.get("txid") == os.environ["TXID"] and u.get("is_owner"):
+            print(u["vout"]); break
+except Exception:
+    pass
+')
+    if [ -z "$vout" ]; then
+        fail "listcoldutxos does not list the delegation $txid as owned"
+        return
+    fi
+
+    local revoke_result=$(rpc_owner revokecoldstaking "$txid" "$vout" 2>&1 || echo "")
+    local revoke_txid=$(echo "$revoke_result" | grep -o '"txid" *: *"[a-f0-9]*"' | grep -o '[a-f0-9]\{64\}')
+    if [ -n "$revoke_txid" ]; then
+        success "revokecoldstaking spent $txid:$vout in $revoke_txid"
         rpc_owner setgenerate true 2 2>/dev/null || true
-        sleep 2
+        sleep 3
+        if rpc_owner listcoldutxos 2>/dev/null | grep -q "$txid"; then
+            fail "the revoked delegation $txid:$vout is still listed"
+        else
+            success "the revoked delegation is no longer listed"
+        fi
     else
-        log "revokecoldstaking result: ${revoke_result:0:120}"
-        warn "revokecoldstaking may need specific vout index"
+        fail "revokecoldstaking $txid $vout: ${revoke_result:0:160}"
     fi
 
     local bad_result=$(rpc_owner revokecoldstaking "0000000000000000000000000000000000000000000000000000000000000000" 0 2>&1 || echo "ERROR")

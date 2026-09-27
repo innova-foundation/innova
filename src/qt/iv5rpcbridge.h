@@ -5,10 +5,8 @@
 #include <QString>
 #include <QStringList>
 
-// GUI-side access to the v5 RPCs the privacy surfaces drive.
-//
-// Kept apart from WalletModel's legacy bridge: the calls here are the v2008 ones,
-// and their whitelist is the list of verbs this page is allowed to reach.
+// GUI-side access to the v5 RPCs used by the privacy, seed and staking pages.
+// Separate from WalletModel's legacy bridge; the whitelist is the set of reachable verbs.
 namespace Iv5Rpc
 {
 
@@ -83,6 +81,11 @@ struct PoolSnapshot
     // not set on every network, so the state is read rather than assumed.
     bool fUnshieldRetired;
     int nUnshieldRetirementHeight;
+    // Seed and recovery-phrase coverage.
+    bool fSeedPresent;
+    QString strKeyState;
+    bool fTransparentHd;
+    int nTransparentKeysNotCovered;
 
     bool UnshieldRetirementScheduled() const;
 };
@@ -207,6 +210,35 @@ struct HeldNote
     bool fSpent;
 };
 
+// getcoldstakinginfo.
+struct ColdStakingInfo
+{
+    ColdStakingInfo() : fEnabled(false), nForkHeight(0), nHeight(0), dBalance(0),
+                        nStakerUtxos(0), nOwnerUtxos(0) {}
+
+    bool fEnabled;
+    int nForkHeight;
+    int nHeight;
+    double dBalance;
+    int nStakerUtxos;
+    int nOwnerUtxos;
+};
+
+// One row of listcoldutxos.
+struct ColdUtxo
+{
+    ColdUtxo() : nVout(0), dAmount(0), fIsStaker(false), fIsOwner(false), nConfirmations(0) {}
+
+    QString strTxid;
+    int nVout;
+    double dAmount;
+    QString strStaker;
+    QString strOwner;
+    bool fIsStaker;
+    bool fIsOwner;
+    int nConfirmations;
+};
+
 // The client's mix ladder: the tier and the note a seat at it spends.
 struct MixTier
 {
@@ -228,6 +260,8 @@ bool FetchMixRounds(QList<MixRoundRow>& out, QStringList& failuresOut, QString& 
 bool FetchMixNotes(const QString& strRound, QList<MixNoteRow>& out, QString& errorOut);
 bool FetchHolds(QList<HeldNote>& out, QString& errorOut);
 bool FetchPool(PoolSnapshot& out, QString& errorOut);
+bool FetchColdStaking(ColdStakingInfo& out, QString& errorOut);
+bool FetchColdUtxos(QList<ColdUtxo>& out, QString& errorOut);
 
 // Whitelisted call. On success resultOut holds the pretty-printed reply.
 bool Call(const QString& method, const QStringList& params,

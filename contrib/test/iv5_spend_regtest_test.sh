@@ -215,6 +215,39 @@ except Exception: pass
 
 feq() { [ "$(python3 -c "print(1 if abs($1 - $2) < 1e-8 else 0)" 2>/dev/null)" = "1" ]; }
 
+# z_getbalance and z_gettotalbalance on node0 against the value known to be in the
+# pool: spendable must match z_getbalance, the parts must add up to "total", and
+# owned (spendable + pending + collateral) must equal EXPECTED.
+assert_owned_balance() {
+    local label="$1" expected="$2" zb tb t s p c tot
+    zb="$(rpc 0 z_getbalance 2>/dev/null | tr -d '"[:space:]')"
+    tb="$(rpc 0 z_gettotalbalance 2>/dev/null)"
+    t="$(jget "$tb" transparent)"
+    s="$(jget "$tb" shielded)"
+    p="$(jget "$tb" shielded_pending)"
+    c="$(jget "$tb" shielded_collateral)"
+    tot="$(jget "$tb" total)"
+    if [ -z "$zb" ] || [ -z "$s" ] || [ -z "$p" ] || [ -z "$c" ] || [ -z "$tot" ]; then
+        fail "$label: balance RPCs incomplete (z_getbalance=$zb z_gettotalbalance=$(echo "$tb" | tr -d '\n'))"
+        return
+    fi
+    if ! feq "$zb" "$s"; then
+        fail "$label: z_getbalance $zb differs from z_gettotalbalance.shielded $s"
+        return
+    fi
+    if ! feq "$tot" "$(python3 -c "print('%.8f' % ($t + $s + $p + $c))")"; then
+        fail "$label: total $tot is not transparent $t + shielded $s + pending $p + collateral $c"
+        return
+    fi
+    local owned
+    owned="$(python3 -c "print('%.8f' % ($s + $p + $c))")"
+    if feq "$owned" "$expected"; then
+        success "$label: owned $owned = spendable $s + pending $p + collateral $c, matches the $expected shielded"
+    else
+        fail "$label: owned $owned (spendable $s + pending $p + collateral $c) does not match the $expected shielded"
+    fi
+}
+
 # A spend block's coinbase may exceed a plain one by the spend's fee and by
 # nothing else: the released pool value is the transaction's own input, not a
 # surplus the miner may claim.
@@ -571,10 +604,13 @@ fi
 # all later spends. Each sweep confirms before the next, since a shield names the tree
 # it saw.
 EXTRA_SHIELDS=0
+SHIELDED_TOTAL="$SHIELDED"
 for _ in 1 2 3 4 5 6; do
-    MORE_TXID="$(jget "$(rpc 0 z_shieldall 2>&1)" txid)"
+    MORE="$(rpc 0 z_shieldall 2>&1)"
+    MORE_TXID="$(jget "$MORE" txid)"
     [ ${#MORE_TXID} -eq 64 ] || break
     EXTRA_SHIELDS=$((EXTRA_SHIELDS + 1))
+    SHIELDED_TOTAL="$(python3 -c "print('%.8f' % (${SHIELDED_TOTAL:-0} + $(jget "$MORE" shielded)))")"
     EXTRA_TARGET=$(( $(height 0) + 2 ))
     mine_to 0 "$EXTRA_TARGET" >/dev/null || break
     wait_sync "$EXTRA_TARGET" >/dev/null || break
@@ -596,6 +632,9 @@ else
     fail "shield did not confirm: $(echo "$SHIELD_CONF" | head -3)"
     exit 1
 fi
+
+# Nothing is spendable before finality, so the shielded value is all pending here.
+assert_owned_balance "after the shields" "$SHIELDED_TOTAL"
 
 # ============================================================
 header "5. Three consecutive HARD epochs produce a finalized height"
@@ -662,6 +701,9 @@ else
     exit 1
 fi
 [ "$TREE_0" = "$STORE_0" ] || fail "tree ($TREE_0) and store ($STORE_0) disagree before the spends"
+
+# Finality moved value from pending to spendable; the owned total must not change.
+assert_owned_balance "at the spend height" "$SHIELDED_TOTAL"
 
 # ============================================================
 header "6. A transfer spends notes without touching transparent value"

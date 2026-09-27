@@ -88,6 +88,10 @@ INTEGRATION_SUITES=(
     "$SCRIPT_DIR/iv5_dag_sibling_regtest_test.sh"
     "$SCRIPT_DIR/iv5_collateral_rpc_regtest_test.sh"
     "$SCRIPT_DIR/iv5_note_vote_regtest_test.sh"
+    # Wallet recovery (phrase and hex seed, locked restart) and P2CS cold
+    # staking (delegate, list, revoke): both driven from the GUI as well as RPC.
+    "$SCRIPT_DIR/recovery_phrase_restore.sh"
+    "$SCRIPT_DIR/cold_staking_test.sh"
     # Proof-of-data stamps: RPC surface and DAG effects (merged blocks, reorged anchors, finalized verdict).
     "$SCRIPT_DIR/pod_regtest_test.sh"
     "$SCRIPT_DIR/pod_post_dag_regtest_test.sh"
