@@ -338,6 +338,7 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/nullsend_round_tests.o \
     obj/test/background_verify_walk_tests.o \
     obj/test/drift_fork_rule_tests.o \
+    obj/test/stake_kernel_v4_tests.o \
     obj/test/settlement_headroom_clamp_tests.o \
     obj/test/block_spacing_floor_tests.o \
     obj/test/ms_timestamp_tests.o \

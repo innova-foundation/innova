@@ -10765,7 +10765,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         else
         {
             uint64_t nCoinAge;
-            if (!vtx[1].GetCoinAge(txdb, nCoinAge))
+            if (!vtx[1].GetCoinAge(txdb, nCoinAge, pindex->nHeight))
                 return TransientFailure(error("ConnectBlock() : %s unable to get coin age for coinstake",
                                               vtx[1].GetHash().ToString().substr(0,10).c_str()));
 
@@ -10959,7 +10959,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 GetCollateralnodeRanks(pindexBest);
                 // Calculate Coin Age for Collateralnode Reward Calculation
                 uint64_t nCoinAge;
-                if (!vtx[1].GetCoinAge(txdb, nCoinAge))
+                if (!vtx[1].GetCoinAge(txdb, nCoinAge, pindex->nHeight))
                     return TransientFailure(error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n",
                                                   vtx[1].GetHash().ToString().substr(0,10).c_str()));
                 const CBlockSubsidySplit stakeSplit = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex);
@@ -13760,7 +13760,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 // guaranteed to be in main chain by sync-checkpoint. This rule is
 // introduced to help nodes establish a consistent view of the coin
 // age (trust score) of competing branches.
-bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const
+bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge, int nEvalHeight) const
 {
     CBigNum bnCentSecond = 0;  // coin age in the unit of cent-seconds
     nCoinAge = 0;
@@ -13788,7 +13788,7 @@ bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const
         int64_t nValueIn = txPrev.vout[txin.prevout.n].nValue;
         // Cap coin age to 1 year (post-fork only)
         int64_t nTimeDiff = nTime - txPrev.nTime;
-        if (nBestHeight >= FORK_HEIGHT_TIGHTER_DRIFT && nTimeDiff > 365 * 24 * 60 * 60)
+        if (nEvalHeight >= FORK_HEIGHT_TIGHTER_DRIFT && nTimeDiff > 365 * 24 * 60 * 60)
             nTimeDiff = 365 * 24 * 60 * 60;
         bnCentSecond += CBigNum(nValueIn) * nTimeDiff / CENT;
 
@@ -13804,7 +13804,7 @@ bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const
 }
 
 // ppcoin: total coin age spent in block, in the unit of coin-days.
-bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
+bool CBlock::GetCoinAge(uint64_t& nCoinAge, int nEvalHeight) const
 {
     nCoinAge = 0;
 
@@ -13812,7 +13812,7 @@ bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
     for (const CTransaction& tx : vtx)
     {
         uint64_t nTxCoinAge;
-        if (tx.GetCoinAge(txdb, nTxCoinAge))
+        if (tx.GetCoinAge(txdb, nTxCoinAge, nEvalHeight))
             nCoinAge += nTxCoinAge;
         else
             return false;
@@ -14847,6 +14847,12 @@ bool CBlock::AcceptBlock()
 
     if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
         return DoS(100, error("AcceptBlock() : proof-of-stake blocks are not allowed after DAG fork height %d", FORK_HEIGHT_DAG));
+
+    // v4.3.9.x: a proof-of-stake coinbase is exactly one empty output. The
+    // extra zero-value outputs CheckBlock admits start at the ms-timestamp gate.
+    if (IsProofOfStake() && nHeight < FORK_HEIGHT_MS_TIMESTAMP && vtx[0].vout.size() != 1)
+        return DoS(100, error("AcceptBlock() : proof-of-stake coinbase has %u outputs below height %d",
+                              (unsigned int)vtx[0].vout.size(), FORK_HEIGHT_MS_TIMESTAMP));
 
     // No coinstake of ANY shape may appear outside vtx[1] of a proof-of-stake
     // block (see CheckBlock; the classic shape needs the height gate because

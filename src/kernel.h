@@ -21,12 +21,12 @@ bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeMod
 
 // Check whether stake kernel meets hash target
 // Sets hashProofOfStake on success return
-bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned int nTxPrevOffset, const CTransaction& txPrev, const COutPoint& prevout, unsigned int nTimeTx, uint256& hashProofOfStake, uint256& targetProofOfStake, bool fPrintProofOfStake=false);
+// nEvalHeight is the height of the block carrying the coinstake.
+bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned int nTxPrevOffset, const CTransaction& txPrev, const COutPoint& prevout, unsigned int nTimeTx, uint256& hashProofOfStake, uint256& targetProofOfStake, bool fPrintProofOfStake, int nEvalHeight);
 
 // Check kernel hash target and coinstake signature
 // Sets hashProofOfStake on success return
-// nEvalHeight is the height this coinstake would occupy; it keys the cached
-// NullStake verifiers.
+// nEvalHeight: this coinstake's height; gates max stake age and keys NullStake verifiers.
 bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hashProofOfStake, uint256& targetProofOfStake, int nEvalHeight);
 
 // Check whether the coinstake timestamp meets protocol

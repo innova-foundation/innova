@@ -209,6 +209,24 @@ bool FindFundingOutput(int nMaxHeight, CTransaction& txOut, unsigned int& nOutIn
     return false;
 }
 
+// Moves the node's tip height for one arm, so an arm can show a rule reads the
+// evaluated block's height and not nBestHeight.
+struct BestHeightGuard
+{
+    int nSaved;
+    explicit BestHeightGuard(int nHeight)
+    {
+        LOCK(cs_main);
+        nSaved = nBestHeight;
+        nBestHeight = nHeight;
+    }
+    ~BestHeightGuard()
+    {
+        LOCK(cs_main);
+        nBestHeight = nSaved;
+    }
+};
+
 CBlockIndex* ParentIndexOf(const CBlock& block)
 {
     LOCK(cs_main);
@@ -488,8 +506,8 @@ BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
     DetachedWalletGuard walletGuard;
 
     BOOST_REQUIRE_MESSAGE(MineTo(2), "could not extend the fixture to height 2");
-    BOOST_REQUIRE_MESSAGE(nBestHeight >= FORK_HEIGHT_TIGHTER_DRIFT,
-                          "the cap keys on nBestHeight, which is " << nBestHeight);
+    const int nEvalHeight = BestIndex()->nHeight + 1;
+    BOOST_REQUIRE(nEvalHeight >= FORK_HEIGHT_TIGHTER_DRIFT);
 
     CTransaction txPrev;
     unsigned int nOut = 0;
@@ -507,13 +525,14 @@ BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
     uint64_t vCoinAge[2] = { 0, 0 };
 
     CTxDB txdb("r");
+    CTransaction vTx[2];
     for (int a = 0; a < 2; a++)
     {
-        CTransaction tx;
+        CTransaction& tx = vTx[a];
         tx.nTime = (unsigned int)((int64_t)txPrev.nTime + vAges[a]);
         tx.vin.push_back(CTxIn(txPrev.GetHash(), nOut));
         tx.vout.push_back(CTxOut(nValueIn, txPrev.vout[nOut].scriptPubKey));
-        BOOST_REQUIRE_MESSAGE(tx.GetCoinAge(txdb, vCoinAge[a]),
+        BOOST_REQUIRE_MESSAGE(tx.GetCoinAge(txdb, vCoinAge[a], nEvalHeight),
                               "GetCoinAge failed for age " << vAges[a]);
     }
 
@@ -535,6 +554,26 @@ BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
     BOOST_CHECK_MESSAGE(vCoinAge[1] < CoinDaysFor(vAges[1]),
                         "the over-cap input scored its uncapped age " << vCoinAge[1]
                         << ", so the cap did not apply");
+
+    // Mainnet gate: the cap follows the carrying block's height, whatever the
+    // node's tip is.
+    {
+        NetworkGuard net(false, false);
+        const int nGate = FORK_HEIGHT_TIGHTER_DRIFT;
+        BOOST_REQUIRE(nGate > nBestHeight + 1);
+        uint64_t nBelow = 0, nAt = 0;
+        {
+            BestHeightGuard tip(nGate + 1000);
+            BOOST_REQUIRE(vTx[1].GetCoinAge(txdb, nBelow, nGate - 1));
+        }
+        BOOST_REQUIRE(vTx[1].GetCoinAge(txdb, nAt, nGate));
+        BOOST_CHECK_MESSAGE(nBelow == CoinDaysFor(vAges[1]),
+                            "a block below the mainnet gate must score the uncapped age "
+                            "with the tip above the gate: got " << nBelow);
+        BOOST_CHECK_MESSAGE(nAt == CoinDaysFor(nYear),
+                            "a block at the mainnet gate must score the capped age "
+                            "with the tip below the gate: got " << nAt);
+    }
 }
 
 // R-DRIFT-006. A stake kernel is refused when the staked output is more than
@@ -547,9 +586,8 @@ BOOST_AUTO_TEST_CASE(a_stake_kernel_older_than_ninety_days_is_refused)
     DetachedWalletGuard walletGuard;
 
     BOOST_REQUIRE_MESSAGE(MineTo(2), "could not extend the fixture to height 2");
-    BOOST_REQUIRE_MESSAGE(nBestHeight >= FORK_HEIGHT_TIGHTER_DRIFT,
-                          "the maximum-age branch keys on nBestHeight, which is "
-                          << nBestHeight);
+    const int nEvalHeight = BestIndex()->nHeight + 1;
+    BOOST_REQUIRE(nEvalHeight >= FORK_HEIGHT_TIGHTER_DRIFT);
 
     CBlockIndex* pindexFrom = AncestorAt(BestIndex()->nHeight - 1);
     BOOST_REQUIRE(pindexFrom != NULL);
@@ -577,7 +615,7 @@ BOOST_AUTO_TEST_CASE(a_stake_kernel_older_than_ninety_days_is_refused)
         CaptureLog log;
         BOOST_REQUIRE(log.Begin());
         CheckStakeKernelHash(nBits, blockFrom, 0, txPrev, prevout, vTimes[a],
-                             hashProof, hashTarget, false);
+                             hashProof, hashTarget, false, nEvalHeight);
         vLogs[a] = log.End();
     }
 
@@ -587,6 +625,38 @@ BOOST_AUTO_TEST_CASE(a_stake_kernel_older_than_ninety_days_is_refused)
     BOOST_CHECK_MESSAGE(vLogs[1].find("max age violation") != std::string::npos,
                         "a kernel one second past ninety days must be refused by the "
                         "maximum-age branch; log: " << vLogs[1]);
+
+    // Mainnet gate: the maximum age follows the carrying block's height, not
+    // the node's tip. Both arms use the over-age time.
+    {
+        NetworkGuard net(false, false);
+        const int nGate = FORK_HEIGHT_TIGHTER_DRIFT;
+        BOOST_REQUIRE(nGate > nBestHeight + 1);
+        std::string strBelow, strAt;
+        {
+            BestHeightGuard tip(nGate + 1000);
+            uint256 hashProof = 0, hashTarget = 0;
+            CaptureLog log;
+            BOOST_REQUIRE(log.Begin());
+            CheckStakeKernelHash(nBits, blockFrom, 0, txPrev, prevout, vTimes[1],
+                                 hashProof, hashTarget, false, nGate - 1);
+            strBelow = log.End();
+        }
+        {
+            uint256 hashProof = 0, hashTarget = 0;
+            CaptureLog log;
+            BOOST_REQUIRE(log.Begin());
+            CheckStakeKernelHash(nBits, blockFrom, 0, txPrev, prevout, vTimes[1],
+                                 hashProof, hashTarget, false, nGate);
+            strAt = log.End();
+        }
+        BOOST_CHECK_MESSAGE(strBelow.find("max age violation") == std::string::npos,
+                            "a block below the mainnet gate must not apply the maximum "
+                            "age with the tip above the gate; log: " << strBelow);
+        BOOST_CHECK_MESSAGE(strAt.find("max age violation") != std::string::npos,
+                            "a block at the mainnet gate must apply the maximum age with "
+                            "the tip below the gate; log: " << strAt);
+    }
 }
 
 // R-DRIFT-001 on all three networks, the only place the ten-minute branch is reachable.
