@@ -5365,6 +5365,30 @@ uint256 WantedByOrphan(const CBlock* pblockOrphan)
     return pblockOrphan->hashPrevBlock;
 }
 
+// Least spacing between two ancestry requests to one peer from the park site.
+static const int64_t ORPHAN_ANCESTRY_REQUEST_INTERVAL = 10;
+
+// Queue headers from pindexFrom toward hashStop; the reply becomes a forward run
+// requested one in-flight window at a time. Throttled per peer.
+static void RequestOrphanAncestry(CNode* pfrom, CBlockIndex* pindexFrom, const uint256& hashStop,
+                                  bool fContinue)
+{
+    if (!pfrom || !pindexFrom || fSPVMode)
+        return;
+    const int64_t nNow = GetTime();
+    if (!fContinue)
+    {
+        if (pfrom->nAncestryFillNext < pfrom->vAncestryFill.size())
+            return;
+        if (pfrom->nAncestryFillRequested > 0 &&
+            nNow - pfrom->nAncestryFillRequested < ORPHAN_ANCESTRY_REQUEST_INTERVAL)
+            return;
+    }
+    pfrom->nAncestryFillRequested = nNow;
+    pfrom->pindexAncestryFrom = pindexFrom;
+    pfrom->hashAncestryStop = hashStop;
+}
+
 // The only writer that adds to the orphan tables.
 bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWaitedFor,
                     NodeId owner, size_t nFootprint)
@@ -15459,6 +15483,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             // ppcoin: getblocks may not obtain the ancestor block rejected
             // earlier by duplicate-stake check so we ask for it again directly
             pfrom->AskFor(CInv(MSG_BLOCK, WantedByOrphan(pblock2)));
+            RequestOrphanAncestry(pfrom, pindexBest, WantedByOrphan(pblock2), false);
         }
         return true;
     }
@@ -16674,7 +16699,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         pfrom->SetRecvVersion(min(pfrom->nVersion, PROTOCOL_VERSION));
         printf("net: received verack from peer version %d (recvVersion: %d) at %s\n", pfrom->nVersion, pfrom->nRecvVersion, pfrom->addr.ToString().c_str());
 
-        pfrom->PushMessage("sendheaders");
+        // -sendheaders=0 (regtest only) keeps the peer announcing by inv, as a
+        // peer from before headers announcements does.
+        if (!fRegTest || GetBoolArg("-sendheaders", true))
+            pfrom->PushMessage("sendheaders");
 
         if (fSPVMode)
         {
@@ -17080,6 +17108,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Headers above a block still held as an orphan are not requested: a park above the gap
         // spends the entry budget its ancestors need. The set carries the skip down the batch.
         std::set<uint256> setForwardOfHeldOrphan;
+        // For a gated peer, the header-linked run rooted in the index and ending
+        // below the first held orphan. Each block of it connects on arrival.
+        const bool fFillPeer = !fSPVMode && IsOrphanGapGatedPeer(pfrom->GetId());
+        std::vector<uint256> vFill;
+        bool fFillOpen = fFillPeer;
         for (const CBlock& header : vHeaders)
         {
             uint256 hash = header.GetHash();
@@ -17184,6 +17217,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     setForwardOfHeldOrphan.count(header.hashPrevBlock);
                 if (fForwardOfHeldOrphan)
                     setForwardOfHeldOrphan.insert(hash);
+                if (fFillOpen)
+                {
+                    if (fForwardOfHeldOrphan || mapOrphanBlocks.count(hash))
+                        fFillOpen = false;
+                    else if (vFill.empty() ? pindexPrev != NULL : header.hashPrevBlock == vFill.back())
+                        vFill.push_back(hash);
+                    else if (!vFill.empty())
+                        fFillOpen = false;
+                }
                 if (!fForwardOfHeldOrphan && !mapOrphanBlocks.count(hash) &&
                     nHeaderHeight <= nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER)
                     pfrom->AskFor(CInv(MSG_BLOCK, hash));
@@ -17194,6 +17236,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             hashPrevHeader = hash;
             nPrevHeaderHeight = nHeaderHeight;
             fHavePrevHeader = true;
+        }
+
+        if (!vFill.empty())
+        {
+            if (fDebug)
+                printf("ancestry fill: %u blocks from %s peer=%d\n", (unsigned int)vFill.size(),
+                       vFill.front().ToString().substr(0,20).c_str(), (int)pfrom->GetId());
+            pfrom->vAncestryFill.swap(vFill);
+            pfrom->nAncestryFillNext = 0;
         }
 
         // Continue header sync only in SPV mode; a stuck full node would be handed the same
@@ -18306,6 +18357,44 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             }
         }
 
+        // The ancestry run, ahead of the queue: indexed and header-linked, so each block
+        // connects on arrival. Bounded by the in-flight window.
+        if (!pto->vAncestryFill.empty())
+        {
+            TRY_LOCK(cs_main, lockMain);
+            if (lockMain)
+            {
+                while (pto->nAncestryFillNext < pto->vAncestryFill.size() &&
+                       pto->setBlocksInFlight.size() < MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                {
+                    const CInv inv(MSG_BLOCK, pto->vAncestryFill[pto->nAncestryFillNext++]);
+                    if (mapBlockIndex.count(inv.hash) || mapOrphanBlocks.count(inv.hash) ||
+                        pto->IsBlockInFlight(inv.hash) || IsOrphanBlockRequestSuppressed(inv.hash) ||
+                        IsOrphanRequestDeferred(inv.hash, nTimeNow) ||
+                        IsBlockDeclinedByPeer(pto->GetId(), inv.hash, nTimeNow))
+                        continue;
+                    if (fDebugNet)
+                        printf("sending getdata: %s (ancestry)\n", inv.ToString().c_str());
+                    vGetData.push_back(inv);
+                    pto->MarkBlockInFlight(inv.hash);
+                    LOCK(cs_mapAlreadyAskedFor);
+                    mapAlreadyAskedFor[inv] = nNow;
+                }
+                if (pto->nAncestryFillNext >= pto->vAncestryFill.size())
+                {
+                    std::map<uint256, CBlockIndex*>::iterator miLast =
+                        mapBlockIndex.find(pto->vAncestryFill.back());
+                    if (miLast != mapBlockIndex.end())
+                    {
+                        if (fGapGated)
+                            RequestOrphanAncestry(pto, miLast->second, uint256(0), true);
+                        pto->vAncestryFill.clear();
+                        pto->nAncestryFillNext = 0;
+                    }
+                }
+            }
+        }
+
         // Hashes already deferred in this pass. The queue does not drain while
         // the gate holds, so a hash offered again would stack a second entry
         // behind the first and a peer could grow the queue by re-announcing.
@@ -18399,7 +18488,19 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             pto->PushMessage("getdata", vGetData);
     }
 
-
+    // The queued ancestry request. Index entries are never freed and the
+    // locator reads pprev only, as the getblocks flush above.
+    if (pto->pindexAncestryFrom)
+    {
+        CBlockIndex* pindexFrom = pto->pindexAncestryFrom;
+        const uint256 hashStop = pto->hashAncestryStop;
+        pto->pindexAncestryFrom = NULL;
+        pto->hashAncestryStop = 0;
+        if (fDebug)
+            printf("ancestry fill: getheaders from %d toward %s peer=%d\n", pindexFrom->nHeight,
+                   hashStop.ToString().substr(0,20).c_str(), (int)pto->GetId());
+        pto->PushMessage("getheaders", CBlockLocator(pindexFrom), hashStop);
+    }
 
     return true;
 }

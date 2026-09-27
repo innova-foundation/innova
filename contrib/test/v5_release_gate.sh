@@ -103,6 +103,7 @@ INTEGRATION_SUITES=(
     # and at a branch the finality gate must refuse without scoring the peer.
     "$SCRIPT_DIR/shutdown_clean_exit_test.sh"
     "$SCRIPT_DIR/orphan_expiry_recovery_test.sh"
+    "$SCRIPT_DIR/side_branch_sync_regtest_test.sh"
     "$SCRIPT_DIR/finality_switch_gate_fleet_test.sh"
 )
 

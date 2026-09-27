@@ -495,6 +495,16 @@ public:
     std::set<uint256> setBlocksInFlight;
     std::map<uint256, int64_t> mapBlockInFlightSince;
 
+    // Header-linked run from an indexed block toward this peer's orphan gap,
+    // oldest first, and the next entry to request. Requested one in-flight
+    // window at a time, ahead of the gated queue.
+    std::vector<uint256> vAncestryFill;
+    size_t nAncestryFillNext;
+    int64_t nAncestryFillRequested;
+    // Headers request for that run, queued until the next SendMessages pass.
+    CBlockIndex* pindexAncestryFrom;
+    uint256 hashAncestryStop;
+
     SecMsgNode smsgData;
 
     // Ping time measurement:
@@ -541,6 +551,10 @@ public:
             id = nLastNodeId++;
         }
         nAskForScanFrom = 0;
+        nAncestryFillNext = 0;
+        nAncestryFillRequested = 0;
+        pindexAncestryFrom = NULL;
+        hashAncestryStop = 0;
         nSendSize = 0;
         nSendOffset = 0;
         hashContinue = 0;

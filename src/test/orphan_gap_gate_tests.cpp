@@ -1199,4 +1199,174 @@ BOOST_AUTO_TEST_CASE(a_gap_root_the_pool_can_never_hold_is_not_asked_for)
                         "the gap root was not asked again once the suppression was lifted");
 }
 
+// The hashStop of every getheaders the peer was sent, in order.
+static std::vector<uint256> GetHeadersStops(CNode& node)
+{
+    std::vector<uint256> vStops;
+    LOCK(node.cs_vSend);
+    for (const CSerializeData& data : node.vSendMsg)
+    {
+        if (CommandOf(data) != "getheaders")
+            continue;
+        CDataStream ss(&data[0] + CMessageHeader::HEADER_SIZE, &data[0] + data.size(),
+                       SER_NETWORK, PROTOCOL_VERSION);
+        CBlockLocator locator;
+        uint256 hashStop;
+        ss >> locator >> hashStop;
+        vStops.push_back(hashStop);
+    }
+    return vStops;
+}
+
+// T16. Deep missing ancestry is asked once as a headers range and fetched forward one
+// in-flight window per pass, not one block per round trip.
+BOOST_AUTO_TEST_CASE(a_deep_missing_ancestry_is_asked_as_one_range)
+{
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+    CScopedGapState state;
+    CScopedArg entries("-maxorphanblocks", "2500");
+    CScopedArg mem("-maxorphanmem", "256");
+
+    TestPeer peer(19431), server(19432);
+    const NodeId owner = peer.node.GetId();
+
+    const unsigned int nDepth = 300;
+    const std::vector<CBlock> vHeaders = MakeHeaderChain(pindexBest->GetBlockHash(), nDepth, 31);
+    const uint256 hashGap = vHeaders.back().GetHash();
+
+    CBlock parked = DetachedBlockOn(hashGap, 7531);
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE(ProcessBlock(&peer.node, &parked));
+    }
+    BOOST_REQUIRE(IsOrphanGapHashForPeer(owner, hashGap));
+    BOOST_CHECK(SendMessages(&peer.node, false));
+    // The socketless peer's optimistic write of the request marks it
+    // disconnected; the message itself stays queued for inspection.
+    peer.node.fDisconnect = false;
+
+    std::vector<uint256> vStops = GetHeadersStops(peer.node);
+    BOOST_CHECK_MESSAGE(vStops.size() == 1U,
+                        "the park sent " << vStops.size() << " headers requests, not one range");
+    BOOST_CHECK_MESSAGE(!vStops.empty() && vStops[0] == hashGap,
+                        "the range request does not stop at the gap");
+
+    // A second park on the same gap inside the interval adds no request.
+    CBlock parked2 = DetachedBlockOn(hashGap, 7532);
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE(ProcessBlock(&peer.node, &parked2));
+    }
+    BOOST_CHECK(SendMessages(&peer.node, false));
+    BOOST_CHECK_MESSAGE(GetHeadersStops(peer.node).size() == 1U,
+                        "a second park inside the interval sent another headers request");
+
+    DeliverHeaders(server, peer, vHeaders);
+    BOOST_CHECK(SendMessages(&peer.node, false));
+
+    // The gap hash from the snapshot, then the run from the fork forward, to
+    // exactly one window.
+    BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.size() == MAX_BLOCKS_IN_FLIGHT_PER_PEER,
+                        "a gated peer with a " << nDepth << "-deep gap was asked for "
+                            << peer.node.setBlocksInFlight.size() << " blocks, not one window");
+    BOOST_CHECK(peer.node.setBlocksInFlight.count(hashGap) == 1);
+    for (unsigned int i = 0; i + 1 < MAX_BLOCKS_IN_FLIGHT_PER_PEER; i++)
+        BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.count(vHeaders[i].GetHash()) == 1,
+                            "ancestor " << i << " above the fork was not in the first window");
+    BOOST_CHECK(peer.node.setBlocksInFlight.count(parked.GetHash()) == 0);
+    BOOST_CHECK(peer.node.setBlocksInFlight.count(parked2.GetHash()) == 0);
+
+    // The window frees; the next pass continues in order and repeats nothing.
+    for (unsigned int i = 0; i + 1 < MAX_BLOCKS_IN_FLIGHT_PER_PEER; i++)
+        peer.node.ClearBlockInFlight(vHeaders[i].GetHash());
+    BOOST_CHECK(SendMessages(&peer.node, false));
+    const unsigned int nFirst = MAX_BLOCKS_IN_FLIGHT_PER_PEER - 1;
+    for (unsigned int i = nFirst; i < 2 * nFirst; i++)
+        BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.count(vHeaders[i].GetHash()) == 1,
+                            "ancestor " << i << " was not in the second window");
+    for (unsigned int i = 0; i < nFirst; i++)
+        BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.count(vHeaders[i].GetHash()) == 0,
+                            "ancestor " << i << " was asked for twice");
+    BOOST_CHECK(peer.node.setBlocksInFlight.size() <= MAX_BLOCKS_IN_FLIGHT_PER_PEER);
+    BOOST_CHECK_MESSAGE(GetHeadersStops(peer.node).size() == 1U,
+                        "the forward fetch sent another headers request");
+}
+
+// T17. The run ends below the first held orphan. A block above a held orphan
+// parks on delivery, so it is not part of what the run fetches.
+BOOST_AUTO_TEST_CASE(the_ancestry_run_ends_below_a_held_orphan)
+{
+    BOOST_REQUIRE(pindexBest != NULL);
+    CScopedGapState state;
+    TestPeer peer(19433), server(19434);
+    const NodeId owner = peer.node.GetId();
+
+    const std::vector<CBlock> vHeaders = MakeHeaderChain(pindexBest->GetBlockHash(), 40, 33);
+    const size_t nHeld = 10;
+    {
+        LOCK(cs_main);
+        CBlock* pheld = new CBlock(vHeaders[nHeld]);
+        BOOST_REQUIRE(AddOrphanBlock(pheld->GetHash(), pheld, pheld->hashPrevBlock,
+                                     owner, OrphanBlockFootprint(*pheld)));
+        RecomputeOrphanGaps();
+    }
+    BOOST_REQUIRE(IsOrphanGapHashForPeer(owner, vHeaders[nHeld - 1].GetHash()));
+
+    DeliverHeaders(server, peer, vHeaders);
+    BOOST_CHECK_MESSAGE(peer.node.vAncestryFill.size() == nHeld,
+                        "the run holds " << peer.node.vAncestryFill.size() << " hashes, not the "
+                            << nHeld << " below the held orphan");
+    BOOST_CHECK(SendMessages(&peer.node, false));
+
+    for (size_t i = 0; i < nHeld; i++)
+        BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.count(vHeaders[i].GetHash()) == 1,
+                            "ancestor " << i << " below the held orphan was not requested");
+    for (size_t i = nHeld; i < vHeaders.size(); i++)
+        BOOST_CHECK_MESSAGE(peer.node.setBlocksInFlight.count(vHeaders[i].GetHash()) == 0,
+                            "header " << i << " at or above the held orphan was requested");
+}
+
+// T18. A peer holding nothing is not gated and keeps the ordinary headers path:
+// no run is recorded for it.
+BOOST_AUTO_TEST_CASE(an_ungated_peer_records_no_ancestry_run)
+{
+    BOOST_REQUIRE(pindexBest != NULL);
+    CScopedGapState state;
+    TestPeer peer(19435), server(19436);
+    BOOST_REQUIRE(!IsOrphanGapGatedPeer(peer.node.GetId()));
+
+    DeliverHeaders(server, peer, MakeHeaderChain(pindexBest->GetBlockHash(), 20, 35));
+    BOOST_CHECK_MESSAGE(peer.node.vAncestryFill.empty(),
+                        "an ungated peer recorded an ancestry run of "
+                            << peer.node.vAncestryFill.size());
+}
+
+// T19. A run whose last block is indexed while the peer is still gated asks
+// for the next range from that block, once, and is dropped. A branch deeper
+// than one headers reply is fetched range by range.
+BOOST_AUTO_TEST_CASE(a_drained_run_asks_for_the_next_range_from_its_last_block)
+{
+    BOOST_REQUIRE(pindexBest != NULL);
+    CScopedGapState state;
+    TestPeer peer(19437);
+    const NodeId owner = peer.node.GetId();
+
+    ParkChain(76100, uint256((uint64_t)0x9ad00001ull), 2, owner);
+    BOOST_REQUIRE(IsOrphanGapGatedPeer(owner));
+
+    peer.node.vAncestryFill.push_back(pindexBest->GetBlockHash());
+    peer.node.nAncestryFillNext = 1;
+    BOOST_CHECK(SendMessages(&peer.node, false));
+
+    BOOST_CHECK_MESSAGE(GetHeadersStops(peer.node).size() == 1U,
+                        "a drained run sent " << GetHeadersStops(peer.node).size()
+                            << " headers requests, not one");
+    BOOST_CHECK_MESSAGE(peer.node.vAncestryFill.empty(), "the drained run was kept");
+
+    BOOST_CHECK(SendMessages(&peer.node, false));
+    BOOST_CHECK_MESSAGE(GetHeadersStops(peer.node).size() == 1U,
+                        "the continuation was sent again on the next pass");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
