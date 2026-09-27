@@ -2671,30 +2671,38 @@ else
     fail "the epoch $TALLY_EPOCH producer line reports tier='$P_TIER' note_votes='$P_NOTES', counted='$TALLY_COUNTED'"
 fi
 
-# Every note certificate a node admitted or a template built, and none of them signed.
+# Every note certificate a producer admitted or a template built, none of them signed.
+# Tallied apart so the producer count comes only from producer lines.
 NOTE_CERT_HASHES=""
+PRODUCED_CERT_HASHES=""
+SELFBUILT_CERT_HASHES=""
 SIGNED_LINE=""
 for ((n=0; n<NUM_NODES; n++)); do
     while read -r L; do
         [ -n "$L" ] || continue
         H="$(echo "$L" | sed -n 's/.*note certificate \([0-9a-f]\{64\}\).*/\1/p')"
-        [ -n "$H" ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
+        [ -n "$H" ] && PRODUCED_CERT_HASHES="$PRODUCED_CERT_HASHES $H"
         echo "$L" | grep -qE ' signers=0$' || SIGNED_LINE="node$n: $L"
     done < <(grep -aF "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " "$(node_log "$n")" 2>/dev/null)
-    # A template builds the same certificate from its own view; once a block carries
-    # it, the producer's pending add is a duplicate and logs nothing.
-    while read -r H; do
-        [ ${#H} -eq 64 ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
+    # Once a block carries the template's certificate, the producer's add is a duplicate
+    # and logs nothing.
+    while read -r L; do
+        [ -n "$L" ] || continue
+        H="$(echo "$L" | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')"
+        [ ${#H} -eq 64 ] && SELFBUILT_CERT_HASHES="$SELFBUILT_CERT_HASHES $H"
+        echo "$L" | grep -qE ' signers=0$' || SIGNED_LINE="node$n: $L"
     done < <(grep -a "CreateNewBlock: self-built tally certificate [0-9a-f]\{64\} epoch $TALLY_EPOCH version $NOTE_CERT_VERSION " \
-                 "$(node_log "$n")" 2>/dev/null | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')
+                 "$(node_log "$n")" 2>/dev/null)
 done
-NOTE_CERT_HASHES="$(echo "$NOTE_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+PRODUCED_CERT_HASHES="$(echo "$PRODUCED_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+SELFBUILT_CERT_HASHES="$(echo "$SELFBUILT_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+NOTE_CERT_HASHES="$(echo "$PRODUCED_CERT_HASHES $SELFBUILT_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
 if [ -n "$NOTE_CERT_HASHES" ] && [ -z "$SIGNED_LINE" ]; then
-    success "$(echo "$NOTE_CERT_HASHES" | wc -w | tr -d ' ') note certificate(s) assembled for epoch $TALLY_EPOCH, each with signers=0"
+    success "epoch $TALLY_EPOCH note certificates with signers=0: $(echo "$PRODUCED_CERT_HASHES" | wc -w | tr -d ' ') producer-admitted, $(echo "$SELFBUILT_CERT_HASHES" | wc -w | tr -d ' ') template-built"
 elif [ -n "$SIGNED_LINE" ]; then
-    fail "a note certificate was assembled with signers: $SIGNED_LINE"
+    fail "a note certificate was built with signers: $SIGNED_LINE"
 else
-    fail "no note certificate was assembled for epoch $TALLY_EPOCH"
+    fail "no note certificate was produced or self-built for epoch $TALLY_EPOCH"
 fi
 
 # Carried by a block of the tally epoch's own span.
