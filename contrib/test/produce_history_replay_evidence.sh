@@ -1,23 +1,7 @@
 #!/bin/bash
-# Produces history_replay_sha256: the candidate binary replaying a real block
-# history through full validation and arriving at a trusted terminal block.
-#
-# The release policy has required this field from the start and nothing emitted
-# it, so the gate reported MISSING PRODUCER against its own obligation. The
-# inputs are an operator's -- a block directory and the height and hash that
-# directory is trusted to end at -- which is why it stayed unwritten. They come
-# from the environment here, and their absence is a refusal rather than a pass.
-#
-# What a pass covers: every blkNNNN.dat in the directory connected under the
-# validation this binary enforces, and the chain it built ends at exactly the
-# height and hash named. That is the check that a consensus change has not
-# silently rejected, accepted or reordered history the network already has.
-# What it does not cover:
-#   - Only the history in the directory. A rule that fires above its terminal
-#     height is untouched by this.
-#   - Nothing about peers, relay or timing: blocks are read from disk.
-#   - The trusted height and hash are asserted by the operator, not derived. A
-#     wrong pair makes this fail, never pass quietly.
+# Produces history_replay_sha256: the candidate replays a best-chain-only block export
+# from genesis through full validation to a trusted height and hash, both from the
+# environment (V5_HISTORY_REPLAY_BLOCKS, V5_HISTORY_REPLAY_HEIGHT, V5_HISTORY_REPLAY_HASH).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,6 +45,8 @@ evidence_observe innovad_sha256 \
 evidence_observe network "$NETWORK"
 evidence_observe block_files "$FILES"
 evidence_observe block_bytes "$BYTES"
+evidence_observe block_files_sha256 "$(find "$BLOCKS" -maxdepth 1 -type f -name 'blk*.dat' \
+    | LC_ALL=C sort | xargs cat | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')"
 evidence_observe expected_height "$HEIGHT"
 evidence_observe expected_hash "$HASH"
 
