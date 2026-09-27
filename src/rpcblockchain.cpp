@@ -2467,7 +2467,12 @@ Value submitfinalitytallycert(const Array& params, bool fHelp)
     if (!g_finalityTracker.CheckTallyCertificate(cert, txdb, &strError))
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("invalid finality tally certificate: %s", strError.c_str()));
 
-    bool fAdded = g_finalityTracker.AddTallyCertificate(cert, false);
+    // The relay-time judgement a peer's certificate gets.
+    if (IsTallyCertificateInvalidForNextBlock(cert))
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "finality tally certificate is invalid for the next block");
+
+    bool fAdded = g_finalityTracker.AddTallyCertificate(cert);
     uint256 hashCert = cert.GetHash();
     if (fAdded)
         RelayFinalityTallyCertificate(cert);

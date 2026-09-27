@@ -1424,11 +1424,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nShareCommitSize + 16;
             }
 
-            // Validated in this block's context (votes connected or embedded here,
-            // named boundary an ancestor of the template parent) before the cap.
+            // Pending plus self-built from the connected view, validated in this block's
+            // context (votes connected or embedded here, named boundary an ancestor of
+            // the template parent) before the cap.
             std::vector<CFinalityTallyCertificate> vFinalityCerts =
-                g_finalityTracker.SelectTallyCertificatesForBlock(txdb, nHeight, &vVotesEmbedded,
-                                                                  pindexPrev);
+                g_finalityTracker.SelectTallyCertificatesForTemplate(txdb, nHeight,
+                                                                     &vVotesEmbedded,
+                                                                     pindexPrev);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
                 CScript certScript;

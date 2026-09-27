@@ -1041,33 +1041,6 @@ bool FinalityCertificateOutranks(const CFinalityTallyCertificate& a,
                                  const CFinalityTallyCertificate& b);
 
 
-/** 2c-4b: M-of-N certificate production. Because the BPAC proofs are builder-
- *  randomized, committee members sign ONE builder's candidate certificate. This
- *  message carries the candidate + one member's signature over its
- *  GetSignatureDigest(); members collect M distinct signatures then assemble the
- *  complete signer-set. */
-class CFinalityCertSignature
-{
-public:
-    int nVersion;
-    CFinalityTallyCertificate candidate;   // content being signed (signer-set ignored)
-    uint16_t nSignerIndex;
-    std::vector<unsigned char> vchSig;
-
-    CFinalityCertSignature() { nVersion = 1; nSignerIndex = 0; }
-
-    IMPLEMENT_SERIALIZE
-    (
-        CFinalityCertSignature* pthis = const_cast<CFinalityCertSignature*>(this);
-        READWRITE(nVersion);
-        READWRITE(candidate);
-        READWRITE(nSignerIndex);
-        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSig, 80,
-                                                 nType, nVersion, ser_action);
-    )
-    uint256 GetHash() const;
-};
-
 /** Pure helper: fill cert.vSignerIndexes/vSignerSigs from collected per-member
  *  signatures over cert.GetSignatureDigest(), keeping only valid ones for the
  *  given committee, in ascending index order. Returns true iff >= nThreshold
@@ -1144,6 +1117,15 @@ bool BuildNoteTallyCertificate(int nEpoch,
                                const std::vector<CNoteFinalityVote>& vCounted,
                                CFinalityTallyCertificate& certOut,
                                std::string* pstrError = NULL);
+class CFinalityTracker;
+/** Every certificate a node builds for nEpoch from the tracker's connected transparent
+ *  votes and counted note votes: the canonical transparent certificate, and the note
+ *  certificate once the note lane is active at nTipHeight + 1. Pure in those sets. */
+std::vector<CFinalityTallyCertificate> BuildConnectedTallyCertificates(
+    const CFinalityTracker& tracker, int nEpoch, int nTipHeight,
+    std::string* pstrTransparentError = NULL, std::string* pstrNoteError = NULL);
+/** Relay policy: the certificate is invalid for the next block on this node's tip. */
+bool IsTallyCertificateInvalidForNextBlock(const CFinalityTallyCertificate& cert);
 bool BuildFinalityVoteScriptForHeight(const CFinalityVote& vote, int nHeight,
                                       CScript& scriptOut);
 bool BuildFinalityTallyCertificateScriptForHeight(const CFinalityTallyCertificate& cert,
@@ -1300,6 +1282,7 @@ public:
         nPendingFinalizedHeight = 0;
         hashPendingFinalized = 0;
         nFinalitySummaryDirtyFromEpoch = -1;
+        fPendingCertsNeedRecheck = false;
     }
 
     /** Add a vote to the tracker. Returns true if vote was accepted. */
@@ -1373,8 +1356,18 @@ public:
     std::vector<CFinalityTallyCertificate> SelectTallyCertificatesForBlock(
         CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
         const CBlockIndex* pindexPrev, unsigned int nMaxCerts = 4) const;
+    /** SelectTallyCertificatesForBlock over the pending set plus the certificates this
+     *  node builds from its connected view (GetSelfBuiltTallyCertificatesForBlock). */
+    std::vector<CFinalityTallyCertificate> SelectTallyCertificatesForTemplate(
+        CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+        const CBlockIndex* pindexPrev, unsigned int nMaxCerts = 4) const;
+    /** The producer's certificates for the epochs a block at nBlockHeight may carry,
+     *  built from the connected view, minus any already connected. */
+    std::vector<CFinalityTallyCertificate> GetSelfBuiltTallyCertificatesForBlock(
+        int nBlockHeight) const;
     size_t GetPendingTallyCertificateCount(int nEpoch) const;
-    /** Drop pending certificates no block at nNextHeight or later may carry. */
+    /** Drop pending certificates no block at nNextHeight or later may carry, and after
+     *  a disconnect those the relay check now refuses on the current branch. */
     void PrunePendingTallyCertificates(int nNextHeight);
     bool HasVoteNullifier(const uint256& nullifier) const;
 
@@ -1581,6 +1574,12 @@ private:
     std::map<std::pair<uint256, std::pair<int,int> >, uint256> mapTallyPartialBySource;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
     std::map<uint256, CFinalityTallyCertificate> mapPendingTallyCertificates;
+    // Set by a vote disconnect; the next prune re-checks the pending set.
+    bool fPendingCertsNeedRecheck;
+    std::vector<CFinalityTallyCertificate> SelectValidTallyCertificates(
+        CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+        const CBlockIndex* pindexPrev, unsigned int nMaxCerts,
+        const std::vector<CFinalityTallyCertificate>& vCandidates) const;
     std::map<uint256, CFinalityTallyCertificate> mapConnectedTallyCertificates;
     // automation-context hash -> canonical minimum certificate hash
     std::map<uint256, uint256> mapConnectedTallyCertificateByContext;

@@ -1495,7 +1495,8 @@ done
 [ "$PROD_OK" -eq 1 ] && \
     success "every held epoch's certificate was built by the nodes themselves at tier HARD over $NOTE_VOTERS note votes and the expected transparent count"
 
-# The assembled line names the certificate and its signer count.
+# The assembled line names the certificate and its signer count; a template's self-built
+# line names the certificate only.
 ASM_OK=1
 declare -A ASSEMBLED=()
 for E in $NOTE_VOTE_EPOCHS; do
@@ -1506,6 +1507,12 @@ for E in $NOTE_VOTE_EPOCHS; do
             [ -n "$H" ] && ASSEMBLED[$E]="${ASSEMBLED[$E]} $H"
             echo "$L" | grep -qE ' signers=0$' || { ASM_OK=0; fail "epoch $E: node$n assembled a certificate with signers: $L"; }
         done < <(grep -aF "FinalityNoteTally: epoch $E note certificate " "$(node_log "$n")" 2>/dev/null)
+        # A template builds the same certificate from its own view; once a block carries
+        # it, the producer's pending add is a duplicate and logs nothing.
+        while read -r H; do
+            [ ${#H} -eq 64 ] && ASSEMBLED[$E]="${ASSEMBLED[$E]} $H"
+        done < <(grep -a "CreateNewBlock: self-built tally certificate [0-9a-f]\{64\} epoch $E version $NOTE_CERT_VERSION " \
+                     "$(node_log "$n")" 2>/dev/null | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')
     done
     ASSEMBLED[$E]="$(echo "${ASSEMBLED[$E]}" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
     [ -n "${ASSEMBLED[$E]}" ] || { ASM_OK=0; fail "epoch $E: no node logged an assembled note certificate"; }
@@ -1876,6 +1883,104 @@ if [ "$RV_RUN" -eq 1 ]; then
 
     RC="$(rpc 0 reconsiderblock "$RV_HASH" 2>&1)"
     log "  reconsiderblock: tip_moved=$(jget "$RC" tip_moved) tip_height=$(jget "$RC" tip_height)"
+fi
+
+# ============================================================
+header "15b. A miner that runs no certificate producer carries the certificate it builds"
+# ============================================================
+
+# node1 restarts with -nofinalityvoting=1 and mines the first carrier heights alone: it
+# must embed the same v4 certificate bytes as node0, and HARD comes only through it.
+SB_E=$(( REORG_VOTE_EPOCH + 1 ))
+SB_B="$(epoch_start "$SB_E")"
+SB_WC="$(window_close "$SB_E")"
+SB_OK=1
+restart_node 1 -nofinalityvoting=1 || { fail "could not restart node1 without the voter"; SB_OK=0; }
+if [ "$SB_OK" -eq 1 ] && [ "$(voting_enabled 1)" = "true" ]; then
+    fail "node1 still runs the finality voter"
+    SB_OK=0
+fi
+if [ "$SB_OK" -eq 1 ]; then
+    note_vote_round "$SB_E" "$SB_B" "$NOTE_VOTE_WINDOW" || { fail "epoch $SB_E vote round failed"; SB_OK=0; }
+fi
+SB_FORK="$(height 1)"
+if [ "$SB_OK" -eq 1 ] && { ! is_int "${SB_FORK:-x}" || [ "$SB_FORK" -ge $(( SB_WC - 1 )) ]; }; then
+    fail "node1 is at ${SB_FORK:-?}; the window of epoch $SB_E closes at tip $(( SB_WC - 1 ))"
+    SB_OK=0
+fi
+if [ "$SB_OK" -eq 1 ]; then
+    SB_PARTED=0
+    # Every peer is 127.0.0.1 and carries node1 as addnode: a ban on node1 keeps the
+    # reconnect timers from healing the partition while both sides mine.
+    rpc 1 setban 127.0.0.1 add 3600 >/dev/null 2>&1 || true
+    for _ in $(seq 1 10); do
+        for ((p=0; p<NUM_NODES; p++)); do
+            [ "$p" -eq 1 ] && continue
+            rpc 1 disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
+            rpc "$p" disconnectnode "127.0.0.1:$(node_port 1)" >/dev/null 2>&1 || true
+        done
+        sleep 3
+        [ "$(peer_count 1)" = "0" ] && { SB_PARTED=1; break; }
+    done
+    [ "$SB_PARTED" -eq 1 ] || { fail "node1 could not be isolated (peers=$(peer_count 1))"; SB_OK=0; }
+fi
+if [ "$SB_OK" -eq 1 ]; then
+    mine_chunk 1 $(( SB_WC + 2 )) || fail "node1 did not mine to $(( SB_WC + 2 ))"
+    SB_ONE="$(epoch_carried_certs 1 "$SB_E" "$SB_WC" $(( SB_WC + 2 )) | \
+              awk -v v="$NOTE_CERT_VERSION" 'NF && $2 == v' | head -1)"
+    read -r SB_H1 _ SB_S1 _ SB_T1 SB_N1 SB_HASH1 <<< "$SB_ONE"
+    SB_SELF="$(grep -aF "CreateNewBlock: self-built tally certificate $SB_HASH1 epoch $SB_E version $NOTE_CERT_VERSION " \
+               "$(node_log 1)" 2>/dev/null | tail -1)"
+    if is_real_hash "${SB_HASH1:-x}" && [ "$SB_T1" = "hard" ] && [ "$SB_S1" = "0" ] && \
+       { [ "$SB_N1" = "0" ] || [ "$SB_N1" = "1" ]; } && [ -n "$SB_SELF" ]; then
+        success "isolated node1 carried the v4 certificate ${SB_HASH1:0:16} at $SB_H1 (tier hard, $SB_N1 transparent vote(s)), built by its own template"
+    else
+        fail "isolated node1 carried '${SB_ONE:-nothing}' in [$SB_WC, $(( SB_WC + 2 ))]; self-built line: '${SB_SELF:-none}'"
+        SB_OK=0
+    fi
+    mine_chunk 0 $(( SB_WC + 1 )) || fail "node0 did not mine to $(( SB_WC + 1 ))"
+    SB_ZERO="$(epoch_carried_certs 0 "$SB_E" "$SB_WC" $(( SB_WC + 1 )) | \
+               awk -v v="$NOTE_CERT_VERSION" 'NF && $2 == v' | head -1)"
+    read -r _ _ _ _ _ _ SB_HASH0 <<< "$SB_ZERO"
+    if [ "$SB_OK" -eq 1 ] && [ "$SB_HASH0" = "$SB_HASH1" ] && \
+       [ "$(block_hash 0 "$SB_WC")" != "$(block_hash 1 "$SB_WC")" ]; then
+        success "node0's branch carries the same certificate bytes ${SB_HASH0:0:16} in a different block"
+    else
+        fail "node0 carried '${SB_ZERO:-nothing}', node1 carried ${SB_HASH1:-nothing}"
+        SB_OK=0
+    fi
+    rpc 1 setban 127.0.0.1 remove >/dev/null 2>&1 || true
+    connect_mesh
+    wait_peers >/dev/null 2>&1 || true
+    SB_CONV=0
+    SB_TIP1="$(block_hash 1 $(( SB_WC + 2 )))"
+    for _ in $(seq 1 240); do
+        OK=1
+        for ((n=0; n<NUM_NODES; n++)); do
+            [ ${#SB_TIP1} -eq 64 ] && [ "$(block_hash "$n" $(( SB_WC + 2 )))" = "$SB_TIP1" ] || OK=0
+        done
+        [ "$OK" -eq 1 ] && { SB_CONV=1; break; }
+        sleep 1
+    done
+    [ "$SB_CONV" -eq 1 ] && success "the fleet reorganised onto node1's branch" || \
+        { fail "the fleet did not converge on node1's branch"; SB_OK=0; }
+fi
+rpc 1 setban 127.0.0.1 remove >/dev/null 2>&1 || true
+restart_node 1 || fail "could not restore node1"
+if [ "$SB_OK" -eq 1 ]; then
+    SB_NEXT="$(epoch_start $(( SB_E + 1 )))"
+    mine_to 0 $(( SB_NEXT + 1 )) || fail "could not cross into epoch $(( SB_E + 1 ))"
+    wait_sync $(( SB_NEXT + 1 )) || fail "the fleet did not sync into epoch $(( SB_E + 1 ))"
+    REC_OK=1
+    for ((n=0; n<NUM_NODES; n++)); do
+        EI="$(rpc "$n" getepochinfo "$SB_E" 2>/dev/null)"
+        [ "$(jget "$EI" finality_tier)" = "hard" ] && \
+            [ "$(jget "$EI" finality_certificate)" = "$SB_HASH1" ] || {
+            REC_OK=0
+            fail "node$n epoch $SB_E record: tier=$(jget "$EI" finality_tier) certificate=$(jget "$EI" finality_certificate)"
+        }
+    done
+    [ "$REC_OK" -eq 1 ] && success "every node's epoch $SB_E record is HARD through the self-built certificate ${SB_HASH1:0:16}"
 fi
 
 # ============================================================

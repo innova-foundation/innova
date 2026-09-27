@@ -2671,7 +2671,7 @@ else
     fail "the epoch $TALLY_EPOCH producer line reports tier='$P_TIER' note_votes='$P_NOTES', counted='$TALLY_COUNTED'"
 fi
 
-# Every note certificate a node admitted, and none of them signed.
+# Every note certificate a node admitted or a template built, and none of them signed.
 NOTE_CERT_HASHES=""
 SIGNED_LINE=""
 for ((n=0; n<NUM_NODES; n++)); do
@@ -2681,6 +2681,12 @@ for ((n=0; n<NUM_NODES; n++)); do
         [ -n "$H" ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
         echo "$L" | grep -qE ' signers=0$' || SIGNED_LINE="node$n: $L"
     done < <(grep -aF "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " "$(node_log "$n")" 2>/dev/null)
+    # A template builds the same certificate from its own view; once a block carries
+    # it, the producer's pending add is a duplicate and logs nothing.
+    while read -r H; do
+        [ ${#H} -eq 64 ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
+    done < <(grep -a "CreateNewBlock: self-built tally certificate [0-9a-f]\{64\} epoch $TALLY_EPOCH version $NOTE_CERT_VERSION " \
+                 "$(node_log "$n")" 2>/dev/null | sed -n 's/.*certificate \([0-9a-f]\{64\}\) .*/\1/p')
 done
 NOTE_CERT_HASHES="$(echo "$NOTE_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
 if [ -n "$NOTE_CERT_HASHES" ] && [ -z "$SIGNED_LINE" ]; then

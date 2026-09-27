@@ -285,16 +285,6 @@ bool VerifyMofNCommitteeSignatures(const std::vector<CPubKey>& vCommitteePubKeys
 }
 
 
-uint256 CFinalityCertSignature::GetHash() const
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << nVersion;
-    ss << candidate.GetSignatureDigest();
-    ss << nSignerIndex;
-    ss << vchSig;
-    return ss.GetHash();
-}
-
 bool AssembleCertificateFromSignatures(CFinalityTallyCertificate& cert,
                                        const std::map<uint16_t, std::vector<unsigned char> >& collected,
                                        const std::vector<CPubKey>& vCommittee,
@@ -5438,6 +5428,12 @@ static int JudgePendingTallyCertificate(const CFinalityTracker& tracker,
                                              : PENDING_CERT_UNDECIDED;
 }
 
+bool IsTallyCertificateInvalidForNextBlock(const CFinalityTallyCertificate& cert)
+{
+    CTxDB txdb("r");
+    return JudgePendingTallyCertificate(g_finalityTracker, cert, txdb) == PENDING_CERT_INVALID;
+}
+
 // Eviction order within one epoch. Undecided certificates rank by coverage first: the
 // one a block can carry covers the epoch's whole connected set.
 static bool PendingCertificateRanksBelow(int nScoreA, const CFinalityTallyCertificate& a,
@@ -6285,33 +6281,40 @@ bool CFinalityTracker::CheckCanonicalVoteSetCapacity(
     return true;
 }
 
+// Whether a block at nBlockHeight may offer cert at all, before any validation.
+static bool TallyCertificateOfferableAt(const CFinalityTallyCertificate& cert, int nBlockHeight)
+{
+    if (cert.IsCanonicalEnvelope() != IsBoundaryAActiveAtHeight(nBlockHeight))
+        return false;
+    const int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+    if (cert.nEpoch > nBlockEpoch)
+        return false;
+    // Staleness bound aligned with the connect-time R2 rule (and the HARD
+    // streak depth) so the miner offers exactly the certs a block can embed.
+    if (cert.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nBlockEpoch)
+        return false;
+    // R2: only offer a cert at/after its vote-inclusion window close, matching
+    // connect-time CheckTallyCertificate so the produced block validates
+    // everywhere.
+    if (nBlockHeight >= FORK_HEIGHT_VOTESET_ROOT)
+    {
+        int nBoundary = GetEpochBoundaryHeight(cert.nEpoch, nBlockHeight);
+        if (nBlockHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            return false;
+    }
+    return true;
+}
+
 std::vector<CFinalityTallyCertificate> CFinalityTracker::GetPendingTallyCertificatesForBlock(int nBlockHeight, unsigned int nMaxCerts) const
 {
     LOCK(cs_finality);
 
     std::vector<CFinalityTallyCertificate> vCerts;
-    int nBlockEpoch = GetEpochForHeight(nBlockHeight);
     for (const auto& pair : mapPendingTallyCertificates)
     {
         const CFinalityTallyCertificate& cert = pair.second;
-        if (cert.IsCanonicalEnvelope() !=
-            IsBoundaryAActiveAtHeight(nBlockHeight))
+        if (!TallyCertificateOfferableAt(cert, nBlockHeight))
             continue;
-        if (cert.nEpoch > nBlockEpoch)
-            continue;
-        // Staleness bound aligned with the connect-time R2 rule (and the HARD
-        // streak depth) so the miner offers exactly the certs a block can embed.
-        if (cert.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nBlockEpoch)
-            continue;
-        // R2: only offer a cert at/after its vote-inclusion window close, matching
-        // connect-time CheckTallyCertificate so the produced block validates
-        // everywhere.
-        if (nBlockHeight >= FORK_HEIGHT_VOTESET_ROOT)
-        {
-            int nBoundary = GetEpochBoundaryHeight(cert.nEpoch, nBlockHeight);
-            if (nBlockHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
-                continue;
-        }
         vCerts.push_back(cert);
         if (vCerts.size() >= nMaxCerts)
             break;
@@ -6323,11 +6326,87 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::SelectTallyCertificates
     CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
     const CBlockIndex* pindexPrev, unsigned int nMaxCerts) const
 {
-    // Validate before capping: a cap over unvalidated candidates lets relay-valid
-    // certificates that no block can carry displace the one that it can.
-    const std::vector<CFinalityTallyCertificate> vCandidates =
+    return SelectValidTallyCertificates(
+        txdb, nBlockHeight, pvBlockVotes, pindexPrev, nMaxCerts,
+        GetPendingTallyCertificatesForBlock(nBlockHeight,
+                                            std::numeric_limits<unsigned int>::max()));
+}
+
+std::vector<CFinalityTallyCertificate> CFinalityTracker::GetSelfBuiltTallyCertificatesForBlock(
+    int nBlockHeight) const
+{
+    std::vector<CFinalityTallyCertificate> vOut;
+    const int nTipHeight = nBlockHeight - 1;
+    if (nTipHeight < FORK_HEIGHT_DAG || !UseCanonicalFinalityTrafficForTip(nTipHeight))
+        return vOut;
+    // The producer's epochs: the previous one, and the current one once its window
+    // is closed.
+    const int nCurrentEpoch = GetEpochForHeight(nTipHeight);
+    std::vector<int> vEpochs;
+    if (nCurrentEpoch > 0)
+        vEpochs.push_back(nCurrentEpoch - 1);
+    if (IsFinalityVoteWindowClosedForTip(nCurrentEpoch, nTipHeight))
+        vEpochs.push_back(nCurrentEpoch);
+    for (int nEpoch : vEpochs)
+    {
+        const std::vector<CFinalityTallyCertificate> vBuilt =
+            BuildConnectedTallyCertificates(*this, nEpoch, nTipHeight);
+        for (const CFinalityTallyCertificate& cert : vBuilt)
+        {
+            if (!TallyCertificateOfferableAt(cert, nBlockHeight))
+                continue;
+            {
+                // Already carried on this chain.
+                LOCK(cs_finality);
+                if (mapConnectedTallyCertificates.count(cert.GetHash()) ||
+                    mapConnectedTallyCertificateByContext.count(
+                        FinalityCertificateAutomationContextHash(cert)))
+                    continue;
+            }
+            vOut.push_back(cert);
+        }
+    }
+    return vOut;
+}
+
+std::vector<CFinalityTallyCertificate> CFinalityTracker::SelectTallyCertificatesForTemplate(
+    CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+    const CBlockIndex* pindexPrev, unsigned int nMaxCerts) const
+{
+    // The pending set plus what this node builds from its own connected view, so a
+    // builder that missed the relay still carries the epoch's certificate.
+    std::vector<CFinalityTallyCertificate> vCandidates =
         GetPendingTallyCertificatesForBlock(nBlockHeight,
                                             std::numeric_limits<unsigned int>::max());
+    std::set<uint256> setHave;
+    for (const CFinalityTallyCertificate& cert : vCandidates)
+        setHave.insert(cert.GetHash());
+    std::set<uint256> setSelfOnly;
+    for (const CFinalityTallyCertificate& cert : GetSelfBuiltTallyCertificatesForBlock(nBlockHeight))
+        if (setHave.insert(cert.GetHash()).second)
+        {
+            vCandidates.push_back(cert);
+            setSelfOnly.insert(cert.GetHash());
+        }
+    const std::vector<CFinalityTallyCertificate> vSelected =
+        SelectValidTallyCertificates(txdb, nBlockHeight, pvBlockVotes, pindexPrev, nMaxCerts,
+                                     vCandidates);
+    for (const CFinalityTallyCertificate& cert : vSelected)
+        if (setSelfOnly.count(cert.GetHash()))
+            printf("CreateNewBlock: self-built tally certificate %s epoch %d version %d "
+                   "tier=%d note_votes=%u\n",
+                   cert.GetHash().ToString().c_str(), cert.nEpoch, cert.nVersion, cert.nTier,
+                   (unsigned int)cert.nNoteVoteCount);
+    return vSelected;
+}
+
+std::vector<CFinalityTallyCertificate> CFinalityTracker::SelectValidTallyCertificates(
+    CTxDB& txdb, int nBlockHeight, const std::vector<CFinalityVote>* pvBlockVotes,
+    const CBlockIndex* pindexPrev, unsigned int nMaxCerts,
+    const std::vector<CFinalityTallyCertificate>& vCandidates) const
+{
+    // Validate before capping: a cap over unvalidated candidates lets relay-valid
+    // certificates that no block can carry displace the one that it can.
     const bool fNoPrivate = IsLegacyPrivacyPolicyDisabled() ||
                             IsBoundaryAActiveAtHeight(nBlockHeight);
     std::vector<CFinalityTallyCertificate> vValid;
@@ -6387,17 +6466,38 @@ size_t CFinalityTracker::GetPendingTallyCertificateCount(int nEpoch) const
 
 void CFinalityTracker::PrunePendingTallyCertificates(int nNextHeight)
 {
-    LOCK(cs_finality);
-    const int nNextEpoch = GetEpochForHeight(nNextHeight);
-    for (std::map<uint256, CFinalityTallyCertificate>::iterator it =
-             mapPendingTallyCertificates.begin();
-         it != mapPendingTallyCertificates.end(); )
+    std::vector<CFinalityTallyCertificate> vRecheck;
     {
-        if (it->second.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nNextEpoch)
-            mapPendingTallyCertificates.erase(it++);
-        else
-            ++it;
+        LOCK(cs_finality);
+        const int nNextEpoch = GetEpochForHeight(nNextHeight);
+        for (std::map<uint256, CFinalityTallyCertificate>::iterator it =
+                 mapPendingTallyCertificates.begin();
+             it != mapPendingTallyCertificates.end(); )
+        {
+            if (it->second.nEpoch + FINALITY_CONFIRMATION_EPOCHS < nNextEpoch)
+                mapPendingTallyCertificates.erase(it++);
+            else
+                ++it;
+        }
+        if (!fPendingCertsNeedRecheck)
+            return;
+        fPendingCertsNeedRecheck = false;
+        for (const auto& pair : mapPendingTallyCertificates)
+            vRecheck.push_back(pair.second);
     }
+
+    // After a disconnect, coverage held from the abandoned branch must not outrank the
+    // current branch's certificate: drop what the relay check now refuses.
+    CTxDB txdb("r");
+    std::vector<uint256> vDrop;
+    for (const CFinalityTallyCertificate& cert : vRecheck)
+        if (!CheckTallyCertificate(cert, txdb, NULL))
+            vDrop.push_back(cert.GetHash());
+    if (vDrop.empty())
+        return;
+    LOCK(cs_finality);
+    for (const uint256& hash : vDrop)
+        mapPendingTallyCertificates.erase(hash);
 }
 
 std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock(int nBlockHeight, unsigned int nMaxShares,
@@ -6525,6 +6625,7 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
         return true;
 
     LOCK(cs_finality);
+    fPendingCertsNeedRecheck = true;
     for (const CFinalityVote& vote : vVotes)
     {
         // A vote may be carried by several connected blocks but is recorded once; tear
@@ -6835,6 +6936,8 @@ bool CFinalityTracker::DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hash
     // Remove the carrier index entry the block recorded, even when re-derivation yields
     // an empty list, so RecomputeNoteVoteCounting never counts a disconnected block.
     const bool fHadEntry = mapBlockConnectedNoteVotes.count(hashBlock) != 0;
+    if (fHadEntry)
+        fPendingCertsNeedRecheck = true;
     mapBlockConnectedNoteVotes.erase(hashBlock);
     if (fHadEntry && !txdb.EraseFinalityConnectedNoteVoteBlock(hashBlock))
         return false;
@@ -8264,34 +8367,54 @@ bool BuildNoteTallyCertificate(int nEpoch,
     return true;
 }
 
-// Any node builds the epoch's note certificate from its connected view; no seat or tally
+std::vector<CFinalityTallyCertificate> BuildConnectedTallyCertificates(
+    const CFinalityTracker& tracker, int nEpoch, int nTipHeight,
+    std::string* pstrTransparentError, std::string* pstrNoteError)
+{
+    std::vector<CFinalityTallyCertificate> vOut;
+    if (nEpoch < 0)
+        return vOut;
+    const std::vector<CFinalityVote> vConnected = tracker.GetConnectedEpochVotes(nEpoch);
+    CFinalityTallyCertificate cert;
+    if (BuildCanonicalTransparentFinalityCertificate(vConnected, cert, pstrTransparentError))
+        vOut.push_back(cert);
+    if (IsIV5NoteVoteActiveAtHeight(nTipHeight + 1) &&
+        BuildNoteTallyCertificate(nEpoch, vConnected, tracker.GetCountedEpochNoteVotes(nEpoch),
+                                  cert, pstrNoteError))
+        vOut.push_back(cert);
+    return vOut;
+}
+
+// Any node builds the epoch's certificates from its connected view; no seat or tally
 // key is involved. AddTallyCertificate runs the same relay-mode check a peer runs, so a
 // producer holding a stale view keeps the certificate out of its pending set.
-static bool ProduceNoteTallyCertificateEpoch(int nEpoch)
+static bool ProduceConnectedTallyCertificatesEpoch(int nEpoch, int nTipHeight)
 {
-    if (nEpoch < 0)
-        return false;
-    CFinalityTallyCertificate cert;
-    std::string strError;
-    if (!BuildNoteTallyCertificate(nEpoch, g_finalityTracker.GetConnectedEpochVotes(nEpoch),
-                                   g_finalityTracker.GetCountedEpochNoteVotes(nEpoch),
-                                   cert, &strError))
+    std::string strTransparentError;
+    std::string strNoteError;
+    const std::vector<CFinalityTallyCertificate> vBuilt = BuildConnectedTallyCertificates(
+        g_finalityTracker, nEpoch, nTipHeight, &strTransparentError, &strNoteError);
+    if (fDebug && !strTransparentError.empty())
+        printf("ProcessFinalityTallyCommittee: canonical epoch %d not ready: %s\n",
+               nEpoch, strTransparentError.c_str());
+    if (fDebug && !strNoteError.empty() && strNoteError != "no counted note votes")
+        printf("ProduceNoteTallyCertificateEpoch: epoch %d: %s\n", nEpoch,
+               strNoteError.c_str());
+    bool fDidWork = false;
+    for (const CFinalityTallyCertificate& cert : vBuilt)
     {
-        if (fDebug && strError != "no counted note votes")
-            printf("ProduceNoteTallyCertificateEpoch: epoch %d: %s\n", nEpoch,
-                   strError.c_str());
-        return false;
+        if (fDebug && cert.HasNoteWeight())
+            printf("ProduceNoteTallyCertificateEpoch: epoch %d tier=%d note_votes=%u "
+                   "transparent_votes=%u\n",
+                   nEpoch, cert.nTier, (unsigned int)cert.nNoteVoteCount,
+                   (unsigned int)cert.vVoteNullifiers.size());
+        if (!g_finalityTracker.AddTallyCertificate(cert))
+            continue;
+        LogBuiltNoteCertificate(cert);
+        RelayFinalityTallyCertificate(cert);
+        fDidWork = true;
     }
-    if (fDebug)
-        printf("ProduceNoteTallyCertificateEpoch: epoch %d tier=%d note_votes=%u "
-               "transparent_votes=%u\n",
-               nEpoch, cert.nTier, (unsigned int)cert.nNoteVoteCount,
-               (unsigned int)cert.vVoteNullifiers.size());
-    if (!g_finalityTracker.AddTallyCertificate(cert))
-        return false;
-    LogBuiltNoteCertificate(cert);
-    RelayFinalityTallyCertificate(cert);
-    return true;
+    return fDidWork;
 }
 
 bool ProcessFinalityTallyCommittee()
@@ -8318,44 +8441,14 @@ bool ProcessFinalityTallyCommittee()
     // construction and validation both succeed.
     if (UseCanonicalFinalityTrafficForTip(nTipHeight))
     {
-        const auto produce = [](int nEpoch) -> bool {
-            CFinalityTallyCertificate cert;
-            std::string strError;
-            if (!BuildCanonicalTransparentFinalityCertificate(
-                    g_finalityTracker.GetConnectedEpochVotes(nEpoch), cert,
-                    &strError))
-            {
-                if (fDebug && !strError.empty())
-                    printf("ProcessFinalityTallyCommittee: canonical epoch %d not ready: %s\n",
-                           nEpoch, strError.c_str());
-                return false;
-            }
-            if (!g_finalityTracker.AddTallyCertificate(cert))
-                return false;
-            RelayFinalityTallyCertificate(cert);
-            return true;
-        };
-
+        // Epochs whose vote sets are frozen: the previous one, and the current one once
+        // its inclusion window is closed. Templates build the same set
+        // (GetSelfBuiltTallyCertificatesForBlock).
         bool fDidWork = false;
         if (nCurrentEpoch > 0)
-            fDidWork |= produce(nCurrentEpoch - 1);
-        const bool fCurrentWindowClosed =
-            IsFinalityVoteWindowClosedForTip(nCurrentEpoch, nTipHeight);
-        if (fCurrentWindowClosed)
-            fDidWork |= produce(nCurrentEpoch);
-
-        // F2 note tally, on the same freeze points as the transparent pass and the
-        // reward settlement: the previous epoch's inclusion window is a whole epoch
-        // behind, and the current one is only tallied once R1 guarantees no further
-        // epoch-E note vote can connect. Before that the counted set still grows and
-        // any certificate would fail the connect-time coverage rule.
-        if (IsIV5NoteVoteActiveAtHeight(nTipHeight + 1))
-        {
-            if (nCurrentEpoch > 0)
-                fDidWork |= ProduceNoteTallyCertificateEpoch(nCurrentEpoch - 1);
-            if (fCurrentWindowClosed)
-                fDidWork |= ProduceNoteTallyCertificateEpoch(nCurrentEpoch);
-        }
+            fDidWork |= ProduceConnectedTallyCertificatesEpoch(nCurrentEpoch - 1, nTipHeight);
+        if (IsFinalityVoteWindowClosedForTip(nCurrentEpoch, nTipHeight))
+            fDidWork |= ProduceConnectedTallyCertificatesEpoch(nCurrentEpoch, nTipHeight);
         return fDidWork;
     }
 

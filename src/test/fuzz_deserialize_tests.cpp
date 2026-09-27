@@ -672,12 +672,20 @@ BOOST_AUTO_TEST_CASE(consensus_proof_versions_preserve_legacy_stream_shadowing)
             CFinalityTallyShare(), 2,
             context.nType, context.nVersion);
         CheckLegacyShadowedVersionContext(
-            CFinalityCertSignature(), 1,
-            context.nType, context.nVersion);
-        CheckLegacyShadowedVersionContext(
             CNullStakeMofNHiddenAuthProof(),
             NULLSTAKE_B2C_HIDDEN_AUTH_VERSION,
             context.nType, context.nVersion);
+
+        // The certificate is the exception: its member version is encoded.
+        CFinalityTallyCertificate certificate;
+        certificate.nVersion = 2;
+        CDataStream certStream(context.nType, context.nVersion);
+        certStream << certificate;
+        CFinalityTallyCertificate decodedCertificate;
+        decodedCertificate.nVersion = 1;
+        certStream >> decodedCertificate;
+        BOOST_CHECK(certStream.empty());
+        BOOST_CHECK_EQUAL(decodedCertificate.nVersion, 2);
     }
 
     // CTransaction encodes nested proof objects under its own transaction version:

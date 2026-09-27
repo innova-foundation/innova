@@ -15,6 +15,7 @@
 #include "../finality.h"
 #include "../hash.h"
 #include "../init.h"
+#include "../innovarpc.h"
 #include "../key.h"
 #include "../main.h"
 #include "../miner.h"
@@ -344,6 +345,80 @@ struct GlobalFinalityRestore
     }
 };
 
+
+struct ScopedNoteVoteHeight
+{
+    int nSaved;
+    explicit ScopedNoteVoteHeight(int nNew) : nSaved(nRegtestIV5NoteVoteHeight)
+    {
+        nRegtestIV5NoteVoteHeight = nNew;
+    }
+    ~ScopedNoteVoteHeight() { nRegtestIV5NoteVoteHeight = nSaved; }
+};
+
+// Note votes counted on g_finalityTracker under a synthetic carrier; disconnected on exit.
+struct CountedNoteVotes
+{
+    CTxDB txdb;
+    uint256 hashCarrier;
+    std::vector<CNoteFinalityVote> vVotes;
+    bool fConnected;
+
+    CountedNoteVotes(const uint256& hashCarrierIn, int nEpoch, int nBoundary,
+                     const uint256& hashNamed, int nCount, unsigned char nTagSeed)
+        : hashCarrier(hashCarrierIn), fConnected(false)
+    {
+        for (int i = 0; i < nCount; i++)
+        {
+            CNoteFinalityVote vote;
+            vote.nEpoch = nEpoch;
+            vote.nHeight = nBoundary;
+            vote.hashBlock = hashNamed;
+            vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, (unsigned char)(nTagSeed + i));
+            vVotes.push_back(vote);
+        }
+        fConnected = g_finalityTracker.ConnectBlockNoteVotes(
+            txdb, hashCarrier, vVotes, CFinalityVoteContext::ChainHeight(nBoundary + 1),
+            NULL, false);
+        BOOST_REQUIRE(fConnected);
+        BOOST_REQUIRE_EQUAL(g_finalityTracker.GetCountedEpochNoteVotes(nEpoch).size(),
+                            (size_t)nCount);
+    }
+
+    ~CountedNoteVotes()
+    {
+        if (fConnected)
+            g_finalityTracker.DisconnectBlockNoteVotes(txdb, hashCarrier, vVotes);
+    }
+};
+
+CFinalityTallyCertificate NoteCertificate(int nEpoch, const std::vector<CFinalityVote>& votes)
+{
+    CFinalityTallyCertificate cert;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(BuildNoteTallyCertificate(
+                              nEpoch, votes, g_finalityTracker.GetCountedEpochNoteVotes(nEpoch),
+                              cert, &error),
+                          error);
+    return cert;
+}
+
+// Mines until the next template height satisfies fAccept; returns the template parent.
+template <typename F>
+CBlockIndex* MineUntil(F fAccept)
+{
+    for (int nMined = 0;; nMined++)
+    {
+        BOOST_REQUIRE(nMined < 3000);
+        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        CBlockIndex* pindexPrev = TemplateParent(*pblock);
+        if (fAccept(pindexPrev->nHeight + 1))
+            return pindexPrev;
+        MineOnTemplate();
+    }
+}
+
 } // namespace
 
 // The template's certificate filter must apply the same binding as connect. Two pending
@@ -522,8 +597,22 @@ BOOST_AUTO_TEST_CASE(non_covering_certificates_do_not_starve_the_covering_one)
     BOOST_CHECK(!g_finalityTracker.AddTallyCertificate(mapJunk[nEpoch][0]));
     BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
 
-    // Admitted without the relay check, as if they arrived before the window closed:
-    // up to a full epoch's worth that hash below the covering certificate.
+    // The regtest submit RPC applies the same judgement. MUTATION: submit with
+    // AddTallyCertificate(cert, false) and no judgement, and it is stored.
+    {
+        CCanonicalFinalityTallyCertificateEnvelope envelope;
+        BOOST_REQUIRE(envelope.FromLogical(mapJunk[nEpoch][0]));
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << envelope;
+        json_spirit::Array params;
+        params.push_back(HexStr(ss.begin(), ss.end()));
+        BOOST_CHECK_THROW(submitfinalitytallycert(params, false), json_spirit::Object);
+        BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+    }
+
+    // Forced in without the relay check (fCheck=false). Past the window each is judged
+    // INVALID and ranks below the covering certificate; the pre-window order is pinned by
+    // undecided_certificates_rank_by_coverage_before_the_window_closes.
     std::vector<CFinalityTallyCertificate> vLowJunk;
     size_t nLowOlderEpochs = 0;
     for (int e = nFirstEpoch; e <= nEpoch; e++)
@@ -597,6 +686,150 @@ BOOST_AUTO_TEST_CASE(non_covering_certificates_do_not_starve_the_covering_one)
     g_finalityTracker.PrunePendingTallyCertificates(nNextEpochStart);
     BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nFirstEpoch), 0U);
     BOOST_CHECK(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch) > 0U);
+}
+
+// Before the window closes, the pending bound evicts by coverage first, so junk
+// certificates that outrank the covering one by record ranking cannot displace it.
+BOOST_AUTO_TEST_CASE(undecided_certificates_rank_by_coverage_before_the_window_closes)
+{
+    CBlockIndex* pindexPrev = MineUntil([](int nHeight) {
+        const int nEpoch = GetEpochForHeight(nHeight);
+        const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+        return IsBoundaryAActiveAtHeight(nHeight) && nBoundary >= FORK_HEIGHT_BOUNDARY_A &&
+               nHeight > nBoundary + 1 &&
+               nHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW;
+    });
+    BOOST_REQUIRE(pindexPrev == pindexBest);
+    const int nHeight = pindexPrev->nHeight + 1;
+    const int nEpoch = GetEpochForHeight(nHeight);
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+    BOOST_REQUIRE(!IsFinalityVoteWindowClosedForTip(nEpoch, pindexPrev->nHeight));
+    const CBlockIndex* pBoundary =
+        GetFinalityAncestorOnChain(pindexPrev, nBoundary, FINALITY_ANCESTOR_MAX_WALK);
+    BOOST_REQUIRE(pBoundary != NULL);
+
+    CertAncestryRegtest network;
+    GlobalFinalityRestore restore;
+    ScopedNoteVoteHeight noteVoteHeight(1);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(nEpoch), 0);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+    CountedNoteVotes notes(uint256(0xCE000001), nEpoch, nBoundary, pBoundary->GetBlockHash(),
+                           2, 0x61);
+    CTxDB txdb("r");
+
+    const int kVoters = 5;
+    std::vector<CFinalityVote> votes;
+    CFinalityTallyCertificate honest;
+    std::vector<CFinalityTallyCertificate> vJunk;
+    for (int nTry = 0;; nTry++)
+    {
+        BOOST_REQUIRE(nTry < 64);
+        votes.clear();
+        vJunk.clear();
+        for (int i = 0; i < kVoters; i++)
+        {
+            CKey key;
+            key.MakeNewKey(true);
+            votes.push_back(MakeVote(key, nEpoch, nBoundary, pBoundary->GetBlockHash()));
+        }
+        honest = NoteCertificate(nEpoch, votes);
+        size_t nOutrank = 0;
+        for (unsigned int mask = 1; mask < (1U << kVoters); mask++)
+        {
+            std::vector<CFinalityVote> subset;
+            for (int i = 0; i < kVoters; i++)
+                if (mask & (1U << i))
+                    subset.push_back(votes[i]);
+            if (subset.size() < (size_t)FINALITY_MIN_VOTERS || subset.size() == (size_t)kVoters)
+                continue;
+            vJunk.push_back(CanonicalCertificate(subset));
+            vJunk.push_back(NoteCertificate(nEpoch, subset));
+            if (FinalityCertificateOutranks(vJunk.back(), honest))
+                nOutrank++;
+        }
+        if (nOutrank >= FINALITY_PENDING_CERTS_PER_EPOCH)
+            break;
+    }
+    for (const CFinalityVote& vote : votes)
+        BOOST_REQUIRE(g_finalityTracker.AddVote(vote, false, true));
+    BOOST_REQUIRE(honest.HasNoteWeight());
+    BOOST_REQUIRE_EQUAL(honest.nTier, (int)FINALITY_HARD);
+    BOOST_REQUIRE(Judge(g_finalityTracker, honest, txdb, -1, NULL).fOk);
+    for (const CFinalityTallyCertificate& junk : vJunk)
+    {
+        const Verdict relay = Judge(g_finalityTracker, junk, txdb, -1, NULL);
+        BOOST_REQUIRE_MESSAGE(relay.fOk, "subset certificate not relay-valid: " << relay.error);
+        BOOST_REQUIRE(!IsTallyCertificateInvalidForNextBlock(junk));
+    }
+
+    for (const CFinalityTallyCertificate& junk : vJunk)
+        g_finalityTracker.AddTallyCertificate(junk);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch),
+                        (size_t)FINALITY_PENDING_CERTS_PER_EPOCH);
+    BOOST_REQUIRE_MESSAGE(g_finalityTracker.AddTallyCertificate(honest),
+                          "covering certificate refused at a full pending set");
+    for (const CFinalityTallyCertificate& junk : vJunk)
+        g_finalityTracker.AddTallyCertificate(junk);
+
+    BOOST_CHECK_LE(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch),
+                   (size_t)FINALITY_PENDING_CERTS_PER_EPOCH);
+    bool fHonestPending = false;
+    const std::vector<CFinalityTallyCertificate> vPending =
+        g_finalityTracker.GetPendingTallyCertificatesForBlock(
+            nBoundary + FINALITY_VOTE_INCLUSION_WINDOW, std::numeric_limits<unsigned int>::max());
+    for (const CFinalityTallyCertificate& cert : vPending)
+        if (cert.GetHash() == honest.GetHash())
+            fHonestPending = true;
+    BOOST_CHECK_MESSAGE(fHonestPending, "covering certificate was evicted");
+}
+
+// A template builder holding no certificate embeds the one it builds from its connected
+// view: one transparent voter and two note votes, HARD only through the note leg.
+// MUTATION: return nothing from GetSelfBuiltTallyCertificatesForBlock and the template
+// carries no certificate.
+BOOST_AUTO_TEST_CASE(a_template_with_no_received_certificate_embeds_the_self_built_one)
+{
+    CBlockIndex* pindexPrev = MineUntil([](int nHeight) {
+        const int nEpoch = GetEpochForHeight(nHeight);
+        const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+        return IsBoundaryAActiveAtHeight(nHeight) && nBoundary >= FORK_HEIGHT_BOUNDARY_A &&
+               nHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW;
+    });
+    BOOST_REQUIRE(pindexPrev == pindexBest);
+    const int nHeight = pindexPrev->nHeight + 1;
+    const int nEpoch = GetEpochForHeight(nHeight);
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+    const CBlockIndex* pBoundary =
+        GetFinalityAncestorOnChain(pindexPrev, nBoundary, FINALITY_ANCESTOR_MAX_WALK);
+    BOOST_REQUIRE(pBoundary != NULL);
+
+    CertAncestryRegtest network;
+    GlobalFinalityRestore restore;
+    ScopedNoteVoteHeight noteVoteHeight(1);
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetEpochVoteCount(nEpoch), 0);
+    CountedNoteVotes notes(uint256(0xCE000002), nEpoch, nBoundary, pBoundary->GetBlockHash(),
+                           2, 0x71);
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_REQUIRE(g_finalityTracker.AddVote(
+        MakeVote(key, nEpoch, nBoundary, pBoundary->GetBlockHash()), false, true));
+    BOOST_REQUIRE_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+
+    const std::vector<CFinalityTallyCertificate> vProduced =
+        BuildConnectedTallyCertificates(g_finalityTracker, nEpoch, pindexPrev->nHeight);
+    BOOST_REQUIRE_EQUAL(vProduced.size(), 1U);
+    BOOST_REQUIRE(vProduced[0].HasNoteWeight());
+    BOOST_REQUIRE_EQUAL(vProduced[0].nTier, (int)FINALITY_HARD);
+    CScript scriptProduced;
+    BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(vProduced[0], nHeight,
+                                                               scriptProduced));
+
+    std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+    BOOST_REQUIRE(pblock.get() != NULL);
+    BOOST_REQUIRE(TemplateParent(*pblock) == pindexPrev);
+    BOOST_CHECK_MESSAGE(CoinbaseCarries(*pblock, scriptProduced),
+                        "self-built certificate not embedded");
+    BOOST_CHECK_EQUAL(g_finalityTracker.GetPendingTallyCertificateCount(nEpoch), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

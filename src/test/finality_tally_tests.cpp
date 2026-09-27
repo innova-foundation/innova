@@ -7,6 +7,7 @@
 #include "../zkproof.h"
 
 #include <algorithm>
+#include <memory>
 #include <string.h>
 
 namespace
@@ -2992,6 +2993,149 @@ BOOST_AUTO_TEST_CASE(a_committee_free_note_certificate_is_built_connected_and_ha
         BOOST_CHECK(tracker.DisconnectBlockTallyCertificates(
             txdb, hashCarrier, std::vector<CFinalityTallyCertificate>(1, carried)));
     }
+}
+
+// A template builder with no received certificate carries the one built from its own
+// view, byte for byte (note-only, mixed, both lanes).
+BOOST_AUTO_TEST_CASE(a_template_without_a_received_certificate_carries_the_self_built_one)
+{
+    ScopedFinalityRegtest network;
+    ScopedNoteVoteForkAt scopedNoteVoteFork(1);
+
+    const int nBaseEpoch = GetEpochForHeight(FORK_HEIGHT_BOUNDARY_A);
+    for (int nCase = 0; nCase < 3; nCase++)
+    {
+        const int nTransparent = nCase == 0 ? 0 : (nCase == 1 ? 1 : 3);
+        BOOST_TEST_MESSAGE("transparent voters " << nTransparent);
+        const int nEpoch = nBaseEpoch + 1 + nCase;
+        const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+        BOOST_REQUIRE_EQUAL(GetEpochForHeight(nTargetHeight), nEpoch);
+        const int nBlockHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+        BOOST_REQUIRE_EQUAL(GetEpochForHeight(nBlockHeight), nEpoch);
+        BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nBlockHeight));
+
+        ScopedIndexChain chain(0xE1000000u + 0x1000u * (unsigned int)nCase, nTargetHeight,
+                               FINALITY_VOTE_INCLUSION_WINDOW + 1);
+        const uint256 hashTarget = chain.HashAt(0);
+        const CBlockIndex* pindexPrev = chain.At(FINALITY_VOTE_INCLUSION_WINDOW - 1);
+        const uint256 hashCarrier = chain.HashAt(FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_REQUIRE_EQUAL(pindexPrev->nHeight + 1, nBlockHeight);
+
+        CFinalityTracker tracker;
+        CTxDB txdb("r+");
+        ScopedFinalityCertDbCleanup cleanup(txdb);
+        for (int i = 0; i < nTransparent; i++)
+        {
+            CKey key;
+            key.MakeNewKey(true);
+            CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+                key, nEpoch, nTargetHeight, hashTarget);
+            vote.MarkCanonicalEnvelope();
+            BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        }
+        ScopedCountedNoteVotes counted(tracker, txdb, uint256(0xE101 + nCase), nEpoch,
+                                       nTargetHeight, hashTarget, 2,
+                                       (unsigned char)(0x41 + 0x10 * nCase));
+
+        // Nothing received: the pending set offers nothing.
+        BOOST_REQUIRE_EQUAL(tracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+        BOOST_REQUIRE(tracker.SelectTallyCertificatesForBlock(txdb, nBlockHeight, NULL,
+                                                              pindexPrev).empty());
+
+        // What the producer builds at the same tip.
+        const std::vector<CFinalityTallyCertificate> vProduced =
+            BuildConnectedTallyCertificates(tracker, nEpoch, pindexPrev->nHeight);
+        BOOST_REQUIRE_EQUAL(vProduced.size(), nTransparent >= FINALITY_MIN_VOTERS ? 2U : 1U);
+        const CFinalityTallyCertificate& noteCert = vProduced.back();
+        BOOST_REQUIRE(noteCert.HasNoteWeight());
+        BOOST_CHECK_EQUAL(noteCert.nTier, FINALITY_HARD);
+        BOOST_CHECK_EQUAL(noteCert.nNoteVoteCount, 2u);
+        BOOST_CHECK(noteCert.hashNoteVoteRoot == counted.Root());
+        BOOST_CHECK(noteCert.hashBlock == hashTarget);
+
+        const std::vector<CFinalityTallyCertificate> vSelected =
+            tracker.SelectTallyCertificatesForTemplate(txdb, nBlockHeight, NULL, pindexPrev);
+        BOOST_REQUIRE_EQUAL(vSelected.size(), vProduced.size());
+        // The epoch record's pick first: the note-weighted certificate.
+        BOOST_CHECK(vSelected[0].GetHash() == noteCert.GetHash());
+        for (size_t i = 0; i < vProduced.size(); i++)
+        {
+            bool fMatched = false;
+            CScript scriptProduced;
+            BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(
+                vProduced[i], nBlockHeight, scriptProduced));
+            for (size_t j = 0; j < vSelected.size(); j++)
+            {
+                CScript scriptSelected;
+                BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(
+                    vSelected[j], nBlockHeight, scriptSelected));
+                if (scriptSelected == scriptProduced)
+                    fMatched = true;
+            }
+            BOOST_CHECK_MESSAGE(fMatched, "produced certificate " << i << " not selected");
+        }
+
+        // Carried: the carrier accepts it, and the next template does not repeat it.
+        CFinalityTallyCertificate carried;
+        {
+            CScript script;
+            BOOST_REQUIRE(BuildFinalityTallyCertificateScriptForHeight(noteCert, nBlockHeight,
+                                                                       script));
+            BOOST_REQUIRE_EQUAL(ExtractFinalityTallyCertificateForHeight(script, nBlockHeight,
+                                                                         carried),
+                                FINALITY_ENVELOPE_VALID);
+        }
+        cleanup.TrackCert(carried.GetHash());
+        cleanup.TrackBlock(hashCarrier);
+        FinalityResult result = FINALITY_RESULT_INVALID;
+        BOOST_CHECK(tracker.ConnectBlockTallyCertificates(
+            txdb, hashCarrier, std::vector<CFinalityTallyCertificate>(1, carried),
+            nBlockHeight, &result));
+        BOOST_CHECK_EQUAL(result, FINALITY_RESULT_OK);
+        const std::vector<CFinalityTallyCertificate> vAfter =
+            tracker.GetSelfBuiltTallyCertificatesForBlock(nBlockHeight + 1);
+        for (const CFinalityTallyCertificate& cert : vAfter)
+            BOOST_CHECK(cert.GetHash() != noteCert.GetHash());
+        BOOST_CHECK_EQUAL(vAfter.size(), vProduced.size() - 1);
+        BOOST_CHECK(tracker.DisconnectBlockTallyCertificates(
+            txdb, hashCarrier, std::vector<CFinalityTallyCertificate>(1, carried)));
+    }
+}
+
+// After a disconnect the pending set is re-checked on the current branch: a certificate
+// over note votes the branch no longer counts is dropped at the next prune.
+// MUTATION: skip the re-check in PrunePendingTallyCertificates and it stays pending.
+BOOST_AUTO_TEST_CASE(a_disconnect_drops_pending_certificates_the_branch_no_longer_supports)
+{
+    ScopedFinalityRegtest network;
+    ScopedNoteVoteForkAt scopedNoteVoteFork(1);
+
+    const int nEpoch = GetEpochForHeight(FORK_HEIGHT_BOUNDARY_A) + 1;
+    const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+    const int nBlockHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    ScopedIndexChain chain(0xE2000000u, nTargetHeight, FINALITY_VOTE_INCLUSION_WINDOW + 1);
+    const uint256 hashTarget = chain.HashAt(0);
+
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+    std::unique_ptr<ScopedCountedNoteVotes> counted(new ScopedCountedNoteVotes(
+        tracker, txdb, uint256(0xE201), nEpoch, nTargetHeight, hashTarget, 2, 0x91));
+    CFinalityTallyCertificate cert;
+    std::string strBuild;
+    BOOST_REQUIRE_MESSAGE(BuildNoteTallyCertificate(
+                              nEpoch, tracker.GetConnectedEpochVotes(nEpoch),
+                              tracker.GetCountedEpochNoteVotes(nEpoch), cert, &strBuild),
+                          strBuild);
+    BOOST_REQUIRE(tracker.AddTallyCertificate(cert, false));
+
+    // No disconnect: the prune keeps it.
+    tracker.PrunePendingTallyCertificates(nBlockHeight);
+    BOOST_REQUIRE_EQUAL(tracker.GetPendingTallyCertificateCount(nEpoch), 1U);
+
+    counted.reset();
+    BOOST_REQUIRE_EQUAL(tracker.GetEpochNoteVoteCount(nEpoch), 0);
+    tracker.PrunePendingTallyCertificates(nBlockHeight);
+    BOOST_CHECK_EQUAL(tracker.GetPendingTallyCertificateCount(nEpoch), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
