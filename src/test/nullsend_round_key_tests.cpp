@@ -134,6 +134,24 @@ BOOST_AUTO_TEST_CASE(the_signature_covers_the_commitment)
                         "the commitment moved and the signature still verified");
     BOOST_CHECK(!edited.IsValidBasic(&strError));
 
+    // With the identifier re-derived over the edit, the signature is the only check left
+    // to refuse it: a commitment of the publisher's choosing, unsigned by the coordinator.
+    CMixRoundAnnouncement rederived = edited;
+    rederived.hashRound = rederived.DerivedRoundId();
+    BOOST_CHECK(!rederived.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "coordinator signature does not verify");
+    CMixRoundAnnouncement unsignedCopy = announce;
+    unsignedCopy.vchSig.clear();
+    BOOST_CHECK(!unsignedCopy.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "coordinator signature does not verify");
+    CKey otherKey;
+    otherKey.MakeNewKey(true);
+    CMixRoundAnnouncement forged = announce;
+    forged.pubkeyCoordinator = otherKey.GetPubKey();
+    forged.hashRound = forged.DerivedRoundId();
+    BOOST_CHECK(!forged.IsValidBasic(&strError));
+    BOOST_CHECK_EQUAL(strError, "coordinator signature does not verify");
+
     // Every other field is covered too, so a round cannot be re-pointed either.
     CMixRoundAnnouncement moved = announce;
     moved.strEndpoint = "other.onion";

@@ -2699,18 +2699,19 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
     BOOST_REQUIRE(round.RegisterOutput(first.vchCredential, first.vchSignature, vFirst, nNow,
                                        &strError));
 
-    // A DIFFERENT bundle -- so a different credential, and not a retransmission -- whose
-    // variant for the next free position names the key already registered. A slot is still
-    // free, so the seat count is not what refuses it.
+    // A different bundle (not a retransmission) naming the already registered key at a fresh
+    // commitment; a slot is free, so only the duplicate-key check can refuse it.
     std::vector<CMixOutputRecord> vSecond(round.Seats(), Rec(uint256(321), 0xaf));
-    vSecond[1] = taken;
+    vSecond[1] = Rec(uint256(320), 0xb9);
+    BOOST_REQUIRE(vSecond[1].OwnerKey() == taken.OwnerKey());
+    BOOST_REQUIRE(!(vSecond[1].commitment == taken.commitment));
     const Token second = MintToken(vSecond);
     BOOST_CHECK(second.vchCredential != first.vchCredential);
     BOOST_CHECK_MESSAGE(!round.RegisterOutput(second.vchCredential, second.vchSignature, vSecond,
                                               nNow, &strError),
                         "two outputs named one key, so one seat's value is payable to "
                         "another seat's key");
-    BOOST_CHECK(strError.find("already registered") != std::string::npos);
+    BOOST_CHECK_EQUAL(strError, "output key is already registered");
     BOOST_CHECK_EQUAL(round.Outputs(), 1u);
 
     // The same token under another bundle is refused too, now for the binding rather than
@@ -2723,6 +2724,41 @@ BOOST_AUTO_TEST_CASE(two_outputs_may_not_name_the_same_key)
     const Token other = MintToken(Bundle(Rec(uint256(321), 0xaf), round));
     BOOST_CHECK(round.RegisterOutput(other.vchCredential, other.vchSignature, Bundle(Rec(uint256(321), 0xaf), round), nNow, &strError));
     BOOST_CHECK_EQUAL(round.Outputs(), 2u);
+}
+
+// A registration past the last seat is refused before any variant is read: the position
+// it would take is outside the bundle.
+BOOST_AUTO_TEST_CASE(an_output_past_the_last_seat_is_refused)
+{
+    const int64_t nNow = 18100000;
+    CMixRound round;
+    std::vector<Seat> vSeats;
+    BOOST_REQUIRE(OpenAndFill(round, vSeats, 3, nNow));
+    std::string strError;
+    BOOST_REQUIRE(round.CloseJoin(nNow, &strError));
+    for (size_t i = 0; i < vSeats.size(); i++)
+        BOOST_REQUIRE(round.IssueToken(vSeats[i].pubkey, &strError));
+    BOOST_REQUIRE(round.OpenOutputWindow(nNow, nNow + MIX_OUTPUT_WINDOW, &strError));
+
+    for (size_t i = 0; i < round.Seats(); i++)
+    {
+        const std::vector<CMixOutputRecord> vBundle =
+            Bundle(Rec(uint256(340 + (int)i), (unsigned char)(0xc0 + i)), round);
+        const Token token = MintToken(vBundle);
+        BOOST_REQUIRE_MESSAGE(round.RegisterOutput(token.vchCredential, token.vchSignature,
+                                                   vBundle, nNow, &strError),
+                              strError);
+    }
+    BOOST_REQUIRE_EQUAL(round.Outputs(), round.Seats());
+
+    // A fresh token over a fresh bundle: not a retransmission, and every field is new.
+    const std::vector<CMixOutputRecord> vExtra = Bundle(Rec(uint256(349), 0xcf), round);
+    const Token extra = MintToken(vExtra);
+    BOOST_CHECK_MESSAGE(!round.RegisterOutput(extra.vchCredential, extra.vchSignature, vExtra,
+                                              nNow, &strError),
+                        "an output was registered with every seat already paid");
+    BOOST_CHECK_EQUAL(strError, "every seat already has an output");
+    BOOST_CHECK_EQUAL(round.Outputs(), round.Seats());
 }
 
 // The prefix travels coordinator to seat, never the other way, and its frame carries the
