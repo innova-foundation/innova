@@ -355,17 +355,8 @@ BOOST_AUTO_TEST_CASE(block_value_conservation_stands_behind_the_coinbase_allowan
     BOOST_CHECK_EQUAL(gross.block.nDoS, 50);
 }
 
-// ---------------------------------------------------------------------------
-// R-DAG-009: finality carriers are valid only in a post-DAG proof-of-work block.
-//
-// Three carriers, one rule each, and the rule is a conjunction: the carrier must
-// be present AND the containing block must be either below the DAG fork or a
-// proof-of-stake block. A case that only showed the refusal would pass on either
-// half alone, so each carrier is driven four ways -- carried by a post-DAG
-// proof-of-work block (must pass the gate and be refused later, by the carrier's
-// own validation), carried below the fork, carried by a proof-of-stake block,
-// and a proof-of-stake block with no carrier at all (must pass the gate).
-// ---------------------------------------------------------------------------
+// R-DAG-009: below the DAG fork a tagged OP_RETURN is plain data; at or above it a PoW
+// block validates the carrier and a PoS block is refused.
 
 namespace {
 
@@ -533,8 +524,8 @@ void RunCarrierArms(const char* pszCarrier, const CScript& carrierScript,
                         "validation, so nothing here shows the gate was passed "
                         "rather than skipped; log: " << strPowLog);
 
-    // Arm: the same block, one height lower, below the DAG fork. This is the
-    // deciding half of the gate.
+    // Arm: the same block, one height lower, below the DAG fork. The carrier is
+    // plain data there: no gate refusal, no envelope refusal, no validation.
     Candidate preDag;
     BOOST_REQUIRE(BuildCandidate(preDag));
     AppendCoinbaseCarrier(preDag, carrierScript);
@@ -542,12 +533,27 @@ void RunCarrierArms(const char* pszCarrier, const CScript& carrierScript,
     preDag.index.pprev = pPreParent;
     preDag.index.nHeight = nPreForkHeight;
     BOOST_REQUIRE(preDag.Height() < FORK_HEIGHT_DAG);
+    Candidate preDagPlain;
+    BOOST_REQUIRE(BuildCandidate(preDagPlain));
+    BOOST_REQUIRE(SealCandidate(preDagPlain));
+    preDagPlain.index.pprev = pPreParent;
+    preDagPlain.index.nHeight = nPreForkHeight;
+    std::string strPlainLog;
+    const CBlock::ConnectResult plainResult = ConnectAndRollBack(preDagPlain, strPlainLog);
     std::string strPreDagLog;
-    BOOST_CHECK(ConnectAndRollBack(preDag, strPreDagLog) == CBlock::CONNECT_RESULT_INVALID);
-    BOOST_CHECK_MESSAGE(Says(strPreDagLog, strReason),
-                        pszCarrier << ": a block below the DAG fork carrying this "
-                        "envelope was not refused by the carrier gate; log: "
-                        << strPreDagLog);
+    BOOST_CHECK_MESSAGE(ConnectAndRollBack(preDag, strPreDagLog) == plainResult,
+                        pszCarrier << ": below the DAG fork the carrier changed the "
+                        "connect result; log: " << strPreDagLog);
+    BOOST_CHECK_MESSAGE(!Says(strPreDagLog, strReason),
+                        pszCarrier << ": a block below the DAG fork was refused by "
+                        "the carrier gate; log: " << strPreDagLog);
+    BOOST_CHECK_MESSAGE(!Says(strPreDagLog, "finality vote envelope") &&
+                        !Says(strPreDagLog, "finality certificate envelope"),
+                        pszCarrier << ": a block below the DAG fork was refused by "
+                        "the envelope decoder; log: " << strPreDagLog);
+    BOOST_CHECK_MESSAGE(!SaysCarrierWasValidatedLater(strPreDagLog),
+                        pszCarrier << ": a carrier below the DAG fork was validated; "
+                        "log: " << strPreDagLog);
 
     // The proof-of-stake half of the gate is shadowed on every reachable input: at or
     // above the DAG height a PoS block is refused for its type at the top of

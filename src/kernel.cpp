@@ -556,7 +556,7 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
 
                         if (fFound)
                         {
-                            if (!VerifySignature(txPrev, tx, 0, SCRIPT_VERIFY_NONE, 0))
+                            if (!VerifySignature(txPrev, tx, 0, GetColdStakeScriptFlags(nEvalHeight), 0))
                                 return tx.DoS(100, error("CheckProofOfStake() : SPV VerifySignature failed on coinstake %s", tx.GetHash().ToString().c_str()));
 
                             if (!CheckStakeKernelHash(nBits, block, nTxPos, txPrev, txin.prevout, tx.nTime, hashProofOfStake, targetProofOfStake, fDebug, nEvalHeight))
@@ -572,7 +572,7 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
     }
 
     // Verify signature
-    if (!VerifySignature(txPrev, tx, 0, SCRIPT_VERIFY_NONE, 0))
+    if (!VerifySignature(txPrev, tx, 0, GetColdStakeScriptFlags(nEvalHeight), 0))
         return tx.DoS(100, error("CheckProofOfStake() : VerifySignature failed on coinstake %s", tx.GetHash().ToString().c_str()));
 
     // Read block header

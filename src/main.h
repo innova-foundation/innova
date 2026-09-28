@@ -320,6 +320,11 @@ inline int GetForkHeightColdStaking() {
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
 
+// Script flag enabling OP_CHECKCOLDSTAKEVERIFY for a transaction validated at nHeight.
+inline unsigned int GetColdStakeScriptFlags(int nHeight) {
+    return nHeight >= FORK_HEIGHT_COLD_STAKING ? (unsigned int)SCRIPT_VERIFY_COLDSTAKE : 0U;
+}
+
 // Hard fork height for shielded transactions (zk-SNARK privacy)
 // In regtest/testnet mode, shielded transactions activate at block 1
 inline int GetForkHeightShielded() {
@@ -329,14 +334,11 @@ inline int GetForkHeightShielded() {
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
-// ANON_TXN_VERSION (1000) is retired on every network from genesis. A full
-// replay of mainnet to 7,889,246 counted zero ring-signature transactions ever
-// -- no outputs, no key images, nothing unclaimed -- so rejecting from height 0
-// cannot change how any historical block validates. Returning 0 rather than
-// deleting the checks keeps every >= site rejecting, including the consensus
-// ones in ConnectInputs, ConnectBlock and AcceptBlock.
+// ANON_TXN_VERSION (1000) stays valid on mainnet until the first v5 gate, as in v4.3.9.5.
 inline int GetForkHeightRingSigDeprecation() {
-    return 0;
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 0 : ShiftMainnetV5Activation(7800000);
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 

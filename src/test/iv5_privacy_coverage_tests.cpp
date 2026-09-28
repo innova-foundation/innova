@@ -1208,6 +1208,85 @@ BOOST_AUTO_TEST_CASE(a_ring_signature_transaction_is_refused_at_every_height)
                      "an ordinary transaction");
 }
 
+// Mainnet keeps v4.3.9.5's window: the height gate admits a ring-signature
+// transaction below the first v5 gate and refuses it from there.
+BOOST_AUTO_TEST_CASE(a_ring_signature_transaction_passes_the_gate_below_it_on_mainnet)
+{
+    LadderGuard guard;
+    TipHeightGuard tipGuard;
+    guard.SelectMainnet();
+    LOCK(cs_main);
+
+    const char* kDeprecated =
+        "ConnectInputs() : ring signature transactions deprecated after height";
+
+    BOOST_REQUIRE_EQUAL(FORK_HEIGHT_RINGSIG_DEPRECATION,
+                        ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE));
+
+    CTransaction anon;
+    anon.nVersion = ANON_TXN_VERSION;
+    anon.nTime = (unsigned int)GetAdjustedTime();
+    anon.vout.push_back(CTxOut(1 * COIN, CScript()));
+
+    CBlockIndex index;
+    index.nHeight = FORK_HEIGHT_RINGSIG_DEPRECATION - 1;
+    nBestHeight = index.nHeight;
+    ExpectPastReason(RunConnectInputs(anon, &index), kDeprecated,
+                     "ring-signature transaction below the mainnet gate");
+
+    index.nHeight = FORK_HEIGHT_RINGSIG_DEPRECATION;
+    nBestHeight = index.nHeight;
+    ExpectReason(RunConnectInputs(anon, &index), kDeprecated,
+                 "ring-signature transaction at the mainnet gate");
+}
+
+// The consensus ring-size floor is 1, as in v4.3.9.5; MIN_RING_SIZE is relay
+// policy. Sizes 1..MIN_RING_SIZE-1 pass the range check, 0 does not.
+BOOST_AUTO_TEST_CASE(ring_size_consensus_floor_is_one)
+{
+    LadderGuard guard;
+    guard.SelectMainnet();
+    LOCK(cs_main);
+    BOOST_REQUIRE(MIN_RING_SIZE > 2);
+
+    for (int nRing = 0; nRing <= (int)MIN_RING_SIZE; ++nRing)
+    {
+        CTransaction anon;
+        anon.nVersion = ANON_TXN_VERSION;
+        anon.nTime = 123;
+        CTxIn txin;
+        txin.prevout.hash = uint256((uint64_t)(0x0d3a0000ull + nRing));
+        txin.prevout.n = ((uint32_t)nRing << 16) | 0x02;
+        txin.scriptSig.resize(2 + (33 + 32 + 32) * (nRing > 0 ? nRing : 1), 0);
+        txin.scriptSig[0] = OP_RETURN;
+        txin.scriptSig[1] = OP_ANON_MARKER;
+        BOOST_REQUIRE(txin.IsAnonInput());
+        BOOST_REQUIRE_EQUAL(txin.ExtractRingSize(), nRing);
+        anon.vin.push_back(txin);
+        anon.vout.push_back(CTxOut(1 * COIN, CScript()));
+
+        CTxDB txdb("r+");
+        int64_t nSum = 0;
+        bool fInvalid = false;
+        LogCapture capture;
+        const bool fOk = anon.CheckAnonInputs(txdb, 100, nSum, fInvalid, false);
+        const std::string strLog = capture.Release();
+        const std::string strRange = strprintf("ringsize %d not in range", nRing);
+        if (nRing < 1)
+        {
+            BOOST_CHECK(!fOk);
+            BOOST_CHECK_MESSAGE(LogHas(strLog, strRange.c_str()),
+                                "ring size 0 passed the floor; captured: " << Excerpt(strLog));
+        }
+        else
+        {
+            BOOST_CHECK_MESSAGE(!LogHas(strLog, strRange.c_str()),
+                                "ring size " << nRing << " refused by the floor; captured: "
+                                << Excerpt(strLog));
+        }
+    }
+}
+
 // The same rule at the site ahead of it, reached with a real block. The
 // transaction names an output the chain actually holds, so the block gets past
 // input resolution and the ring-signature branch is what refuses it.

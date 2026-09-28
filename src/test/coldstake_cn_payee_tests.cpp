@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../collateralnode.h"
+#include "../kernel.h"
 #include "../key.h"
 #include "../main.h"
 #include "../miner.h"
@@ -289,17 +290,15 @@ CBlock::ConnectResult ConnectAndRollBack(ColdStakeBlock& cs)
     return result;
 }
 
-// Whether the script interpreter -- which runs before the cold-stake branch, on
-// the same coinstake -- accepts the delegation input. The flags are the ones
-// ConnectBlock computes at or above FORK_HEIGHT_TIGHTER_DRIFT, which on regtest
-// is every height. A value arm is only cover for ConnectBlock's clause if this
-// answers true.
+// Whether the interpreter (run before the cold-stake branch) accepts the delegation
+// input under ConnectBlock's flags. A value arm covers ConnectBlock only if true.
 bool InterpreterAcceptsLeg(const CTransaction& txFund, const ColdStakeBlock& cs,
                            unsigned int nIn)
 {
     const unsigned int flags = MANDATORY_SCRIPT_VERIFY_FLAGS |
                                SCRIPT_VERIFY_STRICTENC |
-                               SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+                               SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
+                               GetColdStakeScriptFlags(cs.nHeight);
     return VerifySignature(txFund, cs.block.vtx[1], nIn, flags, 0);
 }
 
@@ -777,6 +776,51 @@ BOOST_AUTO_TEST_CASE(a_cold_stake_collateralnode_payment_is_capped_at_a_share_of
                                 "result " << (int)result);
             BOOST_CHECK(ConnectResultMayPersistVerdict(result));
         }
+    }
+}
+
+// The kernel's own signature check on a staker-path coinstake follows the
+// cold-staking gate: below it OP_CHECKCOLDSTAKEVERIFY is undefined, as in v4.3.9.5.
+BOOST_AUTO_TEST_CASE(the_kernel_signature_check_follows_the_cold_staking_gate)
+{
+    ColdStakingGateGuard gateGuard;
+    DetachedWalletGuard walletGuard;
+
+    BOOST_REQUIRE(EnsureFixture());
+    nRegtestColdStakingHeight = 0;
+
+    std::vector<unsigned int> vLegs;
+    vLegs.push_back(LEG_P2CS_SMALL);
+    std::vector<CTxOut> vOutputs;
+    vOutputs.push_back(CTxOut(nLegValues[LEG_P2CS_SMALL], g_fixture.p2csScript));
+
+    ColdStakeBlock cs;
+    BOOST_REQUIRE(BuildStakeBlock(g_fixture.txFund, vLegs, vOutputs, cs));
+    BOOST_REQUIRE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING && cs.nHeight < FORK_HEIGHT_DAG);
+    BOOST_REQUIRE(InterpreterAcceptsLeg(g_fixture.txFund, cs, 0));
+
+    // At the gate the signature passes; only the kernel hash may still refuse (DoS 1).
+    {
+        CTransaction tx = cs.block.vtx[1];
+        tx.nDoS = 0;
+        uint256 hashProof, hashTarget;
+        CheckProofOfStake(tx, cs.block.nBits, hashProof, hashTarget, cs.nHeight);
+        BOOST_CHECK_MESSAGE(tx.nDoS < 100,
+                            "the kernel refused a staker-path signature at the gate, DoS "
+                            << tx.nDoS);
+    }
+
+    // One height below the gate the same bytes fail the signature check (DoS 100).
+    nRegtestColdStakingHeight = cs.nHeight + 1;
+    BOOST_REQUIRE(cs.nHeight < FORK_HEIGHT_COLD_STAKING);
+    {
+        CTransaction tx = cs.block.vtx[1];
+        tx.nDoS = 0;
+        uint256 hashProof, hashTarget;
+        BOOST_CHECK(!CheckProofOfStake(tx, cs.block.nBits, hashProof, hashTarget, cs.nHeight));
+        BOOST_CHECK_MESSAGE(tx.nDoS == 100,
+                            "the kernel accepted a staker-path signature below the gate, DoS "
+                            << tx.nDoS);
     }
 }
 

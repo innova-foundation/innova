@@ -200,8 +200,8 @@ BOOST_AUTO_TEST_CASE(both_decoders_agree_across_the_permitted_parent_range)
     }
 }
 
-// The 16/17 step is where the generic element cap used to cut the permissive
-// decoder off. The cap itself must still be in force for generic readers.
+// The 16/17 parent step crosses the 520-byte element cap. GetOp has no element cap,
+// as in v4.3.9.5; EvalScript enforces it.
 BOOST_AUTO_TEST_CASE(the_sixteen_to_seventeen_parent_boundary_decodes)
 {
     BOOST_CHECK_EQUAL(MAX_SCRIPT_ELEMENT_SIZE, 520U);
@@ -218,9 +218,8 @@ BOOST_AUTO_TEST_CASE(the_sixteen_to_seventeen_parent_boundary_decodes)
         BOOST_CHECK_EQUAL(script.size(), nPayloads[i] + 4);
 
         BOOST_CHECK_MESSAGE(
-            GenericReaderAcceptsPush(script) ==
-                (nPayloads[i] <= MAX_SCRIPT_ELEMENT_SIZE),
-            "generic element cap moved at n=" << nCounts[i]);
+            GenericReaderAcceptsPush(script),
+            "generic reader refused the push at n=" << nCounts[i]);
 
         const std::vector<uint256> vPermissive = ExtractDAGParents(script);
         BOOST_CHECK_MESSAGE(vPermissive == vParents,

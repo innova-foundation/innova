@@ -135,7 +135,10 @@ enum
     // discouraged NOPs fails the script. This verification flag will never be
     // a mandatory flag applied to scripts in a block. NOPs that are not
     // executed, e.g.  within an unexecuted IF ENDIF block, are *not* rejected.
-    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS  = (1U << 8)
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS  = (1U << 8),
+
+    // OP_CHECKCOLDSTAKEVERIFY is defined; without it the opcode fails when executed, as before the cold-staking fork.
+    SCRIPT_VERIFY_COLDSTAKE = (1U << 10)
 
 };
 
@@ -770,8 +773,6 @@ public:
                 memcpy(&nSize, &pc[0], 4);
                 pc += 4;
             }
-            if (nSize > MAX_SCRIPT_ELEMENT_SIZE)
-                return false;
             if (end() - pc < 0 || (unsigned int)(end() - pc) < nSize)
                 return false;
             if (pvchRet)
@@ -804,48 +805,14 @@ public:
         int nFound = 0;
         if (b.empty())
             return nFound;
-
-        // Verify pattern contains complete opcodes
-        opcodetype bopcode;
-        CScript::const_iterator bpc = b.begin();
-        while (bpc < b.end())
-        {
-            if (!b.GetOp(bpc, bopcode))
-                return nFound;  // Pattern contains incomplete opcodes, refuse to match
-        }
-
         iterator pc = begin();
         opcodetype opcode;
         do
         {
-            if (end() - pc >= (long)b.size() && memcmp(&pc[0], &b[0], b.size()) == 0)
+            while (end() - pc >= (long)b.size() && memcmp(&pc[0], &b[0], b.size()) == 0)
             {
-                // Verify match ends at opcode boundary
-                iterator matchEnd = pc + b.size();
-                iterator checkPc = pc;
-                opcodetype checkOp;
-                bool isCompleteMatch = true;
-
-                while (checkPc < matchEnd)
-                {
-                    if (!GetOp(checkPc, checkOp))
-                    {
-                        isCompleteMatch = false;
-                        break;
-                    }
-                    if (checkPc > matchEnd)
-                    {
-                        isCompleteMatch = false;
-                        break;
-                    }
-                }
-
-                if (isCompleteMatch && checkPc == matchEnd)
-                {
-                    erase(pc, pc + b.size());
-                    ++nFound;
-                    continue;  // Check for another match at same position
-                }
+                erase(pc, pc + b.size());
+                ++nFound;
             }
         }
         while (GetOp(pc, opcode));

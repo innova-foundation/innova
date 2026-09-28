@@ -624,6 +624,8 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
 
                 case OP_CHECKCOLDSTAKEVERIFY:
                 {
+                    if (!(flags & SCRIPT_VERIFY_COLDSTAKE))
+                        return false;
                     if (!txTo.IsCoinStake())
                         return false;
 
@@ -698,8 +700,6 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 case OP_NOTIF:
                 {
                     // <expression> if [statements] [else [statements]] endif
-                    if (vfExec.size() >= 100)
-                        return false;
                     bool fValue = false;
                     if (fExec)
                     {
@@ -1480,9 +1480,7 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int
     if (nIn >= txTo.vin.size())
     {
         printf("ERROR: SignatureHash() : nIn=%d out of range\n", nIn);
-        CHashWriter ssError(SER_GETHASH, 0);
-        ssError << txTo.GetHash() << nIn << (uint32_t)0xDEADBEEF;
-        return ssError.GetHash();
+        return 1;
     }
     CTransaction txTmp(txTo);
 
@@ -1516,9 +1514,7 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int
         if (nOut >= txTmp.vout.size())
         {
             printf("ERROR: SignatureHash() : nOut=%d out of range\n", nOut);
-            CHashWriter ssError(SER_GETHASH, 0);
-            ssError << txTo.GetHash() << nOut << (uint32_t)0xBADC0DE1;
-            return ssError.GetHash();
+            return 1;
         }
         txTmp.vout.resize(nOut+1);
         for (unsigned int i = 0; i < nOut; i++)
@@ -1578,7 +1574,8 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
 
     // Test solution
     //return VerifyScript(txin.scriptSig, fromPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, SignatureChecker(txTo, nIn));
-    return VerifyScript(txin.scriptSig, fromPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0);
+    // Signer self-check; the height gate on SCRIPT_VERIFY_COLDSTAKE is applied by the validators.
+    return VerifyScript(txin.scriptSig, fromPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_COLDSTAKE, 0);
 }
 
 bool SignSignature(const CKeyStore &keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)

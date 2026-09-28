@@ -1221,27 +1221,60 @@ BOOST_AUTO_TEST_CASE(anonymous_chain_effects_are_outer_batch_atomic_and_fail_clo
     BOOST_CHECK(!ApplyLegacyAnonEffectPlan(txdb, plan, error));
     BOOST_CHECK(error.find("outer chain transaction") != std::string::npos);
 
-    // Ring signatures are retired from genesis, so no height builds a plan and
-    // the apply/disconnect machinery below the old gate is unreachable. The
-    // coverage it used to carry goes when that machinery is deleted alongside
-    // the 2000-2002 envelopes; until then this pins the retirement itself.
+    // Mainnet builds a plan below the ring-signature gate, as v4.3.9.5 did.
     BOOST_REQUIRE(txdb.TxnBegin());
     BOOST_REQUIRE(txdb.EraseAnonOutput(pkCoin));
     {
         LOCK(cs_main);
-        const int vHeights[] = { 0, 1, nBlockHeight,
-                                 FORK_HEIGHT_RINGSIG_DEPRECATION };
-        for (size_t i = 0; i < sizeof(vHeights) / sizeof(vHeights[0]); i++)
-        {
-            std::set<ec_point> blockKeyImages;
-            bool invalid = false;
-            BOOST_CHECK(!tx.BuildLegacyAnonEffectPlan(
-                txdb, vHeights[i], blockKeyImages, plan, invalid));
-            BOOST_CHECK(invalid);
-            BOOST_CHECK_EQUAL(plan.vOutputs.size(), 0U);
-        }
+        BOOST_REQUIRE(nBlockHeight < FORK_HEIGHT_RINGSIG_DEPRECATION);
+        std::set<ec_point> blockKeyImages;
+        bool invalid = false;
+        BOOST_REQUIRE(tx.BuildLegacyAnonEffectPlan(
+            txdb, nBlockHeight, blockKeyImages, plan, invalid));
+        BOOST_CHECK(!invalid);
     }
+    BOOST_REQUIRE_EQUAL(plan.vOutputs.size(), 1U);
+
+    COutPoint conflictingOutpoint(uint256(0xa200), 0);
+    CAnonOutput conflictingOutput(conflictingOutpoint, 7,
+                                  nBlockHeight, 0);
+    BOOST_REQUIRE(txdb.WriteAnonOutput(pkCoin, conflictingOutput));
+    BOOST_CHECK(!ApplyLegacyAnonEffectPlan(txdb, plan, error));
+    BOOST_CHECK(error.find("changed after validation") !=
+                std::string::npos);
+    BOOST_REQUIRE(txdb.EraseAnonOutput(pkCoin));
+
+    BOOST_REQUIRE(ApplyLegacyAnonEffectPlan(txdb, plan, error));
+    // Replaying the exact plan in the same batch is idempotent.
+    BOOST_REQUIRE(ApplyLegacyAnonEffectPlan(txdb, plan, error));
+
+    CAnonOutput stored;
+    BOOST_REQUIRE_EQUAL(txdb.ReadAnonOutputStatus(pkCoin, stored),
+                        TXDB_READ_FOUND);
+    BOOST_CHECK_EQUAL(stored.nBlockHeight, nBlockHeight);
+    BOOST_CHECK_EQUAL(stored.nValue, 7);
+
+    BOOST_REQUIRE(DisconnectLegacyAnonChainState(
+        txdb, tx, nBlockHeight, error));
+    BOOST_CHECK_EQUAL(txdb.ReadAnonOutputStatus(pkCoin, stored),
+                      TXDB_READ_NOT_FOUND);
+    // Missing exact state on a duplicate rollback is corruption, not a no-op.
+    BOOST_CHECK(!DisconnectLegacyAnonChainState(
+        txdb, tx, nBlockHeight, error));
+    BOOST_CHECK(error.find("missing/corrupt/mismatched") !=
+                std::string::npos);
     BOOST_REQUIRE(txdb.TxnAbort());
+
+    // The builder refuses from the gate on.
+    {
+        LOCK(cs_main);
+        std::set<ec_point> blockKeyImages;
+        bool invalid = false;
+        BOOST_CHECK(!tx.BuildLegacyAnonEffectPlan(
+            txdb, FORK_HEIGHT_RINGSIG_DEPRECATION,
+            blockKeyImages, plan, invalid));
+        BOOST_CHECK(invalid);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(anonymous_block_key_image_duplicates_are_candidate_local)
@@ -2291,9 +2324,8 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
 
     // Shielded output support precedes anything that spends or proves over it.
     BOOST_CHECK(GetForkHeightShielded() > nFirst);
-    // Ring signatures are retired from genesis on every network rather than
-    // staged after shielded activation, so there is no window to order.
-    BOOST_CHECK_EQUAL(GetForkHeightRingSigDeprecation(), 0);
+    // Ring signatures stay valid until the first v5 gate, as in v4.3.9.5.
+    BOOST_CHECK_EQUAL(GetForkHeightRingSigDeprecation(), nFirst);
     // Serial v2 spends over the shielded pool, so it must follow shielded activation
     // and stay on the shift.
     BOOST_CHECK(GetForkHeightSerialV2() > GetForkHeightShielded());

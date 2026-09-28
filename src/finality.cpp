@@ -2416,7 +2416,8 @@ bool ExtractFinalityVotesFromBlockForHeight(
     vVotesOut.clear();
     if (pFailure)
         *pFailure = FINALITY_ENVELOPE_NO_MATCH;
-    if (block.vtx.empty())
+    // Below the DAG gate a tagged OP_RETURN is plain data, as in v4.3.9.5.
+    if (block.vtx.empty() || nHeight < FORK_HEIGHT_DAG)
         return true;
     for (const CTxOut& out : block.vtx[0].vout)
     {
@@ -2445,7 +2446,8 @@ bool ExtractFinalityTallyCertificatesFromBlockForHeight(
     vCertsOut.clear();
     if (pFailure)
         *pFailure = FINALITY_ENVELOPE_NO_MATCH;
-    if (block.vtx.empty())
+    // Below the DAG gate a tagged OP_RETURN is plain data, as in v4.3.9.5.
+    if (block.vtx.empty() || nHeight < FORK_HEIGHT_DAG)
         return true;
     for (const CTxOut& out : block.vtx[0].vout)
     {

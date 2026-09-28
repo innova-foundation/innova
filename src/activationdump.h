@@ -132,10 +132,9 @@ inline std::string GetActivationLadderJSON()
       "activates_at", NULL, NULL },
     { "FORK_HEIGHT_SHIELDED", "GetForkHeightShielded", "src/main.h",
       &GetForkHeightShielded, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
-    // Zero here means active from genesis on every network -- the opposite of the
-    // zero FORK_HEIGHT_IDNS_RESET returns off mainnet.
+    // Zero off mainnet means retired from genesis on testnet and regtest.
     { "FORK_HEIGHT_RINGSIG_DEPRECATION", "GetForkHeightRingSigDeprecation", "src/main.h",
-      &GetForkHeightRingSigDeprecation, false, NULL, NULL, NULL, false, NULL, "always_active", "always_active", NULL },
+      &GetForkHeightRingSigDeprecation, true, NULL, NULL, NULL, false, NULL, "activates_at", "always_active", NULL },
     { "FORK_HEIGHT_DSP", "GetForkHeightDSP", "src/main.h",
       &GetForkHeightDSP, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_NULLSEND", "GetForkHeightNullSend", "src/main.h",

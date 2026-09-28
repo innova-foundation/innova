@@ -679,8 +679,6 @@ void Unserialize_impl(Stream& is, std::vector<T, A>& v, int nType, int nVersion,
 {
     v.clear();
     unsigned int nSize = ReadCompactSize(is);
-    if (nSize * sizeof(T) > MAX_VECTOR_SIZE)
-        throw std::ios_base::failure("vector size too large");
     unsigned int i = 0;
     unsigned int nMid = 0;
     while (nMid < nSize)

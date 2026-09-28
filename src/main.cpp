@@ -7325,7 +7325,16 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits)
     return true;
 }
 
-// Return maximum amount of blocks that other nodes claim to have
+// Lower median, so one peer's announced height cannot move it; -1 when empty.
+static int LowerMedianPeerHeight(std::vector<int> vHeights)
+{
+    if (vHeights.empty())
+        return -1;
+    std::sort(vHeights.begin(), vHeights.end());
+    return vHeights[(vHeights.size() - 1) / 2];
+}
+
+// Blocks that other nodes claim to have: lower median of fresh peer heights.
 int GetNumBlocksOfPeers()
 {
     int nPeerHeight = -1;
@@ -7333,13 +7342,15 @@ int GetNumBlocksOfPeers()
     TRY_LOCK(cs_vNodes, lockNodes);
     if (lockNodes)
     {
+        std::vector<int> vFresh;
         for (CNode* pnode : vNodes)
         {
             if (!pnode || pnode->fClient)
                 continue;
             if (pnode->nBestKnownHeight > 0 && pnode->nLastHeightUpdate > 0 && nNow - pnode->nLastHeightUpdate <= 120)
-                nPeerHeight = std::max(nPeerHeight, pnode->nBestKnownHeight);
+                vFresh.push_back(pnode->nBestKnownHeight);
         }
+        nPeerHeight = LowerMedianPeerHeight(vFresh);
     }
     if (nPeerHeight >= 0)
         return std::max(nPeerHeight, Checkpoints::GetTotalBlocksEstimate());
@@ -7548,6 +7559,7 @@ bool IsInitialBlockDownload()
         TRY_LOCK(cs_vNodes, lockNodes);
         if (lockNodes)
         {
+            std::vector<int> vFresh, vKnown, vBusy;
             for (CNode* pnode : vNodes)
             {
                 if (!pnode || pnode->fClient)
@@ -7559,23 +7571,23 @@ bool IsInitialBlockDownload()
                                     pnode->nLastHeightUpdate > 0 &&
                                     nNow - pnode->nLastHeightUpdate <= 120;
                 if (fFreshHeight)
-                    nFreshPeerHeight = std::max(nFreshPeerHeight, pnode->nBestKnownHeight);
+                    vFresh.push_back(pnode->nBestKnownHeight);
+                if (pnode->nBestKnownHeight > 0)
+                    vKnown.push_back(pnode->nBestKnownHeight);
 
                 if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
                     nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
 
-                // Deliberately not gated on fFreshHeight. nLastHeightUpdate only moves when
-                // a peer's height RISES, so a peer sitting at the tip goes stale after 120s
-                // and stops counting -- which said a node thousands of blocks behind was not
-                // in initial download, so it stopped clearing per-peer orphan counts and
-                // began scoring the one peer that could help it as misbehaving. Outstanding
-                // requests to a peer we know is ahead is catch-up whether or not its height
-                // moved recently, and it cannot be claimed by an idle peer: something has to
-                // actually be in flight.
-                bool fPeerHasWork = pnode->nBestKnownHeight > nBestHeight + 2;
-                if (fPeerHasWork && (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty()))
-                    fActiveCatchup = true;
+                // Not gated on fFreshHeight: a peer at the tip stops raising its height. Outstanding
+                // requests to a peer ahead count as catch-up; its height is capped at the median.
+                if (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty())
+                    vBusy.push_back(pnode->nBestKnownHeight);
             }
+            nFreshPeerHeight = LowerMedianPeerHeight(vFresh);
+            int nKnownMedian = LowerMedianPeerHeight(vKnown);
+            for (int nBusyHeight : vBusy)
+                if (std::min(nBusyHeight, nKnownMedian) > nBestHeight + 2)
+                    fActiveCatchup = true;
         }
     }
 
@@ -8040,7 +8052,8 @@ bool CTransaction::CheckAnonInputs(
 
         int64_t nCoinValue = -1;
         int nRingSize = txin.ExtractRingSize();
-        if (nRingSize < (int)MIN_RING_SIZE
+        // Consensus floor is 1 as in v4.3.9.5; MIN_RING_SIZE is relay policy.
+        if (nRingSize < 1
           ||nRingSize > LegacyAnonMaxRingSizeAtCandidate(nCandidateHeight))
         {
             printf("CheckAnonInputs(): Error input %d ringsize %d not in range [%d, %d].\n", i, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
@@ -8336,7 +8349,7 @@ static bool ReadLegacyAnonInputValueForDisconnect(
 {
     nValue = -1;
     const int nRingSize = txin.ExtractRingSize();
-    if (nRingSize < (int)MIN_RING_SIZE ||
+    if (nRingSize < 1 ||
         nRingSize > LegacyAnonMaxRingSizeAtCandidate(nBlockHeight))
     {
         strError = "legacy ANON disconnect has invalid ring size";
@@ -8532,6 +8545,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             if (!fBlock && nInclusionHeight < std::numeric_limits<int>::max())
                 ++nInclusionHeight;
         }
+        // OP_CHECKCOLDSTAKEVERIFY follows the carrying block's height, whatever the caller passed.
+        flags = (flags & ~(unsigned int)SCRIPT_VERIFY_COLDSTAKE) | GetColdStakeScriptFlags(nInclusionHeight);
         if (IsShielded() &&
             (IsLegacyPrivacyPolicyDisabled() ||
              IsBoundaryAActiveAtHeight(nInclusionHeight)))
@@ -9949,8 +9964,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         return DoS(100, error("ConnectBlock() : note finality votes are only valid in proof-of-work blocks"));
     if (vNoteFinalityVotes.size() > (size_t)FINALITY_MAX_BLOCK_NOTE_VOTES)
         return DoS(100, error("ConnectBlock() : too many note finality votes in block"));
-    std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
-    if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+    std::vector<CFinalityTallyShare> vFinalityShares;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
+    if (!vFinalityShares.empty() && IsProofOfStake())
         return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
     std::vector<CFinalityTallyCertificate> vFinalityCerts;
     FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
