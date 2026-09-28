@@ -891,6 +891,26 @@ add_executable(Innova MACOSX_BUNDLE
     ${INNOVA_CXX_SOURCES} ${INNOVA_HEADERS} ${INNOVA_UI_HEADERS} ${INNOVA_RESOURCES})
 
 add_dependencies(Innova genbuild)
+
+# bitcoin.qrc embeds the compiled translations; a checkout carries only the .ts sources.
+find_program(INNOVA_LRELEASE NAMES lrelease lrelease-qt6
+    HINTS ${QT6_INSTALL_PREFIX}/bin /opt/homebrew/opt/qttools/bin /usr/local/opt/qttools/bin
+          /usr/lib/qt6/bin /usr/lib/x86_64-linux-gnu/qt6/bin)
+if(NOT INNOVA_LRELEASE)
+    message(FATAL_ERROR "lrelease not found: install the Qt 6 Linguist tools (brew install qttools, or qt6-l10n-tools)")
+endif()
+file(GLOB INNOVA_TS_FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/qt/locale/bitcoin_*.ts)
+set(INNOVA_QM_FILES)
+foreach(ts ${INNOVA_TS_FILES})
+    get_filename_component(ts_name ${ts} NAME_WE)
+    set(qm ${CMAKE_CURRENT_SOURCE_DIR}/src/qt/locale/${ts_name}.qm)
+    add_custom_command(OUTPUT ${qm}
+        COMMAND ${INNOVA_LRELEASE} -silent ${ts} -qm ${qm}
+        DEPENDS ${ts} VERBATIM)
+    list(APPEND INNOVA_QM_FILES ${qm})
+endforeach()
+add_custom_target(translations DEPENDS ${INNOVA_QM_FILES})
+add_dependencies(Innova translations)
 target_compile_definitions(Innova PRIVATE ${INNOVA_DEFINES})
 target_include_directories(Innova PRIVATE ${INNOVA_INCLUDES})
 target_compile_options(Innova PRIVATE
