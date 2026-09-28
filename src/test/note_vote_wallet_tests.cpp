@@ -303,7 +303,7 @@ struct VoteChain
         BOOST_REQUIRE(pParent != NULL);
         pBoundary = chain.Extend(pParent, 1);
         BOOST_REQUIRE(pBoundary != NULL);
-        pTip = chain.Extend(pBoundary, FINALITY_VOTE_INCLUSION_WINDOW);
+        pTip = chain.Extend(pBoundary, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
         BOOST_REQUIRE(pTip != NULL);
         pSiblingBoundary = chain.Extend(pParent, 1);
         BOOST_REQUIRE(pSiblingBoundary != NULL);
@@ -590,11 +590,11 @@ BOOST_AUTO_TEST_CASE(the_builder_makes_a_vote_the_connect_rules_accept)
 
     // The window's far edge holds too, and the block after it does not.
     const ContextVerdict vLast =
-        JudgeVote(txdb, chain, nBoundary + FINALITY_VOTE_INCLUSION_WINDOW - 1,
+        JudgeVote(txdb, chain, nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1,
                   vote.effects);
     BOOST_CHECK_MESSAGE(vLast.fOK, vLast.strError);
     const ContextVerdict vPast =
-        JudgeVote(txdb, chain, nBoundary + FINALITY_VOTE_INCLUSION_WINDOW,
+        JudgeVote(txdb, chain, nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW,
                   vote.effects);
     BOOST_CHECK(!vPast.fOK);
     BOOST_CHECK(Mentions(vPast.strError, "outside its inclusion window"));
@@ -1026,14 +1026,9 @@ BOOST_AUTO_TEST_CASE(the_lane_is_inert_while_its_fork_height_is_unset)
     }
 }
 
-// What building a vote costs against the window it has to fit in.
-//
-// The window is FINALITY_VOTE_INCLUSION_WINDOW blocks at post-DAG spacing, and this node
-// starts building at GetFinalityVoteEmitOffset blocks past the boundary, so the build
-// plus relay must finish inside what is left. The builder runs the membership prover
-// twice -- once to learn the key image the outputs derive under, once against the signing
-// hash -- so the single-prove figure printed beside it is the ceiling on what splitting
-// the proof across the boundary could save.
+// Vote build time against FINALITY_NOTE_VOTE_INCLUSION_WINDOW at post-DAG spacing, after
+// GetFinalityVoteEmitOffset. The builder proves membership twice; the single-prove figure
+// is printed alongside.
 BOOST_AUTO_TEST_CASE(a_vote_builds_inside_its_inclusion_window)
 {
     ScopedNoteVoteHeight fork(0);
@@ -1089,7 +1084,7 @@ BOOST_AUTO_TEST_CASE(a_vote_builds_inside_its_inclusion_window)
     const int64_t nWarmMs = GetTimeMillis() - nWarmStart;
 
     const int64_t nWindowMs =
-        (int64_t)(FINALITY_VOTE_INCLUSION_WINDOW -
+        (int64_t)(FINALITY_NOTE_VOTE_INCLUSION_WINDOW -
                   GetFinalityVoteEmitOffset(BoundaryHeight())) *
         1000;
     // util.h redirects printf into debug.log, so the number a reader of the test run needs
@@ -1118,6 +1113,26 @@ BOOST_AUTO_TEST_CASE(a_vote_builds_inside_its_inclusion_window)
     // The size the design costed. A payload materially over it would not be the shape the
     // block and window caps were sized against.
     BOOST_CHECK_LT(vote.payload.size(), (size_t)10000);
+}
+
+// The producer proves only inside the note lane's own window, not the transparent one.
+BOOST_AUTO_TEST_CASE(the_producer_window_is_the_note_vote_window)
+{
+    ScopedNoteVoteHeight fork(0);
+    CTxDB txdb("r+");
+    VoteChain chain(0x6E770900U);
+    const int nBoundary = BoundaryHeight();
+    const char* strClosed = "the epoch's inclusion window is not open at this height";
+    uint256 keyImage = 0;
+    std::string error;
+    ProducePrivacyVNextNoteVote(txdb, chain.pBoundary,
+                                nBoundary + FINALITY_VOTE_INCLUSION_WINDOW, keyImage, error);
+    BOOST_CHECK_MESSAGE(!Mentions(error, strClosed), error);
+    error.clear();
+    BOOST_CHECK(!ProducePrivacyVNextNoteVote(txdb, chain.pBoundary,
+                                             nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW,
+                                             keyImage, error));
+    BOOST_CHECK_MESSAGE(Mentions(error, strClosed), error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

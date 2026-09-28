@@ -1779,6 +1779,17 @@ const CBlockIndex* GetFinalityAncestorOnChain(const CBlockIndex* pindexTip, int 
     return p;
 }
 
+int GetFinalityVoteSetCloseOffset(int nBoundaryHeight)
+{
+    const int nLastNoteHeight =
+        nBoundaryHeight > std::numeric_limits<int>::max() - FINALITY_NOTE_VOTE_INCLUSION_WINDOW
+            ? std::numeric_limits<int>::max()
+            : nBoundaryHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1;
+    if (IsIV5NoteVoteActiveAtHeight(nLastNoteHeight))
+        return std::max(FINALITY_VOTE_INCLUSION_WINDOW, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    return FINALITY_VOTE_INCLUSION_WINDOW;
+}
+
 bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
                                    std::vector<CFinalityVote>& vVotesOut,
                                    std::string* pstrError, bool* pfLocalFailure)
@@ -1797,17 +1808,17 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
         return reject("settlement has no parent block");
 
     const int nBoundary = GetEpochBoundaryHeight(nEpoch, pindexPrev->nHeight);
-    const int nWindowTop = nBoundary + FINALITY_VOTE_INCLUSION_WINDOW - 1;
+    const int nWindowTop = nBoundary + GetFinalityVoteSetCloseOffset(nBoundary) - 1;
     if (pindexPrev->nHeight != nWindowTop)
         return reject("settlement parent is not the top of the epoch vote-inclusion window");
 
-    // Walk the ancestor chain down to the epoch boundary. This is the canonical
-    // (selected-parent) chain of the settlement block, so the window it covers is
-    // exactly the set of blocks whose votes ConnectBlock validated on this chain.
+    // Walk the settlement block's selected-parent chain down to the epoch boundary. Transparent
+    // votes connect only in the first FINALITY_VOTE_INCLUSION_WINDOW blocks.
     std::vector<const CBlockIndex*> vWindow;
     vWindow.reserve(FINALITY_VOTE_INCLUSION_WINDOW);
     for (const CBlockIndex* p = pindexPrev; p && p->nHeight >= nBoundary; p = p->pprev)
-        vWindow.push_back(p);
+        if (p->nHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            vWindow.push_back(p);
     if (vWindow.empty() || vWindow.back()->nHeight != nBoundary)
         return reject("settlement vote-inclusion window is incomplete");
 
@@ -2967,9 +2978,9 @@ bool IsFinalityVoteWindowClosedForTip(int nEpoch, int nTipHeight)
             ? nTipHeight : nTipHeight + 1;
     if (nCandidateHeight < FORK_HEIGHT_VOTESET_ROOT)
         return true;
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, nCandidateHeight);
     const int64_t nFirstCertificateHeight =
-        (int64_t)GetEpochBoundaryHeight(nEpoch, nCandidateHeight) +
-        FINALITY_VOTE_INCLUSION_WINDOW;
+        (int64_t)nBoundary + GetFinalityVoteSetCloseOffset(nBoundary);
     return (int64_t)nCandidateHeight >= nFirstCertificateHeight;
 }
 
@@ -4814,7 +4825,7 @@ bool CFinalityTracker::CheckTallyCertificate(
     if (nContextHeight >= 0 && nContextHeight >= FORK_HEIGHT_VOTESET_ROOT)
     {
         int nCertBoundary = GetEpochBoundaryHeight(cert.nEpoch, nContextHeight);
-        if (nContextHeight < nCertBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+        if (nContextHeight < nCertBoundary + GetFinalityVoteSetCloseOffset(nCertBoundary))
             return reject("tally certificate before epoch vote-inclusion window close");
         int nContextEpoch = GetEpochForHeight(nContextHeight);
         if (cert.nEpoch > nContextEpoch)
@@ -6322,7 +6333,7 @@ static bool TallyCertificateOfferableAt(const CFinalityTallyCertificate& cert, i
     if (nBlockHeight >= FORK_HEIGHT_VOTESET_ROOT)
     {
         int nBoundary = GetEpochBoundaryHeight(cert.nEpoch, nBlockHeight);
-        if (nBlockHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+        if (nBlockHeight < nBoundary + GetFinalityVoteSetCloseOffset(nBoundary))
             return false;
     }
     return true;
@@ -6759,13 +6770,13 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
         GetEpochBoundaryHeight(vote.nEpoch, vote.nHeight) != vote.nHeight)
         return reject("note vote height is not this epoch boundary");
 
-    // R1: an epoch-E vote is block-valid only inside E's own [H_E, H_E+K) blocks, which is
-    // what freezes the connected vote set a certificate has to cover.
+    // R1: an epoch-E note vote is block-valid only inside E's own [H_E, H_E+K_note)
+    // blocks, which is what freezes the connected vote set a certificate has to cover.
     if (nContextHeight >= 0)
     {
         int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nContextHeight);
         if (nContextHeight < nBoundary ||
-            nContextHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            nContextHeight >= nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW)
             return reject("note finality vote outside epoch vote-inclusion window");
     }
 

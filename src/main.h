@@ -640,23 +640,9 @@ static const char* const MAINNET_ASSUME_VALID_BLOCK =
 // init.cpp refuses a value below Boundary B.
 extern int nRegtestIV5NoteVoteHeight;
 
-/** Where the note-vote lane activates: 4,800 blocks past Boundary B, so the pool and the
- *  boundary have settled before any note votes. Shift-invariant, because Boundary B moves
- *  with the ladder and this rides it.
- *
- *  The gap is a whole number of post-DAG epochs (16 x FINALITY_EPOCH_INTERVAL_POST_DAG)
- *  and Boundary B is itself one epoch above the DAG gate, so the result opens an epoch on
- *  every network, so activation is uniform within every epoch. Two gates read this height:
- *  the per-block one, on a connect height, and the per-epoch one, on state.nHeightEnd,
- *  which decides whether an epoch state commits note-vote leaves and which serialization
- *  version it is written at. They agree for every block of an epoch only when the height
- *  opens one. Off a boundary the straddling epoch is written V6 while its whole 24-block
- *  vote window precedes activation, so it commits a note-vote epoch no vote could enter.
- *
- *  This is a derivation and not a literal on purpose. The height used to live only in
- *  prose, which is the shape that leaves a stale value behind the next time the ladder is
- *  re-based -- the 2026-09-13 re-base left three of those. The gap is the invariant; the
- *  height is what the gap produces. */
+/** Note-vote lane activation: Boundary B + 4,800 (16 post-DAG epochs), so it opens an
+ *  epoch on every network. Must stay on an epoch boundary: the per-block and per-epoch
+ *  gates (state.nHeightEnd) agree only when the height opens an epoch. */
 inline int DeriveIV5NoteVoteHeight(int nBoundaryBHeight)
 {
     return nBoundaryBHeight + 4800;
@@ -1502,14 +1488,9 @@ bool CheckPrivacyVNextSpendAnchor(CTxDB& txdb, int nContextHeight,
                                   int& nAnchorEpochOut, bool& fLocalFailure,
                                   std::string& strError);
 
-/** Connect-time rules of a note finality vote (operation 10), judged at nContextHeight
- *  on the chain pindexAnchorTip heads: the lane's fork gate; the boundary the vote
- *  names is a post-DAG epoch boundary and the carrier chain's own ancestor at that
- *  height; the carrier sits inside [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW); and the
- *  proof anchors to epoch state E-1, which is identified by its boundary block before
- *  its root is compared. fLocalFailure is a record this node cannot read. fUnavailable
- *  is a record that is another branch's or not yet installed here, which the caller
- *  retries and never scores. Neither is a verdict on the vote. */
+/** Connect-time rules of a note finality vote (op 10): fork gate, boundary on the carrier's
+ *  chain, carrier within the inclusion window, proof anchored to epoch state E-1.
+ *  fLocalFailure and fUnavailable are not verdicts. */
 bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
                                          const CBlockIndex* pindexAnchorTip,
                                          int nContextHeight,

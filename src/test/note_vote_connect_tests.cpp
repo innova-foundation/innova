@@ -504,7 +504,7 @@ struct VoteChain
     CSyntheticChain chain;
     CBlockIndex* pParent;           // H_E - 1, shared by both branches
     CBlockIndex* pBoundary;         // main H_E
-    CBlockIndex* pTip;              // main H_E + FINALITY_VOTE_INCLUSION_WINDOW
+    CBlockIndex* pTip;              // main H_E + FINALITY_NOTE_VOTE_INCLUSION_WINDOW
     CBlockIndex* pSiblingBoundary;  // sibling H_E
     CBlockIndex* pSiblingTip;       // sibling H_E + 3
 
@@ -514,7 +514,7 @@ struct VoteChain
         BOOST_REQUIRE(pParent != NULL);
         pBoundary = chain.Extend(pParent, 1);
         BOOST_REQUIRE(pBoundary != NULL);
-        pTip = chain.Extend(pBoundary, FINALITY_VOTE_INCLUSION_WINDOW);
+        pTip = chain.Extend(pBoundary, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
         BOOST_REQUIRE(pTip != NULL);
         pSiblingBoundary = chain.Extend(pParent, 1);
         BOOST_REQUIRE(pSiblingBoundary != NULL);
@@ -803,16 +803,17 @@ BOOST_AUTO_TEST_CASE(a_second_vote_of_one_note_is_refused_as_spent)
     BOOST_CHECK_EQUAL(record.nHeight, nBoundary + 1);
 }
 
-// R1 of the transparent lane: an epoch-E vote connects at heights in
-// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW) and nowhere else. Each refusal here is the
-// window's, since every other rule holds on the main branch at those heights.
+// R1 of the note lane: an epoch-E note vote connects at heights in
+// [H_E, H_E + FINALITY_NOTE_VOTE_INCLUSION_WINDOW) and nowhere else. Each refusal here is
+// the window's, since every other rule holds on the main branch at those heights.
 BOOST_AUTO_TEST_CASE(a_vote_connects_only_inside_its_inclusion_window)
 {
     ScopedNoteVoteHeight fork(0);
     CTxDB txdb("r+");
     VoteChain chain(0x6E760300U);
     const int nFirst = BoundaryHeight();
-    const int nLast = nFirst + FINALITY_VOTE_INCLUSION_WINDOW - 1;
+    const int nLast = nFirst + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1;
+    BOOST_REQUIRE(FINALITY_NOTE_VOTE_INCLUSION_WINDOW > FINALITY_VOTE_INCLUSION_WINDOW);
 
     FundedNote note;
     Fund(txdb, 0x15, note);
@@ -823,6 +824,9 @@ BOOST_AUTO_TEST_CASE(a_vote_connects_only_inside_its_inclusion_window)
     ContextVerdict v = JudgeVote(txdb, chain, nFirst, vote.effects);
     BOOST_CHECK_MESSAGE(v.fOK, v.strError);
     v = JudgeVote(txdb, chain, nLast, vote.effects);
+    BOOST_CHECK_MESSAGE(v.fOK, v.strError);
+    // Past the transparent lane's window, still inside the note lane's.
+    v = JudgeVote(txdb, chain, nFirst + FINALITY_VOTE_INCLUSION_WINDOW, vote.effects);
     BOOST_CHECK_MESSAGE(v.fOK, v.strError);
 
     v = JudgeVote(txdb, chain, nLast + 1, vote.effects);

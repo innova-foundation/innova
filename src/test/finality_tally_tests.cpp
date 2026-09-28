@@ -2644,7 +2644,7 @@ BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical
     {
         const int nEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 2;
         const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
-        const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+        const int nContextHeight = nTargetHeight + GetFinalityVoteSetCloseOffset(nTargetHeight);
         BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nContextHeight));
         BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nTargetHeight));
 
@@ -2728,7 +2728,7 @@ BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_reb
     const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
     const int nEpoch = GetEpochForHeight(nTargetHeight);
     BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight), nTargetHeight);
-    const int nContextHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    const int nContextHeight = nTargetHeight + GetFinalityVoteSetCloseOffset(nTargetHeight);
     BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nContextHeight));
 
     const uint256 hashTarget(0xD701);
@@ -2867,14 +2867,14 @@ BOOST_AUTO_TEST_CASE(a_committee_free_note_certificate_is_built_connected_and_ha
         const int nEpoch = nBaseEpoch + 1 + nCase;
         const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
         BOOST_REQUIRE_EQUAL(GetEpochForHeight(nTargetHeight), nEpoch);
-        const int nCarrierHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+        const int nCarrierHeight = nTargetHeight + GetFinalityVoteSetCloseOffset(nTargetHeight);
         BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nTargetHeight));
         BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nCarrierHeight));
 
         ScopedIndexChain chain(0xD8000000u + 0x1000u * (unsigned int)nCase, nTargetHeight,
-                               FINALITY_VOTE_INCLUSION_WINDOW + 1);
+                               GetFinalityVoteSetCloseOffset(nTargetHeight) + 1);
         const uint256 hashTarget = chain.HashAt(0);
-        const uint256 hashCarrier = chain.HashAt(FINALITY_VOTE_INCLUSION_WINDOW);
+        const uint256 hashCarrier = chain.HashAt(GetFinalityVoteSetCloseOffset(nTargetHeight));
         BOOST_REQUIRE_EQUAL(chain.Tip()->nHeight, nCarrierHeight);
 
         CFinalityTracker tracker;
@@ -3010,15 +3010,15 @@ BOOST_AUTO_TEST_CASE(a_template_without_a_received_certificate_carries_the_self_
         const int nEpoch = nBaseEpoch + 1 + nCase;
         const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
         BOOST_REQUIRE_EQUAL(GetEpochForHeight(nTargetHeight), nEpoch);
-        const int nBlockHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+        const int nBlockHeight = nTargetHeight + GetFinalityVoteSetCloseOffset(nTargetHeight);
         BOOST_REQUIRE_EQUAL(GetEpochForHeight(nBlockHeight), nEpoch);
         BOOST_REQUIRE(IsBoundaryAActiveAtHeight(nBlockHeight));
 
         ScopedIndexChain chain(0xE1000000u + 0x1000u * (unsigned int)nCase, nTargetHeight,
-                               FINALITY_VOTE_INCLUSION_WINDOW + 1);
+                               GetFinalityVoteSetCloseOffset(nTargetHeight) + 1);
         const uint256 hashTarget = chain.HashAt(0);
-        const CBlockIndex* pindexPrev = chain.At(FINALITY_VOTE_INCLUSION_WINDOW - 1);
-        const uint256 hashCarrier = chain.HashAt(FINALITY_VOTE_INCLUSION_WINDOW);
+        const CBlockIndex* pindexPrev = chain.At(GetFinalityVoteSetCloseOffset(nTargetHeight) - 1);
+        const uint256 hashCarrier = chain.HashAt(GetFinalityVoteSetCloseOffset(nTargetHeight));
         BOOST_REQUIRE_EQUAL(pindexPrev->nHeight + 1, nBlockHeight);
 
         CFinalityTracker tracker;
@@ -3157,8 +3157,8 @@ BOOST_AUTO_TEST_CASE(a_disconnect_drops_pending_certificates_the_branch_no_longe
 
     const int nEpoch = GetEpochForHeight(FORK_HEIGHT_BOUNDARY_A) + 1;
     const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
-    const int nBlockHeight = nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
-    ScopedIndexChain chain(0xE2000000u, nTargetHeight, FINALITY_VOTE_INCLUSION_WINDOW + 1);
+    const int nBlockHeight = nTargetHeight + GetFinalityVoteSetCloseOffset(nTargetHeight);
+    ScopedIndexChain chain(0xE2000000u, nTargetHeight, GetFinalityVoteSetCloseOffset(nTargetHeight) + 1);
     const uint256 hashTarget = chain.HashAt(0);
 
     CFinalityTracker tracker;
@@ -3181,6 +3181,124 @@ BOOST_AUTO_TEST_CASE(a_disconnect_drops_pending_certificates_the_branch_no_longe
     BOOST_REQUIRE_EQUAL(tracker.GetEpochNoteVoteCount(nEpoch), 0);
     tracker.PrunePendingTallyCertificates(nBlockHeight);
     BOOST_CHECK_EQUAL(tracker.GetPendingTallyCertificateCount(nEpoch), 0U);
+}
+
+// Note votes have their own inclusion window; a note vote carried after the transparent
+// window counts, and the certificate, producer and settlement wait for the note window.
+BOOST_AUTO_TEST_CASE(a_note_vote_after_the_transparent_window_is_counted_by_the_certificate)
+{
+    ScopedFinalityRegtest network;
+    ScopedNoteVoteForkAt scopedNoteVoteFork(1);
+
+    const int nEpoch = GetEpochForHeight(FORK_HEIGHT_BOUNDARY_A) + 1;
+    const int nTargetHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+    BOOST_REQUIRE(IsIV5NoteVoteActiveAtHeight(nTargetHeight));
+    BOOST_REQUIRE(FINALITY_NOTE_VOTE_INCLUSION_WINDOW > FINALITY_VOTE_INCLUSION_WINDOW);
+    BOOST_REQUIRE(FINALITY_NOTE_VOTE_INCLUSION_WINDOW < GetEpochInterval(nTargetHeight));
+    const int nClose = GetFinalityVoteSetCloseOffset(nTargetHeight);
+    BOOST_CHECK_EQUAL(nClose, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK_EQUAL(GetFinalitySettlementHeight(nEpoch, nTargetHeight),
+                      nTargetHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+
+    ScopedIndexChain chain(0xE4000000u, nTargetHeight, nClose + 1);
+    const uint256 hashTarget = chain.HashAt(0);
+
+    // The note lane's R1 edges; the transparent lane keeps its own (see
+    // a_vote_outside_its_epoch_inclusion_window_is_rejected_at_connect).
+    {
+        CFinalityTracker tracker;
+        CTxDB txdb("r+");
+        CNoteFinalityVote vote;
+        vote.nEpoch = nEpoch;
+        vote.nHeight = nTargetHeight;
+        vote.hashBlock = hashTarget;
+        vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, (unsigned char)0xB0);
+        const std::string strWindow = "note finality vote outside epoch vote-inclusion window";
+        std::string strError;
+        tracker.CheckNoteVoteForContext(
+            vote, txdb, &strError,
+            CFinalityVoteContext::ChainHeight(nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW));
+        BOOST_CHECK_MESSAGE(strError != strWindow, strError);
+        strError.clear();
+        tracker.CheckNoteVoteForContext(
+            vote, txdb, &strError,
+            CFinalityVoteContext::ChainHeight(nTargetHeight +
+                                              FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1));
+        BOOST_CHECK_MESSAGE(strError != strWindow, strError);
+        strError.clear();
+        BOOST_CHECK(!tracker.CheckNoteVoteForContext(
+            vote, txdb, &strError,
+            CFinalityVoteContext::ChainHeight(nTargetHeight +
+                                              FINALITY_NOTE_VOTE_INCLUSION_WINDOW)));
+        BOOST_CHECK_EQUAL(strError, strWindow);
+    }
+
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+    ScopedFinalityCertDbCleanup cleanup(txdb);
+    // One note vote early in the window, one after the transparent window closed.
+    ScopedCountedNoteVotes early(tracker, txdb, uint256(0xE401), nEpoch, nTargetHeight,
+                                 hashTarget, 1, 0xB1);
+    std::vector<CNoteFinalityVote> vLate(1);
+    vLate[0].nEpoch = nEpoch;
+    vLate[0].nHeight = nTargetHeight;
+    vLate[0].hashBlock = hashTarget;
+    vLate[0].vchTag.assign(FINALITY_NOTE_POINT_SIZE, (unsigned char)0xC1);
+    BOOST_REQUIRE(tracker.ConnectBlockNoteVotes(
+        txdb, uint256(0xE402), vLate,
+        CFinalityVoteContext::ChainHeight(nTargetHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1),
+        NULL, false));
+    BOOST_REQUIRE_EQUAL(tracker.GetEpochNoteVoteCount(nEpoch), 2);
+
+    // The producer waits for the note window, then counts both votes: two voters is HARD.
+    BOOST_CHECK(!IsFinalityVoteWindowClosedForTip(
+        nEpoch, nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW - 1));
+    BOOST_CHECK(!IsFinalityVoteWindowClosedForTip(nEpoch, nTargetHeight + nClose - 2));
+    BOOST_CHECK(IsFinalityVoteWindowClosedForTip(nEpoch, nTargetHeight + nClose - 1));
+    const std::vector<CFinalityTallyCertificate> vBuilt =
+        BuildConnectedTallyCertificates(tracker, nEpoch, nTargetHeight + nClose - 1);
+    BOOST_REQUIRE_EQUAL(vBuilt.size(), 1U);
+    const CFinalityTallyCertificate& cert = vBuilt[0];
+    BOOST_CHECK_EQUAL(cert.nNoteVoteCount, 2u);
+    BOOST_CHECK_EQUAL(cert.nTier, FINALITY_HARD);
+
+    // R2: the certificate is block-valid only once the note window has closed.
+    const std::string strFloor = "tally certificate before epoch vote-inclusion window close";
+    CertVerdict v = CheckCertAtContext(tracker, txdb, cert,
+                                       nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK(!v.fOk);
+    BOOST_CHECK_EQUAL(v.strError, strFloor);
+    v = CheckCertAtContext(tracker, txdb, cert, nTargetHeight + nClose - 1);
+    BOOST_CHECK(!v.fOk);
+    BOOST_CHECK_EQUAL(v.strError, strFloor);
+    v = CheckCertAtContext(tracker, txdb, cert, nTargetHeight + nClose);
+    BOOST_CHECK_MESSAGE(v.fOk, v.strError);
+
+    // The template offers it from the same height and not before.
+    BOOST_REQUIRE(tracker.AddTallyCertificate(cert, false));
+    BOOST_CHECK(tracker.GetPendingTallyCertificatesForBlock(
+                    nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW).empty());
+    BOOST_CHECK(tracker.GetPendingTallyCertificatesForBlock(nTargetHeight + nClose - 1).empty());
+    BOOST_CHECK_EQUAL(tracker.GetPendingTallyCertificatesForBlock(nTargetHeight + nClose).size(),
+                      1U);
+
+    // The late vote is what makes the epoch HARD: without it one voter remains.
+    tracker.DisconnectBlockNoteVotes(txdb, uint256(0xE402), vLate);
+    BOOST_REQUIRE_EQUAL(tracker.GetEpochNoteVoteCount(nEpoch), 1);
+    const std::vector<CFinalityTallyCertificate> vEarlyOnly =
+        BuildConnectedTallyCertificates(tracker, nEpoch, nTargetHeight + nClose - 1);
+    BOOST_CHECK(vEarlyOnly.empty() || vEarlyOnly[0].nTier != FINALITY_HARD);
+
+    // With the lane off the epoch closes at the transparent window.
+    {
+        ScopedNoteVoteForkAt off(PRIVACY_VNEXT_HEIGHT_UNSET);
+        BOOST_CHECK_EQUAL(GetFinalityVoteSetCloseOffset(nTargetHeight),
+                          FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_CHECK_EQUAL(GetFinalitySettlementHeight(nEpoch, nTargetHeight),
+                          nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_CHECK(IsFinalityVoteWindowClosedForTip(
+            nEpoch, nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW - 1));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

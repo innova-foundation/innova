@@ -129,8 +129,11 @@ MASK_HEIGHT="$(epoch_start "$MASK_EPOCH")"
 # Boundaries observed for note votes: the two epochs after the mask epoch.
 NOTE_VOTE_EPOCHS="$(( MASK_EPOCH + 1 )) $(( MASK_EPOCH + 2 ))"
 NOTE_VOTE_WINDOW=10
-# FINALITY_VOTE_INCLUSION_WINDOW: an epoch-E vote connects only in [H_E, H_E + 24).
+# FINALITY_VOTE_INCLUSION_WINDOW: an epoch-E transparent vote connects only in [H_E, H_E + 24).
 FINALITY_VOTE_WINDOW_BLOCKS=24
+# FINALITY_NOTE_VOTE_INCLUSION_WINDOW: a note vote connects only in [H_E, H_E + 120); the
+# certificate waits for it.
+NOTE_VOTE_WINDOW_BLOCKS=120
 NOTE_VOTE_SETTLE=30
 
 # OP_RETURN payload tags of the three coinbase envelopes this run reads.
@@ -2892,7 +2895,7 @@ if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
             [ "$(jget "$ei" finality_tier)" = "$tier" ]        || { REC_DIV=$((REC_DIV + 1)); REC_WHY="$REC_WHY node${n}_tier_differs"; }
         done
         is_real_hash "$cert" || return 0
-        if find_note_cert_carrier 0 "$e" $(( $(epoch_start "$e") + FINALITY_VOTE_WINDOW_BLOCKS )) "$(epoch_end "$e")" "$cert"; then
+        if find_note_cert_carrier 0 "$e" $(( $(epoch_start "$e") + NOTE_VOTE_WINDOW_BLOCKS )) "$(epoch_end "$e")" "$cert"; then
             read -r c_hash c_ver c_signers c_tier c_csh <<< "$CARRY_FIELDS"
             REC_CERTVER="$c_ver"
             [ "$c_signers" = "0" ]       || REC_WHY="$REC_WHY cert_signer_count=$c_signers"
@@ -2917,7 +2920,7 @@ if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
         E="$SOAK_E"
         B="$(epoch_start "$E")"
         NEXT_B="$(epoch_start $(( E + 1 )))"
-        CLOSE=$(( B + FINALITY_VOTE_WINDOW_BLOCKS ))
+        CLOSE=$(( B + NOTE_VOTE_WINDOW_BLOCKS ))
         CARRY=$(( CLOSE + 40 ))
         BAD_BEFORE="$(soak_bad_count)"
         WHY=""
@@ -2944,10 +2947,10 @@ if is_int "$SOAK_MINUTES" && [ "$SOAK_MINUTES" -gt 0 ]; then
         if [ -n "$NV_TXID" ]; then
             NV_FULL="$(rpc 0 listtransactions "*" 50 2>/dev/null | grep -o "\"txid\" : \"$NV_TXID[0-9a-f]*\"" | head -1 | cut -d'"' -f4)"
             [ ${#NV_FULL} -eq 64 ] && NV_H="$(tx_height 0 "$NV_FULL")"
-            if ! is_int "${NV_H:-x}" || [ "$NV_H" -lt "$B" ] || [ "$NV_H" -ge $(( B + FINALITY_VOTE_WINDOW_BLOCKS )) ]; then
+            if ! is_int "${NV_H:-x}" || [ "$NV_H" -lt "$B" ] || [ "$NV_H" -ge $(( B + NOTE_VOTE_WINDOW_BLOCKS )) ]; then
                 # The wallet listing does not always carry a vote; scan the window instead.
                 NV_H=""
-                for ((h=B; h<B+FINALITY_VOTE_WINDOW_BLOCKS; h++)); do
+                for ((h=B; h<B+NOTE_VOTE_WINDOW_BLOCKS; h++)); do
                     if block_json 0 "$h" | grep -q "\"$NV_TXID"; then NV_H="$h"; break; fi
                 done
             fi

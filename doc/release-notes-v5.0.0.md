@@ -18,9 +18,6 @@ block or transaction:
 
 ## Known limitations
 
-- Note votes (from 8,375,100): a note vote is about 9.4 KB and has 24 blocks to reach
-  a miner. On a fast, multi-hop network it can miss that window, and the epoch then
-  relies on transparent votes. A point release before 8,375,100 addresses this.
 - NullSend: a round can be filled or held open by callers that never complete it, so
   rounds may abort under that load. No funds are at risk; the service is best effort.
 - NullSend: notes prepared with `mixprepare` are paid to issued addresses and are
@@ -31,3 +28,6 @@ block or transaction:
   the transparent settlement budget.
 - A viewing key import rescans on the GUI thread; the window is unresponsive until it
   finishes.
+- `z_iv5transfer` spends at most 16 notes. When the 16 largest notes do not cover the
+  amount it reports insufficient spendable balance; send a smaller amount to yourself
+  first to merge notes.

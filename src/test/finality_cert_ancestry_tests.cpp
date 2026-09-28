@@ -776,24 +776,23 @@ BOOST_AUTO_TEST_CASE(undecided_certificates_rank_by_coverage_before_the_window_c
     bool fHonestPending = false;
     const std::vector<CFinalityTallyCertificate> vPending =
         g_finalityTracker.GetPendingTallyCertificatesForBlock(
-            nBoundary + FINALITY_VOTE_INCLUSION_WINDOW, std::numeric_limits<unsigned int>::max());
+            nBoundary + GetFinalityVoteSetCloseOffset(nBoundary),
+            std::numeric_limits<unsigned int>::max());
     for (const CFinalityTallyCertificate& cert : vPending)
         if (cert.GetHash() == honest.GetHash())
             fHonestPending = true;
     BOOST_CHECK_MESSAGE(fHonestPending, "covering certificate was evicted");
 }
 
-// A template builder holding no certificate embeds the one it builds from its connected
-// view: one transparent voter and two note votes, HARD only through the note leg.
-// MUTATION: return nothing from GetSelfBuiltTallyCertificatesForBlock and the template
-// carries no certificate.
+// With no received certificate, the template embeds the self-built one (one
+// transparent voter plus two note votes, HARD only through the note leg).
 BOOST_AUTO_TEST_CASE(a_template_with_no_received_certificate_embeds_the_self_built_one)
 {
     CBlockIndex* pindexPrev = MineUntil([](int nHeight) {
         const int nEpoch = GetEpochForHeight(nHeight);
         const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
         return IsBoundaryAActiveAtHeight(nHeight) && nBoundary >= FORK_HEIGHT_BOUNDARY_A &&
-               nHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW;
+               nHeight >= nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW;
     });
     BOOST_REQUIRE(pindexPrev == pindexBest);
     const int nHeight = pindexPrev->nHeight + 1;
@@ -840,7 +839,7 @@ BOOST_AUTO_TEST_CASE(a_template_off_the_tip_carries_no_certificate)
         const int nEpoch = GetEpochForHeight(nHeight);
         const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
         return IsBoundaryAActiveAtHeight(nHeight) && nBoundary >= FORK_HEIGHT_BOUNDARY_A &&
-               nHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW;
+               nHeight >= nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW;
     });
     BOOST_REQUIRE(pindexPrev == pindexBest);
     const int nHeight = pindexPrev->nHeight + 1;

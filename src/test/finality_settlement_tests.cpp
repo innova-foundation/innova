@@ -779,4 +779,47 @@ BOOST_AUTO_TEST_CASE(the_settlement_vote_set_is_walked_off_the_whole_window)
     fTestNet = fSavedTestNet;
 }
 
+// With the note lane active the epoch settles once the note-vote window closes, so the
+// note mint total the budget subtracts covers every note vote the epoch can carry.
+// Transparent votes still sit only in the first FINALITY_VOTE_INCLUSION_WINDOW blocks.
+BOOST_AUTO_TEST_CASE(the_settlement_waits_for_the_note_vote_window)
+{
+    const bool fSavedRegTest = fRegTest;
+    const bool fSavedTestNet = fTestNet;
+    const int nSavedNoteVote = nRegtestIV5NoteVoteHeight;
+    fRegTest = true;
+    fTestNet = false;
+    nRegtestIV5NoteVoteHeight = 1;
+
+    const int nEpoch = PostDAGEpoch(1);
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, GetForkHeightDAG());
+    BOOST_CHECK_EQUAL(GetFinalityVoteSetCloseOffset(nBoundary),
+                      FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK_EQUAL(GetFinalitySettlementHeight(nEpoch, nBoundary),
+                      nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK(IsFinalitySettlementHeight(nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW));
+    BOOST_CHECK(!IsFinalitySettlementHeight(nBoundary + FINALITY_VOTE_INCLUSION_WINDOW));
+
+    std::vector<CFinalityVote> vVotes;
+    std::string strError;
+    {
+        SettlementWindowChain full(0xFA5E2001, nBoundary, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+        BOOST_REQUIRE_EQUAL(full.Tip()->nHeight,
+                            nBoundary + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1);
+        BOOST_CHECK_MESSAGE(GatherFinalitySettlementVotes(full.Tip(), nEpoch, vVotes,
+                                                          &strError),
+                            strError);
+        strError.clear();
+        BOOST_CHECK(!GatherFinalitySettlementVotes(
+            full.At(FINALITY_VOTE_INCLUSION_WINDOW - 1), nEpoch, vVotes, &strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "settlement parent is not the top of the epoch "
+                          "vote-inclusion window");
+    }
+
+    nRegtestIV5NoteVoteHeight = nSavedNoteVote;
+    fRegTest = fSavedRegTest;
+    fTestNet = fSavedTestNet;
+}
+
 BOOST_AUTO_TEST_SUITE_END()

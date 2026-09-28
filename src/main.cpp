@@ -2763,10 +2763,10 @@ bool ValidatePrivacyVNextNoteVoteContext(CTxDB& txdb,
                              "post-DAG epoch", nBoundaryHeight);
         return false;
     }
-    // R1 of the transparent lane: an epoch-E vote connects only in E's own first
-    // FINALITY_VOTE_INCLUSION_WINDOW blocks.
+    // R1 of the note lane: an epoch-E note vote connects only in E's own first
+    // FINALITY_NOTE_VOTE_INCLUSION_WINDOW blocks.
     if (nContextHeight < nBoundaryHeight ||
-        nContextHeight >= nBoundaryHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+        nContextHeight >= nBoundaryHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW)
     {
         strError = strprintf("IV5 note finality vote for boundary %d is outside its "
                              "inclusion window at height %d",
@@ -2934,7 +2934,7 @@ bool CountConnectedPrivacyVNextNoteVotes(const CBlockIndex* pindexFrom,
     int nSteps = 0;
     for (const CBlockIndex* p = pindexFrom;
          p != NULL && p->nHeight >= nBoundaryHeight &&
-         nSteps < FINALITY_VOTE_INCLUSION_WINDOW;
+         nSteps < FINALITY_NOTE_VOTE_INCLUSION_WINDOW;
          p = p->pprev, ++nSteps)
     {
         CBlock block;
@@ -10355,29 +10355,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
-    // Per-epoch finality-reward settlement. Every counted epoch-E vote is paid exactly
-    // once, in the canonical block at H_E + FINALITY_VOTE_INCLUSION_WINDOW, from the
-    // frozen vote set the epoch's own window blocks committed. Re-carrying a vote across
-    // several canonical window blocks changes nothing: the settlement dedupes by
-    // nullifier, and no other block is allowed any finality reward at all.
-    //
-    // The payout is derived from the ancestor chain (GatherFinalitySettlementVotes),
-    // never from mutable tracker state such as mapConnectedVotes, so producer and
-    // validator compute the same coinbase allowance. Coupling a money allowance to
-    // order-dependent live state is what produced the reward-base mismatch and the
-    // private-finality ConnectBlock split; the settlement set is anchor-pure instead.
-    //
-    // Reorg: the mint is an ordinary coinbase output, so it reverses through the normal
-    // UTXO disconnect. The settlement block's ancestors ARE the window blocks, so the
-    // window can never be reorged out from under a still-connected settlement block.
-    // Whatever block becomes canonical at this height re-derives the set from ITS
-    // ancestors and re-pays accordingly. DisconnectBlockVotes is decoupled from payment.
-    //
-    // Private tier: vSettlementVotes already carries both tiers. The private leg plugs in
-    // at this same call, alongside CheckFinalitySettlementOutputs -- see the PRIVATE-TIER
-    // PLUG-IN POINT in BuildFinalitySettlementOutputs (finality.cpp). It mints sealed
-    // reward notes, so it lands in the shielded-pool delta rather than in
-    // nFinalityRewardOut, and it is inert until the note-tally layer is wired.
+    // Per-epoch finality-reward settlement at H_E + GetFinalityVoteSetCloseOffset(H_E): each
+    // counted vote from the ancestor chain is paid once, deduped by nullifier.
     {
         int nSettlementEpoch = -1;
         if (IsFinalitySettlementHeight(pindex->nHeight, &nSettlementEpoch))

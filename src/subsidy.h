@@ -38,15 +38,9 @@ bool GetFinalityAccrualRange(int nSettlementEpoch, int& nBeginOut, int& nEndOut)
  *  reserve is defined at every height and is zero below the DAG fork. */
 int64_t SumFinalityReserve(int nBegin, int nEnd);
 
-/** Budget available to the settlement of epoch nSettlementEpoch: the reserve
- *  accrued over the epoch BEFORE it, [H_{E-1}, H_E).
- *
- *  Settlement happens at H_E + FINALITY_VOTE_INCLUSION_WINDOW, well before epoch
- *  E itself closes, so E's own accrual is not yet a fixed quantity there. The
- *  preceding epoch is closed and is entirely made of ancestors of the settlement
- *  block, so producer and validator sum the identical range. The first post-DAG
- *  settlement therefore pays nothing: its predecessor accrued at the pre-DAG
- *  rate, which is zero. */
+/** Budget for epoch nSettlementEpoch's settlement: the reserve accrued over the
+ *  PREVIOUS epoch [H_{E-1}, H_E), which is closed and all ancestors of the
+ *  settlement block. The first post-DAG settlement therefore pays nothing. */
 int64_t GetFinalityEpochBudget(int nSettlementEpoch);
 
 /** What one counted note vote may mint into its own reissue: the epoch budget

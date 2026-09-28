@@ -222,13 +222,9 @@ bool AdmitPrivacyVNextNoteVote(const CTransaction& tx,
     return true;
 }
 
-// Where a note finality vote sits in the selection order.
-//
-// It pays no fee and has no input age, so on both orderings it sorts below every other
-// candidate and a full block leaves it out -- permanently, because its window is 24
-// blocks wide and the note it spends is single-shot. It cannot crowd a block out in
-// return: consensus admits at most FINALITY_MAX_BLOCK_NOTE_VOTES of them per block, and
-// each one costs its sender a note at the stake floor.
+// A note vote pays no fee and has no input age, so it sorts below every other candidate
+// and is dropped from a full block. Consensus caps it at FINALITY_MAX_BLOCK_NOTE_VOTES per
+// block and each costs a note at the stake floor.
 void ApplyPrivacyVNextNoteVoteSelectionOrder(const CTransaction& tx,
                                              double& dPriority,
                                              double& dFeePerKb)
@@ -741,11 +737,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         }
     }
 
-    // Per-epoch finality-reward settlement. At H_E + FINALITY_VOTE_INCLUSION_WINDOW the
-    // epoch's vote set is frozen, and this block owes every counted transparent voter
-    // exactly one payment. Derive it from the SAME committed set ConnectBlock will use
-    // (the ancestor window blocks), never from tracker state, so the template's coinbase
-    // allowance matches the validator's. Carrying a vote pays nothing on any other block.
+    // Per-epoch finality-reward settlement at H_E + GetFinalityVoteSetCloseOffset(H_E).
+    // Derived from the same committed vote set ConnectBlock uses (ancestor window blocks),
+    // never tracker state. Carrying a vote pays nothing on any other block.
     std::vector<CTxOut> vFinalitySettlementOutputs;
     int64_t nFinalitySettlementTotal = 0;
     if (!fProofOfStake)

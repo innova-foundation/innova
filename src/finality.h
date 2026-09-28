@@ -46,13 +46,10 @@ static const int FINALITY_MAX_VOTES = 10000;       // max votes per epoch
 static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundary to vote
 // Connect-time vote-inclusion window (consensus, fork-gated by FORK_HEIGHT_VOTESET_ROOT).
 // An epoch-E finality vote is block-valid only in a containing block at height in
-// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW); a tally certificate for E is block-valid
-// only at height >= H_E + FINALITY_VOTE_INCLUSION_WINDOW and must reference EXACTLY the
-// epoch-E votes connected within that window (coverage equality). Suppressing a vote
-// then requires censoring all K consecutive blocks of the window, while the latency cost
-// (~K seconds at 1s blocks) is <1% of the 3-epoch HARD-finality window. Tunable pre-mainnet
-// (the testnet remine makes a change free).
+// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW) (note votes: the note window); a tally cert must cover exactly those votes.
 static const int FINALITY_VOTE_INCLUSION_WINDOW = 24;
+// Note-vote lane window: ~12 dandelion hops at ~10s each (a ~9.4 KB vote) at 1s blocks.
+static const int FINALITY_NOTE_VOTE_INCLUSION_WINDOW = 120;
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
 // Relay policy: pending tally certificates held per epoch.
@@ -200,11 +197,8 @@ static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
 // Note-leg schema. Schema 1 stays byte-identical; only a certificate that actually
 // carries a note leg uses schema 2.
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE = 2;
-// Per-block cap on note-vote carriers, mirroring FINALITY_MAX_BLOCK_VOTES for the
-// transparent path. At the envelope's working size the full set sits inside the
-// penalty-free generation target with room for ordinary traffic alongside. 32 per block
-// over the 24-block inclusion window is 768 slots against the
-// FINALITY_MAX_EPOCH_NOTE_VOTES (128) the epoch admits, so the epoch cap is what binds.
+// Per-block cap on note-vote carriers (cf. FINALITY_MAX_BLOCK_VOTES). Over the
+// 120-block window this exceeds FINALITY_MAX_EPOCH_NOTE_VOTES, so the epoch cap binds.
 static const int FINALITY_MAX_BLOCK_NOTE_VOTES = 32;
 // LevelDB-only envelope generation, independent of network envelope versions: records
 // the decoded carrier so a restart cannot change the object's hash/signature domain.
@@ -405,28 +399,20 @@ inline bool IsEpochBoundaryHeight(int nHeight)
  *  -1 when no epoch ends that early. */
 int GetFinalizedEpochForHeight(int nFinalizedHeight);
 
-// Per-epoch finality-reward settlement.
-//
-// A vote is COUNTED once per epoch (keyed by nullifier) but may legitimately be
-// carried by more than one canonical block inside the inclusion window
-// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). Paying the carrying block made the
-// payout a function of how many canonical blocks re-embedded the vote, so a producer
-// of several window blocks collected up to K payouts for one counted vote, with no
-// per-epoch reconciliation.
-//
-// Payment is instead settled ONCE per epoch, in the canonical block at
-// H_E + FINALITY_VOTE_INCLUSION_WINDOW: a single height (so a single canonical block),
-// inside epoch E (K << the epoch interval), and exactly where the epoch's vote set is
-// frozen -- the inclusion window has just closed, which is also the height at which a
-// tally certificate for E becomes block-valid (R2). Producer and validators derive the
-// payout from that same frozen, chain-derived set, never from node-local tracker state,
-// so the coinbase money allowance cannot drift between them.
-static const int FINALITY_SETTLEMENT_OFFSET = FINALITY_VOTE_INCLUSION_WINDOW;
+// Rewards settle once per epoch at H_E + GetFinalityVoteSetCloseOffset(H_E), from the
+// frozen vote set, so a vote carried in several window blocks is paid once.
+static const int FINALITY_SETTLEMENT_OFFSET = FINALITY_VOTE_INCLUSION_WINDOW; // before the note-vote lane
+
+/** Blocks past boundary H_E at which epoch E's vote set closes: the transparent window,
+ *  or the note-vote window where a block of that window can carry a note vote. The
+ *  settlement, the certificate floor (R2) and the certificate producer all key on it. */
+int GetFinalityVoteSetCloseOffset(int nBoundaryHeight);
 
 /** Settlement height of epoch nEpoch (nHeightHint only selects the pre/post-DAG regime). */
 inline int GetFinalitySettlementHeight(int nEpoch, int nHeightHint)
 {
-    return GetEpochBoundaryHeight(nEpoch, nHeightHint) + FINALITY_SETTLEMENT_OFFSET;
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeightHint);
+    return nBoundary + GetFinalityVoteSetCloseOffset(nBoundary);
 }
 
 /** Base for the collateralnode share of a coinbase: the coinbase value minus the

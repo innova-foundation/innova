@@ -13558,7 +13558,7 @@ bool ProducePrivacyVNextNoteVote(CTxDB& txdb,
     // Outside the window no block may carry the vote, so proving one only spends time.
     // This is the rule ConnectBlock enforces, not a producer margin.
     if (nIncludingHeight < nBoundaryHeight ||
-        nIncludingHeight >= nBoundaryHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+        nIncludingHeight >= nBoundaryHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW)
     {
         strErrorOut = "the epoch's inclusion window is not open at this height";
         return false;

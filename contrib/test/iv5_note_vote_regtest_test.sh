@@ -1,34 +1,7 @@
 #!/bin/bash
 # Copyright (c) 2026 The Innova developers
-# IV5 note finality vote regtest: drive the op-10 note vote end to end.
-#
-# A note vote is an ordinary privacy-vNext transaction, operation 10, that spends the
-# voting note and reissues it. Its tag is the spent note's key image, so a second vote
-# from one note is a double spend. It anchors to epoch state E-1, relays through the
-# mempool, and must be mined in [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). The
-# epoch's v4 tally certificate commits the counted set as a root and a count, which
-# every node rebuilds at connect.
-#
-# No committee exists. Any node builds the v4 certificate from its connected view
-# (ProduceNoteTallyCertificateEpoch); it names committee set hash 0 and carries no
-# signers. The run proves the certificate is load-bearing: one epoch has a single
-# transparent voter plus note votes, another has note votes only. Neither can reach
-# HARD without the v4 certificate (FINALITY_MIN_VOTERS is 2), and finality has to
-# advance through both.
-#
-# Fleet: node0 and node3 vote in the note lane (node0 mines, encrypted wallet);
-# node1 and node2 carry the transparent lane.
-#
-# Configuration:
-#   -regtestiv5notevote=<h>  the note-vote fork; init refuses a height below
-#                            Boundary B (src/init.cpp)
-#   -finalityvotemode=note   node0/node3; the peers run "transparent"
-#   -nofinalityvoting=1      passed on restart to silence a transparent voter
-#   -debug -debugnet         the producer lines are behind fDebug
-#
-# Regtest epoch layout: DAG fork 11, 300-block epochs, so epoch E covers
-# [11 + 300*(E-1), 310 + 300*(E-1)]. Boundary B sits at 311 because the IV5 tree
-# is only maintained by the schema-V3 epoch build.
+# IV5 note finality vote (op-10) end to end: cast, relay, mine inside the inclusion window, v4 certificate.
+# node0/node3 vote in the note lane (node0 mines, encrypted wallet); node1/node2 are transparent voters.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -104,8 +77,10 @@ declare -A EXPECT_TRANSPARENT=(
 NOTE_VOTERS=2
 # The epoch after them, for the carrier-disconnect case in section 15a.
 REORG_VOTE_EPOCH=$(( RESTORED_EPOCH + 1 ))
-# FINALITY_VOTE_INCLUSION_WINDOW: a vote for boundary B connects only in [B, B+24).
-NOTE_VOTE_INCLUSION_WINDOW=24
+# FINALITY_VOTE_INCLUSION_WINDOW: a transparent vote for boundary B connects only in [B, B+24).
+TRANSPARENT_VOTE_INCLUSION_WINDOW=24
+# FINALITY_NOTE_VOTE_INCLUSION_WINDOW: a note vote for boundary B connects only in [B, B+120).
+NOTE_VOTE_INCLUSION_WINDOW=120
 # FINALITY_VOTE_EMIT_OFFSET_POST_DAG: the producer casts once the tip is 2 blocks past
 # the boundary, so a note-vote round holds the chain there.
 NOTE_VOTE_EMIT_OFFSET=2
@@ -123,7 +98,7 @@ ZERO_HASH="0000000000000000000000000000000000000000000000000000000000000000"
 
 # The epoch the double-vote probe and the section 12-14 detail checks run on.
 TALLY_EPOCH="$FULL_EPOCH"
-# H_E + FINALITY_VOTE_INCLUSION_WINDOW is the freeze point: before it the counted
+# H_E + FINALITY_NOTE_VOTE_INCLUSION_WINDOW is the freeze point: before it the counted
 # note-vote set still grows and no certificate can satisfy connect-time coverage.
 window_close() { echo $(( $(epoch_start "$1") + NOTE_VOTE_INCLUSION_WINDOW )); }
 # Blocks mined past the freeze point, inside the same epoch, for a miner to carry
@@ -398,7 +373,7 @@ mine_chunk() {
 
 # Transparent finality votes for the epoch starting at BOUNDARY. Each node casts
 # on its own 5s cycle and relays; mining is paused at the boundary so every vote
-# lands inside the [H_E, H_E+24) inclusion window.
+# lands inside the [H_E, H_E+24) transparent inclusion window.
 vote_round() {
     local boundary="$1" settle="${2:-18}" carry="${3:-3}"
     mine_to 0 "$boundary" || return 1
@@ -1646,9 +1621,9 @@ header "14b. HARD depends on note votes, and finality advances through it"
 # Transparent votes each held epoch's own window carried.
 for E in $NOTE_VOTE_EPOCHS; do
     B="$(epoch_start "$E")"
-    TV="$(votes_in_range 0 "$B" $((B + NOTE_VOTE_INCLUSION_WINDOW - 1)))"
+    TV="$(votes_in_range 0 "$B" $((B + TRANSPARENT_VOTE_INCLUSION_WINDOW - 1)))"
     if [ "$TV" = "${EXPECT_TRANSPARENT[$E]}" ]; then
-        success "epoch $E carried $TV transparent vote(s) in [$B, $((B + NOTE_VOTE_INCLUSION_WINDOW)))"
+        success "epoch $E carried $TV transparent vote(s) in [$B, $((B + TRANSPARENT_VOTE_INCLUSION_WINDOW)))"
     else
         fail "epoch $E carried $TV transparent vote(s), expected ${EXPECT_TRANSPARENT[$E]}"
     fi

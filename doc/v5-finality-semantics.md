@@ -5,8 +5,10 @@ not Byzantine fault tolerance, and it carries no stake-weighted security bound.
 
 ## The rule
 
-- An epoch is 300 blocks. Votes for an epoch are carried in blocks within
-  `FINALITY_VOTE_INCLUSION_WINDOW` (24) blocks of its boundary.
+- An epoch is 300 blocks. Transparent votes for an epoch are carried in blocks within
+  `FINALITY_VOTE_INCLUSION_WINDOW` (24) blocks of its boundary, note votes within
+  `FINALITY_NOTE_VOTE_INCLUSION_WINDOW` (120). Once the note lane is active, the epoch's
+  certificate and settlement wait for the note window to close (boundary + 120).
 - An epoch's tier is HARD when at least `FINALITY_MIN_VOTERS` (2) distinct voters are
   counted for the boundary block on the chain that carries them.
 - A height becomes final after `FINALITY_CONFIRMATION_EPOCHS` (3) consecutive HARD

@@ -287,6 +287,7 @@ inline std::string GetActivationLadderJSON()
     { "FINALITY_EPOCH_INTERVAL_PRE_DAG", NULL, "src/finality.h", FINALITY_EPOCH_INTERVAL_PRE_DAG, "blocks" },
     { "FINALITY_EPOCH_INTERVAL_POST_DAG", NULL, "src/finality.h", FINALITY_EPOCH_INTERVAL_POST_DAG, "blocks" },
     { "FINALITY_VOTE_INCLUSION_WINDOW", NULL, "src/finality.h", FINALITY_VOTE_INCLUSION_WINDOW, "blocks" },
+    { "FINALITY_NOTE_VOTE_INCLUSION_WINDOW", NULL, "src/finality.h", FINALITY_NOTE_VOTE_INCLUSION_WINDOW, "blocks" },
     { "FINALITY_SETTLEMENT_OFFSET", NULL, "src/finality.h", FINALITY_SETTLEMENT_OFFSET, "blocks" },
     { "FINALITY_MIN_VOTERS", NULL, "src/finality.h", FINALITY_MIN_VOTERS, "voters" },
     { "FINALITY_CONFIRMATION_EPOCHS", NULL, "src/finality.h", FINALITY_CONFIRMATION_EPOCHS, "epochs" },
