@@ -132,7 +132,8 @@ Iv5SeedDialog::Iv5SeedDialog(QWidget* parent)
     QLabel* viewHelp = new QLabel(tr(
         "A viewing key shows every incoming payment and its amount to the addresses it "
         "covers, now and in the future. It cannot spend. It does not show spends, change "
-        "or shields, so what it reports is value received, not a balance."));
+        "or shields, so what it reports is value received, not a balance. Notes prepared "
+        "for NullSend rounds are paid to covered addresses and are visible."));
     viewHelp->setWordWrap(true);
     viewLayout->addWidget(viewHelp);
     QHBoxLayout* vkExportRow = new QHBoxLayout();
@@ -474,7 +475,8 @@ void Iv5SeedDialog::exportViewingKey()
             tr("Anyone holding this viewing key can see every payment to the covered "
                "addresses and its amount, now and in the future. There is no way to revoke "
                "it except moving to new addresses.\n\n"
-               "It cannot spend, and it does not show spends or change.\n\n"
+               "It cannot spend, and it does not show spends or change. It does show "
+               "notes prepared for NullSend rounds.\n\n"
                "Show it?"),
             QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
         return;
