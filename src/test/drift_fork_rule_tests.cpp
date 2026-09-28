@@ -7,6 +7,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <stdio.h>
 #include <string>
@@ -656,6 +657,190 @@ BOOST_AUTO_TEST_CASE(a_stake_kernel_older_than_ninety_days_is_refused)
         BOOST_CHECK_MESSAGE(strAt.find("max age violation") != std::string::npos,
                             "a block at the mainnet gate must apply the maximum age with "
                             "the tip below the gate; log: " << strAt);
+    }
+}
+
+namespace {
+
+// A transparent coinstake spending one wallet output, signed, with its time set
+// by the case.
+CTransaction SignedCoinstake(const CTransaction& txPrev, unsigned int nOut,
+                             unsigned int nTime, int64_t nValueOut)
+{
+    CTransaction tx;
+    tx.nTime = nTime;
+    tx.vin.push_back(CTxIn(txPrev.GetHash(), nOut));
+    tx.vout.resize(2);
+    tx.vout[0].SetEmpty();
+    tx.vout[1] = CTxOut(nValueOut, txPrev.vout[nOut].scriptPubKey);
+    BOOST_REQUIRE(SignSignature(*pwalletMain, txPrev, tx, 0));
+    BOOST_REQUIRE(tx.IsCoinStake());
+    return tx;
+}
+
+// The block that carries txPrev, header only.
+unsigned int BlockTimeOf(const CTransaction& txPrev)
+{
+    CTxDB txdb("r");
+    CTxIndex txindex;
+    BOOST_REQUIRE(txdb.ReadTxIndex(txPrev.GetHash(), txindex));
+    CBlock block;
+    BOOST_REQUIRE(block.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false));
+    return (unsigned int)block.GetBlockTime();
+}
+
+} // namespace
+
+// R-KERN-003b. CheckProofOfStake hands the kernel the carrying block's height,
+// so the ninety-day maximum is decided by that height and not by the tip. The
+// arms put the two on opposite sides of the mainnet gate.
+BOOST_AUTO_TEST_CASE(check_proof_of_stake_reads_the_maximum_age_at_the_block_height)
+{
+    BOOST_REQUIRE(fRegTest);
+
+    DetachedWalletGuard walletGuard;
+
+    BOOST_REQUIRE_MESSAGE(MineTo(2), "could not extend the fixture to height 2");
+    CTransaction txPrev;
+    unsigned int nOut = 0;
+    BOOST_REQUIRE_MESSAGE(FindFundingOutput(BestIndex()->nHeight, txPrev, nOut),
+                          "no unspent wallet output to stake");
+
+    const unsigned int nTimeFrom = BlockTimeOf(txPrev);
+    const unsigned int nTimeTx = nTimeFrom + 90 * 24 * 60 * 60 + 1;
+    CTransaction tx = SignedCoinstake(txPrev, nOut, nTimeTx, txPrev.vout[nOut].nValue);
+    const unsigned int nBits = GetNextTargetRequired(BestIndex(), true);
+
+    NetworkGuard net(false, false);
+    const int nGate = FORK_HEIGHT_TIGHTER_DRIFT;
+    BOOST_REQUIRE(nGate > nBestHeight + 1);
+
+    bool vResult[2] = { false, false };
+    std::string vLogs[2];
+    const int vEvalHeight[2] = { nGate - 1, nGate };
+    const int vTipHeight[2] = { nGate + 1000, nGate - 1 };
+    for (int a = 0; a < 2; a++)
+    {
+        BestHeightGuard tip(vTipHeight[a]);
+        uint256 hashProof = 0, hashTarget = 0;
+        CaptureLog log;
+        BOOST_REQUIRE(log.Begin());
+        vResult[a] = CheckProofOfStake(tx, nBits, hashProof, hashTarget, vEvalHeight[a]);
+        vLogs[a] = log.End();
+    }
+
+    BOOST_CHECK_MESSAGE(vLogs[0].find("max age violation") == std::string::npos,
+                        "a block below the mainnet gate must not apply the maximum age "
+                        "with the tip above the gate; log: " << vLogs[0]);
+    BOOST_CHECK_MESSAGE(vResult[0] || vLogs[0].find("check kernel failed") != std::string::npos,
+                        "the below-gate arm did not reach the kernel; log: " << vLogs[0]);
+    BOOST_CHECK(!vResult[1]);
+    BOOST_CHECK_MESSAGE(vLogs[1].find("max age violation") != std::string::npos,
+                        "a block at the mainnet gate must apply the maximum age with the "
+                        "tip below the gate; log: " << vLogs[1]);
+}
+
+// R-KERN-004b: coin age is capped at the block's own height, not the tip's. Each arm
+// overpays by one satoshi so the refusal prints the reward it was scored against.
+BOOST_AUTO_TEST_CASE(connect_block_scores_coin_age_at_the_block_height)
+{
+    BOOST_REQUIRE(fRegTest);
+
+    DetachedWalletGuard walletGuard;
+    MockClockGuard clockGuard;
+
+    BOOST_REQUIRE_MESSAGE(MineTo(2), "could not extend the fixture to height 2");
+    CTransaction txPrev;
+    unsigned int nOut = 0;
+    BOOST_REQUIRE_MESSAGE(FindFundingOutput(BestIndex()->nHeight, txPrev, nOut),
+                          "no unspent wallet output to stake");
+    CBlockIndex* pparent = BestIndex();
+    const int64_t nValueIn = txPrev.vout[nOut].nValue;
+
+    const int64_t nYear = 365 * 24 * 60 * 60;
+    const int64_t nAge = nYear + 400 * 24 * 60 * 60;
+    const unsigned int nTimeTx = (unsigned int)((int64_t)txPrev.nTime + nAge);
+    SetMockTime((int64_t)nTimeTx + 60);
+
+    auto CoinDaysFor = [&](int64_t nTimeDiff) -> uint64_t {
+        CBigNum bnCentSecond = CBigNum(nValueIn) * nTimeDiff / CENT;
+        CBigNum bnCoinDay = bnCentSecond * CENT / COIN / (24 * 60 * 60);
+        return bnCoinDay.getuint64();
+    };
+
+    NetworkGuard net(false, false);
+    const int nGate = FORK_HEIGHT_TIGHTER_DRIFT;
+    BOOST_REQUIRE(nGate > nBestHeight + 1);
+    BOOST_REQUIRE(nGate < FORK_HEIGHT_DAG);
+
+    auto PaidFor = [&](int nHeight, int64_t nTimeDiff) -> int64_t {
+        const int64_t nSubsidy =
+            GetProofOfStakeReward((int64_t)CoinDaysFor(nTimeDiff), 0, pparent, 0);
+        return CBlockSubsidySplit::ForBlock(nHeight, nSubsidy, 0,
+                                            CollateralnodeShare::Paid).PaidToBlock();
+    };
+
+    const int vHeight[2] = { nGate - 1, nGate };
+    const int vTipHeight[2] = { nGate + 1000, nGate - 1 };
+    const int64_t vExpected[2] = { PaidFor(nGate - 1, nAge), PaidFor(nGate, nYear) };
+    BOOST_REQUIRE_MESSAGE(PaidFor(nGate - 1, nYear) < vExpected[0] &&
+                          vExpected[1] < PaidFor(nGate, nAge),
+                          "the capped and uncapped rewards coincide, so no arm can see "
+                          "which height scored the coin age");
+    const int64_t nPaid = std::max(PaidFor(nGate - 1, nAge), PaidFor(nGate, nAge)) + 1;
+
+    std::string vLogs[2];
+    for (int a = 0; a < 2; a++)
+    {
+        CBlock block;
+        block.nVersion = CBlock::CURRENT_VERSION;
+        block.hashPrevBlock = pparent->GetBlockHash();
+        block.nTime = nTimeTx;
+        block.nBits = pparent->nBits;
+
+        CTransaction coinbase;
+        coinbase.nTime = nTimeTx;
+        coinbase.vin.resize(1);
+        coinbase.vin[0].prevout.SetNull();
+        coinbase.vin[0].scriptSig = CScript() << vHeight[a] << OP_0;
+        coinbase.vout.resize(1);
+        coinbase.vout[0].SetEmpty();
+
+        block.vtx.push_back(coinbase);
+        block.vtx.push_back(SignedCoinstake(txPrev, nOut, nTimeTx, nValueIn + nPaid));
+        block.hashMerkleRoot = block.BuildMerkleTree();
+        BOOST_REQUIRE(block.IsProofOfStake());
+
+        const uint256 hash = block.GetHash();
+        CBlockIndex index(0, 0, block);
+        index.pprev = pparent;
+        index.nHeight = vHeight[a];
+        index.phashBlock = &hash;
+
+        BestHeightGuard tip(vTipHeight[a]);
+        LOCK(cs_main);
+        CTxDB txdb;
+        BOOST_REQUIRE(txdb.TxnBegin());
+        CBlock::ConnectResult result = CBlock::CONNECT_RESULT_INVALID;
+        CaptureLog log;
+        BOOST_REQUIRE(log.Begin());
+        const bool fConnected = block.ConnectBlock(txdb, &index, false, false, &result);
+        vLogs[a] = log.End();
+        BOOST_REQUIRE(txdb.TxnAbort());
+        BOOST_CHECK(!fConnected);
+    }
+
+    for (int a = 0; a < 2; a++)
+    {
+        const std::string strWant = strprintf("coinstake pays too much(actual=%" PRId64
+                                              " vs calculated=%" PRId64 ")",
+                                              nPaid, vExpected[a]);
+        BOOST_CHECK_MESSAGE(vLogs[a].find(strWant) != std::string::npos,
+                            (a == 0 ? "a block below the mainnet gate must score the "
+                                      "uncapped coin age with the tip above the gate"
+                                    : "a block at the mainnet gate must score the capped "
+                                      "coin age with the tip below the gate")
+                            << "; want '" << strWant << "'; log: " << vLogs[a]);
     }
 }
 

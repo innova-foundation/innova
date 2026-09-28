@@ -1439,6 +1439,78 @@ BOOST_AUTO_TEST_CASE(a_watch_only_wallet_sees_incoming_notes_and_cannot_spend_th
     BOOST_CHECK(watcher.vPrivacyVNextWatchNotes.empty());
 }
 
+// A block carrying one skipped and one active payload: the watch scan runs, and
+// records the active payment only.
+BOOST_AUTO_TEST_CASE(a_watch_scan_skips_a_skipped_payload_beside_an_active_one)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNotes funded;
+    FundNotes(txdb, 2, funded, 0x86);
+
+    const PrivacyVNextDigest senderSeed = RotationDigest(0x86);
+    const unsigned char payeeFill = 0x87;
+    PrivacyVNextDerivedKeys vPayee[2];
+    for (int i = 0; i < 2; ++i)
+        BOOST_REQUIRE_MESSAGE(DerivePrivacyVNextKeys(RotationDigest(payeeFill), funded.genesis,
+                                                     (uint32_t)(1 + i), LocalNetwork(), 0,
+                                                     vPayee[i], error),
+                              error);
+
+    const uint64_t vPaid[2] = { 1500, 2500 };
+    const uint64_t nFee = 100;
+    CBlock block;
+    for (size_t n = 0; n < 2; ++n)
+    {
+        const std::vector<PrivacyVNextDigest> vSpent(1, funded.vKeyImages[n]);
+        PrivacyVNextDerivedKeys change;
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildTransferWithChangeAt(funded, n, senderSeed,
+                                      ChangeIndexForSpendOf(funded.genesis, vSpent), 7,
+                                      vPayee[n], vPaid[n], nFee, change, payload, error),
+            error);
+        block.vtx.push_back(CarrierOf(payload));
+    }
+    const uint256 hashSkipped = block.vtx[0].GetHash();
+    const uint256 hashActive = block.vtx[1].GetHash();
+    BOOST_REQUIRE(hashSkipped != hashActive);
+    CBlockIndex index;
+    index.nHeight = 121;
+
+    std::vector<uint32_t> vIndices;
+    vIndices.push_back(0);
+    vIndices.push_back(1);
+    vIndices.push_back(2);
+    CWallet watcher;
+    uint256 id;
+    bool fNew = false;
+    BOOST_REQUIRE_MESSAGE(watcher.ImportPrivacyVNextViewKey(ViewKeyFor(payeeFill, vIndices),
+                                                            id, fNew, error),
+                          error);
+
+    // Control: with nothing skipped the key opens both payments.
+    {
+        CWallet control;
+        BOOST_REQUIRE(control.ImportPrivacyVNextViewKey(ViewKeyFor(payeeFill, vIndices), id,
+                                                        fNew, error));
+        const std::set<uint256> setNoneSkipped;
+        BOOST_REQUIRE_MESSAGE(control.ApplyPrivacyVNextBlock(block, setNoneSkipped, &index,
+                                                             error),
+                              error);
+        BOOST_CHECK_EQUAL(control.vPrivacyVNextWatchNotes.size(), 2U);
+    }
+
+    std::set<uint256> setSkipped;
+    setSkipped.insert(hashSkipped);
+    BOOST_REQUIRE_MESSAGE(watcher.ApplyPrivacyVNextBlock(block, setSkipped, &index, error),
+                          error);
+    BOOST_REQUIRE_EQUAL(watcher.vPrivacyVNextWatchNotes.size(), 1U);
+    BOOST_CHECK(watcher.vPrivacyVNextWatchNotes[0].txhash == hashActive);
+    BOOST_CHECK_EQUAL(watcher.vPrivacyVNextWatchNotes[0].nAmount, vPaid[1]);
+    BOOST_CHECK_EQUAL(watcher.GetPrivacyVNextWatchOnlyBalance(), (int64_t)vPaid[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(privacy_vnext_held_balance_tests)
