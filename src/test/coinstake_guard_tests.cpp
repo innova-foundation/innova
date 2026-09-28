@@ -1,5 +1,4 @@
-// Regression tests for the coinstake-position handling (CR-1, re-audit
-// 2026-06-12): a coinstake-shaped transaction outside vtx[1] of a
+// Regression tests for the coinstake-position handling: a coinstake-shaped transaction outside vtx[1] of a
 // proof-of-stake block must never reach the coinstake validation exemptions
 // (shielded value balance, nullifier binding, value conservation), and a
 // coinstake may never unshield (positive nValueBalance). Also covers the

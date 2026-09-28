@@ -103,6 +103,8 @@ struct PrivacyVNextPrefixOutput
 /** A uniformly random canonical scalar; the single source for every IV5 secret. */
 bool RandomScalar(PrivacyVNextDigest& out, std::string& strErrorOut);
 
+// Serializes a spend-shaped prefix in decoder order (the signing-hash preimage). Shared by
+// the builder and the mix coordinator.
 bool AssemblePrivacyVNextPayloadPrefix(const PrivacyVNextPrefixHeader& header,
                                        const std::vector<PrivacyVNextPrefixInput>& vInputs,
                                        const std::vector<PrivacyVNextPrefixOutput>& vOutputs,

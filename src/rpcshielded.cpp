@@ -2085,9 +2085,7 @@ Value z_shieldall(const Array& params, bool fHelp)
             "  \"remaining\": n        (numeric) outputs still unshielded at that address\n"
             "}\n");
 
-    // The transaction being built lands in the next block, so gate on the height it
-    // would occupy. Gating on the tip refuses a transaction consensus would accept in
-    // the activation block itself.
+    // Gate on the next block's height, not the tip.
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
         !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
@@ -2491,9 +2489,7 @@ Value z_iv5transfer(const Array& params, bool fHelp)
             "  \"discloses_amount\": bool   (boolean) output amounts are published\n"
             "}\n");
 
-    // The transaction being built lands in the next block, so gate on the height it
-    // would occupy. Gating on the tip refuses a transaction consensus would accept in
-    // the activation block itself.
+    // Gate on the next block's height, not the tip.
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
         !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
@@ -2652,9 +2648,7 @@ Value z_iv5unshield(const Array& params, bool fHelp)
             "  \"notes\": n         (numeric) notes consumed\n"
             "}\n");
 
-    // The transaction being built lands in the next block, so gate on the height it
-    // would occupy. Gating on the tip refuses a transaction consensus would accept in
-    // the activation block itself.
+    // Gate on the next block's height, not the tip.
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
         !IsShieldedVNextConsensusReady())
         throw JSONRPCError(RPC_INVALID_REQUEST,
@@ -2803,6 +2797,7 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
         // Assume-valid re-verification progress; below the tip, the rest is still trusted.
         obj.push_back(Pair("privacy_vnext_verified_height",
                            GetPrivacyVNextVerifiedHeight()));
+        // False with a gap present: the gap is lost on restart; rescan first.
         obj.push_back(Pair("privacy_vnext_scan_gap_persisted",
                            pwalletMain->PrivacyVNextScanGapIsPersisted()));
         // Gap-closer status; "complete" with scan_gap_height -1 means done.

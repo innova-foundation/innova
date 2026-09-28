@@ -377,6 +377,11 @@ std::string MixNoteIneligibility(const CMixNoteFacts& note, const CMixRoundAnnou
 /** One coordinator round at a time, under this key, from the next publishing window on. */
 bool MixStartCoordinator(const CKey& keyCoordinator, uint64_t nDenomination, int nSeats,
                          std::string& strError);
+/** The chain's block spacing over the last MIX_SPACING_SAMPLE_BLOCKS up to nNow, and never
+ *  below the target. Caller holds cs_main. */
+class CBlockIndex;
+int64_t MixMeasuredSpacingMs(const CBlockIndex* pindexTip, int64_t nNow);
+
 /** One attempt at the round this coordinator's record for nRecordSlot authorises. nIdOut is
  *  the seat's id in mixstatus. */
 bool MixStartSeat(const CPubKey& pubkeyCoordinator, int64_t nRecordSlot, std::string& strError,

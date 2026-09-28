@@ -201,10 +201,8 @@ single default key.
 ## 7. Known gaps
 
 1. **The bundled Tor cannot rendezvous.** Upgrading vendored Tor from 0.3.0.9 to
-   a release with a v3 client (0.4.8.x) or replacing it with arti is a separate,
-   scoped item: see `docs/architecture/TOR-VENDORED-UPGRADE-SCOPE.md`, which
-   prices it against the seven defects four commits had to fix just to make
-   0.3.0.9 compile on both platforms.
+   a release with a v3 client (0.4.8.x) or replacing it with arti is a separate
+   item.
 2. **No v3 checksum validation**, for want of SHA3-256 (section 2).
 3. **No live rendezvous has been demonstrated** from this tree. The codec, the
    classification, the DNS refusal and the request encoding are covered by unit

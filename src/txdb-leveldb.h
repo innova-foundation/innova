@@ -719,6 +719,7 @@ public:
      *  those assume-valid skipped at connect time. */
     bool WritePrivacyVNextVerifiedHeight(int nHeight);
     bool ReadPrivacyVNextVerifiedHeight(int& nHeightOut);
+    // Running IV5 pool balance at the tip (consensus state): a missing record is not an empty pool.
     bool WritePrivacyVNextPoolValue(int64_t nValue);
     TxDBReadStatus ReadPrivacyVNextPoolValueStatus(int64_t& nValue);
 

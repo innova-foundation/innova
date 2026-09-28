@@ -26,7 +26,7 @@ both.
 | Target | Build system | Output | What it is |
 | --- | --- | --- | --- |
 | `innovad` | `make -f makefile.<platform>` in `src/` | `src/innovad` (`innovad.exe` on Windows) | The headless daemon and RPC server. Runs full validation, staking / finality voting, and the wallet backend. This is what you run on a node or seed. |
-| `Innova` (Qt) | `qmake6 innova-qt.pro && make` (Linux/Windows) or `qmake` with Qt 5 (macOS) | `Innova` / `Innova.app` / `release/Innova.exe` | The desktop wallet GUI. Wraps the same consensus/wallet code with a graphical interface, block/DAG browser, staking and privacy pages. |
+| `Innova` (Qt) | `qmake6 innova-qt.pro && make` (Linux/Windows) or CMake with Qt 6 (macOS) | `Innova` / `Innova.app` / `release/Innova.exe` | The desktop wallet GUI. Wraps the same consensus/wallet code with a graphical interface, block/DAG browser, staking and privacy pages. |
 
 Both link the same consensus and wallet code, so their dependency sets overlap
 heavily. The Qt wallet additionally needs Qt (see below), and (optionally) `qrencode` for
@@ -61,7 +61,7 @@ The Qt wallet adds:
 - **qrencode** — QR-code rendering (`USE_QRCODE`).
 - **protobuf** — payment-protocol support.
 
-The tree builds against both Qt 5.15 and Qt 6. Linux and Windows release builds use Qt 6 (`qmake6`); macOS uses Qt 5, because Homebrew's Qt 6 ships no qmake platform mkspec. Moving macOS to Qt 6 needs the official Qt distribution or a CMake port.
+The tree builds against both Qt 5.15 and Qt 6. Linux and Windows release builds use Qt 6 (`qmake6`); macOS builds Qt 6 with CMake (`CMakeLists.txt`), because Homebrew's Qt 6 ships no qmake platform mkspec.
 
 The build embeds git revision info via `share/genbuild.sh`, so build from a git
 checkout (a shallow tarball works but yields less version detail).
@@ -241,20 +241,23 @@ dependencies into a redistributable binary.
 
 ### 3. Build the Qt wallet and .dmg (optional)
 
+Build `innovad` first (step 2): it produces the Rust IV5 library and LevelDB that
+the GUI links. Then, with `brew install qt qttools`:
+
 ```sh
-/opt/homebrew/opt/qt@5/bin/qmake USE_UPNP=1 USE_QRCODE=1 innova-qt.pro
-make -j$(sysctl -n hw.ncpu)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+make -C build -j$(sysctl -n hw.ncpu)
 ```
 
-This produces `Innova.app`. The `.pro` file targets a macOS 12.0 deployment
-minimum and ad-hoc code-signs the bundle on link (recent macOS refuses to run
+This produces `build/Innova.app`. The build compiles the translations with
+`lrelease` (from `qttools`) and ad-hoc code-signs the bundle on link (recent macOS refuses to run
 unsigned `.app` bundles). To assemble the distributable disk image that CI
 publishes, stage `innovad` and `Innova.app` into a folder and run `hdiutil`:
 
 ```sh
 mkdir -p dmg_contents
 cp src/innovad dmg_contents/
-cp -R Innova.app dmg_contents/
+cp -R build/Innova.app dmg_contents/
 hdiutil create -volname "Innova" -srcfolder dmg_contents \
   -ov -format UDZO innova-<version>-macOS-arm64.dmg
 ```

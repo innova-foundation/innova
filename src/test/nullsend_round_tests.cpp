@@ -17,6 +17,7 @@
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../ed25519_zk.h"
 #include "../main.h"
+#include "../finality.h"
 #include "../privacy_vnext_ffi.h"
 #include "../privacy_vnext_store.h"
 #include "../txdb.h"
@@ -3382,6 +3383,7 @@ CMixRoundAnnouncement ProvenAnnouncement(CKey& keyOut, const CNullSendSession& r
     announce.nPort = 8443;
     announce.nParticipants = 2;
     announce.nTime = nStart;
+    announce.nRecordSlot = MixRendezvousRecordSlot(nStart);
     announce.nNetwork = proofs.header.nNetwork;
     announce.genesis = proofs.header.genesis;
     announce.parameterDigest = proofs.header.parameterDigest;
@@ -6205,6 +6207,210 @@ BOOST_AUTO_TEST_CASE(a_note_is_eligible_only_under_the_rounds_anchor_at_its_amou
         if (nFirst > 0)
             BOOST_CHECK_EQUAL(MixNoteEligibleHeight(nFirst), nEligible);
     }
+}
+
+namespace {
+
+// A chain paced like a node sees it: nBaseMs a block, nSlowMs over each vote-inclusion
+// window [boundary - 5, boundary + nWindow]. Heights from nFirst, times in ms.
+struct PacedChain
+{
+    int nFirst;
+    std::vector<int64_t> vTimeMs;
+
+    PacedChain(int nFirstIn, int nBlocks, int64_t nStartMs, int64_t nBaseMs, int64_t nSlowMs,
+               int nWindow)
+        : nFirst(nFirstIn)
+    {
+        int64_t t = nStartMs;
+        for (int i = 0; i < nBlocks; i++)
+        {
+            const int h = nFirst + i;
+            const int nEpoch = GetEpochForHeight(h);
+            const int64_t nInto = h - GetEpochBoundaryHeight64(nEpoch);
+            const int64_t nToNext = GetEpochBoundaryHeight64(nEpoch + 1) - h;
+            t += (nInto <= nWindow || nToNext <= 5) ? nSlowMs : nBaseMs;
+            vTimeMs.push_back(t);
+        }
+    }
+    int64_t Time(int h) const { return vTimeMs[h - nFirst] / 1000; }
+    int64_t Mtp(int h) const
+    {
+        std::vector<int64_t> v;
+        for (int i = 0; i < 11; i++)
+            v.push_back(Time(h - i));
+        std::sort(v.begin(), v.end());
+        return v[5];
+    }
+    int TipAt(int64_t nNow) const
+    {
+        int h = nFirst;
+        while (h + 1 < nFirst + (int)vTimeMs.size() && Time(h + 1) <= nNow)
+            h++;
+        return h;
+    }
+    // When ReadSettledMixRendezvous first answers for nSlot: the deterministic latch of the
+    // last complete epoch names that epoch's boundary, whose median time past must reach
+    // the slot's opening.
+    int64_t Settles(int64_t nSlot, int nFrom) const
+    {
+        for (int h = nFrom; h < nFirst + (int)vTimeMs.size(); h++)
+        {
+            const int nBoundary = (int)GetEpochBoundaryHeight64(GetEpochForHeight(h + 1) - 1);
+            if (nBoundary - 10 >= nFirst && Mtp(nBoundary) >= nSlot * MIX_RENDEZVOUS_SLOT_SECONDS)
+                return Time(h);
+        }
+        return std::numeric_limits<int64_t>::max();
+    }
+    int64_t SpacingMs(int nTip, int64_t nNow) const
+    {
+        const int nOld = std::max(nFirst, nTip - MIX_SPACING_SAMPLE_BLOCKS);
+        if (nOld == nTip)
+            return MIX_TARGET_SPACING_MS;
+        return std::max<int64_t>(MIX_TARGET_SPACING_MS,
+                                 (nNow - Time(nOld)) * 1000 / (nTip - nOld));
+    }
+};
+
+struct PacedResult
+{
+    int nPlanned, nLate, nOldLate, nMaxLag;
+    PacedResult() : nPlanned(0), nLate(0), nOldLate(0), nMaxLag(0) {}
+};
+
+// Every publishing instant over several epochs: plan the start the way PlanMixRound does and
+// check a seat that asks on RETRY_SECS reads the record and still has JOIN open.
+PacedResult SweepPacedChain(int64_t nBaseMs, int64_t nSlowMs, int nWindow)
+{
+    const int nEpoch0 = GetEpochForHeight(GetForkHeightDAG()) + 40;
+    const int nFirst = (int)GetEpochBoundaryHeight64(nEpoch0);
+    const PacedChain chain(nFirst, 30 * FINALITY_EPOCH_INTERVAL_POST_DAG,
+                           (int64_t)30000000 * 1000, nBaseMs, nSlowMs, nWindow);
+    PacedResult out;
+    const int64_t nFrom = chain.Time(nFirst + 3 * FINALITY_EPOCH_INTERVAL_POST_DAG);
+    const int64_t nTo = chain.Time(nFirst + 18 * FINALITY_EPOCH_INTERVAL_POST_DAG);
+    for (int64_t nNow = nFrom; nNow < nTo; nNow += 13)
+    {
+        const int64_t nSlot = MixRendezvousSlot(nNow) + 1;
+        const int64_t nLead = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS - nNow;
+        if (nLead > MIX_PUBLISH_EARLIEST_SECS || nLead < MIX_PUBLISH_LATEST_SECS)
+            continue;
+        const int nTip = chain.TipAt(nNow);
+        const int64_t nStart = MixRoundStartAfterSettle(
+            nSlot, MixRecordSettleTime(nSlot, nTip, nNow, chain.SpacingMs(nTip, nNow)));
+        BOOST_REQUIRE(MixRendezvousRunSlotAllowed(nSlot, nStart));
+        BOOST_REQUIRE(nStart % MIX_RENDEZVOUS_SLOT_SECONDS >= MIX_RENDEZVOUS_MIN_START_SLACK);
+        out.nMaxLag = std::max(out.nMaxLag, (int)(MixRendezvousSlot(nStart) - nSlot));
+        const int64_t nSettles = chain.Settles(nSlot, nTip);
+        // A seat asks again every RETRY_SECS and must be inside JOIN after that.
+        const int64_t nReads = nSettles + CMixSeatJob::RETRY_SECS;
+        out.nPlanned++;
+        if (nReads >= nStart + MIX_JOIN_WINDOW_MIN_SECS)
+            out.nLate++;
+        const int64_t nOldStart = (nSlot + 1) * MIX_RENDEZVOUS_SLOT_SECONDS +
+                                  MIX_RENDEZVOUS_MIN_START_SLACK;
+        if (nReads >= nOldStart + MIX_JOIN_WINDOW_MIN_SECS)
+            out.nOldLate++;
+    }
+    return out;
+}
+
+} // namespace
+
+// The record slot settles one to two epochs after its opening, so the planner starts a
+// round once a seat can have read the record, not a fixed 720 s after the opening.
+BOOST_AUTO_TEST_CASE(a_planned_round_starts_after_a_seat_can_read_its_record)
+{
+    // (i) one-second blocks, transparent-vote window 24
+    const PacedResult r24 = SweepPacedChain(1000, 1000, FINALITY_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK(r24.nPlanned > 100);
+    BOOST_CHECK_EQUAL(r24.nLate, 0);
+    BOOST_CHECK_EQUAL(r24.nMaxLag, 1);   // unchanged at the target rate
+    BOOST_CHECK_EQUAL(r24.nOldLate, 0);
+
+    // (ii) one-second blocks, note-vote window 120, the window paced at 1.2 s
+    const PacedResult r120 = SweepPacedChain(1000, 1200, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    BOOST_CHECK(r120.nPlanned > 100);
+    BOOST_CHECK_EQUAL(r120.nLate, 0);
+
+    // (iii) the release run's pacing: ~1 s blocks, 6 s over each vote window
+    const PacedResult rSlow = SweepPacedChain(1000, 6000, 30);
+    BOOST_CHECK(rSlow.nPlanned > 100);
+    BOOST_CHECK_EQUAL(rSlow.nLate, 0);
+    BOOST_CHECK(rSlow.nMaxLag > 1);
+    // The same with 0.8 s blocks between the windows, as the release run paces them.
+    const PacedResult rFast = SweepPacedChain(800, 6000, 30);
+    BOOST_CHECK(rFast.nPlanned > 100);
+    BOOST_CHECK_EQUAL(rFast.nLate, 0);
+    // The fixed start the planner used before misses JOIN on this chain.
+    BOOST_CHECK(rSlow.nOldLate > 0);
+    BOOST_TEST_MESSAGE("paced sweep: planned " << rSlow.nPlanned << ", late " << rSlow.nLate
+                       << ", fixed-start late " << rSlow.nOldLate << ", max slot lag "
+                       << rSlow.nMaxLag);
+
+    // A chain too slow to settle within MIX_RENDEZVOUS_MAX_RUN_SLOTS is refused, not planned.
+    const int nTip = (int)GetEpochBoundaryHeight64(GetEpochForHeight(GetForkHeightDAG()) + 40);
+    const int64_t nSlot = 50000;
+    const int64_t nNow = nSlot * MIX_RENDEZVOUS_SLOT_SECONDS - 120;
+    BOOST_CHECK(!MixRendezvousRunSlotAllowed(
+        nSlot, MixRoundStartAfterSettle(nSlot, MixRecordSettleTime(nSlot, nTip, nNow, 20000))));
+}
+
+// The announcement names the record slot it was published for, inside the signed and derived
+// identifier, and a seat takes it only for that slot and only for a run slot it may authorise.
+BOOST_AUTO_TEST_CASE(a_round_may_run_in_a_later_slot_its_record_names)
+{
+    const int64_t T0 = 27000300;
+    const int64_t nRunSlot = MixRendezvousSlot(T0);
+    CKey key;
+    CMixRoundAnnouncement announce = ProvenAnnouncement(key, FreshRoundKey(4801), T0);
+    std::string strError;
+
+    // Two slots after its record: valid and authorised by that record.
+    announce.nRecordSlot = nRunSlot - 2;
+    BOOST_REQUIRE(announce.Sign(key));
+    BOOST_CHECK_MESSAGE(announce.IsValidBasic(&strError), strError);
+    CMixRendezvous rendezvous;
+    rendezvous.pubkeyCoordinator = announce.pubkeyCoordinator;
+    rendezvous.nSlot = nRunSlot - 2;
+    rendezvous.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator,
+                                                        rendezvous.nSlot, announce.hashRound);
+    BOOST_CHECK_MESSAGE(MixAnnouncementMatchesRendezvous(announce, rendezvous, &strError),
+                        strError);
+
+    // The record slot is inside the identifier: moving it is a different round.
+    CMixRoundAnnouncement moved = announce;
+    moved.nRecordSlot = nRunSlot - 1;
+    BOOST_CHECK(moved.DerivedRoundId() != announce.hashRound);
+    BOOST_CHECK(!moved.IsValidBasic(&strError));
+
+    // A record for another slot, even with a commitment consistent with it, does not authorise it.
+    CMixRendezvous other = rendezvous;
+    other.nSlot = nRunSlot - 1;
+    other.hashCommitment = MixRendezvousCommitment(announce.pubkeyCoordinator, other.nSlot,
+                                                   announce.hashRound);
+    BOOST_CHECK(!MixAnnouncementMatchesRendezvous(announce, other, &strError));
+    BOOST_CHECK(strError.find("slot") != std::string::npos);
+
+    // Past MIX_RENDEZVOUS_MAX_RUN_SLOTS, and in its own record slot, the round is refused.
+    CMixRoundAnnouncement far = announce;
+    far.nRecordSlot = nRunSlot - MIX_RENDEZVOUS_MAX_RUN_SLOTS - 1;
+    BOOST_REQUIRE(far.Sign(key));
+    BOOST_CHECK(!far.IsValidBasic(&strError));
+    CMixRoundAnnouncement same = announce;
+    same.nRecordSlot = nRunSlot;
+    BOOST_REQUIRE(same.Sign(key));
+    BOOST_CHECK(!same.IsValidBasic(&strError));
+    BOOST_CHECK(MixRendezvousRunSlotAllowed(nRunSlot - MIX_RENDEZVOUS_MAX_RUN_SLOTS, T0));
+    BOOST_CHECK(!MixRendezvousRunSlotAllowed(nRunSlot - MIX_RENDEZVOUS_MAX_RUN_SLOTS - 1, T0));
+
+    // It round-trips with the slot it names.
+    std::vector<unsigned char> vch;
+    BOOST_REQUIRE(EncodeMixAnnouncement(announce, vch));
+    CMixRoundAnnouncement decoded;
+    BOOST_REQUIRE(DecodeMixAnnouncement(vch, decoded));
+    BOOST_CHECK_EQUAL(decoded.nRecordSlot, nRunSlot - 2);
+    BOOST_CHECK(decoded.CheckSignature());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

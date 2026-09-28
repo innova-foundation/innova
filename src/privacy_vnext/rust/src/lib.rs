@@ -230,31 +230,37 @@ pub const fn is_note_vote_operation(operation: u8) -> bool {
 /// Contract texts this binary's lineage has published, besides the current one. Provenance
 /// only: no consensus rule may branch on it. Append-only, for text changes that move no rule.
 const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 6] = [
+    // e65eaaa6: operation 8 text written down, operation 9 added (both already enforced).
     [
         0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
         0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
         0x9d, 0x5f,
     ],
+    // f0259ccc: 2005/2008 auth modes narrowed to owner in the text; digest acceptance rule added.
     [
         0xf0, 0x25, 0x9c, 0xcc, 0xfe, 0x96, 0xb0, 0x66, 0x5a, 0x26, 0xb1, 0x77, 0x4e, 0x27, 0x94,
         0x22, 0x2c, 0xeb, 0x80, 0x93, 0xd8, 0x00, 0xd8, 0x86, 0xcb, 0x16, 0x46, 0xf7, 0x60, 0xf3,
         0x71, 0x0b,
     ],
+    // 4313419b: vote membership prover response widened with r_i and r_r_i (FFI only).
     [
         0x43, 0x13, 0x41, 0x9b, 0x35, 0x1b, 0x5c, 0x9b, 0xa6, 0xa2, 0x5b, 0xb9, 0x4c, 0x5b, 0xf2,
         0xb3, 0x17, 0x84, 0x3d, 0x23, 0x8d, 0x23, 0x76, 0xb5, 0xcc, 0x18, 0x1d, 0xfb, 0x61, 0x46,
         0xa2, 0x80,
     ],
+    // 07c5f16b: effects trailer reports the boundary a note vote names (FFI only).
     [
         0x07, 0xc5, 0xf1, 0x6b, 0x0d, 0xa2, 0x6d, 0x5f, 0x20, 0x1a, 0x24, 0x03, 0x9d, 0xc7, 0xeb,
         0x0c, 0x00, 0xb4, 0xff, 0x57, 0xd1, 0x61, 0xed, 0x6c, 0x78, 0x96, 0x58, 0x6c, 0xc5, 0x01,
         0x63, 0xf1,
     ],
+    // b796ba76: note-vote stake-floor rule added (lane never active before it).
     [
         0xb7, 0x96, 0xba, 0x76, 0xb3, 0xa9, 0x5b, 0xd9, 0x6e, 0x36, 0xc7, 0xe1, 0x25, 0x5c, 0x6d,
         0xea, 0xe4, 0x10, 0x67, 0x56, 0x92, 0xde, 0x7e, 0x7e, 0xaa, 0xff, 0x1b, 0x4d, 0x1f, 0x70,
         0xa2, 0xa7,
     ],
+    // 1424a38b: payload_effects_assume_valid added (FFI only).
     [
         0x14, 0x24, 0xa3, 0x8b, 0x5e, 0x43, 0x51, 0xe0, 0xae, 0x9f, 0xb1, 0x03, 0xb7, 0x79, 0xd3,
         0xb5, 0xb2, 0x45, 0xaa, 0xf0, 0x2d, 0x02, 0x52, 0x5d, 0x79, 0xad, 0x8b, 0xb9, 0xb3, 0xe9,
@@ -645,9 +651,7 @@ fn upstream_compile_marker() -> usize {
 }
 
 /// Return the metadata ABI version through caller-owned storage.
-///
 /// # Safety
-///
 /// `out_version` must point to writable caller-owned storage for one `u32`.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_abi_version(out_version: *mut u32) -> i32 {
@@ -663,9 +667,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_abi_version(out_version: *mut u32)
 }
 
 /// Return SHA-256 of the canonical ABI schema through caller-owned storage.
-///
 /// # Safety
-///
 /// `out` must point to `out_len` writable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_abi_hash(out: *mut u8, out_len: usize) -> i32 {
@@ -673,9 +675,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_abi_hash(out: *mut u8, out_len: us
 }
 
 /// Return SHA-256 of the checked-in provenance manifest.
-///
 /// # Safety
-///
 /// `out` must point to `out_len` writable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_provenance_digest(
@@ -687,7 +687,6 @@ pub unsafe extern "C" fn innova_privacy_vnext_provenance_digest(
 
 /// Return SHA-256 of the fixed, non-consensus product contract (not an activation signal).
 /// # Safety
-///
 /// `out` must point to `out_len` writable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_parameter_digest(
@@ -771,7 +770,6 @@ pub extern "C" fn innova_privacy_vnext_envelope_allows(
 }
 
 /// Copy the fixed, non-consensus product contract into caller-owned storage.
-///
 /// # Safety
 /// `out` must point to `sizeof(ContractMetadata)` writable bytes aligned for `ContractMetadata`.
 #[no_mangle]
@@ -820,7 +818,6 @@ pub unsafe extern "C" fn innova_privacy_vnext_protocol_contract(
 
 /// Serialized FCMP++ proof size for 1 through 16 inputs and exactly eight layers.
 /// # Safety
-///
 /// `out_size` must point to writable caller-owned storage for one `usize`.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_fcmp_proof_size(
@@ -845,9 +842,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_proof_size(
 }
 
 /// Construct an FCMP++ proof from a canonical ABI-v2 proving request.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_fcmp_prove(
@@ -867,9 +862,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_prove(
 }
 
 /// Verify one canonical ABI-v2 FCMP++ request.
-///
 /// # Safety
-///
 /// `request` must identify `request_len` readable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_fcmp_verify(
@@ -885,9 +878,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_verify(
 }
 
 /// Verify a canonical batch of FCMP++ requests.
-///
 /// # Safety
-///
 /// `request` must identify `request_len` readable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_fcmp_batch_verify(
@@ -965,9 +956,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_sal_prove(
     })
 }
 /// Produce a canonical membership witness from caller-owned tree state.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_tree_witness(
@@ -987,9 +976,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_witness(
 }
 
 /// Scan every output of one canonical IV5 payload with the caller's material.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_payload_scan(
@@ -1009,9 +996,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_scan(
 }
 
 /// Scan one canonical IV5 output with full, view-only, or outgoing material.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_note_scan(
@@ -1031,9 +1016,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_note_scan(
 }
 
 /// Encrypt one canonical IV5 note for its recipient and outgoing scanner.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_note_encrypt(
@@ -1111,9 +1094,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_input_context(
 }
 
 /// Construct and self-verify the canonical IV5 range proof and value balance proof.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_value_prove(
@@ -1133,9 +1114,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_value_prove(
 }
 
 /// Initialize or update the canonical eight-layer IV5 FCMP++ frontier.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_tree_update(
@@ -1156,7 +1135,6 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_update(
 
 /// `innova_privacy_vnext_tree_update` that also reports every per-level node it changed.
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_tree_extend(
@@ -1176,9 +1154,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_extend(
 }
 
 /// Calculate the fixed-depth root for a canonical IV5 FCMP++ frontier.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_tree_root(
@@ -1198,9 +1174,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_root(
 }
 
 /// Append canonical spent key images to the bounded IV5 nullifier accumulator.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_nullifier_update(
@@ -1220,9 +1194,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_nullifier_update(
 }
 
 /// Decode and return one canonical IV5 nullifier accumulator state/root.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_nullifier_root(
@@ -1242,9 +1214,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_nullifier_root(
 }
 
 /// Encode one canonical IV5 `Base58Check` address component record.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_address_encode(
@@ -1324,9 +1294,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_address_decode(
 }
 
 /// Derive the five IV5 secret domains and spend/view public keys.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_key_derive(
@@ -1391,9 +1359,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_key_derive(
 }
 
 /// Validate one canonical IV5 payload and its contextual commitments.
-///
 /// # Safety
-///
 /// `request` must identify `request_len` readable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_payload_validate(
@@ -1411,9 +1377,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_validate(
 }
 
 /// Hash a payload prefix so a builder's proofs bind to the value validation recomputes.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_payload_signing_hash(
@@ -1439,7 +1403,6 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_signing_hash(
 
 /// Prove one output's receiver disclosure once the prefix hash is known.
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
@@ -1658,9 +1621,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_combine(
 }
 
 /// Validate a canonical IV5 payload and extract its ordered state effects.
-///
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_payload_effects(
@@ -1681,7 +1642,6 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_effects(
 
 /// Payload effects WITHOUT proof verification (structure rules still run); the caller owns the gate.
 /// # Safety
-///
 /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_payload_effects_assume_valid(
@@ -1728,9 +1688,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_vote_membership_prove(
 }
 
 /// Verify one membership-only instance. No key image and no signable hash take part.
-///
 /// # Safety
-///
 /// `request` must identify `request_len` readable caller-owned bytes.
 #[no_mangle]
 pub unsafe extern "C" fn innova_privacy_vnext_vote_membership_verify(

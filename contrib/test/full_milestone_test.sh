@@ -348,7 +348,7 @@ else
     skip "z_nullsendinfo not available"
 fi
 
-# sp_getnewaddress/sp_listaddresses were retired in 9d8fcfe2 (Method not found);
+# sp_getnewaddress/sp_listaddresses were retired in 20299621 (Method not found);
 # the old check passed on the error text.
 
 # ============================================================

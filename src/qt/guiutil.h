@@ -52,13 +52,11 @@ namespace GUIUtil
     void setupAddressWidget(QLineEdit *widget, QWidget *parent);
     void setupAmountWidget(QLineEdit *widget, QWidget *parent);
 
-    // Parse "innova:" URI into recipient object, return true on successful parsing
-    // See Bitcoin URI definition discussion here: https://bitcointalk.org/index.php?topic=33490.0
-    // Execute a wallet RPC command by name with string args, via the same dispatcher
-    // the debug console uses. Returns the result text; on error sets ok=false and
-    // returns the error message. Runs on the calling (GUI) thread.
+    // Run a wallet RPC through the debug console's dispatcher on the GUI thread; on error sets ok=false and returns the message.
     QString executeRpc(const QString &command, const QStringList &args, bool &ok);
 
+    // Parse "innova:" URI into recipient object, return true on successful parsing
+    // See Bitcoin URI definition discussion here: https://bitcointalk.org/index.php?topic=33490.0
     bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out);
     bool parseBitcoinURI(QString uri, SendCoinsRecipient *out);
 

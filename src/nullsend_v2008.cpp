@@ -43,7 +43,7 @@ bool IsMixOnionEndpoint(const std::string& strEndpoint)
 uint256 CMixRoundAnnouncement::GetSignatureHash() const
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/announce/v2");
+    ss << std::string("innova/iv5/mix/announce/v3");
     ss << nVersion;
     ss << hashRound;
     ss << hashRoundKey;
@@ -51,6 +51,7 @@ uint256 CMixRoundAnnouncement::GetSignatureHash() const
     ss << nPort;
     ss << nParticipants;
     ss << nTime;
+    ss << nRecordSlot;
     ss << pubkeyCoordinator;
     ss.write((const char*)&nNetwork, 1);
     ss.write((const char*)genesis.data(), genesis.size());
@@ -75,13 +76,14 @@ uint256 CMixRoundAnnouncement::DerivedRoundId() const
     // Every field but hashRound and the signature. Including hashRound would be
     // circular; including the signature would make the identifier depend on the nonce.
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("innova/iv5/mix/round-id/v2");
+    ss << std::string("innova/iv5/mix/round-id/v3");
     ss << nVersion;
     ss << hashRoundKey;
     ss << strEndpoint;
     ss << nPort;
     ss << nParticipants;
     ss << nTime;
+    ss << nRecordSlot;
     ss << pubkeyCoordinator;
     ss.write((const char*)&nNetwork, 1);
     ss.write((const char*)genesis.data(), genesis.size());
@@ -175,6 +177,8 @@ bool CMixRoundAnnouncement::IsValidBasic(std::string* pstrError) const
         nTime - MixRendezvousSlot(nTime) * MIX_RENDEZVOUS_SLOT_SECONDS <
             MIX_RENDEZVOUS_MIN_START_SLACK)
         FAIL("the round starts too early in its slot for a seat to have settled its record");
+    if (nTime > 0 && !MixRendezvousRunSlotAllowed(nRecordSlot, nTime))
+        FAIL("the round does not run in a slot its record slot may authorise");
     // The anonymous window is the one a seat cannot be asked to hurry: it has to build a
     // bundle, then pick an instant inside the window to submit at.
     if (nOutputSecs < MIX_OUTPUT_WINDOW)
@@ -3167,6 +3171,57 @@ int64_t MixRendezvousRecordSlot(int64_t nRoundTime)
     return nSlot > 0 ? nSlot - 1 : 0;
 }
 
+bool MixRendezvousRunSlotAllowed(int64_t nRecordSlot, int64_t nRoundTime)
+{
+    if (nRecordSlot <= 0 || nRoundTime <= 0)
+        return false;
+    const int64_t nLag = MixRendezvousSlot(nRoundTime) - nRecordSlot;
+    return nLag >= 1 && nLag <= MIX_RENDEZVOUS_MAX_RUN_SLOTS;
+}
+
+int64_t MixRecordSettleTime(int64_t nRecordSlot, int nTipHeight, int64_t nNow,
+                            int64_t nSpacingMs)
+{
+    if (nRecordSlot <= 0 || nTipHeight < 0 || nNow <= 0)
+        return std::numeric_limits<int64_t>::max();
+    // Above the target the excess counts twice: a paced chain is slowest around the epoch
+    // boundaries the settlement waits on, so the mean understates the blocks that matter.
+    const int64_t nSpacing = std::max<int64_t>(1, nSpacingMs) +
+                             std::max<int64_t>(0, nSpacingMs - MIX_TARGET_SPACING_MS);
+    const int64_t nOpens = nRecordSlot * MIX_RENDEZVOUS_SLOT_SECONDS;
+    // Counted at the target rate, which puts the crossing no lower than a slower chain does:
+    // one block too low is one epoch too early.
+    const int64_t nToOpens =
+        nOpens > nNow ? ((nOpens - nNow) * 1000 + MIX_TARGET_SPACING_MS - 1) /
+                            MIX_TARGET_SPACING_MS
+                      : 0;
+    // The first block whose median time past reaches the opening.
+    const int64_t nFirst = (int64_t)nTipHeight + nToOpens + MIX_MTP_LAG_BLOCKS;
+    if (nFirst > std::numeric_limits<int>::max() / 2)
+        return std::numeric_limits<int64_t>::max();
+    // The first boundary at or above it is the finalized height a seat needs, and the latch
+    // carries it once that boundary's epoch is complete at the tip.
+    int nEpoch = GetEpochForHeight((int)nFirst);
+    if (GetEpochBoundaryHeight64(nEpoch) < nFirst)
+        nEpoch++;
+    const int64_t nLatched = GetEpochBoundaryHeight64(nEpoch + 1) - 1;
+    const int64_t nBlocks = std::max<int64_t>(0, nLatched - nTipHeight);
+    return nNow + (nBlocks * nSpacing + 999) / 1000;
+}
+
+int64_t MixRoundStartAfterSettle(int64_t nRecordSlot, int64_t nSettleTime)
+{
+    if (nRecordSlot <= 0 || nSettleTime > std::numeric_limits<int64_t>::max() / 2)
+        return 0;
+    int64_t nStart = std::max<int64_t>(
+        (nRecordSlot + 1) * MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK,
+        nSettleTime + MIX_JOIN_WINDOW_MIN_SECS);
+    const int64_t nInto = nStart - MixRendezvousSlot(nStart) * MIX_RENDEZVOUS_SLOT_SECONDS;
+    if (nInto < MIX_RENDEZVOUS_MIN_START_SLACK)
+        nStart += MIX_RENDEZVOUS_MIN_START_SLACK - nInto;
+    return nStart;
+}
+
 uint256 MixRendezvousCommitment(const CPubKey& pubkeyCoordinator, int64_t nSlot,
                                 const uint256& hashRound)
 {
@@ -3444,8 +3499,10 @@ bool MixAnnouncementMatchesRendezvous(const CMixRoundAnnouncement& announce,
         FAIL("the announcement is not from the coordinator this slot authorises");
     // The record's slot is the one before the round's own start, so a coordinator cannot
     // publish once and then run the round at a time of its choosing.
-    if (MixRendezvousRecordSlot(announce.nTime) != rendezvous.nSlot)
-        FAIL("the announcement does not start in the slot after the one it was published for");
+    if (announce.nRecordSlot != rendezvous.nSlot ||
+        !MixRendezvousRunSlotAllowed(rendezvous.nSlot, announce.nTime))
+        FAIL("the announcement does not start in a slot the one it was published for "
+             "authorises");
     if (MixRendezvousCommitment(announce.pubkeyCoordinator, rendezvous.nSlot,
                                 announce.hashRound) != rendezvous.hashCommitment)
         FAIL("the announcement is not the one this slot authorises");
@@ -4036,7 +4093,7 @@ bool CMixDirectory::Put(const std::vector<unsigned char>& vchAnnouncement, int64
         FAIL("not one canonically encoded announcement");
     if (!announce.IsValidBasic(pstrError))
         return false;
-    const int64_t nSlot = MixRendezvousRecordSlot(announce.nTime);
+    const int64_t nSlot = announce.nRecordSlot;
     if (announce.Ends() < nNow)
         FAIL("the round is already over");
     if (nSlot > MixRendezvousSlot(nNow) + MIX_DIRECTORY_AHEAD_SLOTS)
@@ -4324,6 +4381,7 @@ bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAncho
 void CMixRoundPlan::ApplyTo(CMixRoundAnnouncement& announce) const
 {
     announce.nTime = nTime;
+    announce.nRecordSlot = nSlot;
     announce.finalizedRoot = finalizedRoot;
     announce.nFinalizedTreeSize = nFinalizedTreeSize;
     announce.parameterDigest = parameterDigest;
@@ -4338,7 +4396,7 @@ void CMixRoundPlan::ApplyTo(CMixRoundAnnouncement& announce) const
 }
 
 bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& planOut,
-                  std::string* pstrError)
+                  std::string* pstrError, int64_t nSpacingMs)
 {
     #define FAIL(msg) do { if (pstrError) *pstrError = (msg); return false; } while (0)
     planOut = CMixRoundPlan();
@@ -4352,7 +4410,14 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
     if (nLead > MIX_PUBLISH_EARLIEST_SECS || nLead < MIX_PUBLISH_LATEST_SECS)
         FAIL(strprintf("outside the publishing window: the next opens %d seconds before %d",
                        (int)MIX_PUBLISH_EARLIEST_SECS, (int)nOpens));
-    const int64_t nTime = nOpens + MIX_RENDEZVOUS_SLOT_SECONDS + MIX_RENDEZVOUS_MIN_START_SLACK;
+    // The round starts once a seat can have read the record, which at the target rate is the
+    // slot after the record's and on a slower chain a later one.
+    const int64_t nSpacing = std::max<int64_t>(MIX_TARGET_SPACING_MS, nSpacingMs);
+    const int64_t nTime =
+        MixRoundStartAfterSettle(nSlot, MixRecordSettleTime(nSlot, nTipHeight, nNow, nSpacing));
+    if (!MixRendezvousRunSlotAllowed(nSlot, nTime))
+        FAIL(strprintf("the chain is too slow for the record of slot %d to settle within %d "
+                       "slots", (int)nSlot, (int)MIX_RENDEZVOUS_MAX_RUN_SLOTS));
 
     // The longest schedule the budget allows; the middle one keeps 30 s token, nonce and
     // response windows (two Tor exchanges each), the floors are last resort.
@@ -4373,7 +4438,7 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
         FAIL(fLocal ? "the anchor head cannot be read" : "there is no anchor head yet");
     // Where the seats' tips will be at JOIN: at the target rate for depth, which only has to
     // be reached, and at the margin rate for the budget, which must not be passed.
-    const int64_t nJoinTipExpected = (int64_t)nTipHeight + (nTime - nNow);
+    const int64_t nJoinTipExpected = (int64_t)nTipHeight + (nTime - nNow) * 1000 / nSpacing;
     for (int nBack = 0; nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
     {
         CEpochState state;

@@ -3218,6 +3218,7 @@ void CollectPrivacyVNextWarmSet(
         }
 }
 
+// Re-prove one block's payloads; false only on a payload that does not verify.
 static bool VerifyPrivacyVNextActiveBlockProofs(const CBlock& activeBlock, int nHeight,
                                                 std::string& strErrorOut)
 {
@@ -10576,11 +10577,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                               nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V2 kernel proof invalid"));
 
-            // Legacy NullStake membership rested on the FCMP path-proof layer,
-            // which is gone. The coinstake still parses; nothing can show it
-            // spends a note in the tree, so the encoding is never valid.
-            // Nothing below this return runs, the stake-reward bound included;
-            // a membership check put back here brings that bound back with it.
+            // FCMP path proofs are unverifiable, so this encoding is never valid. The stake-reward
+            // bound below is unreachable while this return stands.
             return DoS(100, error("ConnectBlock() : NullStake V2 stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
@@ -10689,11 +10687,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                               nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof invalid"));
 
-            // Legacy NullStake membership rested on the FCMP path-proof layer,
-            // which is gone. The coinstake still parses; nothing can show it
-            // spends a note in the tree, so the encoding is never valid.
-            // Nothing below this return runs, the stake-reward bound included;
-            // a membership check put back here brings that bound back with it.
+            // FCMP path proofs are unverifiable, so this encoding is never valid. The stake-reward
+            // bound below is unreachable while this return stands.
             return DoS(100, error("ConnectBlock() : NullStake V3 stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             // V3 reward: same conservative approach as V2
@@ -10770,11 +10765,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                             nBits, nWeight))
                 return DoS(100, error("ConnectBlock() : NullStake kernel proof invalid"));
 
-            // Legacy NullStake membership rested on the FCMP path-proof layer,
-            // which is gone. The coinstake still parses; nothing can show it
-            // spends a note in the tree, so the encoding is never valid.
-            // Nothing below this return runs, the stake-reward bound included;
-            // a membership check put back here brings that bound back with it.
+            // FCMP path proofs are unverifiable, so this encoding is never valid. The stake-reward
+            // bound below is unreachable while this return stands.
             return DoS(100, error("ConnectBlock() : NullStake stake note membership is unverifiable; the coinstake encoding is permanently invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;

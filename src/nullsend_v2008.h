@@ -57,6 +57,9 @@ static const int MIX_JOIN_WINDOW_MIN_SECS = 60;
  *  the start is past record settlement (finalized block lags the tip by up to a slot) in
  *  every epoch/slot alignment at the target rate. */
 static const int64_t MIX_RENDEZVOUS_MIN_START_SLACK = 120;
+/** The latest slot a round may run in, counted from its record's slot. Seats accept any run
+ *  slot up to this far out; the coordinator picks the first one JOIN can reach (PlanMixRound). */
+static const int64_t MIX_RENDEZVOUS_MAX_RUN_SLOTS = 4;
 /** How long the round may keep answering after it has published. Terminal is the only window
  *  after the broadcast, so it spends no anchor life. */
 static const int MIX_SCHEDULE_MAX_TERMINAL_SECS = 900;
@@ -83,7 +86,7 @@ int MixAnchorSafeThroughHeight(int nAnchorEpoch);
 class CMixRoundAnnouncement
 {
 public:
-    static const int CURRENT_VERSION = 2;
+    static const int CURRENT_VERSION = 3;
 
     int nVersion;
     uint256 hashRound;
@@ -92,6 +95,7 @@ public:
     int nPort;
     int nParticipants;
     int64_t nTime;
+    int64_t nRecordSlot;       // the slot whose record authorises this round
     CPubKey pubkeyCoordinator;
 
     // The transcript. Every seat must hold the same anchor, denomination and fee; signed and
@@ -131,6 +135,7 @@ public:
         nPort = 0;
         nParticipants = 0;
         nTime = 0;
+        nRecordSlot = 0;
         pubkeyCoordinator = CPubKey();
         nNetwork = 0;
         genesis.fill(0);
@@ -170,6 +175,7 @@ public:
         READWRITE(nPort);
         READWRITE(nParticipants);
         READWRITE(nTime);
+        READWRITE(nRecordSlot);
         READWRITE(pubkeyCoordinator);
         READWRITE(FLATDATA(nNetwork));
         READWRITE(FLATDATA(genesis));
@@ -790,7 +796,7 @@ private:
 };
 
 // Dispatch. Every input-side frame is authenticated with the session key; OUTPUT is not, as
-// that would reveal the input-to-output mapping. See doc/nullsend-v2008-wire.md.
+// that would reveal the input-to-output mapping.
 
 /** Body of an authenticated frame, with the session signature split off its tail.
  *  Returns false on any payload that is not exactly one body plus one signature. */
@@ -1049,8 +1055,23 @@ static const int64_t MIX_RENDEZVOUS_SLOT_SECONDS = 600;
 
 int64_t MixRendezvousSlot(int64_t nTime);
 
-/** The slot a round's record is published for: the one before the slot the round runs in. */
+/** The earliest slot a round's record may be published for: the one before the slot the
+ *  round runs in. The announcement names the record slot it was published for. */
 int64_t MixRendezvousRecordSlot(int64_t nRoundTime);
+
+/** Whether a round starting at nRoundTime may be authorised by a record for nRecordSlot:
+ *  the run slot is 1 to MIX_RENDEZVOUS_MAX_RUN_SLOTS slots after the record's. */
+bool MixRendezvousRunSlotAllowed(int64_t nRecordSlot, int64_t nRoundTime);
+
+/** When a seat can first read nRecordSlot's record under ReadSettledMixRendezvous, projected
+ *  from a tip at nTipHeight at nNow with a block every nSpacingMs: the first epoch boundary
+ *  whose median time past reaches the slot's opening, latched when its epoch completes. */
+int64_t MixRecordSettleTime(int64_t nRecordSlot, int nTipHeight, int64_t nNow,
+                            int64_t nSpacingMs);
+
+/** The earliest round start for nRecordSlot that gives a seat MIX_JOIN_WINDOW_MIN_SECS after
+ *  nSettleTime and still starts MIX_RENDEZVOUS_MIN_START_SLACK into its slot. */
+int64_t MixRoundStartAfterSettle(int64_t nRecordSlot, int64_t nSettleTime);
 
 /** The commitment a coordinator publishes for a slot: the announcement's derived identifier,
  *  which already binds every announcement field. */
@@ -1434,6 +1455,14 @@ private:
     int nRequests;
 };
 
+/** The block spacing a planner assumes at least, and the window it measures the chain's
+ *  actual spacing over. */
+static const int64_t MIX_TARGET_SPACING_MS = 1000;
+static const int MIX_SPACING_SAMPLE_BLOCKS = 300;
+/** Blocks past the first one timed at or after an instant before the median time past
+ *  reaches it: the median of eleven is the sixth newest. */
+static const int MIX_MTP_LAG_BLOCKS = 6;
+
 /** When a coordinator may sign, in seconds before its record's slot opens: earlier ages the
  *  anchor past what seats accept, later misses the record's median-time-past window. */
 static const int64_t MIX_PUBLISH_EARLIEST_SECS = 360;
@@ -1469,7 +1498,7 @@ struct CMixRoundPlan
  *  with no anchor that fits; prefers the newest anchor, then the longer schedule. Read
  *  nTipHeight and txdb under one cs_main lock. */
 bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& planOut,
-                  std::string* pstrError = NULL);
+                  std::string* pstrError = NULL, int64_t nSpacingMs = MIX_TARGET_SPACING_MS);
 
 /** The denominations a client mixes at, and the fixed per-seat fee share at each. A seat
  *  refuses a round whose fee or denomination differs from its own choice, so a coordinator

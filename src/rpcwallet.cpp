@@ -592,7 +592,8 @@ Value mixjoin(const Array& params, bool fHelp)
             "1. \"coordinator\" (string, required) the coordinator's public key, hex\n"
             "2. recordslot    (numeric, required) the slot the coordinator's record names\n"
             "\nResult:\n"
-            "{ \"id\": n (the seat in mixstatus and mixcancel), \"recordslot\": n, \"runs\": t }\n");
+            "{ \"id\": n (the seat in mixstatus and mixcancel), \"recordslot\": n,\n"
+            "  \"runs\": t (the earliest start; the announcement sets the round's own) }\n");
     EnsureWalletIsUnlocked();
     const std::vector<unsigned char> vchKey = ParseHex(params[0].get_str());
     const CPubKey pubkey(vchKey);
@@ -867,7 +868,7 @@ Value mixlistrounds(const Array& params, bool fHelp)
     for (size_t i = 0; i < vRounds.size(); i++)
     {
         const CMixRoundAnnouncement& a = vRounds[i].announce;
-        const int64_t nSlot = MixRendezvousRecordSlot(a.nTime);
+        const int64_t nSlot = a.nRecordSlot;
         Object row;
         row.push_back(Pair("round", a.hashRound.ToString()));
         row.push_back(Pair("coordinator", HexStr(a.pubkeyCoordinator.begin(),

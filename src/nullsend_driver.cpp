@@ -393,8 +393,9 @@ void CMixSeatJob::Step(int64_t nNow)
             if (rendezvous.IsNull())
                 return Fail("the slot published no round for this coordinator");
         }
-        // A round runs in the slot after its record's and starts inside it.
-        if (nNow >= (config.nRecordSlot + 2) * MIX_RENDEZVOUS_SLOT_SECONDS)
+        // A round runs at most MIX_RENDEZVOUS_MAX_RUN_SLOTS after its record's slot.
+        if (nNow >= (config.nRecordSlot + MIX_RENDEZVOUS_MAX_RUN_SLOTS + 1) *
+                        MIX_RENDEZVOUS_SLOT_SECONDS)
             return Fail("the round's slot has passed");
         CMixRoundAnnouncement fetched;
         if (!FetchMixAnnouncement(dialer, config.vDirectories, rendezvous, fetched, &strError))
@@ -777,6 +778,25 @@ bool ReadSettledMixRendezvous(const CPubKey& pubkeyCoordinator, int64_t nSlot,
                                pubkeyCoordinator, nSlot, rendezvousOut, &strError);
 }
 
+int64_t MixMeasuredSpacingMs(const CBlockIndex* pindexTip, int64_t nNow)
+{
+    if (!pindexTip)
+        return MIX_TARGET_SPACING_MS;
+    const CBlockIndex* pindexOld = pindexTip;
+    int nBlocks = 0;
+    while (pindexOld->pprev && nBlocks < MIX_SPACING_SAMPLE_BLOCKS)
+    {
+        pindexOld = pindexOld->pprev;
+        nBlocks++;
+    }
+    if (nBlocks == 0)
+        return MIX_TARGET_SPACING_MS;
+    // Counted to now, so a chain that has stopped reads as slow.
+    const int64_t nElapsed = std::max<int64_t>(nNow, pindexTip->GetBlockTime()) -
+                             pindexOld->GetBlockTime();
+    return std::max<int64_t>(MIX_TARGET_SPACING_MS, nElapsed * 1000 / nBlocks);
+}
+
 namespace {
 
 class CNodeMixCoordinatorEnv : public CMixCoordinatorEnv
@@ -788,7 +808,8 @@ public:
     {
         LOCK(cs_main);
         CTxDB txdb("r");
-        return PlanMixRound(txdb, nBestHeight, nNow, planOut, &strError);
+        return PlanMixRound(txdb, nBestHeight, nNow, planOut, &strError,
+                            MixMeasuredSpacingMs(pindexBest, nNow));
     }
     void ChainIdentity(uint8_t& nNetworkOut, PrivacyVNextDigest& genesisOut)
     {
@@ -1837,7 +1858,7 @@ void GetMixServiceStatus(std::vector<CMixJobStatus>& vJobsOut, size_t& nDirector
         status.fFinished = nState == MIX_COORD_DONE || nState == MIX_COORD_FAILED;
         const CMixRoundAnnouncement announce = g_mix.coordinator->job->Announcement();
         status.strRound = announce.hashRound.ToString();
-        status.nRecordSlot = announce.nTime > 0 ? MixRendezvousRecordSlot(announce.nTime) : 0;
+        status.nRecordSlot = announce.nRecordSlot;
         vJobsOut.push_back(status);
     }
     for (size_t i = 0; i < g_mix.vSeats.size(); i++)

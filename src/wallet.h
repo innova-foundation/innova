@@ -413,6 +413,7 @@ public:
     /** Raise the issued count to cover an address index a scan found value at, so a
      *  restored wallet's lookahead window slides forward as it discovers notes. */
     void RaisePrivacyVNextScanIndexForMatch(uint16_t nKeyIndex, size_t nAddressKeys);
+    // Base scan key list: one key per issued index, then the legacy self-pay index.
     bool BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
                                    const PrivacyVNextDigest& genesis,
                                    uint8_t nNetwork,
@@ -444,6 +445,7 @@ public:
     /** Drop notes whose transaction is no longer on this chain; a failed disconnect would
      *  otherwise leave an unspendable note. Returns the count. Caller holds cs_shielded. */
     unsigned int ReconcilePrivacyVNextNotes();
+    // Reprocess connected blocks from `nFromHeight`; the only way back to a missed note.
     bool RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
                                   std::string& strErrorOut);
     // Records a gap-close request without reading blocks; Unlock may hold cs_main.
@@ -548,6 +550,8 @@ public:
                                     bool fCommit, CWalletTx& wtxNew, int64_t& nFeeOut,
                                     std::string& strErrorOut);
 
+    // The one note a round of this shape can take: exact value, deep enough, unheld, not in
+    // flight, not collateral, unspent on chain and in the mempool. Oldest first.
     bool SelectPrivacyVNextMixNote(CTxDB& txdb, uint64_t nRequired, int nSpendHeight,
                                    uint64_t nAnchorTreeSize, CPrivacyVNextWalletNote& noteOut,
                                    std::string& strErrorOut) const;

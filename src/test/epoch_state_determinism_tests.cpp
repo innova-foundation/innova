@@ -2,33 +2,9 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// Reorg-determinism harness for the epoch-state finality anchor (HIGH #2).
-//
-// The consensus finality anchor is CDAGManager::ComputeEpochState(): it derives an
-// epoch's canonical block set + DAG order and, from those, the curve/nullifier/vote-set
-// roots that CheckVote / CheckTallyCertificate compare against during block validation.
-// The audit finding (increments-1-4 sweep) is that this state is
-//   (a) derived from SelectBestDAGTip() -- the node-local LIVE best tip -- rather than a
-//       canonical anchor, and
-//   (b) computed once at the epoch boundary and NEVER recomputed on reorg,
-// so two nodes that cross a boundary at different transient DAG states, or that take a
-// reorg, can hold different frozen roots -> a private vote/cert anchored to the canonical
-// root passes on one node and is rejected on another -> permanent ConnectBlock split.
-//
-// This suite is the deterministic (CI-able) unit-level half of the validation harness:
-//   - anchor_purity:  proves the fix's FOUNDATION -- GetDAGLinearOrder(anchor) is a pure
-//                     function of its anchor (blocks not reachable from the anchor cannot
-//                     change the order), which is what makes a canonical-anchor fix sound.
-//   - reorg_staleness: REPRODUCES the bug -- after a reorg replaces an epoch's blocks, the
-//                     stored epoch state is still the pre-reorg (stale) block set, and only
-//                     an explicit recompute reflects the new canonical chain.
-//
-// The multi-node regtest reorg e2e (integration half) is tracked separately; it exercises
-// the actual Reorganize recompute hook that a unit test cannot.
-//
-// FLIP-WHEN-FIXED markers below call out the exact assertions that must invert once HIGH #2
-// (deterministic anchor + recompute-on-reorg) lands: the stale-state checks become
-// reflects-new-chain checks.
+// Reorg determinism of the epoch-state finality anchor: ComputeEpochState must be a
+// pure function of its anchor, and a reorg across an epoch must recompute the stored
+// state, or nodes that saw different transient tips hold different roots.
 
 #include <boost/test/unit_test.hpp>
 
@@ -62,8 +38,8 @@ public:
 
 // Builds throwaway post-DAG PoW CBlockIndex nodes wired into the global mapBlockIndex + the
 // DAG manager, and tears them all down (plus restoring pindexBest / fRegTest) on destruction.
-// fRegTest is forced on so the fork heights are small (GetForkHeightDAG()==11) and, once the
-// HIGH #2 fix lands, FORK_HEIGHT_EPOCH_STATE_V2 is active in-test.
+// fRegTest is forced on so the fork heights are small (GetForkHeightDAG()==11) and
+// FORK_HEIGHT_EPOCH_STATE_V2 is active in-test.
 struct DAGHarness
 {
     std::vector<uint256>      hashes;
@@ -386,7 +362,7 @@ BOOST_AUTO_TEST_CASE(v3_dag_score_survives_pruned_history_and_rebuild)
     BOOST_CHECK(pGrandchild->nChainTrust == nGrandchildScore);
 }
 
-// THE FIX (HIGH #2): ComputeEpochState anchored to a canonical tip must be a PURE function of
+// ComputeEpochState anchored to a canonical tip must be a PURE function of
 // that anchor -- the epoch it produces reflects the anchor's selected-parent chain, NOT the
 // node-local live best tip. Two competing branches coexist in the DAG; anchoring to each tip
 // yields that branch's epoch, and flipping pindexBest to the OTHER branch does not change the
@@ -466,7 +442,7 @@ BOOST_AUTO_TEST_CASE(epoch_state_is_deterministic_per_anchor)
     BOOST_CHECK(!contains(sB.vBlockHashes, hA));
 
     // The two anchors yield genuinely different canonical epochs (the reorg case), and the epoch
-    // is a pure function of the anchor -- the HIGH #2 frozen-live-tip divergence is gone.
+    // is a pure function of the anchor.
     BOOST_CHECK(sA.vBlockHashes != sB.vBlockHashes);
 
     // Later-tip arrival and a simulated restart serialization round-trip cannot change A.

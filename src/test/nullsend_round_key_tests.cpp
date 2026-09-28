@@ -39,6 +39,7 @@ const std::vector<unsigned char>& Exponent()
 // from. A round announcing neither is refused, so every fixture carries one.
 void FillTranscript(CMixRoundAnnouncement& announce)
 {
+    announce.nRecordSlot = MixRendezvousRecordSlot(announce.nTime);
     announce.nNetwork = 1;
     announce.genesis.fill(0x11);
     announce.parameterDigest.fill(0x22);

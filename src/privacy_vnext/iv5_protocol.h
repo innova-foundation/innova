@@ -12,31 +12,9 @@ namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
     "da90b08e174b297af8295ce7fc90b25c6ee26b8a3d1ad6e7839644fccc8d6feb";
-// Contract texts this build's lineage has published, besides the current one.
-//
-// Provenance only. No consensus rule may branch on this list: a payload is judged against
-// the digest the chain carries, so that two builds whose lists differ still reach the same
-// verdict on the same block. Reused here only to hold the two halves of one build to the
-// same list -- LoadPrivacyVNextAbiInfo refuses a build whose C++ and Rust lists disagree.
-//
-// e65eaaa6: operation 8 was written into the contract text and operation 9 was added.
-// 4313419b: the vote membership prover began reporting r_i and r_r_i, widening its FFI
-// response record. That record is prover-side construction material, never a consensus
-// payload, so no rule moved and no payload's verdict changes.
-// f0259ccc: the parameter-digest acceptance rule was written down as the chain's own, and
-// the text still declared all four authorization modes on 2005 and 2008 after the decoders
-// were narrowed to owner. The digest selects no rule, so a payload carrying it is judged by
-// the narrowed table like any other.
-// 07c5f16b: the effects trailer began reporting the boundary a note finality vote names. The
-// trailer is the decoder's answer to this binary, never a consensus payload, so no rule
-// moved and no payload's verdict changes.
-// b796ba76: a note finality vote gained its stake-floor rule and the floor itself. This one
-// DOES move a rule: a vote that proves no floor, or proves it against an unshifted point, is
-// refused from the same height the lane activates, and the lane has never been active.
-// 1424a38b: the ABI gained innova_privacy_vnext_payload_effects_assume_valid. No rule moved:
-// the new entry skips proof verdicts for a caller that has already established the block is
-// below a compiled-in hash, and returns identical effects for anything the verifying entry
-// accepts.
+// Contract texts earlier builds of this lineage published. Provenance only: no consensus
+// rule may branch on this list. LoadPrivacyVNextAbiInfo refuses a build whose C++ and
+// Rust lists disagree.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
     "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
     "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b",
@@ -48,27 +26,14 @@ static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR[0]);
-// SHA-256 of privacy_vnext/rust/provenance.json, which the crate include_bytes! and
-// reports back through innova_privacy_vnext_provenance_digest.
-//
-// The archive answers with the manifest it was compiled against; this constant is what
-// the C++ side was compiled against. A decoder that did not rebuild answers with the
-// old digest and LoadPrivacyVNextAbiInfo refuses the build. Regenerate the manifest and
-// update this line together -- verify_provenance.py fails while the two disagree.
+// SHA-256 of privacy_vnext/rust/provenance.json as compiled into the crate.
+// LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
+// (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "5f7361d9333462f7abd1735922cc8932327ee12b74b78427565e0059388d55a8";
-// The parameter digest a chain's first IV5 epoch is stamped with, and the digest a
-// payload is judged against below that epoch.
-//
-// Consensus, not provenance. Nothing earlier exists to inherit from there, so something
-// must choose; taking the linked contract text's hash would make the choice a property
-// of the binary and Boundary B a flag day.
-//
-// FROZEN. It was derived once, as sha256("Innova/IV5/GenesisParameterDigest/v1" || a
-// contract digest), only to land on a value provably unequal to any contract text's hash.
-// The derivation is spent: it is now an opaque constant and must NOT be re-derived when
-// the contract text changes. Re-deriving it forks every chain that has stamped an epoch.
-// genesis_parameter_digest_is_frozen pins the literal so an edit fails rather than forks.
+    "c96fb85f36cf0dd2d9ecb8dbaec48f5607754acd2452267401de5dd88f2d919f";
+// Parameter digest stamped on a chain's first IV5 epoch and used below it. Consensus.
+// FROZEN opaque constant: never re-derive it when the contract text changes
+// (pinned by genesis_parameter_digest_is_frozen).
 static const char GENESIS_PARAMETER_DIGEST_SHA256[] =
     "e34a1abae989c66e6d06906a83e419adac4ba04dc0a5dd7804a52fdad9df0387";
 static const uint16_t PROTOCOL_SCHEMA = 1;
@@ -93,24 +58,17 @@ enum NoteOperation
     NOTE_RECLAIM = 6,
     NOTE_CONDITIONAL_MIGRATION = 7,
     NOTE_COLLATERAL_REGISTER = 8,
-    // The collateral attestation above plus the long-lived key other voters seal their
-    // tally shares to. A sibling operation, not a wider operation 8: an operation code is
-    // the version discriminator of its own layout, so widening 8 would invalidate every
-    // payload already built under it and would make a collateralnode publish an
-    // encryption key it may never want a use for.
+    // Collateral attestation plus the key other voters seal tally shares to. A separate
+    // operation because an operation code fixes its own layout.
     NOTE_FINALITY_MEMBER_REGISTER = 9,
-    // Spends one note as a finality vote and reissues its value to one fresh output,
-    // naming the epoch boundary it votes for. The key image is a spend: it goes to the
-    // spent-key index, which is what makes the vote provably unspent, never the watch
-    // set. A sibling of NOTE_TRANSFER for the same reason 9 is a sibling of 8.
+    // Spends one note as a finality vote for an epoch boundary and reissues its value to
+    // one fresh output. The key image goes to the spent-key index, never the watch set.
     NOTE_FINALITY_VOTE = 10,
     NOTE_OPERATION_NONE = 255
 };
 
-// Atomic units a note must hold to cast a finality vote. Mirrors NOTE_VOTE_MIN_WEIGHT in
-// the Rust crate, which proves the floor as a range statement and has no height to key on;
-// GetFinalityMinVoteWeight() reads its one rung from here so the two cannot drift, and a
-// later rung moves both under a new wire version.
+// Minimum note value for a finality vote. Mirrors NOTE_VOTE_MIN_WEIGHT in the Rust
+// crate; a new rung moves both under a new wire version.
 static const int64_t NOTE_VOTE_MIN_WEIGHT = 500LL * 100000000LL;
 
 // Compressed secp256k1 encoding length of a committee member's tally-encryption key.
@@ -180,13 +138,9 @@ static const uint8_t DISCLOSURE_MASK = 7;
 static const uint8_t NULLSEND_DISCLOSURE_MASK = 3;
 static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 
-// The one mask a coinbase fee note may carry.
-//
-// Its amount is the block's declared IV5 fee sum, which the block-level equality
-// publishes anyway, so hiding it buys nothing and costs every node a range proof.
-// The producer's address stays hidden, and the note spends nothing, so the sender
-// bit names no input. Pinned by consensus: a shape that varies by producer is a
-// per-block fingerprint of who built the block and of the pool notes they own.
+// The only mask a coinbase fee note may carry: amount disclosed (it equals the block's
+// published IV5 fee sum), producer address hidden. Fixed by consensus so the shape is
+// not a per-producer fingerprint.
 static const uint8_t COINBASE_FEE_NOTE_DISCLOSURE_MASK =
     (uint8_t)(DISCLOSURE_HIDE_SENDER | DISCLOSURE_HIDE_RECEIVER);
 
@@ -196,11 +150,8 @@ inline bool IsKnownNoteOperation(uint8_t operation)
            operation == NOTE_OPERATION_NONE;
 }
 
-// Read the operation and disclosure mask a payload declares in its fixed header.
-//
-// This is not a decoder and must never stand in for one: it reads two header bytes so a
-// caller can report what a payload says about itself. Everything consensus acts on comes
-// from the Rust decoder, which is the only thing that checks the rest of the payload.
+// Read the declared operation and mask from the fixed header. Not a decoder; consensus
+// acts only on the Rust decoder's output.
 inline bool ReadDeclaredEnvelope(const unsigned char* payload, size_t nSize,
                                  uint8_t& operationOut, uint8_t& disclosureMaskOut)
 {
@@ -217,11 +168,8 @@ inline bool ReadDeclaredEnvelope(const unsigned char* payload, size_t nSize,
     return true;
 }
 
-// Whether a coinbase IV5 payload declares the one envelope a fee note may carry.
-//
-// The block rule that pins it runs before the payload's proofs, so a restated header
-// is refused here rather than deeper in verification where the message would name the
-// proof instead of the field that was changed.
+// Whether a coinbase IV5 payload declares the fee-note envelope. Checked before proofs
+// so the error names the header field.
 inline bool CoinbaseFeeNoteEnvelopeAllows(const unsigned char* payload, size_t nSize,
                                           uint8_t& disclosureMaskOut)
 {
@@ -285,12 +233,8 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
     case 2007:
         return operation == NOTE_RECLAIM && authorization == AUTH_OWNER;
     case 2008:
-        // No verifier dispatches on the authorization field, so owner is the only mode any
-        // proof actually enforces; admitting a mode nothing verifies would take a fork to
-        // withdraw. An attestation also publishes a persistent per-node pseudonym by
-        // design, so the fully private mask is the only one it may carry. A note vote is
-        // one note acting once per epoch, so any disclosure on it links the voter across
-        // epochs; it carries the same pin.
+        // Only owner authorization is enforced by any proof. Attestations and note votes must
+        // be fully private: any disclosure would link a node or voter across epochs.
         return authorization == AUTH_OWNER &&
                (!(IsAttestationOperation(operation) ||
                   IsNoteFinalityVoteOperation(operation)) ||
