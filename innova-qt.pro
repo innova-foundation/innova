@@ -89,11 +89,12 @@ MOC_DIR = build
 UI_DIR = build
 
 IV5_RUST_DIR = $$PWD/src/privacy_vnext/rust
-IV5_RUST_PROFILE = debug
-IV5_RUST_FLAGS =
-contains(RELEASE, 1) {
-    IV5_RUST_PROFILE = release
-    IV5_RUST_FLAGS = --release
+# Optimized unless IV5_RUST_DEBUG=1: unoptimized proving is too slow to use.
+IV5_RUST_PROFILE = release
+IV5_RUST_FLAGS = --release
+contains(IV5_RUST_DEBUG, 1) {
+    IV5_RUST_PROFILE = debug
+    IV5_RUST_FLAGS =
 }
 win32-msvc:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/innova_privacy_vnext.lib
 else:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/libinnova_privacy_vnext.a
