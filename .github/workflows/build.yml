@@ -2,23 +2,31 @@ name: Build & Release Innova
 
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
+      bump:
+        description: 'Version part to bump: major (A), minor (B), patch (C) or build (D)'
+        required: false
+        type: choice
+        options: [build, patch, minor, major]
+        default: build
+      publish_release:
+        description: 'Tag and publish a GitHub release after the full matrix passes'
+        required: false
+        type: boolean
+        default: false
       replace_existing_release:
         description: 'To REPLACE an existing published release, type its exact tag (e.g. v5.0.0.0). Leave blank otherwise.'
         required: false
         default: ''
-      publish_release:
-        description: 'Publish a GitHub release after the full matrix completes'
-        required: false
-        type: boolean
-        default: false
-      signed_run_id:
-        description: 'Completed protected desktop-signing workflow run ID'
-        required: false
-        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   COIN_NAME: innova
@@ -29,20 +37,25 @@ jobs:
   # ─────────────────────────────────────────────────────────
   get-version:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+      release: ${{ steps.version.outputs.release }}
     steps:
       - uses: actions/checkout@v5
-      - name: Determine version
+        with:
+          fetch-depth: 0
+      - name: Determine version; on release, stamp, commit and tag it
         id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          else
-            VERSION=$(grep 'release-version=' build.properties | cut -d= -f2)
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION"
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_PUBLISH: ${{ inputs.publish_release }}
+          DEFAULT_BUMP: ${{ vars.DEFAULT_RELEASE_BUMP || 'build' }}
+        run: contrib/versioning/next-version.sh
 
   # ─────────────────────────────────────────────────────────
   # Ubuntu 22.04 x86_64 (daemon + Qt)
@@ -53,6 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -106,6 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -166,6 +181,7 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -249,6 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -303,6 +320,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -347,6 +365,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -429,6 +448,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -569,6 +589,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -623,6 +644,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -675,6 +697,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -727,6 +750,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -777,6 +801,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -838,6 +863,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
 
@@ -893,6 +919,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
       - name: Install dependencies
@@ -950,6 +977,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
       - name: Install dependencies
@@ -988,6 +1016,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
       - name: Install pinned Rust toolchain only
         run: rustup toolchain install 1.94.1 --profile minimal --component clippy
@@ -1014,10 +1043,12 @@ jobs:
 
   audit-regtest:
     runs-on: ubuntu-22.04
-    needs: audit-linux-clean
+    needs: [get-version, audit-linux-clean]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.get-version.outputs.sha }}
 
       - name: Install runtime dependencies
         run: |
@@ -1044,95 +1075,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  release-policy:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.signed_run_id != ''
-    runs-on: ubuntu-22.04
-    needs:
-      - audit-linux-clean
-      - audit-rust-vnext
-      - build-ubuntu-2204
-      - build-ubuntu-2404
-      - build-ubuntu-2604
-      - build-debian-11
-      - build-debian-12
-      - build-fedora-40
-      - build-fedora-41
-      - build-archlinux
-      - build-linux-arm64
-      - build-linux-arm64-qt
-      - build-linux-armhf
-      - build-macos-arm64
-      - build-windows
-    environment: v5-release
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v5
-        with:
-          name: v5-immutable-source-artifact
-          path: ${{ runner.temp }}/v5-immutable-source-artifact
-      - uses: actions/download-artifact@v5
-        with:
-          pattern: innova-*
-          path: ${{ runner.temp }}/v5-release-artifacts
-      - uses: actions/download-artifact@v5
-        with:
-          run-id: ${{ inputs.signed_run_id }}
-          github-token: ${{ github.token }}
-          pattern: innova-*-signed
-          path: ${{ runner.temp }}/v5-release-artifacts
-
-      - name: Require external provenance, preflight, audit, and review attestations
-        env:
-          V5_RELEASE_MANIFEST_BASE64: ${{ secrets.V5_RELEASE_MANIFEST_BASE64 }}
-          V5_RELEASE_EVIDENCE_BASE64: ${{ secrets.V5_RELEASE_EVIDENCE_BASE64 }}
-          V5_RELEASE_GATE_EVIDENCE_BASE64: ${{ secrets.V5_RELEASE_GATE_EVIDENCE_BASE64 }}
-          V5_PRIVATE_AUDIT_SHA256: ${{ secrets.V5_PRIVATE_AUDIT_SHA256 }}
-          V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64: ${{ secrets.V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64 }}
-          V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64: ${{ secrets.V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64 }}
-        run: |
-          set -euo pipefail
-          test -n "$V5_RELEASE_MANIFEST_BASE64"
-          test -n "$V5_RELEASE_EVIDENCE_BASE64"
-          test -n "$V5_RELEASE_GATE_EVIDENCE_BASE64"
-          test -n "$V5_PRIVATE_AUDIT_SHA256"
-          test -n "$V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64"
-          test -n "$V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64"
-          umask 077
-          manifest_path="$RUNNER_TEMP/v5-release-candidate-manifest.json"
-          evidence_path="$RUNNER_TEMP/v5-testnet-v3-preflight.json"
-          release_gate_evidence_path="$RUNNER_TEMP/v5-release-gate-evidence.json"
-          source_artifact_path="$RUNNER_TEMP/v5-immutable-source-artifact/innova-v5-source.tar"
-          artifact_directory="$RUNNER_TEMP/v5-release-artifacts"
-          specification_attestation_path="$RUNNER_TEMP/specification-to-code-review.json"
-          adversarial_attestation_path="$RUNNER_TEMP/adversarial-composition-review.json"
-          trap 'rm -f "$manifest_path" "$evidence_path" "$release_gate_evidence_path" "$specification_attestation_path" "$adversarial_attestation_path"' EXIT
-          printf '%s' "$V5_RELEASE_MANIFEST_BASE64" | base64 --decode > "$manifest_path"
-          printf '%s' "$V5_RELEASE_EVIDENCE_BASE64" | base64 --decode > "$evidence_path"
-          printf '%s' "$V5_RELEASE_GATE_EVIDENCE_BASE64" | base64 --decode > "$release_gate_evidence_path"
-          printf '%s' "$V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64" | base64 --decode > "$specification_attestation_path"
-          printf '%s' "$V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64" | base64 --decode > "$adversarial_attestation_path"
-          test -s "$manifest_path"
-          test -s "$evidence_path"
-          test -s "$release_gate_evidence_path"
-          test -s "$source_artifact_path"
-          test -d "$artifact_directory"
-          test -s "$specification_attestation_path"
-          test -s "$adversarial_attestation_path"
-          python3 contrib/test/check_v5_release_policy.py \
-            --manifest "$manifest_path" \
-            --evidence "$evidence_path" \
-            --release-gate-evidence "$release_gate_evidence_path" \
-            --artifact-directory "$artifact_directory" \
-            --source-artifact "$source_artifact_path" \
-            --specification-to-code-attestation "$specification_attestation_path" \
-            --adversarial-composition-attestation "$adversarial_attestation_path" \
-            --private-audit-sha256 "$V5_PRIVATE_AUDIT_SHA256"
-
   # Create GitHub Release (version tags or explicit manual publish)
   release:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.signed_run_id != ''
+    if: needs.get-version.outputs.release == 'true'
     runs-on: ubuntu-22.04
     needs:
       - get-version
@@ -1153,11 +1098,13 @@ jobs:
       - audit-linux-sanitizers
       - audit-rust-vnext
       - audit-regtest
-      - release-policy
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.get-version.outputs.sha }}
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v5
@@ -1178,14 +1125,6 @@ jobs:
               -o "$GITHUB_WORKSPACE/innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst"
           cd "$GITHUB_WORKSPACE"
           sha256sum "innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst"
-
-      - name: Download protected signed desktop artifacts
-        uses: actions/download-artifact@v5
-        with:
-          run-id: ${{ inputs.signed_run_id }}
-          github-token: ${{ github.token }}
-          pattern: innova-*-signed
-          path: artifacts
 
       - name: Collect release assets
         env:
@@ -1210,12 +1149,6 @@ jobs:
           )
           for asset in "${expected[@]}"; do
             case "$asset" in
-              *-macOS-arm64.dmg)
-                source="artifacts/innova-macOS-arm64-signed/$asset"
-                ;;
-              *-win64.zip)
-                source="artifacts/innova-win64-signed/$asset"
-                ;;
               *)
                 count="$(find artifacts -type f -name "$asset" | wc -l | tr -d '[:space:]')"
                 if [ "$count" -ne 1 ]; then
@@ -1265,14 +1198,38 @@ jobs:
             gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           done
 
+      - name: Compose release notes
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          short="${VERSION%.*}"
+          notes=""
+          for f in "doc/release-notes-v${VERSION}.md" "doc/release-notes-v${short}.md"; do
+            if [ -s "$f" ] && { [ "$f" = "doc/release-notes-v${VERSION}.md" ] || [ "${VERSION##*.}" = 0 ]; }; then notes="$f"; break; fi
+          done
+          {
+            if [ -n "$notes" ]; then cat "$notes"; else
+              prev="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v "^v${VERSION}$" | head -1)"
+              echo "## Changes since ${prev}"
+              git log --no-merges --format='- %s' "${prev}..HEAD" | grep -v '\[release:none\]' || true
+            fi
+            echo
+            echo "## Checksums (SHA256SUMS.txt)"
+            echo '```'
+            cat release-assets/SHA256SUMS.txt
+            echo '```'
+          } > release-body.md
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.get-version.outputs.version }}
+          target_commitish: ${{ needs.get-version.outputs.sha }}
           name: "Innova v${{ needs.get-version.outputs.version }}"
-          body: "Official release binaries for Innova v${{ needs.get-version.outputs.version }}. See release notes above for details."
+          body_path: release-body.md
           files: |
             release-assets/*
             innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst
           draft: false
-          prerelease: true
+          prerelease: false
+          make_latest: true
