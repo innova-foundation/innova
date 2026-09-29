@@ -227,7 +227,13 @@ contains(USE_QRCODE, 1) {
         INCLUDEPATH += $$HOMEBREW_PREFIX/opt/qrencode/include $$HOMEBREW_PREFIX/include
         LIBS += -L$$HOMEBREW_PREFIX/opt/qrencode/lib
     }
-    LIBS += -lqrencode
+    linux {
+        # Distributions ship libqrencode shared only; link it shared under RELEASE=1.
+        contains(RELEASE, 1): QRENCODE_LINK_MODE = -Wl,-Bstatic
+        LIBS += -Wl,-Bdynamic -lqrencode $$QRENCODE_LINK_MODE
+    } else {
+        LIBS += -lqrencode
+    }
 }
 contains(USE_PROFILER, 1) {
     QMAKE_LFLAGS += -pg
