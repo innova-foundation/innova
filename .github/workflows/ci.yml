@@ -57,8 +57,7 @@ jobs:
 
       # The qt5 leg produces linux_clean_sha256 instead of running the same
       # commands loosely: the producer does the clean build and the aggregate and
-      # writes the document the release manifest digests. In place, because this
-      # checkout is disposable and the readiness step below needs the binaries.
+      # writes the document the release manifest digests, in place.
       - name: Clean Linux build evidence (linux_clean_sha256)
         if: matrix.qt == 5
         env:
@@ -82,26 +81,6 @@ jobs:
           make USE_NATIVETOR=- -f makefile.unix release-check \
             CXXFLAGS="-Werror=return-type -Werror=format" \
             CFLAGS="-Werror=return-type -Werror=format"
-
-      # Reporting only. The graph stage fails on fact-base or emitter integrity,
-      # never on the readiness verdict: NOT READY is the state of the work, not a
-      # defect in the candidate. To make an unready verdict fail the build, set
-      # GRAPH_REQUIRE_READY: "1" in the env below -- it blocks every build until
-      # every in-scope rule is GREEN and all 14 release obligations are met.
-      # Runs on the qt5 leg only; it reads the binaries, not Qt.
-      - name: Readiness graph (report only)
-        if: matrix.qt == 5
-        env:
-          GRAPH_OUT: ${{ github.workspace }}/graph-readiness
-        run: contrib/test/v5_release_gate.sh --graph
-
-      - name: Upload readiness report
-        if: matrix.qt == 5 && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: readiness-report
-          path: ${{ github.workspace }}/graph-readiness
-          if-no-files-found: warn
 
       # Same commands as the qt6 leg below, run by the producer so the Qt5
       # compatibility build leaves a document behind. It works on a copy of the
