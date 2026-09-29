@@ -4342,6 +4342,19 @@ bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
     return true;
 }
 
+int64_t MixAnchorConnectHeight(int nTipHeight, int64_t nReadTime, int64_t nConnectBy)
+{
+    const int64_t nSecs = nConnectBy <= nReadTime
+                              ? 0
+                              : std::min<int64_t>(nConnectBy - nReadTime,
+                                                  std::numeric_limits<int>::max());
+    // At least the next block, which is the first height the view was read for.
+    const int64_t nBlocks = std::max<int64_t>(1, (nSecs * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
+                                                  MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
+                                                     MIX_ANCHOR_BLOCKS_PER_SEC_DEN);
+    return (int64_t)nTipHeight + nBlocks;
+}
+
 bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
                           int64_t nConnectBy, std::string* pstrError)
 {
@@ -4362,18 +4375,11 @@ bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAncho
     // blocks than have been mined. Clamped so a far deadline refuses rather than overflows.
     if (view.nReadTime < 0)
         FAIL("the anchor view carries no read time");
-    const int64_t nSecs = nConnectBy <= view.nReadTime
-                              ? 0
-                              : std::min<int64_t>(nConnectBy - view.nReadTime,
-                                                  std::numeric_limits<int>::max());
-    // At least the next block, which is the first height the view was read for.
-    const int64_t nBlocks = std::max<int64_t>(1, (nSecs * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
-                                                  MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
-                                                     MIX_ANCHOR_BLOCKS_PER_SEC_DEN);
-    if ((int64_t)view.nTipHeight + nBlocks > (int64_t)view.nSafeThroughHeight)
+    const int64_t nLatest = MixAnchorConnectHeight(view.nTipHeight, view.nReadTime, nConnectBy);
+    if (nLatest > (int64_t)view.nSafeThroughHeight)
         FAIL(strprintf("the round's anchor is safe through height %d, but the transaction may "
                        "connect as late as %d",
-                       view.nSafeThroughHeight, (int)((int64_t)view.nTipHeight + nBlocks)));
+                       view.nSafeThroughHeight, (int)nLatest));
     return true;
     #undef FAIL
 }
@@ -4393,6 +4399,60 @@ void CMixRoundPlan::ApplyTo(CMixRoundAnnouncement& announce) const
     announce.nNonceSecs = nNonceSecs;
     announce.nResponseSecs = nResponseSecs;
     announce.nTerminalSecs = nTerminalSecs;
+}
+
+bool MixPlanAnchor(int nAnchorEpoch, int nTipHeight, int64_t nNow, int64_t nSlot, int64_t nTime,
+                   int64_t nSpacingMs, CMixRoundPlan& planOut)
+{
+    planOut = CMixRoundPlan();
+    if (nAnchorEpoch < 0 || nTipHeight < 0 || nTime < nNow)
+        return false;
+    // The longest schedule the budget allows; the middle one keeps 30 s token, nonce and
+    // response windows (two Tor exchanges each), the floors are last resort.
+    struct Schedule { uint16_t v[7]; };
+    const Schedule vSchedules[3] = {
+        { { 90, 90, 30, (uint16_t)MIX_OUTPUT_WINDOW, 90, 30, 30 } },
+        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30,
+            (uint16_t)MIX_OUTPUT_WINDOW, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30, 30 } },
+        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS,
+            (uint16_t)MIX_WINDOW_MIN_SECS, (uint16_t)MIX_OUTPUT_WINDOW,
+            (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, (uint16_t)MIX_WINDOW_MIN_SECS,
+            (uint16_t)MIX_WINDOW_MIN_SECS } },
+    };
+    // Depth only has to be reached, so it takes the measured spacing; the budget must not be
+    // passed, so there the excess above the target counts half.
+    const int64_t nSlowMs = std::max<int64_t>(MIX_TARGET_SPACING_MS, nSpacingMs);
+    const int64_t nFastMs = MIX_TARGET_SPACING_MS + (nSlowMs - MIX_TARGET_SPACING_MS) / 2;
+    const int64_t nDeepTip = (int64_t)nTipHeight + (nTime - nNow) * 1000 / nSlowMs;
+    const int64_t nJoinTip = (int64_t)nTipHeight + (nTime - nNow) * 1000 / nFastMs;
+    if (nJoinTip > std::numeric_limits<int>::max() || !MixAnchorIsDeep((int)nDeepTip, nAnchorEpoch))
+        return false;
+    const int nSafeThrough = MixAnchorSafeThroughHeight(nAnchorEpoch);
+    for (size_t k = 0; k < sizeof(vSchedules) / sizeof(vSchedules[0]); k++)
+    {
+        const Schedule& sch = vSchedules[k];
+        int64_t nToResponse = 0;
+        for (int w = 0; w < 7; w++)
+            nToResponse += sch.v[w];
+        // A seat first reads the anchor at the round's start (CMixSeat::Begin).
+        if (MixAnchorConnectHeight((int)nJoinTip, nTime,
+                                   nTime + nToResponse + MIX_INCLUSION_ALLOWANCE_SECS) >
+            (int64_t)nSafeThrough)
+            continue;
+        planOut.nSlot = nSlot;
+        planOut.nTime = nTime;
+        planOut.nAnchorEpoch = nAnchorEpoch;
+        planOut.nJoinSecs = sch.v[0];
+        planOut.nViewSecs = sch.v[1];
+        planOut.nTokenSecs = sch.v[2];
+        planOut.nOutputSecs = sch.v[3];
+        planOut.nApproveSecs = sch.v[4];
+        planOut.nNonceSecs = sch.v[5];
+        planOut.nResponseSecs = sch.v[6];
+        planOut.nTerminalSecs = 300;
+        return true;
+    }
+    return false;
 }
 
 bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& planOut,
@@ -4419,26 +4479,10 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
         FAIL(strprintf("the chain is too slow for the record of slot %d to settle within %d "
                        "slots", (int)nSlot, (int)MIX_RENDEZVOUS_MAX_RUN_SLOTS));
 
-    // The longest schedule the budget allows; the middle one keeps 30 s token, nonce and
-    // response windows (two Tor exchanges each), the floors are last resort.
-    struct Schedule { uint16_t v[7]; };
-    const Schedule vSchedules[3] = {
-        { { 90, 90, 30, (uint16_t)MIX_OUTPUT_WINDOW, 90, 30, 30 } },
-        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30,
-            (uint16_t)MIX_OUTPUT_WINDOW, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, 30, 30 } },
-        { { (uint16_t)MIX_JOIN_WINDOW_MIN_SECS, (uint16_t)MIX_PROOF_WINDOW_MIN_SECS,
-            (uint16_t)MIX_WINDOW_MIN_SECS, (uint16_t)MIX_OUTPUT_WINDOW,
-            (uint16_t)MIX_PROOF_WINDOW_MIN_SECS, (uint16_t)MIX_WINDOW_MIN_SECS,
-            (uint16_t)MIX_WINDOW_MIN_SECS } },
-    };
-
     CEpochState head;
     bool fLocal = false;
     if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nTipHeight + 1, head, fLocal))
         FAIL(fLocal ? "the anchor head cannot be read" : "there is no anchor head yet");
-    // Where the seats' tips will be at JOIN: at the target rate for depth, which only has to
-    // be reached, and at the margin rate for the budget, which must not be passed.
-    const int64_t nJoinTipExpected = (int64_t)nTipHeight + (nTime - nNow) * 1000 / nSpacing;
     for (int nBack = 0; nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
     {
         CEpochState state;
@@ -4460,8 +4504,8 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
             state.vchVNextParameterDigest.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
             state.nVNextTreeSize == 0)
             continue;
-        if (nJoinTipExpected > std::numeric_limits<int>::max() ||
-            !MixAnchorIsDeep((int)nJoinTipExpected, state.nEpoch))
+        CMixRoundPlan plan;
+        if (!MixPlanAnchor(state.nEpoch, nTipHeight, nNow, nSlot, nTime, nSpacing, plan))
             continue;
         PrivacyVNextDigest root, digest;
         std::copy(state.vchVNextRoot.begin(), state.vchVNextRoot.end(), root.begin());
@@ -4473,36 +4517,11 @@ bool PlanMixRound(CTxDB& txdb, int nTipHeight, int64_t nNow, CMixRoundPlan& plan
         if (!CheckPrivacyVNextSpendAnchor(txdb, nTipHeight + 1, root, state.nVNextTreeSize,
                                           digest, nMatched, fAnchorLocal, strAnchor))
             continue;
-        const int nSafeThrough = MixAnchorSafeThroughHeight(state.nEpoch);
-        for (size_t k = 0; k < sizeof(vSchedules) / sizeof(vSchedules[0]); k++)
-        {
-            const Schedule& sch = vSchedules[k];
-            int64_t nToResponse = 0;
-            for (int w = 0; w < 7; w++)
-                nToResponse += sch.v[w];
-            // Exactly what a seat computes at JOIN, from the tip it will have then.
-            const int64_t nConnectBy = nTime + nToResponse + MIX_INCLUSION_ALLOWANCE_SECS;
-            const int64_t nBlocks = ((nConnectBy - nTime) * MIX_ANCHOR_BLOCKS_PER_SEC_NUM +
-                                     MIX_ANCHOR_BLOCKS_PER_SEC_DEN - 1) /
-                                    MIX_ANCHOR_BLOCKS_PER_SEC_DEN;
-            if (nJoinTipExpected + nBlocks > (int64_t)nSafeThrough)
-                continue;
-            planOut.nSlot = nSlot;
-            planOut.nTime = nTime;
-            planOut.nAnchorEpoch = state.nEpoch;
-            planOut.finalizedRoot = root;
-            planOut.nFinalizedTreeSize = state.nVNextTreeSize;
-            planOut.parameterDigest = digest;
-            planOut.nJoinSecs = sch.v[0];
-            planOut.nViewSecs = sch.v[1];
-            planOut.nTokenSecs = sch.v[2];
-            planOut.nOutputSecs = sch.v[3];
-            planOut.nApproveSecs = sch.v[4];
-            planOut.nNonceSecs = sch.v[5];
-            planOut.nResponseSecs = sch.v[6];
-            planOut.nTerminalSecs = 300;
-            return true;
-        }
+        plan.finalizedRoot = root;
+        plan.nFinalizedTreeSize = state.nVNextTreeSize;
+        plan.parameterDigest = digest;
+        planOut = plan;
+        return true;
     }
     FAIL("no accepted anchor will be deep at JOIN and last the shortest schedule");
     #undef FAIL
@@ -4575,6 +4594,8 @@ bool CMixSeat::Begin(const CMixRoundAnnouncement& announce, const CKey& keySessi
         return false;
     // Also before anything is revealed: a round whose anchor consensus will have dropped by
     // the time its transaction is mined costs every seat its key image for nothing.
+    if (anchor.nReadTime < announce.nTime)
+        FAIL("the anchor view was read before the join window; read it again");
     if (!CheckMixAnchorBudget(announce, anchor,
                               announce.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
                               pstrError))

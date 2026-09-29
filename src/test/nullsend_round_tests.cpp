@@ -4412,6 +4412,14 @@ BOOST_AUTO_TEST_CASE(a_seat_refuses_a_round_whose_anchor_will_not_last)
                         "a seat joined a round whose anchor expires before it can be mined");
     BOOST_CHECK(strError.find("anchor") != std::string::npos);
     BOOST_CHECK(seat.KeyImage() == 0);
+    // A view read before the start is judged against a round the planner never budgeted.
+    CMixAnchorView before = fresh;
+    before.nReadTime = T0 - 1;
+    before.nTipHeight = fresh.nTipHeight - 1;
+    BOOST_CHECK(!seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC5), TestPolicy(),
+                            TestRendezvous(announce), before, &strError));
+    BOOST_CHECK(strError.find("read it again") != std::string::npos);
+    BOOST_CHECK(seat.KeyImage() == 0);
     BOOST_CHECK_MESSAGE(seat.Begin(announce, id.key, SeatMaterial(0, 2, 0xC5), TestPolicy(),
                                    TestRendezvous(announce), fresh, &strError),
                         strError);
@@ -6244,10 +6252,9 @@ struct PacedChain
     }
     int TipAt(int64_t nNow) const
     {
-        int h = nFirst;
-        while (h + 1 < nFirst + (int)vTimeMs.size() && Time(h + 1) <= nNow)
-            h++;
-        return h;
+        const int64_t nIdx = std::upper_bound(vTimeMs.begin(), vTimeMs.end(), nNow * 1000 + 999) -
+                             vTimeMs.begin() - 1;
+        return nFirst + (int)std::max<int64_t>(0, nIdx);
     }
     // When ReadSettledMixRendezvous first answers for nSlot: the deterministic latch of the
     // last complete epoch names that epoch's boundary, whose median time past must reach
@@ -6274,12 +6281,31 @@ struct PacedChain
 
 struct PacedResult
 {
-    int nPlanned, nLate, nOldLate, nMaxLag;
-    PacedResult() : nPlanned(0), nLate(0), nOldLate(0), nMaxLag(0) {}
+    int nPlanned, nLate, nOldLate, nMaxLag, nUnplanned, nRefused, nEarlyRefused;
+    PacedResult()
+        : nPlanned(0), nLate(0), nOldLate(0), nMaxLag(0), nUnplanned(0), nRefused(0),
+          nEarlyRefused(0) {}
 };
 
-// Every publishing instant over several epochs: plan the start the way PlanMixRound does and
-// check a seat that asks on RETRY_SECS reads the record and still has JOIN open.
+// A seat's anchor-budget check for the planned round, with the view read at nRead.
+bool SeatBudgetPasses(const PacedChain& chain, const CMixRoundAnnouncement& announce,
+                      int nAnchorEpoch, int64_t nRead)
+{
+    CMixAnchorView view;
+    view.finalizedRoot = announce.finalizedRoot;
+    view.nFinalizedTreeSize = announce.nFinalizedTreeSize;
+    view.nAnchorEpoch = nAnchorEpoch;
+    view.nTipHeight = chain.TipAt(nRead);
+    view.nReadTime = nRead;
+    view.nSafeThroughHeight = MixAnchorSafeThroughHeight(nAnchorEpoch);
+    std::string strError;
+    return CheckMixAnchorBudget(announce, view,
+                                announce.ResponseCloses() + MIX_INCLUSION_ALLOWANCE_SECS,
+                                &strError);
+}
+
+// Every publishing instant over several epochs, planned as PlanMixRound does: a seat asking on
+// RETRY_SECS reads the record with JOIN open and passes the budget at every read after the start.
 PacedResult SweepPacedChain(int64_t nBaseMs, int64_t nSlowMs, int nWindow)
 {
     const int nEpoch0 = GetEpochForHeight(GetForkHeightDAG()) + 40;
@@ -6311,6 +6337,31 @@ PacedResult SweepPacedChain(int64_t nBaseMs, int64_t nSlowMs, int nWindow)
                                   MIX_RENDEZVOUS_MIN_START_SLACK;
         if (nReads >= nOldStart + MIX_JOIN_WINDOW_MIN_SECS)
             out.nOldLate++;
+
+        // The anchor window at the planning tip: the latch's record names the epoch before it.
+        const int nHead = GetEpochForHeight(nTip + 1) - 2;
+        CMixRoundPlan plan;
+        bool fPlanned = false;
+        for (int e = nHead; e > nHead - EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS && !fPlanned; e--)
+            fPlanned = MixPlanAnchor(e, nTip, nNow, nSlot, nStart, chain.SpacingMs(nTip, nNow),
+                                     plan);
+        if (!fPlanned)
+        {
+            out.nUnplanned++;
+            continue;
+        }
+        CMixRoundAnnouncement announce;
+        plan.ApplyTo(announce);
+        // The seat waits for the start before its first read (CMixSeatJob, READY).
+        bool fRefused = false;
+        for (int64_t t = std::max(nReads, announce.nTime);
+             t <= announce.ResponseCloses() && !fRefused; t += 2)
+            fRefused = !SeatBudgetPasses(chain, announce, plan.nAnchorEpoch, t);
+        if (fRefused)
+            out.nRefused++;
+        if (nReads < announce.nTime &&
+            !SeatBudgetPasses(chain, announce, plan.nAnchorEpoch, nReads))
+            out.nEarlyRefused++;
     }
     return out;
 }
@@ -6325,6 +6376,7 @@ BOOST_AUTO_TEST_CASE(a_planned_round_starts_after_a_seat_can_read_its_record)
     const PacedResult r24 = SweepPacedChain(1000, 1000, FINALITY_VOTE_INCLUSION_WINDOW);
     BOOST_CHECK(r24.nPlanned > 100);
     BOOST_CHECK_EQUAL(r24.nLate, 0);
+    BOOST_CHECK_EQUAL(r24.nRefused, 0);
     BOOST_CHECK_EQUAL(r24.nMaxLag, 1);   // unchanged at the target rate
     BOOST_CHECK_EQUAL(r24.nOldLate, 0);
 
@@ -6332,18 +6384,30 @@ BOOST_AUTO_TEST_CASE(a_planned_round_starts_after_a_seat_can_read_its_record)
     const PacedResult r120 = SweepPacedChain(1000, 1200, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
     BOOST_CHECK(r120.nPlanned > 100);
     BOOST_CHECK_EQUAL(r120.nLate, 0);
+    BOOST_CHECK_EQUAL(r120.nRefused, 0);
 
     // (iii) the release run's pacing: ~1 s blocks, 6 s over each vote window
     const PacedResult rSlow = SweepPacedChain(1000, 6000, 30);
     BOOST_CHECK(rSlow.nPlanned > 100);
     BOOST_CHECK_EQUAL(rSlow.nLate, 0);
+    BOOST_CHECK_EQUAL(rSlow.nRefused, 0);
     BOOST_CHECK(rSlow.nMaxLag > 1);
     // The same with 0.8 s blocks between the windows, as the release run paces them.
     const PacedResult rFast = SweepPacedChain(800, 6000, 30);
     BOOST_CHECK(rFast.nPlanned > 100);
     BOOST_CHECK_EQUAL(rFast.nLate, 0);
+    BOOST_CHECK_EQUAL(rFast.nRefused, 0);
+    // A seat that judged the budget when it read the record, before the start, refused.
+    BOOST_CHECK(rSlow.nEarlyRefused + rFast.nEarlyRefused > 0);
     // The fixed start the planner used before misses JOIN on this chain.
     BOOST_CHECK(rSlow.nOldLate > 0);
+    BOOST_TEST_MESSAGE("anchor sweep (unplanned/refused/early-refused): steady "
+                       << r24.nUnplanned << "/" << r24.nRefused << "/" << r24.nEarlyRefused
+                       << ", 1.2 s " << r120.nUnplanned << "/" << r120.nRefused << "/"
+                       << r120.nEarlyRefused << ", 6 s " << rSlow.nUnplanned << "/"
+                       << rSlow.nRefused << "/" << rSlow.nEarlyRefused << ", 0.8 s "
+                       << rFast.nUnplanned << "/" << rFast.nRefused << "/"
+                       << rFast.nEarlyRefused);
     BOOST_TEST_MESSAGE("paced sweep: planned " << rSlow.nPlanned << ", late " << rSlow.nLate
                        << ", fixed-start late " << rSlow.nOldLate << ", max slot lag "
                        << rSlow.nMaxLag);

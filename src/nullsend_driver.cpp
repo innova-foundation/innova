@@ -414,6 +414,13 @@ void CMixSeatJob::Step(int64_t nNow)
     }
     case MIX_SEAT_READY:
     {
+        // The anchor budget is judged from the round's start, as the coordinator planned it.
+        if (nNow < announce.nTime)
+        {
+            strStatus = "waiting for the join window";
+            Schedule(announce.nTime, announce.nTime);
+            return;
+        }
         CMixSeatMaterial material;
         if (!env.BuildMaterial(announce, material, strError))
             return Fail("no note for this round: " + strError);

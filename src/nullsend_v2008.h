@@ -1223,6 +1223,10 @@ bool ReadMixAnchorView(CTxDB& txdb, int nTipHeight, int64_t nNow,
                        const CMixRoundAnnouncement& announce, CMixAnchorView& viewOut,
                        std::string* pstrError = NULL);
 
+/** The latest height a transaction finished by nConnectBy may connect at, projected from a
+ *  tip read at nReadTime at the margin rate. The seat's and the planner's one rule. */
+int64_t MixAnchorConnectHeight(int nTipHeight, int64_t nReadTime, int64_t nConnectBy);
+
 /** Whether the anchor is 600 blocks deep at the tip and still accepted when a transaction
  *  finished by nConnectBy is mined, projecting the tip forward at the margin rate. */
 bool CheckMixAnchorBudget(const CMixRoundAnnouncement& announce, const CMixAnchorView& view,
@@ -1493,6 +1497,11 @@ struct CMixRoundPlan
     /** Copy the plan into an announcement the coordinator then fills and signs. */
     void ApplyTo(CMixRoundAnnouncement& announce) const;
 };
+
+/** The plan for a round at nTime anchored in nAnchorEpoch, from a tip at nNow: false unless
+ *  the anchor is deep at JOIN and a schedule passes the seat's budget check read at nTime. */
+bool MixPlanAnchor(int nAnchorEpoch, int nTipHeight, int64_t nNow, int64_t nSlot, int64_t nTime,
+                   int64_t nSpacingMs, CMixRoundPlan& planOut);
 
 /** Plan the next slot's round at this tip and time. Refused outside the publishing window or
  *  with no anchor that fits; prefers the newest anchor, then the longer schedule. Read
