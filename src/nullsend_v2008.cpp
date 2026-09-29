@@ -381,7 +381,7 @@ struct PrefixReader
         out = vch[nAt++];
         return true;
     }
-    bool U64(uint64_t& out)
+    bool Uint64(uint64_t& out)
     {
         if (nAt + 8 > vch.size())
             return false;
@@ -462,8 +462,8 @@ bool ParseMixPrefix(const std::vector<unsigned char>& vchPrefix, CMixPrefixView&
         BAD("prefix is not at the NullSend disclosure mask");
     uint64_t nBalance = 0;
     if (!r.Digest(view.genesis) || !r.Digest(view.parameterDigest) ||
-        !r.Digest(view.finalizedRoot) || !r.U64(view.nFinalizedTreeSize) || !r.U64(nBalance) ||
-        !r.U64(view.nFee) || !r.Digest(view.transparentBinding))
+        !r.Digest(view.finalizedRoot) || !r.Uint64(view.nFinalizedTreeSize) || !r.Uint64(nBalance) ||
+        !r.Uint64(view.nFee) || !r.Digest(view.transparentBinding))
         BAD("prefix fixed fields are truncated");
     view.nTransparentValueBalance = (int64_t)nBalance;
 
@@ -503,7 +503,7 @@ bool ParseMixPrefix(const std::vector<unsigned char>& vchPrefix, CMixPrefixView&
     for (uint64_t i = 0; i < nOutputs; i++)
     {
         uint64_t nAmount = 0;
-        if (!r.U64(nAmount) || !r.Digest(view.vOutputs[i].mask))
+        if (!r.Uint64(nAmount) || !r.Digest(view.vOutputs[i].mask))
             BAD("prefix disclosed amounts are truncated");
         view.vAmounts.push_back(nAmount);
     }
