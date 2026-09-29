@@ -456,19 +456,30 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-boost
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-db
-            mingw-w64-x86_64-miniupnpc
-            mingw-w64-x86_64-libevent
-            mingw-w64-x86_64-curl
-            mingw-w64-x86_64-gmp
-            mingw-w64-x86_64-qt6-static
-            mingw-w64-x86_64-protobuf
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-db
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-libevent
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-gmp
+            mingw-w64-ucrt-x86_64-qt6-static
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-graphite2
+            mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-jbigkit
+            mingw-w64-ucrt-x86_64-lerc
+            mingw-w64-ucrt-x86_64-libdeflate
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-libtiff
+            mingw-w64-ucrt-x86_64-libwebp
+            mingw-w64-ucrt-x86_64-protobuf
             make
             git
 
@@ -484,17 +495,17 @@ jobs:
         id: libs
         run: |
           echo "=== Available boost libraries (sample) ==="
-          ls /mingw64/lib/libboost_system* 2>/dev/null || echo "  boost_system: (none - header-only)"
-          ls /mingw64/lib/libboost_filesystem* 2>/dev/null || echo "  boost_filesystem: (none found)"
-          ls /mingw64/lib/libboost_thread* 2>/dev/null || echo "  boost_thread: (none found)"
+          ls /ucrt64/lib/libboost_system* 2>/dev/null || echo "  boost_system: (none - header-only)"
+          ls /ucrt64/lib/libboost_filesystem* 2>/dev/null || echo "  boost_filesystem: (none found)"
+          ls /ucrt64/lib/libboost_thread* 2>/dev/null || echo "  boost_thread: (none found)"
           echo "=== Available BDB libraries ==="
-          ls /mingw64/lib/libdb_cxx* 2>/dev/null || echo "  (none found)"
+          ls /ucrt64/lib/libdb_cxx* 2>/dev/null || echo "  (none found)"
           echo ""
 
           # Detect boost suffix from boost_filesystem (boost_system is header-only since 1.69)
-          BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.dll.a" -print -quit 2>/dev/null)
+          BOOST_LIB=$(find /ucrt64/lib -maxdepth 1 -name "libboost_filesystem*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BOOST_LIB" ]; then
-            BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.a" -print -quit 2>/dev/null)
+            BOOST_LIB=$(find /ucrt64/lib -maxdepth 1 -name "libboost_filesystem*.a" -print -quit 2>/dev/null)
           fi
           if [ -n "$BOOST_LIB" ]; then
             BOOST_SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_filesystem//; s/\.dll\.a$//; s/\.a$//')
@@ -506,9 +517,9 @@ jobs:
           echo "boost_suffix=$BOOST_SUFFIX" >> "$GITHUB_OUTPUT"
 
           # Detect BDB suffix
-          BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.dll.a" -print -quit 2>/dev/null)
+          BDB_LIB=$(find /ucrt64/lib -maxdepth 1 -name "libdb_cxx*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BDB_LIB" ]; then
-            BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.a" -print -quit 2>/dev/null)
+            BDB_LIB=$(find /ucrt64/lib -maxdepth 1 -name "libdb_cxx*.a" -print -quit 2>/dev/null)
           fi
           if [ -n "$BDB_LIB" ]; then
             BDB_SUFFIX=$(basename "$BDB_LIB" | sed 's/^libdb_cxx//; s/\.dll\.a$//; s/\.a$//')
@@ -523,12 +534,12 @@ jobs:
         run: |
           cd src
           make -f makefile.mingw \
-            BOOST_ROOT=/mingw64 \
-            BDB_ROOT=/mingw64 \
-            OPENSSL_ROOT=/mingw64 \
-            LIBEVENT_ROOT=/mingw64 \
-            CURL_ROOT=/mingw64 \
-            MINIUPNPC_ROOT=/mingw64 \
+            BOOST_ROOT=/ucrt64 \
+            BDB_ROOT=/ucrt64 \
+            OPENSSL_ROOT=/ucrt64 \
+            LIBEVENT_ROOT=/ucrt64 \
+            CURL_ROOT=/ucrt64 \
+            MINIUPNPC_ROOT=/ucrt64 \
             BOOST_LIB_SUFFIX="${{ steps.libs.outputs.boost_suffix }}" \
             BDB_LIB_SUFFIX="${{ steps.libs.outputs.bdb_suffix }}" \
             STATIC=1 \
@@ -540,7 +551,7 @@ jobs:
 
       - name: Build Qt wallet (fully static)
         run: |
-          /mingw64/qt6-static/bin/qmake \
+          /ucrt64/qt6-static/bin/qmake \
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BOOST_THREAD_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BDB_LIB_SUFFIX=${{ steps.libs.outputs.bdb_suffix }}" \
