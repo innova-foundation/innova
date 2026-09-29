@@ -317,7 +317,7 @@ jobs:
   # Linux aarch64 (daemon only)
   # ─────────────────────────────────────────────────────────
   build-linux-arm64:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
     needs: get-version
     steps:
       - uses: actions/checkout@v5
@@ -334,7 +334,7 @@ jobs:
           sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-            libsecp256k1-dev gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            libsecp256k1-dev
 
       - name: Build daemon
         run: |
