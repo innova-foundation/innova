@@ -79,7 +79,7 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
-            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler
 
       - name: Build daemon
@@ -177,7 +177,7 @@ jobs:
       - name: Install checkout dependencies
         run: |
           apt-get update
-          apt-get install -y ca-certificates git
+          apt-get install -y ca-certificates git curl
 
       - uses: actions/checkout@v5
         with:
@@ -185,8 +185,6 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
         run: |
           apt-get update
@@ -199,6 +197,9 @@ jobs:
             libsecp256k1-dev \
             qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Configure Berkeley DB paths
         run: |
@@ -269,8 +270,6 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
         run: |
           apt-get update
@@ -280,7 +279,10 @@ jobs:
             libsecp256k1-dev \
             qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler \
-            git
+            git curl ca-certificates
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Build daemon
         run: |
@@ -593,16 +595,23 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
+      - name: Repoint apt at the bullseye snapshot (bullseye is EOL on deb.debian.org)
+        run: |
+          sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
+          echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot
+
       - name: Install dependencies
         run: |
           apt-get update
           apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
-            libprotobuf-dev protobuf-compiler git
+            qtbase5-dev qttools5-dev qttools5-dev-tools libgl1-mesa-dev \
+            libprotobuf-dev protobuf-compiler git \
+            curl ca-certificates
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Build daemon
         run: |
@@ -612,8 +621,7 @@ jobs:
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-          strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          /usr/lib/x86_64-linux-gnu/qt5/bin/qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -648,8 +656,6 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
         run: |
           dnf install -y gcc-c++ make libtool automake pkgconfig \
@@ -657,6 +663,9 @@ jobs:
             miniupnpc-devel qrencode-devel libcurl-devel gmp-devel zlib-devel \
             qt5-qtbase-devel qt5-qttools-devel \
             protobuf-devel protobuf-compiler git
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Build daemon
         run: |
@@ -701,13 +710,14 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm base-devel boost boost-libs openssl libevent db \
-            miniupnpc qrencode curl gmp qt5-base qt5-tools \
+            miniupnpc qrencode curl gmp qt6-base qt6-tools \
             protobuf git
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Build daemon
         run: |
@@ -754,8 +764,6 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
         run: |
           dnf install -y gcc-c++ make libtool automake pkgconfig \
@@ -763,6 +771,9 @@ jobs:
             miniupnpc-devel qrencode-devel libcurl-devel gmp-devel zlib-devel \
             qt5-qtbase-devel qt5-qttools-devel \
             protobuf-devel protobuf-compiler git
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Build daemon
         run: |
