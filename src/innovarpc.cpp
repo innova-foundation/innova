@@ -1124,11 +1124,12 @@ void ThreadRPCServer2(void* parg)
 
     const bool fUseSSL = GetBoolArg("-rpcssl");
 
-    ioContext io_service;
+    // Never freed: handler threads can still own connections on both after this returns.
+    ioContext& io_service = *new ioContext;
 #if defined BOOST_VERSION && BOOST_VERSION >= 106600
-    ssl::context context(ssl::context::sslv23);
+    ssl::context& context = *new ssl::context(ssl::context::sslv23);
 #else
-    ssl::context context(io_service, ssl::context::sslv23);
+    ssl::context& context = *new ssl::context(io_service, ssl::context::sslv23);
 #endif
 
     if (fUseSSL)
