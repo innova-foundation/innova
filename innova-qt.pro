@@ -103,7 +103,8 @@ privacy_vnext_rust.target = $$IV5_RUST_LIB
 # runs again, linking whatever decoder was built first. Cargo tracks the real
 # sources, and a no-op build leaves the archive alone, so defer to it.
 privacy_vnext_rust.depends = FORCE
-win32:privacy_vnext_rust.commands = cd /d $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
+# MSYS2 qmake runs recipes through sh (QMAKE_SH); only cmd needs cd /d.
+win32:isEmpty(QMAKE_SH):privacy_vnext_rust.commands = cd /d $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
 else:privacy_vnext_rust.commands = cd $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
 QMAKE_EXTRA_TARGETS += privacy_vnext_rust
 PRE_TARGETDEPS += $$IV5_RUST_LIB
@@ -880,8 +881,11 @@ LIBS += -lz -levent
 LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
 
 # -lgdi32 has to happen after -lcrypto (see  #681)
-windows:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32
+windows:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32 -lntdll -luserenv
 windows:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
+# Static Qt lists harfbuzz and freetype after their own dependencies, and qmake
+# drops repeated -l flags; re-add them after Qt through the linker directly.
+windows:contains(STATIC_LINK, 1):QMAKE_LIBS_PRIVATE += -Wl,-lgraphite2,-lbz2,-lrpcrt4
 win32:contains(STATIC_LINK, 1) {
     DEFINES += CURL_STATICLIB
     LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
