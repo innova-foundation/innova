@@ -440,11 +440,11 @@ bool CDB::Rewrite(const string& strFile, const char* pszSkip)
                 }
                 if (fSuccess)
                 {
-                    Db dbA(&bitdb.dbenv, 0);
-                    if (dbA.remove(strFile.c_str(), NULL, 0))
+                    // Logged swap: recovery after a crash must not re-create the copy under its old name.
+                    if (bitdb.dbenv.dbremove(NULL, strFile.c_str(), NULL, DB_AUTO_COMMIT))
                         fSuccess = false;
-                    Db dbB(&bitdb.dbenv, 0);
-                    if (dbB.rename(strFileRes.c_str(), NULL, strFile.c_str(), 0))
+                    if (bitdb.dbenv.dbrename(NULL, strFileRes.c_str(), NULL, strFile.c_str(),
+                                             DB_AUTO_COMMIT))
                         fSuccess = false;
                 }
                 if (!fSuccess)

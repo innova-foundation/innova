@@ -29,6 +29,8 @@
 
     {"name": "quick_test.sh", "kind": "suite", "nodes": 1, "minutes": 3},
     {"name": "shutdown_clean_exit_test.sh", "kind": "suite", "nodes": 1, "minutes": 3},
+    {"name": "rpc_stop_open_connection_test.sh", "kind": "suite", "nodes": 1, "minutes": 1},
+    {"name": "wallet_rewrite_crash_test.sh", "kind": "suite", "nodes": 1, "minutes": 2},
   {"name": "nativetor_datadir_regtest_test.sh", "kind": "suite", "nodes": 1, "minutes": 6, "fixed_ports": true},
     {"name": "regtest_test.sh", "kind": "suite", "nodes": 2, "minutes": 5},
     {"name": "nyx_rpc_test.sh", "kind": "suite", "nodes": 1, "minutes": 4},
