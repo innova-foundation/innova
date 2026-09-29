@@ -380,6 +380,9 @@ obj/test/%.o: override CXXFLAGS += $(TESTDEFS)
 # otherwise leave a stale binary behind.
 $(TEST_OBJS): makefile.osx
 
+# A bare make builds all; the rule above would otherwise be the default goal.
+.DEFAULT_GOAL := all
+
 FUZZ_CXX ?= clang++
 FUZZ_COMPILE_FLAGS ?= -O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer
 FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
