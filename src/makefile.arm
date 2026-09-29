@@ -328,6 +328,17 @@ OBJS= \
     obj/dandelion.o \
     obj/finality.o \
     obj/finality_note.o \
+    obj/bip39.o \
+    obj/bip39_wordlist.o \
+    obj/hdroot.o \
+    obj/finality_schedule.o \
+    obj/mstimestamp.o \
+    obj/idnsdescriptor.o \
+    obj/nullsend_v2008.o \
+    obj/nullsend_driver.o \
+    obj/privacy_vnext_store.o \
+    obj/privacy_vnext_builder.o \
+    obj/subsidy.o \
     obj/dag.o \
     obj/blockprofile.o \
     obj/script.o \
@@ -409,6 +420,17 @@ OBJS= \
     obj/dandelion.o \
     obj/finality.o \
     obj/finality_note.o \
+    obj/bip39.o \
+    obj/bip39_wordlist.o \
+    obj/hdroot.o \
+    obj/finality_schedule.o \
+    obj/mstimestamp.o \
+    obj/idnsdescriptor.o \
+    obj/nullsend_v2008.o \
+    obj/nullsend_driver.o \
+    obj/privacy_vnext_store.o \
+    obj/privacy_vnext_builder.o \
+    obj/subsidy.o \
     obj/dag.o \
     obj/blockprofile.o \
     obj/script.o \
@@ -546,11 +568,12 @@ obj/%.o: %.cc
 endif
 
 PRIVACY_VNEXT_RUST_DIR := $(CURDIR)/privacy_vnext/rust
-PRIVACY_VNEXT_RUST_PROFILE := debug
-PRIVACY_VNEXT_RUST_FLAGS :=
-ifdef RELEASE
+# Optimized unless PRIVACY_VNEXT_RUST_DEBUG is set: unoptimized proving is too slow to use.
 PRIVACY_VNEXT_RUST_PROFILE := release
 PRIVACY_VNEXT_RUST_FLAGS := --release
+ifdef PRIVACY_VNEXT_RUST_DEBUG
+PRIVACY_VNEXT_RUST_PROFILE := debug
+PRIVACY_VNEXT_RUST_FLAGS :=
 endif
 PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
 # Cargo is the freshness authority here: it tracks the crate's own sources and
