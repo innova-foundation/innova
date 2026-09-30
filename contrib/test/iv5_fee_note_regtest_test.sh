@@ -79,7 +79,7 @@ coinbase_value() {
     [ ${#cb} -eq 64 ] || return 1
     rpc getrawtransaction "$cb" 1 2>/dev/null | python3 -c '
 import json, sys
-# vout 0 only: the producer's claim. Other coinbase outputs (e.g. vote rewards)
+# vout 0 only: what the producer claims. Other coinbase outputs (e.g. vote rewards)
 # are paid to other parties.
 try: print("%.8f" % float(json.load(sys.stdin)["vout"][0]["value"]))
 except Exception: pass
