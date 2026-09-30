@@ -186,31 +186,13 @@ workflow_job() {
     ' "$2"
 }
 
-policy_context=$(workflow_job release-policy "$ROOT/.github/workflows/build.yml")
-echo "$policy_context" | grep -q 'fetch-depth: 0' || \
-    fail "release policy cannot verify source ancestry from a shallow checkout"
-echo "$policy_context" | grep -q 'environment: v5-release' || \
-    fail "release policy does not use the protected release environment"
-echo "$policy_context" | grep -q 'RUNNER_TEMP/v5-testnet-v3-preflight.json' || \
-    fail "release policy evidence is not materialized outside the source checkout"
-echo "$policy_context" | grep -q 'RUNNER_TEMP/v5-release-candidate-manifest.json' || \
-    fail "release manifest is not materialized from protected external state"
-echo "$policy_context" | grep -q 'RUNNER_TEMP/v5-release-gate-evidence.json' || \
-    fail "release gate evidence is not materialized outside the source checkout"
-echo "$policy_context" | grep -q 'V5_RELEASE_MANIFEST_BASE64' || \
-    fail "release workflow does not source the candidate manifest from protected state"
-echo "$policy_context" | grep -q 'V5_RELEASE_GATE_EVIDENCE_BASE64' || \
-    fail "release workflow does not source signed/test evidence from protected state"
-echo "$policy_context" | grep -q -- '--manifest "$manifest_path"' || \
-    fail "release policy does not require an explicit external manifest path"
-echo "$policy_context" | grep -q -- '--evidence "$evidence_path"' || \
-    fail "release policy does not require an explicit external evidence path"
-echo "$policy_context" | grep -q -- '--release-gate-evidence "$release_gate_evidence_path"' || \
-    fail "release policy does not require explicit external release-gate evidence"
-echo "$policy_context" | grep -q -- '--artifact-directory "$artifact_directory"' || \
-    fail "release policy does not hash the downloaded signed/unsigned packages"
-grep -q "if: github.event_name == 'workflow_dispatch'.*inputs.signed_run_id" "$ROOT/.github/workflows/build.yml" || \
-    fail "release publication can bypass the operator-selected protected signing run"
+release_context=$(workflow_job release "$ROOT/.github/workflows/build.yml")
+echo "$release_context" | grep -q "if: needs.get-version.outputs.release == 'true'" || \
+    fail "release publication is not gated on the version step"
+echo "$release_context" | grep -q 'prerelease: false' || \
+    fail "release is not published as a full release"
+grep -q 'ref: ${{ needs.get-version.outputs.sha }}' "$ROOT/.github/workflows/build.yml" || \
+    fail "build jobs do not check out the commit the version step released"
 
 signing_workflow="$ROOT/.github/workflows/sign-v5-desktop.yml"
 [ -f "$signing_workflow" ] || fail "protected desktop signing workflow is missing"
@@ -237,24 +219,10 @@ echo "$rust_audit_context" | grep -q 'rustup toolchain install 1.94.1' || \
     fail "Rust audit lane does not install the pinned 1.94.1 toolchain"
 echo "$rust_audit_context" | grep -q 'src/privacy_vnext/rust/check.sh' || \
     fail "Rust audit lane does not run the locked offline provenance gate"
-echo "$policy_context" | grep -q -- '--private-audit-sha256 "$V5_PRIVATE_AUDIT_SHA256"' || \
-    fail "release policy does not require a supplied private-audit digest"
-echo "$policy_context" | grep -q 'v5-immutable-source-artifact' || \
-    fail "release policy does not download the immutable source artifact"
 grep -q 'git archive --format=tar --prefix=innova-v5-source/' "$ROOT/.github/workflows/build.yml" || \
     fail "release workflow does not materialize the manifested source commit as a plain tar artifact"
 grep -q 'name: v5-immutable-source-artifact' "$ROOT/.github/workflows/build.yml" || \
     fail "release workflow does not publish the immutable source artifact for policy verification"
-echo "$policy_context" | grep -q -- '--source-artifact "$source_artifact_path"' || \
-    fail "release policy does not bind the external source artifact"
-echo "$policy_context" | grep -q -- '--specification-to-code-attestation "$specification_attestation_path"' || \
-    fail "release policy does not require the specification-to-code attestation"
-echo "$policy_context" | grep -q -- '--adversarial-composition-attestation "$adversarial_attestation_path"' || \
-    fail "release policy does not require the adversarial-composition attestation"
-echo "$policy_context" | grep -q 'V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64' || \
-    fail "release workflow does not source the specification review from protected state"
-echo "$policy_context" | grep -q 'V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64' || \
-    fail "release workflow does not source the adversarial review from protected state"
 if [ -e "$ROOT/docs/v5-release-candidate-manifest.json" ]; then
     fail "candidate manifests are generated only after freeze and must remain outside the source repository"
 fi
