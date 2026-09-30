@@ -399,6 +399,9 @@ case "$MODE" in
         run_static
         run_evidence
         ;;
+    --static-checks)
+        run_static
+        ;;
     --unit)
         run_unit
         ;;
@@ -423,6 +426,6 @@ case "$MODE" in
         run_evidence
         ;;
     *)
-        fail "usage: $0 [--static|--unit|--integration|--verification|--evidence|--print-suites|--all]"
+        fail "usage: $0 [--static|--static-checks|--unit|--integration|--verification|--evidence|--print-suites|--all]"
         ;;
 esac
