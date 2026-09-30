@@ -129,7 +129,7 @@ BOOST_AUTO_TEST_CASE(an_unknown_or_disabled_hash_keeps_the_gate_shut)
 BOOST_AUTO_TEST_CASE(no_checkpoint_sits_at_or_above_the_dag_fork)
 {
     // Reads mainnet on purpose: the regtest map holds only genesis.
-    const int nMainnetDagFork = ShiftMainnetV5Activation(7809960);
+    const int nMainnetDagFork = ShiftMainnetV5Activation(7801200);
     const bool fWasRegTest = fRegTest, fWasTestNet = fTestNet;
     fRegTest = false;
     fTestNet = false;

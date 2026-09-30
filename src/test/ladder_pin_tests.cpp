@@ -225,12 +225,12 @@ BOOST_AUTO_TEST_CASE(every_mainnet_gate_derives_from_the_shift)
     // The pre-shift base of each gate above, in order. A gate written as an absolute
     // literal rather than through ShiftMainnetV5Activation lands on another base.
     const int nBases[] = {
-        7801000, 7801500, 7802000,
-        7802500, 7803000,
-        7803500, 7804000,
-        7807000,
-        7808000, 7808980, 7809960,
-        7859960,
+        7800060, 7800120, 7800120,
+        7800180, 7800240,
+        7800300, 7800360,
+        7800480,
+        7800780, 7800820, 7801200,
+        7851200,
     };
     BOOST_REQUIRE_EQUAL(sizeof(nBases) / sizeof(nBases[0]), sizeof(nGates) / sizeof(nGates[0]));
 
@@ -343,7 +343,7 @@ BOOST_AUTO_TEST_CASE(the_note_vote_height_rides_the_ladder_and_opens_an_epoch)
     BOOST_CHECK(nHeight > nBoundaryB);
     // Checked against the ladder rather than written down: base 7,955,100 shifted is the
     // same block the gap produces.
-    BOOST_CHECK_EQUAL(nHeight, ShiftMainnetV5Activation(7815060));
+    BOOST_CHECK_EQUAL(nHeight, ShiftMainnetV5Activation(7806300));
 
     fRegTest = false; fTestNet = true;
     BOOST_CHECK(IsIV5NoteVoteConfigured());

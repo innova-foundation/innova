@@ -6898,19 +6898,20 @@ struct PoWPostDagTier
     int64_t nSubsidy;   // pre-DAG-cadence reward, before the spacing divisor
 };
 
-// Mainnet rungs above the DAG fork, as offsets from FORK_HEIGHT_DAG = 8,160,000 (inside
-// the 8,250,000 rung). Stretched, the first ends at 9,510,000, the last at 35,760,000.
+// Mainnet rungs above the DAG fork, as offsets from FORK_HEIGHT_DAG = 8,151,240 (inside
+// the 8,250,000 rung). Stretched, the first ends at 9,632,640, the last at 35,882,640.
 // Not shift-invariant.
 static const PoWPostDagTier vPoWPostDagMainnet[] = {
-    {   90000,  20000000 },   // 0.2 INN (was <= 8,250,000)
-    {  340000,  15000000 },   // 0.15    (was <= 8,500,000)
-    {  590000,  10000000 },   // 0.1     (was <= 8,750,000)
-    {  840000,   5000000 },   // 0.05    (was <= 9,000,000)
-    { 1090000,   1000000 },   // 0.01    (was <= 9,250,000)
-    { 1340000,   5000000 },   // 0.05    (was <= 9,500,000)
-    { 1590000,  10000000 },   // 0.1     (was <= 9,750,000)
-    { 1840000,  20000000 },   // 0.2     (was <= 10,000,000)
+    {   98760,  20000000 },   // 0.2 INN (was <= 8,250,000)
+    {  348760,  15000000 },   // 0.15    (was <= 8,500,000)
+    {  598760,  10000000 },   // 0.1     (was <= 8,750,000)
+    {  848760,   5000000 },   // 0.05    (was <= 9,000,000)
+    { 1098760,   1000000 },   // 0.01    (was <= 9,250,000)
+    { 1348760,   5000000 },   // 0.05    (was <= 9,500,000)
+    { 1598760,  10000000 },   // 0.1     (was <= 9,750,000)
+    { 1848760,  20000000 },   // 0.2     (was <= 10,000,000)
 };
+
 static const int64_t nPoWPostDagTailMainnet = 10000;      // 0.0001
 
 // Testnet: mainnet's rung rewards over rungs a hundredth as long (666666 satoshi a block

@@ -108,7 +108,7 @@ def selftest() -> None:
     # The shipped ladder is inside the band for the tip it was set against.
     shipped = result(tip, "ab" * 32, shift_override=350_040)
     assert shipped["first_v5_gate"] == 8_150_040
-    assert shipped["dag_gate"] == 8_160_000
+    assert shipped["dag_gate"] == 8_151_240
     assert shipped["boundary_b_slot"] == 8_410_040
     assert shipped["lead_blocks"] == 14_215
 

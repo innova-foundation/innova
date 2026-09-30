@@ -249,13 +249,13 @@ BOOST_AUTO_TEST_CASE(mainnet_fork_ladder_keeps_shielded_pool_born_safe)
     BOOST_CHECK_EQUAL(GetForkHeightTighterDrift(),
                       7800000 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightShielded(),
-                      7801000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7800060 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightFCMP(),
-                      7802000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7800120 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightDAG(),
-                      7809960 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7801200 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(),
-                      7859960 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7851200 + MAINNET_V5_ACTIVATION_SHIFT);
     // DAGKNIGHT is the top rung; the M-of-N staking gates are not on the public ladder.
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), PRIVACY_VNEXT_HEIGHT_UNSET);
 

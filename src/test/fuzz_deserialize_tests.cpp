@@ -2330,7 +2330,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // and stay on the shift.
     BOOST_CHECK(GetForkHeightSerialV2() > GetForkHeightShielded());
     BOOST_CHECK_EQUAL(GetForkHeightSerialV2(),
-                      ShiftMainnetV5Activation(7805000));
+                      ShiftMainnetV5Activation(7800360));
     BOOST_CHECK(GetForkHeightDSP() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightFCMP() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightNullSend() > GetForkHeightShielded());
@@ -2354,7 +2354,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8160300);   // DAG gate + 300
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8151540);   // DAG gate + 300
 
     // Boundary B is an alias of A, so the ladder carries both on one flag day.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());
@@ -2386,18 +2386,18 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
 
     // DAGKNIGHT is the last scheduled rung; B is bounded below only: once it leaves
     // the sentinel it must land at or after A.
-    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(), ShiftMainnetV5Activation(7859960));
+    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(), ShiftMainnetV5Activation(7851200));
     BOOST_CHECK(!IsBoundaryBConfigured() ||
                 GetForkHeightBoundaryB() >= GetForkHeightBoundaryA());
 }
 
 // A retired gate must never compare open: no reachable height clears it off regtest,
-// including 8,152,040. On regtest both sides of the fork stay reachable.
+// including 8,150,160. On regtest both sides of the fork stay reachable.
 BOOST_AUTO_TEST_CASE(retired_mofn_gates_never_open_on_a_public_network)
 {
     NetFlagGuard guard;
 
-    const int vHeights[] = { 0, 1, 12, 14, 1500, 1600, 8130300, 8152040,
+    const int vHeights[] = { 0, 1, 12, 14, 1500, 1600, 8130300, 8150160,
                              PRIVACY_VNEXT_HEIGHT_UNSET - 1 };
     const unsigned int nHeights = sizeof(vHeights) / sizeof(vHeights[0]);
 
