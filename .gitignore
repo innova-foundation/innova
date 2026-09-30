@@ -76,3 +76,6 @@ src/privacy_vnext/rust/upstream/target/
 
 
 
+
+# Visual Studio workspace cache
+.vs/
