@@ -116,13 +116,13 @@ BOOST_AUTO_TEST_CASE(post_dag_reports_the_divided_reward)
     BOOST_CHECK_EQUAL(before.nTargetSpacing, (int)PRE_DAG_TARGET_SPACING);
     BOOST_CHECK_EQUAL(after.nTargetSpacing, (int)POST_DAG_TARGET_SPACING);
 
-    // The first post-DAG rung is 0.15 INN of 15s reward, divided by 15.
+    // The first post-DAG rung is 0.2 INN of 15s reward, divided by 15.
     const int64_t nRatio = PRE_DAG_TARGET_SPACING / POST_DAG_TARGET_SPACING;
-    BOOST_CHECK_EQUAL(after.nSubsidy, 15000000 / nRatio);
+    BOOST_CHECK_EQUAL(after.nSubsidy, 20000000 / nRatio);
     BOOST_CHECK(after.nSubsidy < before.nSubsidy);
 
     // And the string carries it, rather than the pre-fork figure.
-    BOOST_CHECK_EQUAL(PerBlockField(after), FormatMoney(15000000 / nRatio));
+    BOOST_CHECK_EQUAL(PerBlockField(after), FormatMoney(20000000 / nRatio));
     BOOST_CHECK(FormatBlockRewardPerBlock(after) != FormatBlockRewardPerBlock(before));
 }
 

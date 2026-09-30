@@ -242,20 +242,20 @@ BOOST_AUTO_TEST_CASE(mainnet_fork_ladder_keeps_shielded_pool_born_safe)
     BOOST_CHECK(GetForkHeightNullStakeV2() <= GetForkHeightNullStakeV3());
     BOOST_CHECK(GetForkHeightNullStakeV3() <= GetForkHeightDAG());
 
-    // A fresh trusted-tip check may move the ladder only as one 10,000-block
-    // unit. These golden vectors catch an accidental partial shift.
+    // The ladder moves only as one unit, in 60-block steps so the DAG gate stays an
+    // epoch boundary. These golden vectors catch an accidental partial shift.
     BOOST_CHECK_GE(MAINNET_V5_ACTIVATION_SHIFT, 0);
-    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 10000, 0);
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 60, 0);
     BOOST_CHECK_EQUAL(GetForkHeightTighterDrift(),
                       7800000 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightShielded(),
-                      7810000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7801000 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightFCMP(),
-                      7820000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7802000 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightDAG(),
-                      7950000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7809960 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(),
-                      8000000 + MAINNET_V5_ACTIVATION_SHIFT);
+                      7859960 + MAINNET_V5_ACTIVATION_SHIFT);
     // DAGKNIGHT is the top rung; the M-of-N staking gates are not on the public ladder.
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), PRIVACY_VNEXT_HEIGHT_UNSET);
 

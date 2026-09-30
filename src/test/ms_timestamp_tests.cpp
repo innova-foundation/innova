@@ -491,8 +491,8 @@ BOOST_AUTO_TEST_CASE(the_mainnet_gate_sits_between_the_idns_reset_and_poem)
     fTestNet = false;
 
     const int nGate = GetForkHeightMsTimestamp();
-    BOOST_CHECK_EQUAL(nGate, ShiftMainnetV5Activation(7920000));
-    BOOST_CHECK_EQUAL((nGate - MAINNET_V5_ACTIVATION_SHIFT) % 5000, 0);
+    BOOST_CHECK_EQUAL(nGate, ShiftMainnetV5Activation(7807000));
+    BOOST_CHECK_EQUAL((nGate - MAINNET_V5_ACTIVATION_SHIFT) % 1000, 0);
 
     BOOST_CHECK_GT(nGate, GetForkHeightIDNSReset());
     BOOST_CHECK_LT(nGate, GetForkHeightPoem());
@@ -501,9 +501,9 @@ BOOST_AUTO_TEST_CASE(the_mainnet_gate_sits_between_the_idns_reset_and_poem)
     // Separated from the rungs on either side, and from the DAG fork: the
     // point of the placement is a soak window at 15-second spacing, not a
     // gate that activates alongside another one.
-    BOOST_CHECK_EQUAL(nGate - GetForkHeightIDNSReset(), 20000);
-    BOOST_CHECK_EQUAL(GetForkHeightPoem() - nGate, 20000);
-    BOOST_CHECK_EQUAL(GetForkHeightDAG() - nGate, 30000);
+    BOOST_CHECK_EQUAL(nGate - GetForkHeightIDNSReset(), 1000);
+    BOOST_CHECK_EQUAL(GetForkHeightPoem() - nGate, 1000);
+    BOOST_CHECK_EQUAL(GetForkHeightDAG() - nGate, 2960);
 
     // The absence rule is bounded at the v5 first gate rather than at genesis,
     // so a resync does not replay a new rejection over pre-v5 history.

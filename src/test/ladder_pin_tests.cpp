@@ -222,13 +222,22 @@ BOOST_AUTO_TEST_CASE(every_mainnet_gate_derives_from_the_shift)
         GetForkHeightDAGKnight(),
     };
 
+    // The pre-shift base of each gate above, in order. A gate written as an absolute
+    // literal rather than through ShiftMainnetV5Activation lands on another base.
+    const int nBases[] = {
+        7801000, 7801500, 7802000,
+        7802500, 7803000,
+        7803500, 7804000,
+        7807000,
+        7808000, 7808980, 7809960,
+        7859960,
+    };
+    BOOST_REQUIRE_EQUAL(sizeof(nBases) / sizeof(nBases[0]), sizeof(nGates) / sizeof(nGates[0]));
+
     for (size_t i = 0; i < sizeof(nGates) / sizeof(nGates[0]); i++)
     {
         const int nBase = nGates[i] - MAINNET_V5_ACTIVATION_SHIFT;
-        // Every base is a round rung on the pre-shift ladder. A gate written as
-        // an absolute literal rather than through ShiftMainnetV5Activation would
-        // not survive this once the shift stops being a multiple of 5,000.
-        BOOST_CHECK_MESSAGE(nBase % 5000 == 0,
+        BOOST_CHECK_MESSAGE(nBase == nBases[i],
                             "gate " << nGates[i] << " has base " << nBase
                                     << ", which is not a ladder rung -- it is"
                                        " probably an absolute literal rather than"
@@ -334,7 +343,7 @@ BOOST_AUTO_TEST_CASE(the_note_vote_height_rides_the_ladder_and_opens_an_epoch)
     BOOST_CHECK(nHeight > nBoundaryB);
     // Checked against the ladder rather than written down: base 7,955,100 shifted is the
     // same block the gap produces.
-    BOOST_CHECK_EQUAL(nHeight, ShiftMainnetV5Activation(7955100));
+    BOOST_CHECK_EQUAL(nHeight, ShiftMainnetV5Activation(7815060));
 
     fRegTest = false; fTestNet = true;
     BOOST_CHECK(IsIV5NoteVoteConfigured());

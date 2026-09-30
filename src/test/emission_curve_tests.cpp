@@ -54,13 +54,14 @@ struct StretchedTier
 };
 
 static const StretchedTier vStretched[] = {
-    { 10320000,  8500000,  15000000 },  // 0.15
-    { 14070000,  8750000,  10000000 },  // 0.1
-    { 17820000,  9000000,   5000000 },  // 0.05
-    { 21570000,  9250000,   1000000 },  // 0.01
-    { 25320000,  9500000,   5000000 },  // 0.05
-    { 29070000,  9750000,  10000000 },  // 0.1
-    { 32820000, 10000000,  20000000 },  // 0.2
+    {  9510000,  8250000,  20000000 },  // 0.2
+    { 13260000,  8500000,  15000000 },  // 0.15
+    { 17010000,  8750000,  10000000 },  // 0.1
+    { 20760000,  9000000,   5000000 },  // 0.05
+    { 24510000,  9250000,   1000000 },  // 0.01
+    { 28260000,  9500000,   5000000 },  // 0.05
+    { 32010000,  9750000,  10000000 },  // 0.1
+    { 35760000, 10000000,  20000000 },  // 0.2
 };
 static const size_t nStretchedCount = sizeof(vStretched) / sizeof(vStretched[0]);
 
@@ -72,7 +73,6 @@ static const EmissionTier vPreFork[] = {
     { 7525000, 100000000 },
     { 7750000, 50000000 },
     { 8000000, 25000000 },
-    { 8250000, 20000000 },
 };
 static const size_t nPreForkCount = sizeof(vPreFork) / sizeof(vPreFork[0]);
 
@@ -101,8 +101,8 @@ BOOST_AUTO_TEST_CASE(dag_fork_sits_inside_the_stretch_window)
 {
     MainnetEmissionGuard guard;
 
-    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT, 420000);
-    BOOST_CHECK_EQUAL(FORK_HEIGHT_DAG, 8370000);
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT, 350040);
+    BOOST_CHECK_EQUAL(FORK_HEIGHT_DAG, 8160000);
     BOOST_CHECK_EQUAL(PRE_DAG_TARGET_SPACING, 15);
     BOOST_CHECK_EQUAL(POST_DAG_TARGET_SPACING, 1);
     BOOST_CHECK_EQUAL((int)GetTargetSpacingForHeight(FORK_HEIGHT_DAG),
@@ -179,7 +179,7 @@ BOOST_AUTO_TEST_CASE(reward_rate_is_continuous_across_the_dag_fork)
 {
     MainnetEmissionGuard guard;
 
-    // Both sides of the fork sit in the same (0.15 INN) rung.
+    // Both sides of the fork sit in the same (0.2 INN) rung.
     const int64_t nBefore = vStretched[0].nSubsidyBeforeSpacingScale;
     BOOST_CHECK(FORK_HEIGHT_DAG - 1 > vPreFork[nPreForkCount - 1].nLastHeight);
     BOOST_CHECK(FORK_HEIGHT_DAG <= vStretched[0].nLastHeight);
@@ -188,7 +188,7 @@ BOOST_AUTO_TEST_CASE(reward_rate_is_continuous_across_the_dag_fork)
     const int64_t nPost = Subsidy(FORK_HEIGHT_DAG);
     BOOST_CHECK_EQUAL(nPre, nBefore);
     BOOST_CHECK_EQUAL(nPost, nBefore / 15);
-    BOOST_CHECK_EQUAL(nPost, 1000000);
+    BOOST_CHECK_EQUAL(nPost, 1333333);
 
     // Per-second emission matches on both sides to within the truncation.
     BOOST_CHECK(nPost * PRE_DAG_TARGET_SPACING <= nPre * POST_DAG_TARGET_SPACING);
@@ -205,21 +205,23 @@ BOOST_AUTO_TEST_CASE(post_dag_per_block_rewards_are_pinned)
 {
     MainnetEmissionGuard guard;
 
-    BOOST_CHECK_EQUAL(Subsidy(FORK_HEIGHT_DAG),  1000000);   // 0.15 / 15
-    BOOST_CHECK_EQUAL(Subsidy(10320000),         1000000);
-    BOOST_CHECK_EQUAL(Subsidy(10320001),          666666);   // 0.1  / 15
-    BOOST_CHECK_EQUAL(Subsidy(14070000),          666666);
-    BOOST_CHECK_EQUAL(Subsidy(14070001),          333333);   // 0.05 / 15
-    BOOST_CHECK_EQUAL(Subsidy(17820000),          333333);
-    BOOST_CHECK_EQUAL(Subsidy(17820001),           66666);   // 0.01 / 15
-    BOOST_CHECK_EQUAL(Subsidy(21570000),           66666);
-    BOOST_CHECK_EQUAL(Subsidy(21570001),          333333);   // 0.05 / 15
-    BOOST_CHECK_EQUAL(Subsidy(25320000),          333333);
-    BOOST_CHECK_EQUAL(Subsidy(25320001),          666666);   // 0.1  / 15
-    BOOST_CHECK_EQUAL(Subsidy(29070000),          666666);
-    BOOST_CHECK_EQUAL(Subsidy(29070001),         1333333);   // 0.2  / 15
-    BOOST_CHECK_EQUAL(Subsidy(32820000),         1333333);
-    BOOST_CHECK_EQUAL(Subsidy(32820001),             666);   // tail 0.0001 / 15
+    BOOST_CHECK_EQUAL(Subsidy(FORK_HEIGHT_DAG),  1333333);   // 0.2  / 15
+    BOOST_CHECK_EQUAL(Subsidy(9510000),          1333333);
+    BOOST_CHECK_EQUAL(Subsidy(9510001),          1000000);   // 0.15 / 15
+    BOOST_CHECK_EQUAL(Subsidy(13260000),         1000000);
+    BOOST_CHECK_EQUAL(Subsidy(13260001),          666666);   // 0.1  / 15
+    BOOST_CHECK_EQUAL(Subsidy(17010000),          666666);
+    BOOST_CHECK_EQUAL(Subsidy(17010001),          333333);   // 0.05 / 15
+    BOOST_CHECK_EQUAL(Subsidy(20760000),          333333);
+    BOOST_CHECK_EQUAL(Subsidy(20760001),           66666);   // 0.01 / 15
+    BOOST_CHECK_EQUAL(Subsidy(24510000),           66666);
+    BOOST_CHECK_EQUAL(Subsidy(24510001),          333333);   // 0.05 / 15
+    BOOST_CHECK_EQUAL(Subsidy(28260000),          333333);
+    BOOST_CHECK_EQUAL(Subsidy(28260001),          666666);   // 0.1  / 15
+    BOOST_CHECK_EQUAL(Subsidy(32010000),          666666);
+    BOOST_CHECK_EQUAL(Subsidy(32010001),         1333333);   // 0.2  / 15
+    BOOST_CHECK_EQUAL(Subsidy(35760000),         1333333);
+    BOOST_CHECK_EQUAL(Subsidy(35760001),             666);   // tail 0.0001 / 15
     BOOST_CHECK_EQUAL(Subsidy(60000000),             666);
 }
 
@@ -261,26 +263,26 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
 
     const int nLast = vStretched[nStretchedCount - 1].nLastHeight;
     const int64_t nBlockCount = (int64_t)nLast - FORK_HEIGHT_DAG + 1;
-    BOOST_CHECK_EQUAL(nBlockCount, 24450001LL);
+    BOOST_CHECK_EQUAL(nBlockCount, 27600001LL);
 
     int64_t nTotal = 0;
     for (int nHeight = FORK_HEIGHT_DAG; nHeight <= nLast; nHeight++)
         nTotal += Subsidy(nHeight);
 
-    // 146,999.8975 INN over 24,450,001 blocks (~283.0 days at 1s). This sum depends
+    // 182,999.89633333 INN over 27,600,001 blocks (~319.4 days at 1s). This sum depends
     // on the gate height (it sets how much of the schedule is post-fork); total
     // emission is fixed and is pinned by the per-tier invariant below.
-    BOOST_CHECK_EQUAL(nTotal, 14699989750000LL);
+    BOOST_CHECK_EQUAL(nTotal, 18299989633333LL);
 
     // 15s-schedule payout over the half-open span (FORK, nLast], so the fork block is not
     // counted on both sides.
     const int64_t nSpanBlocks = (int64_t)nLast - FORK_HEIGHT_DAG;
-    BOOST_CHECK_EQUAL(nSpanBlocks, 24450000LL);
+    BOOST_CHECK_EQUAL(nSpanBlocks, 27600000LL);
 
     int64_t nSpanTotal = 0;
     for (int nHeight = FORK_HEIGHT_DAG + 1; nHeight <= nLast; nHeight++)
         nSpanTotal += Subsidy(nHeight);
-    BOOST_CHECK_EQUAL(nSpanTotal, 14699988750000LL);
+    BOOST_CHECK_EQUAL(nSpanTotal, 18299988300000LL);
 
     int64_t nIntended = 0;
     int nPrevOrig = FORK_HEIGHT_DAG;
@@ -290,15 +292,15 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
                      vStretched[i].nSubsidyBeforeSpacingScale;
         nPrevOrig = vStretched[i].nOriginal15sHeight;
     }
-    // 130,000 blocks of the 0.15 rung (19,500 INN) plus six full rungs (127,500 INN).
-    BOOST_CHECK_EQUAL(nIntended, 14700000000000LL);
+    // 90,000 blocks of the 0.2 rung (18,000 INN) plus seven full rungs (165,000 INN).
+    BOOST_CHECK_EQUAL(nIntended, 18300000000000LL);
     BOOST_CHECK(nSpanTotal <= nIntended);
-    BOOST_CHECK_EQUAL(nIntended - nSpanTotal, 11250000LL);
+    BOOST_CHECK_EQUAL(nIntended - nSpanTotal, 11700000LL);
     BOOST_CHECK(nIntended - nSpanTotal < nSpanBlocks);
 
-    // Terminal PoW subsidy is reached ~283.0 days after the fork. A later gate
+    // Terminal PoW subsidy is reached ~319.4 days after the fork. A later gate
     // leaves less of the schedule above it, so this shortens as the gate rises.
-    BOOST_CHECK_EQUAL(nSpanBlocks * POST_DAG_TARGET_SPACING / 86400, 282LL);
+    BOOST_CHECK_EQUAL(nSpanBlocks * POST_DAG_TARGET_SPACING / 86400, 319LL);
 
     // The tail: 666 satoshi per 1s block is ~210.03 INN/year, the rate the 15s
     // schedule's 0.0001 INN per block produced (210.24 INN/year).

@@ -90,31 +90,31 @@ def selftest() -> None:
     # The floor is a minimum, and the step is lcm(granularity, epoch interval).
     assert SHIFT_STEP % SHIFT_GRANULARITY == 0
     assert (DAG_BASE + SHIFT_STEP) % EPOCH_INTERVAL == 0
-    assert activation_shift(7_749_999) == 0
-    assert activation_shift(7_750_001) == 30_000
-    assert activation_shift(7_780_000) == 30_000
-    assert activation_shift(7_780_001) == 60_000
+    assert activation_shift(7_789_999) == 0
+    assert activation_shift(7_790_001) == 60
+    assert activation_shift(7_790_060) == 60
+    assert activation_shift(7_790_061) == 120
 
     # A band, not one required answer: every shift in it must be accepted.
-    tip = 7_917_298
+    tip = 8_135_825
     lo, hi = lead_bounds(tip)
-    assert lo == 180_000, lo
-    assert hi == 360_000, hi
+    assert lo == 345_840, lo
+    assert hi == 585_780, hi
     for shift in range(lo, hi + 1, SHIFT_STEP):
         payload = result(tip, "ab" * 32, shift_override=shift)
         assert MINIMUM_LEAD <= payload["lead_blocks"] <= MAXIMUM_LEAD
         assert payload["dag_gate"] % EPOCH_INTERVAL == 0
 
     # The shipped ladder is inside the band for the tip it was set against.
-    shipped = result(tip, "ab" * 32, shift_override=180_000)
-    assert shipped["first_v5_gate"] == 7_980_000
-    assert shipped["dag_gate"] == 8_130_000
-    assert shipped["boundary_b_slot"] == 8_240_000
-    assert shipped["lead_blocks"] == 62_702
+    shipped = result(tip, "ab" * 32, shift_override=350_040)
+    assert shipped["first_v5_gate"] == 8_150_040
+    assert shipped["dag_gate"] == 8_160_000
+    assert shipped["boundary_b_slot"] == 8_410_040
+    assert shipped["lead_blocks"] == 14_215
 
     # Rejected: too short, too long, 600,000, and a shift inside the lead band
     # that puts the DAG gate off an epoch boundary.
-    for bad in (0, 150_000, 370_000, 600_000, 190_000):
+    for bad in (0, 345_780, 585_840, 600_000, 350_000):
         try:
             result(tip, "ab" * 32, shift_override=bad)
         except ValueError:

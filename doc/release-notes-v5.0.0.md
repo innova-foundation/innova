@@ -86,29 +86,29 @@ gate to confirm your build agrees with the table below.
 
 | Height | Gate |
 | --- | --- |
-| 8,220,000 | Tighter drift tolerance; collateral node payment validation; cold staking; ring-signature deprecation |
-| 8,230,000 | Shielded pool; nullifier binding |
-| 8,235,000 | DSP |
-| 8,240,000 | NullSend; FCMP |
-| 8,245,000 | NullStake v1 |
-| 8,250,000 | NullStake v2 |
-| 8,255,000 | NullStake v3 |
-| 8,260,000 | Chaumian CoinJoin |
-| 8,290,000 | Serial v2 |
-| 8,320,000 | IDNS reset |
-| 8,340,000 | Millisecond timestamps |
-| 8,360,000 | PoEM |
-| 8,365,000 | Finality |
-| 8,370,000 | DAG: 1-second blocks, proof-of-stake block production ends, supply cap, epoch state |
-| 8,370,300 | Boundary A/B; IV5 fee note (IV5 unshield retires at this height) |
-| 8,375,100 | IV5 note votes |
-| 8,420,000 | DAGKnight ordering |
+| 8,150,040 | Tighter drift tolerance; collateral node payment validation; cold staking; ring-signature deprecation |
+| 8,151,040 | Shielded pool; nullifier binding |
+| 8,151,540 | DSP |
+| 8,152,040 | NullSend; FCMP |
+| 8,152,540 | NullStake v1 |
+| 8,153,040 | NullStake v2 |
+| 8,153,540 | NullStake v3 |
+| 8,154,040 | Chaumian CoinJoin |
+| 8,155,040 | Serial v2 |
+| 8,156,040 | IDNS reset |
+| 8,157,040 | Millisecond timestamps |
+| 8,158,040 | PoEM |
+| 8,159,020 | Finality |
+| 8,160,000 | DAG: 1-second blocks, proof-of-stake block production ends, supply cap, epoch state |
+| 8,160,300 | Boundary A/B; IV5 fee note (IV5 unshield retires at this height) |
+| 8,165,100 | IV5 note votes |
+| 8,210,000 | DAGKnight ordering |
 
 ## 3. Wallet migration
 
 Do this in order. Steps 1-4 can be done as soon as you have upgraded; step 5
-needs the shielded pool gate (8,230,000) and step 6 needs the IV5 pool active
-(Boundary B, 8,370,300) on the network you're using.
+needs the shielded pool gate (8,151,040) and step 6 needs the IV5 pool active
+(Boundary B, 8,160,300) on the network you're using.
 
 ### 3a. Headless (`innovad` / `innova-cli`)
 
@@ -234,7 +234,7 @@ transfers (`z_iv5transfer`) report their own `fee` field per call.
 
 **No unshield.** `z_iv5unshield` exists for moving value back to a transparent
 address, but it is retired once the IV5 fee note gate activates (height
-8,370,300, Boundary A/B): `CWallet::CreatePrivacyVNextUnshield` refuses every
+8,160,300, Boundary A/B): `CWallet::CreatePrivacyVNextUnshield` refuses every
 call from that height on with "IV5 unshield is retired at height ...". This is
 permanent - there is no path back to a transparent output from the pool after
 that height. A disclosure mask of 0 on `z_iv5transfer` (publishing sender,
@@ -302,7 +302,7 @@ the full text at any time.
   IV5 output; a held note is skipped by ordinary spends and note votes.
 - `z_listiv5holds`: lists this wallet's held IV5 outputs and their amounts.
 - `z_iv5unshield <toaddress> <amount>`: spends notes back to a transparent
-  address. Retired from height 8,370,300 (Boundary A/B / IV5 fee note); see
+  address. Retired from height 8,160,300 (Boundary A/B / IV5 fee note); see
   section 4.
 
 ### Viewing keys
@@ -502,7 +502,7 @@ innovad -printactivations
 - Epoch finality is a 2-voter participation quorum, not a stake-weighted
   Byzantine-fault-tolerant threshold. See `doc/v5-finality-semantics.md` for
   what HARD does and does not guarantee.
-- `z_iv5unshield` is retired outright from height 8,370,300 onward: there is no
+- `z_iv5unshield` is retired outright from height 8,160,300 onward: there is no
   path back to a transparent output from the IV5 pool after that height (see
   section 4).
 

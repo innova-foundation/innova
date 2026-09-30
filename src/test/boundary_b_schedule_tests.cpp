@@ -96,7 +96,7 @@ BOOST_AUTO_TEST_CASE(boundary_b_derives_from_the_ladder)
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightEpochStateV3());
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightDAG() + 300);
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(),
-                      ShiftMainnetV5Activation(7950000) + 300);
+                      ShiftMainnetV5Activation(7809960) + 300);
 
     SetTestnet();
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightEpochStateV3());

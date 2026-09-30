@@ -2330,7 +2330,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // and stay on the shift.
     BOOST_CHECK(GetForkHeightSerialV2() > GetForkHeightShielded());
     BOOST_CHECK_EQUAL(GetForkHeightSerialV2(),
-                      ShiftMainnetV5Activation(7870000));
+                      ShiftMainnetV5Activation(7805000));
     BOOST_CHECK(GetForkHeightDSP() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightFCMP() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightNullSend() > GetForkHeightShielded());
@@ -2354,7 +2354,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8370300);   // DAG gate + 300
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8160300);   // DAG gate + 300
 
     // Boundary B is an alias of A, so the ladder carries both on one flag day.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), GetForkHeightBoundaryA());
@@ -2386,18 +2386,18 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
 
     // DAGKNIGHT is the last scheduled rung; B is bounded below only: once it leaves
     // the sentinel it must land at or after A.
-    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(), ShiftMainnetV5Activation(8000000));
+    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(), ShiftMainnetV5Activation(7859960));
     BOOST_CHECK(!IsBoundaryBConfigured() ||
                 GetForkHeightBoundaryB() >= GetForkHeightBoundaryA());
 }
 
 // A retired gate must never compare open: no reachable height clears it off regtest,
-// including 8,240,000. On regtest both sides of the fork stay reachable.
+// including 8,152,040. On regtest both sides of the fork stay reachable.
 BOOST_AUTO_TEST_CASE(retired_mofn_gates_never_open_on_a_public_network)
 {
     NetFlagGuard guard;
 
-    const int vHeights[] = { 0, 1, 12, 14, 1500, 1600, 8130300, 8240000,
+    const int vHeights[] = { 0, 1, 12, 14, 1500, 1600, 8130300, 8152040,
                              PRIVACY_VNEXT_HEIGHT_UNSET - 1 };
     const unsigned int nHeights = sizeof(vHeights) / sizeof(vHeights[0]);
 
@@ -2504,12 +2504,12 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
     BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % FINALITY_EPOCH_INTERVAL_PRE_DAG, 0);
     BOOST_CHECK_EQUAL(GetForkHeightDAG() % FINALITY_EPOCH_INTERVAL_PRE_DAG, 0);
 
-    // 2. The release policy works in 10,000-block granules.
-    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 10000, 0);
+    // 2. The release policy works in 60-block granules.
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 60, 0);
 
     // 3. Emission-literal window on the gate.
-    BOOST_CHECK(GetForkHeightDAG() > 8250000);
-    BOOST_CHECK(GetForkHeightDAG() < 8500000);
+    BOOST_CHECK(GetForkHeightDAG() > 8000000);
+    BOOST_CHECK(GetForkHeightDAG() < 8250000);
 
     // The ladder must start above the top hardened checkpoint, or a gate would
     // land inside history already pinned against reorg.
@@ -2517,9 +2517,9 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_satisfies_its_stated_constraints)
 }
 
 // A gate already behind the chain activates the moment the release ships. The floor is
-// a mainnet tip read from the 7,750,000 checkpoint; it only goes stale in the safe direction.
-static const int MAINNET_TIP_OBSERVED = 7917298;          // 2026-08-16 02:15 UTC
-static const int MAINNET_V5_MIN_GATE_MARGIN = 50000;
+// a mainnet tip read from the chainz explorer; it only goes stale in the safe direction.
+static const int MAINNET_TIP_OBSERVED = 8135825;          // 2026-09-30 02:33 UTC
+static const int MAINNET_V5_MIN_GATE_MARGIN = 10000;
 
 BOOST_AUTO_TEST_CASE(v5_activation_first_gate_clears_the_release_margin_floor)
 {

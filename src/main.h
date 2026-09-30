@@ -330,7 +330,7 @@ inline unsigned int GetColdStakeScriptFlags(int nHeight) {
 inline int GetForkHeightShielded() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7810000);
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7801000);
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
@@ -347,7 +347,7 @@ inline int GetForkHeightRingSigDeprecation() {
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7815000);
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7801500);
 }
 #define FORK_HEIGHT_DSP (GetForkHeightDSP())
 
@@ -355,7 +355,7 @@ inline int GetForkHeightDSP() {
 inline int GetForkHeightNullSend() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7820000);
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7802000);
 }
 #define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
 #define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
@@ -369,7 +369,7 @@ inline int GetForkHeightNullSend() {
 inline int GetForkHeightNullStake() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 3 : ShiftMainnetV5Activation(7825000);
+    return (fRegTest || fTestNet) ? 3 : ShiftMainnetV5Activation(7802500);
 }
 #define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
 
@@ -378,7 +378,7 @@ inline int GetForkHeightNullStake() {
 inline int GetForkHeightNullStakeV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 5 : ShiftMainnetV5Activation(7830000);
+    return (fRegTest || fTestNet) ? 5 : ShiftMainnetV5Activation(7803000);
 }
 #define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
 
@@ -386,7 +386,7 @@ inline int GetForkHeightNullStakeV2() {
 inline int GetForkHeightNullStakeV3() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 7 : ShiftMainnetV5Activation(7835000);
+    return (fRegTest || fTestNet) ? 7 : ShiftMainnetV5Activation(7803500);
 }
 #define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
 
@@ -395,7 +395,7 @@ inline int GetForkHeightChaumianCJ()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 8 : ShiftMainnetV5Activation(7840000);
+    return (fRegTest || fTestNet) ? 8 : ShiftMainnetV5Activation(7804000);
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
@@ -409,7 +409,7 @@ inline int GetForkHeightMsTimestamp()
     extern bool fTestNet;
     if (fRegTest) return nRegtestMsTimestampHeight;
     if (fTestNet) return 30;    // pre-gate window, then a 30-block soak before DAG at 60
-    return ShiftMainnetV5Activation(7920000);
+    return ShiftMainnetV5Activation(7807000);
 }
 #define FORK_HEIGHT_MS_TIMESTAMP (GetForkHeightMsTimestamp())
 
@@ -434,7 +434,7 @@ inline int GetForkHeightPoem()
     extern bool fTestNet;
     if (fRegTest) return 9;
     if (fTestNet) return 9;         // clean public IDAG testnet
-    return ShiftMainnetV5Activation(7940000); // 140K after the base gate
+    return ShiftMainnetV5Activation(7808000); // 8,000 blocks after the base gate
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
@@ -445,7 +445,7 @@ inline int GetForkHeightFinality()
     extern bool fTestNet;
     if (fRegTest) return 10;
     if (fTestNet) return 10;        // clean public IDAG testnet
-    return ShiftMainnetV5Activation(7945000); // 5,000 blocks after POEM
+    return ShiftMainnetV5Activation(7808980); // 980 blocks after POEM, 40 into an epoch
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
@@ -456,7 +456,7 @@ inline int GetForkHeightDAG()
     extern bool fTestNet;
     if (fRegTest) return 11;
     if (fTestNet) return 60;        // clean public IDAG testnet after premine maturity
-    return ShiftMainnetV5Activation(7950000); // 5,000 blocks after finality
+    return ShiftMainnetV5Activation(7809960); // 980 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
@@ -811,7 +811,7 @@ inline int GetForkHeightDAGKnight()
     extern bool fTestNet;
     if (fRegTest) return 13;
     if (fTestNet) return 62;        // clean public IDAG testnet after DAG activation
-    return ShiftMainnetV5Activation(8000000); // 50,000 blocks after DAG
+    return ShiftMainnetV5Activation(7859960); // 50,000 blocks after DAG
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
@@ -911,7 +911,7 @@ inline int GetForkHeightIDNSReset() {
     extern bool fTestNet;
     if (fRegTest) return nRegtestIDNSResetHeight; // 0 unless rehearsing
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
-    return ShiftMainnetV5Activation(7900000); // Mainnet: between the v5 first gate and the DAG gate
+    return ShiftMainnetV5Activation(7806000); // Mainnet: between the v5 first gate and the DAG gate
 }
 #define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 
