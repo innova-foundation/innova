@@ -876,7 +876,9 @@ def selftest() -> int:
         pass
     else:
         raise AssertionError("non-testnet rollout inventory was accepted")
-    assert len(validate_checked_in_seed_inventory()) == 4
+    # The fleet inventory is private and gitignored; operators have it, CI does not.
+    if (SCRIPT_DIR / "fleet.v3.json").exists():
+        assert len(validate_checked_in_seed_inventory()) == 4
     with tempfile.TemporaryDirectory(prefix="innova-snapshot-manifest-") as tmp:
         manifest_path = Path(tmp) / "snapshots.json"
         manifest_path.write_text(json.dumps({
