@@ -130,7 +130,7 @@ jobs:
         if: always()
         env:
           V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
-        run: contrib/test/v5_release_gate.sh --static
+        run: contrib/test/v5_release_gate.sh --static-checks
 
   ubuntu-sanitizers:
     runs-on: ubuntu-22.04

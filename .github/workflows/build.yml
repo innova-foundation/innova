@@ -818,7 +818,7 @@ jobs:
   # Linux aarch64 Qt (daemon + Qt) via QEMU emulation
   # ─────────────────────────────────────────────────────────
   build-linux-arm64-qt:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
     needs: get-version
     steps:
       - uses: actions/checkout@v5
@@ -829,12 +829,8 @@ jobs:
 
       - name: Setup IV5 Rust layer
         uses: ./.github/actions/setup-iv5-rust
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
-      - name: Build daemon + Qt in ARM64 container
+      - name: Build daemon + Qt in an ARM64 container
         run: |
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/build -w /build \
@@ -844,7 +840,9 @@ jobs:
                 libssl-dev libevent-dev libboost-all-dev libdb++-dev \
                 libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
                 qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
-                libprotobuf-dev protobuf-compiler git && \
+                libprotobuf-dev protobuf-compiler git curl ca-certificates && \
+              curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && \
+              . \$HOME/.cargo/env && \
               cd src && \
               make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc) && \
               cd .. && \
@@ -877,59 +875,6 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
-  # Raspberry Pi (armhf/armv7) — daemon only via QEMU emulation
-  # ─────────────────────────────────────────────────────────
-  build-linux-armhf:
-    runs-on: ubuntu-22.04
-    needs: get-version
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.get-version.outputs.sha }}
-          fetch-depth: 0
-
-
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm
-
-      - name: Build daemon in ARM container
-        run: |
-          docker run --rm --platform linux/arm/v7 \
-            -v ${{ github.workspace }}:/build -w /build \
-            debian:11 bash -c "
-              apt-get update && \
-              apt-get install -y build-essential libtool automake pkg-config \
-                libssl-dev libevent-dev libboost-all-dev libdb++-dev \
-                libminiupnpc-dev libcurl4-openssl-dev libgmp-dev git && \
-              cd src && \
-              make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc)
-            "
-
-      - name: Package
-        run: |
-          set -euo pipefail
-          mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-armhf
-          test -s src/innovad
-          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-armhf/
-          cd innova-${{ needs.get-version.outputs.version }}-linux-armhf
-          sha256sum innovad > SHA256SUMS.txt
-          test -s SHA256SUMS.txt
-          cd ..
-          tar -czf innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz \
-            innova-${{ needs.get-version.outputs.version }}-linux-armhf/
-          test -s innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
-
-      - uses: actions/upload-artifact@v5
-        with:
-          name: innova-linux-armhf
-          path: innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
-          if-no-files-found: error
-
-  # ─────────────────────────────────────────────────────────
   # Required audit gates and GitHub release policy
   # ─────────────────────────────────────────────────────────
   # Required v5 release-audit gates. These build from clean objects so stale
@@ -952,7 +897,7 @@ jobs:
             libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
       - name: Static audit checks
-        run: contrib/test/v5_release_gate.sh --static
+        run: contrib/test/v5_release_gate.sh --static-checks
 
       - name: Clean warning-gated build and 38-translation-unit test aggregate
         run: |
@@ -1113,7 +1058,6 @@ jobs:
       - build-archlinux
       - build-linux-arm64
       - build-linux-arm64-qt
-      - build-linux-armhf
       - build-macos-arm64
       - build-windows
       - audit-linux-clean
@@ -1165,7 +1109,6 @@ jobs:
             "innova-${VERSION}-archlinux-x86_64.tar.gz"
             "innova-${VERSION}-linux-aarch64.tar.gz"
             "innova-${VERSION}-linux-aarch64-qt.tar.gz"
-            "innova-${VERSION}-linux-armhf.tar.gz"
             "innova-${VERSION}-macOS-arm64.dmg"
             "innova-${VERSION}-win64.zip"
           )
