@@ -1206,8 +1206,8 @@ jobs:
           set -euo pipefail
           short="${VERSION%.*}"
           notes=""
-          for f in "doc/release-notes-v${VERSION}.md" "doc/release-notes-v${short}.md"; do
-            if [ -s "$f" ] && { [ "$f" = "doc/release-notes-v${VERSION}.md" ] || [ "${VERSION##*.}" = 0 ]; }; then notes="$f"; break; fi
+          for f in "docs/release-notes-v${VERSION}.md" "docs/release-notes-v${short}.md"; do
+            if [ -s "$f" ] && { [ "$f" = "docs/release-notes-v${VERSION}.md" ] || [ "${VERSION##*.}" = 0 ]; }; then notes="$f"; break; fi
           done
           {
             if [ -n "$notes" ]; then cat "$notes"; else

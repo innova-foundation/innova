@@ -17,7 +17,7 @@ and wallet users upgrading from the v4.3.9.5 series.
   votes from a staked output, and anonymous note votes that spend and reissue an
   IV5 note. An epoch is HARD once at least 2 distinct voters are counted for its
   boundary block; a height finalizes after 3 consecutive HARD epochs. See
-  `doc/v5-finality-semantics.md` for the full rule and its limits - this is a
+  `docs/v5-finality-semantics.md` for the full rule and its limits - this is a
   participation quorum, not Byzantine fault tolerance, and weight does not affect
   the tier.
 - **IV5 private transactions.** A new transaction type (versions 2000-2008)
@@ -498,7 +498,7 @@ innovad -printactivations
   cover the amount it reports insufficient spendable balance; send a smaller
   amount to yourself first to merge notes.
 - Epoch finality is a 2-voter participation quorum, not a stake-weighted
-  Byzantine-fault-tolerant threshold. See `doc/v5-finality-semantics.md` for
+  Byzantine-fault-tolerant threshold. See `docs/v5-finality-semantics.md` for
   what HARD does and does not guarantee.
 - `z_iv5unshield` is retired outright from height 8,151,540 onward: there is no
   path back to a transparent output from the IV5 pool after that height (see

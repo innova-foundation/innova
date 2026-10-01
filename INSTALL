@@ -1,9 +1,4 @@
 Building Innova
 
-See doc/readme-qt.rst for instructions on building Innova QT,
-the intended-for-end-users, nice-graphical-interface, reference
-implementation of Innova.
-
-See doc/build-*.txt for instructions on building innovad,
-the intended-for-services, no-graphical-interface, reference
-implementation of Innova.
+See docs/BUILD.md for instructions on building the Innova daemon (innovad)
+and the Qt wallet on Linux, macOS and Windows.
