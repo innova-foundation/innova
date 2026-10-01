@@ -1,49 +1,38 @@
-#!/bin/sh
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-COL_RESET='\033[0m'
+#!/bin/bash
+# Replace ~/.innova chain data with the published bootstrap. Wallet files are kept.
+set -uo pipefail
 
-echo
-echo -e "$GREEN Innova Bootstrap Installer Script $COL_RESET"
-echo
-sudo apt-get install unrar -y
-echo -e "$GREEN Downloading Bootstrap $COL_RESET"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.5/innovabootstrap.rar
-mv innovabootstrap.rar ~/.innova/innovabootstrap.rar
-killall -9 innovad
+DATADIR="${INNOVA_DATADIR:-$HOME/.innova}"
+LATEST="https://github.com/innova-foundation/innova/releases/latest/download/innovabootstrap.zip"
+LEGACY="https://github.com/innova-foundation/innova/releases/download/v4.3.9.5/innovabootstrap.rar"
+WORK=$(mktemp -d)
 
-sleep 10
+echo "Downloading bootstrap"
+if curl -fsSL -o "$WORK/innovabootstrap.zip" "$LATEST"; then
+    ARCHIVE="$WORK/innovabootstrap.zip"
+else
+    echo "No bootstrap on the latest release; using the v4.3.9.5 archive"
+    curl -fsSL -o "$WORK/innovabootstrap.rar" "$LEGACY" || { echo "download failed" >&2; exit 1; }
+    ARCHIVE="$WORK/innovabootstrap.rar"
+fi
 
-echo
-echo -e "$GREEN Cleaning Innova Core Folder $COL_RESET"
-echo
-mkdir ~/.innova
-cd ~/.innova
-rm -R ./database &>/dev/null &
-rm -R ./smsgDB &>/dev/null &
-rm -R ./txleveldb	&>/dev/null &
-rm banlist.dat  &>/dev/null &
-rm blk0001.dat  &>/dev/null &
-rm banlist.dat &>/dev/null &
-rm innovanamesindex.dat  &>/dev/null &
-rm peers.dat  &>/dev/null &
-rm smsg.ini &>/dev/null &
-rm debug.log &>/dev/null &
-rm db.log &>/dev/null &
+if command -v innovad >/dev/null 2>&1; then
+    innovad -datadir="$DATADIR" stop >/dev/null 2>&1 && sleep 15
+fi
 
-sleep 10
+echo "Cleaning chain data in $DATADIR"
+mkdir -p "$DATADIR"
+rm -rf "$DATADIR/database" "$DATADIR/smsgDB" "$DATADIR/txleveldb"
+rm -f "$DATADIR"/blk0001.dat "$DATADIR"/banlist.dat "$DATADIR"/innovanamesindex.dat \
+      "$DATADIR"/peers.dat "$DATADIR"/smsg.ini
 
-echo
-echo -e "$GREEN Extracting Bootstrap $COL_RESET"
-echo
-unrar x -r innovabootstrap.rar
-mv innovabootstrap/* ~/.innova/
-rm innovabootstrap.rar
-rm -rf ~/.innova/innovabootstrap
-sleep 5
-echo -e "$GREEN Starting Innova daemon $COL_RESET"
-innovad
-echo -e "$RED Please wait.... $COL_RESET"
-sleep 75
-innovad getinfo
-echo -e "$GREEN Bootstrap completed $COL_RESET"
+echo "Extracting bootstrap"
+case "$ARCHIVE" in
+    *.zip) sudo apt-get install -y unzip >/dev/null; unzip -q -o "$ARCHIVE" -d "$WORK/x" ;;
+    *.rar) sudo apt-get install -y unrar >/dev/null; mkdir -p "$WORK/x"; (cd "$WORK/x" && unrar x -r -o+ "$ARCHIVE" >/dev/null) ;;
+esac
+src="$WORK/x"; [ -d "$WORK/x/innovabootstrap" ] && src="$WORK/x/innovabootstrap"
+cp -a "$src"/. "$DATADIR"/
+rm -rf "$WORK"
+
+echo "Bootstrap installed. Start the node with: innovad -daemon"

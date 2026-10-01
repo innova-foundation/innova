@@ -1,181 +1,54 @@
 #!/bin/bash
-TEMP=/tmp/answer$$
-SPINNER="$HOME/innova/contrib/innova_build_spinner.sh"
-make() {
-    if [ -x "$SPINNER" ]; then
-        "$SPINNER" command make "$@"
-    else
-        command make "$@"
+# Build the Innova Qt 6 wallet (v5) on Ubuntu 22.04 or later.
+#   ./innovaqtubuntu.sh [install|update]
+# INNOVA_REF picks the tag or branch (default v5.0.0.0); INNOVA_REPO the clone URL.
+set -euo pipefail
+
+INNOVA_REF="${INNOVA_REF:-v5.0.0.0}"
+INNOVA_REPO="${INNOVA_REPO:-https://github.com/innova-foundation/innova}"
+INNOVA_DIR="${INNOVA_DIR:-$HOME/innova}"
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+mode="${1:-}"
+if [ -z "$mode" ]; then
+    mode=$(whiptail --title "Innova [INN]" --menu "Qt wallet (Ubuntu 22.04+):" 12 60 2 \
+        install "Build the Qt wallet" update "Rebuild at $INNOVA_REF" 3>&1 1>&2 2>&3)
+fi
+
+install_deps() {
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y git curl ca-certificates build-essential libtool autotools-dev \
+        automake pkg-config bsdmainutils libssl-dev libevent-dev libboost-all-dev libdb++-dev \
+        libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev \
+        qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
+        libprotobuf-dev protobuf-compiler
+    if ! command -v cargo >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
     fi
 }
-whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 QT Wallet :" 20 0 0 1 "Compile Innova QT Ubuntu 16.04" 2 "Update Innova QT 16.04 to latest" 3 "Compile Innova QT Ubuntu 18.04" 4 "Update Innova QT 18.04 to latest" 5 "Compile Innova QT Ubuntu 20.04" 6 "Update Innova QT 20.04 to latest" 2>$TEMP
-choice=`cat $TEMP`
-case $choice in
-1) echo 1 "Compiling Innova QT Ubuntu 16.04"
 
-echo "Updating linux packages"
-sudo apt-get update -y && sudo apt-get upgrade -y
+build() {
+    export PATH="$HOME/.cargo/bin:$PATH"
+    [ -d "$INNOVA_DIR/.git" ] || git clone "$INNOVA_REPO" "$INNOVA_DIR"
+    cd "$INNOVA_DIR"
+    git fetch --tags origin
+    git checkout "$INNOVA_REF"
+    git merge --ff-only "origin/$INNOVA_REF" 2>/dev/null || true
+    # vendor/ is not in git; restore it from the checksums pinned in Cargo.lock.
+    (cd src/privacy_vnext/rust && CARGO_NET_OFFLINE=false cargo vendor --locked \
+        --versioned-dirs --sync upstream/Cargo.toml >/dev/null)
+    qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+    make -j"$(nproc)"
+    echo "Built $INNOVA_DIR/Innova"
+}
 
-sudo apt-get install -y git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake  libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
-
-echo "Installing Innova Wallet"
-git clone https://github.com/innova-foundation/innova
-cd innova || exit
-git checkout master
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
-make
-
-echo "Get Chaindata"
-mkdir ~/.innova
-cd ~/innova
-bash bootstrap.sh
-
-Echo "Back to Compiled QT Binary Folder"
-cd ~/innova/src
-                ;;
-2) echo 2 "Update Innova QT"
-echo "Updating Innova Wallet"
-cd ~/innova || exit
-git checkout master
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
-make
-
-echo "Back to Compiled QT Binary Folder"
-cd ~/innova
-                ;;
-3) echo 3 "Compile Innova QT Ubuntu 18.04"
-echo "Updating linux packages"
-sudo apt-get update -y && sudo apt-get upgrade -y
-
-sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
-
-echo "Downgrade libssl-dev"
-sudo apt-get install make
-wget https://ftp.openssl.org/source/old/1.0.1/openssl-1.0.1j.tar.gz
-tar -xzvf openssl-1.0.1j.tar.gz
-cd openssl-1.0.1j
-./config
-make depend
-sudo make install
-sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-cd ~
-openssl version -v
-
-echo "Installing Innova Wallet"
-git clone https://github.com/innova-foundation/innova
-cd innova
-git checkout master
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
-make
-
-echo "Get Chaindata"
-mkdir ~/.innova
-cd ~/innova
-bash bootstrap.sh
-
-Echo "Back to Compiled QT Binary Folder"
-cd ~/innova/src
-                ;;
-4) echo 4 "Update Innova QT 18.04"
-echo "Updating Innova Wallet"
-cd ~/innova || exit
-git checkout master
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
-make
-
-echo "Back to Compiled QT Binary Folder"
-cd ~/innova
-                ;;
-5) echo 5 "Compile Innova QT Ubuntu 20.04"
-echo "Updating linux packages"
-sudo apt-get update -y && sudo apt-get upgrade -y
-
-sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake  libtool libssl-dev libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default zlib1g-dev jq libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
-
-echo "Installing Innova Wallet"
-git clone https://github.com/innova-foundation/innova
-cd innova
-git checkout secp256k1
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Fix Qt in Ubuntu 20.04 WSLv1"
-sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
-make
-
-echo "Get Chaindata"
-mkdir ~/.innova
-cd ~/innova
-bash bootstrap.sh
-
-Echo "Back to Compiled QT Binary Folder"
-cd ~/innova/src
-                ;;
-6) echo 6 "Update Innova QT 20.04"
-echo "Updating Innova Wallet"
-cd ~/innova || exit
-git checkout secp256k1
-git pull
-
-#echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
-#sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
-
-echo "Change line in innova-qt.pro"
-sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-
-echo "Fix Qt in Ubuntu 20.04 WSLv1"
-sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
-
-echo "Building Qt Wallet"
-qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
-make
-
-echo "Back to Compiled QT Binary Folder"
-cd ~/innova
-                ;;
+case "$mode" in
+    install|update)
+        install_deps
+        build
+        ;;
+    *)
+        echo "usage: $0 [install|update]" >&2
+        exit 1
+        ;;
 esac
-echo Selected $choice

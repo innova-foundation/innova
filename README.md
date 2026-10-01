@@ -195,25 +195,21 @@ version-2008 envelope gated on Boundary B, height 8,151,540 on mainnet.
 
 ## installdaemon.sh
 
-Compile the latest Innova Daemon (Headless Wallet) Ubuntu 22.04, Ubuntu 24.04, or 26.04
+Builds and installs the Innova daemon (`innovad`) on Ubuntu 22.04, 24.04 or 26.04:
+installs the build dependencies and Rust, builds the `v5.0.0.0` tag (override with
+`INNOVA_REF`), copies `innovad` to `/usr/bin`, and sets up the firewall and swap.
+`./installdaemon.sh update` rebuilds an existing checkout.
+```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/installdaemon.sh)"```
 
-Compiles Innova Daemon Ubuntu 22.04, 24.04 or 26.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
-```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/installdaemon.sh)"```  
-
-To turn on nativetor in innova.conf  
-```nativetor=1```  
+`bootstrap.sh` replaces the chain data in `~/.innova` with the published bootstrap.
 
 ## innovaqtubuntu.sh
 
-Compile the latest Innova QT (Graphical Wallet) Ubuntu 22.04, Ubuntu 24.04, or 26.04
+Builds the Innova Qt 6 wallet on Ubuntu 22.04, 24.04 or 26.04, from the `v5.0.0.0` tag
+by default (override with `INNOVA_REF`).
 
-Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
-
-Compiles Innova QT Ubuntu 22.04, 24.04 or 26.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
-```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```  
-
-To turn on nativetor in innova.conf  
-```nativetor=1```   
+Credits to Buzzkillb for the original script: https://github.com/buzzkillb/denarius-qt/
+```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```
 
 ## Development process
 
