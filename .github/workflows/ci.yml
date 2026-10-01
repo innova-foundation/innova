@@ -24,6 +24,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Check whitespace
         run: |
           set -euo pipefail
@@ -149,6 +153,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -193,6 +201,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install dependencies
         run: brew install boost openssl@3 berkeley-db@5 miniupnpc libevent curl gmp secp256k1

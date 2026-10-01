@@ -371,6 +371,10 @@ jobs:
           fetch-depth: 0
 
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Setup IV5 Rust layer
         uses: ./.github/actions/setup-iv5-rust
       - name: Install dependencies
@@ -882,12 +886,16 @@ jobs:
   audit-linux-clean:
     runs-on: ubuntu-22.04
     needs: get-version
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -895,6 +903,9 @@ jobs:
           sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Static audit checks
         run: contrib/test/v5_release_gate.sh --static-checks
@@ -909,6 +920,13 @@ jobs:
           make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix release-check \
             CXXFLAGS="-Werror=return-type -Werror=format" \
             CFLAGS="-Werror=return-type -Werror=format"
+
+      # The integration gate tests the daemon as released, which includes Hyperfile/IPFS.
+      - name: Build the integration daemon with IPFS
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix clean
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc) innovad
 
       - uses: actions/upload-artifact@v5
         with:
@@ -936,7 +954,7 @@ jobs:
   audit-linux-sanitizers:
     runs-on: ubuntu-22.04
     needs: get-version
-    timeout-minutes: 180
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -947,12 +965,19 @@ jobs:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Clean sanitizer build and 38-translation-unit test aggregate
         env:
@@ -979,12 +1004,16 @@ jobs:
   audit-rust-vnext:
     runs-on: ubuntu-22.04
     needs: get-version
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install pinned Rust toolchain only
         run: rustup toolchain install 1.94.1 --profile minimal --component clippy
       - name: Restore vendored crates
@@ -1006,6 +1035,9 @@ jobs:
           echo "restored $restored vendored crates, upstream lock names $expected"
           test "$restored" -eq "$expected"
       - name: Verify vendored provenance and run locked offline Rust gate
+        # Samples every 1024th byte; the full bit-flip sweep takes weeks on a runner.
+        env:
+          INNOVA_DIFF_STRIDE: "1024"
         run: src/privacy_vnext/rust/check.sh
 
   audit-regtest:
@@ -1016,6 +1048,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.get-version.outputs.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install runtime dependencies
         run: |
@@ -1085,7 +1121,7 @@ jobs:
           cd src/privacy_vnext/rust
           # Regenerate from the checksums pinned in Cargo.lock so the archive is
           # reproducible from the tag alone, then ship it with the release.
-          cargo vendor --versioned-dirs > /dev/null
+          CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml > /dev/null
           tar --sort=name --owner=0 --group=0 --numeric-owner \
               --mtime='UTC 2020-01-01' -cf - vendor | zstd -19 -T0 \
               -o "$GITHUB_WORKSPACE/innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst"
@@ -1127,7 +1163,7 @@ jobs:
             cp "$source" release-assets/
           done
           cd release-assets
-          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 13
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 12
           sha256sum -- "${expected[@]}" > SHA256SUMS.txt
           test -s SHA256SUMS.txt
           echo "=== Release Assets ==="

@@ -44,7 +44,7 @@ runs:
         if [ ! -d vendor ] || [ -z "$(ls -A vendor 2>/dev/null)" ]; then
           mv .cargo/config.toml .cargo/config.toml.offline
           trap 'mv -f .cargo/config.toml.offline .cargo/config.toml 2>/dev/null || true' EXIT
-          cargo vendor --versioned-dirs > /dev/null
+          cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml > /dev/null
           mv -f .cargo/config.toml.offline .cargo/config.toml
           trap - EXIT
         fi
