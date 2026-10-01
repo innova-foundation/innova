@@ -85,7 +85,9 @@ pub(crate) fn commitment(amount: u64, mask_bytes: &[u8; 32]) -> Result<[u8; 32],
 /// shift itself is the caller's fact. Both inputs are torsion-free, so the result is too.
 pub(crate) fn shift_commitment(encoded: &[u8; 32], shift: u64) -> Result<[u8; 32], ValueError> {
     let point = canonical_point(encoded, false)?;
-    Ok((point - monero_h() * Scalar::from(shift)).compress().to_bytes())
+    Ok((point - monero_h() * Scalar::from(shift))
+        .compress()
+        .to_bytes())
 }
 
 pub(crate) fn validate_disclosed_commitment(
@@ -692,8 +694,7 @@ fn mix_share_verify(
         .pseudo_outs
         .get(input_index)
         .ok_or(ValueError::BadLength)?;
-    let statement =
-        canonical_point(pseudo_out, false)? - monero_h() * Scalar::from(input_amount);
+    let statement = canonical_point(pseudo_out, false)? - monero_h() * Scalar::from(input_amount);
     let own = canonical_point(nonces.get(input_index).ok_or(ValueError::BadLength)?, false)?;
     let aggregate = instance.aggregate_nonce(nonces)?;
     let challenge = instance.challenge(&instance.excess_encoded()?, &aggregate);
@@ -1292,6 +1293,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn a_three_party_mix_signs_one_balance_proof() {
         let mix = Mix::new(0x41, &[1, 1, 0], &[2, 0, 1]);
         let instance = mix.instance();
@@ -1409,7 +1411,12 @@ mod tests {
         };
         let (short_nonces, short_responses) = short.round();
         assert_eq!(
-            mix_balance_combine(&short.instance(), &short_nonces, &short_responses, &short.output_masks),
+            mix_balance_combine(
+                &short.instance(),
+                &short_nonces,
+                &short_responses,
+                &short.output_masks
+            ),
             Err(ValueError::InvalidProof)
         );
     }
@@ -1482,6 +1489,7 @@ mod tests {
 
     /// The single-party prover is pinned to its known bytes.
     #[test]
+    #[allow(clippy::format_collect)]
     fn the_single_party_balance_proof_is_byte_identical() {
         fn hex(bytes: &[u8]) -> String {
             bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -1603,9 +1611,13 @@ mod tests {
         assert_eq!(one_responses, other_responses);
 
         // Both still produce the proof, and it is the same proof.
-        let proof =
-            mix_balance_combine(&one.instance(), &one_nonces, &one_responses, &one.output_masks)
-                .unwrap();
+        let proof = mix_balance_combine(
+            &one.instance(),
+            &one_nonces,
+            &one_responses,
+            &one.output_masks,
+        )
+        .unwrap();
         assert_eq!(
             proof,
             mix_balance_combine(

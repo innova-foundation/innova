@@ -2,16 +2,24 @@
 //! real prover must validate and every mutation must be rejected. Generators are seeded.
 
 #![cfg(test)]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::doc_markdown,
+    clippy::struct_field_names,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::useless_conversion
+)]
 
 use curve25519_dalek::{
     constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, scalar::Scalar,
     traits::IsIdentity,
 };
-use sha2::Digest as _;
 use monero_ed25519::CompressedPoint;
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
+use sha2::Digest as _;
 use sha2::Sha256;
 
 use crate::{
@@ -90,9 +98,13 @@ impl Address {
         let spend_secret = nonzero_scalar(rng);
         let view_secret = nonzero_scalar(rng);
         Self {
-            spend: (ED25519_BASEPOINT_POINT * spend_secret).compress().to_bytes(),
+            spend: (ED25519_BASEPOINT_POINT * spend_secret)
+                .compress()
+                .to_bytes(),
             spend_secret,
-            view: (ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes(),
+            view: (ED25519_BASEPOINT_POINT * view_secret)
+                .compress()
+                .to_bytes(),
             view_secret,
         }
     }
@@ -576,12 +588,12 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     // that prefix can exist. The rerandomization stream is hash-independent by design, so
     // pass two under the real hash reproduces them.
     let first = (!witnesses.is_empty()).then(|| fcmp_prove(root, [0_u8; 32], entropy, &witnesses));
-    let provisional = first
-        .as_ref()
-        .map_or_else(Vec::new, |(proofs, _)| proofs.iter().map(|p| p.pseudo_out).collect::<Vec<_>>());
-    let provisional_images = first
-        .as_ref()
-        .map_or_else(Vec::new, |(proofs, _)| proofs.iter().map(|p| p.key_image).collect::<Vec<_>>());
+    let provisional = first.as_ref().map_or_else(Vec::new, |(proofs, _)| {
+        proofs.iter().map(|p| p.pseudo_out).collect::<Vec<_>>()
+    });
+    let provisional_images = first.as_ref().map_or_else(Vec::new, |(proofs, _)| {
+        proofs.iter().map(|p| p.key_image).collect::<Vec<_>>()
+    });
 
     // Every output is derived under the context of the payload that carries it.
     let context = note::input_context(spec.operation, &TRANSPARENT_BINDING, &provisional_images);
@@ -638,7 +650,12 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     mark(&mut regions, "finalized_tree_size", start, payload.len());
     let start = payload.len();
     payload.extend_from_slice(&spec.transparent_value_balance.to_le_bytes());
-    mark(&mut regions, "transparent_value_balance", start, payload.len());
+    mark(
+        &mut regions,
+        "transparent_value_balance",
+        start,
+        payload.len(),
+    );
     let start = payload.len();
     payload.extend_from_slice(&spec.fee.to_le_bytes());
     mark(&mut regions, "fee", start, payload.len());
@@ -757,7 +774,11 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
 
     let requires_range = !spec.outputs.is_empty() && spec.disclosure_mask & 4 != 0;
     let range_proof = if requires_range {
-        let amounts = spec.outputs.iter().map(|note| note.amount).collect::<Vec<_>>();
+        let amounts = spec
+            .outputs
+            .iter()
+            .map(|note| note.amount)
+            .collect::<Vec<_>>();
         let masks = spec
             .outputs
             .iter()
@@ -912,7 +933,10 @@ fn assume_valid_effects_match_verified_effects_exactly() {
                 .unwrap_or_else(|e| panic!("{label}: verified effects: {e:?}"));
             let assumed = payload::effects_assume_valid(&built.request)
                 .unwrap_or_else(|e| panic!("{label}: assume-valid effects: {e:?}"));
-            assert_eq!(verified, assumed, "{label}: effects differ with proofs skipped");
+            assert_eq!(
+                verified, assumed,
+                "{label}: effects differ with proofs skipped"
+            );
             checked += 1;
         }
     }
@@ -934,7 +958,10 @@ fn report_assume_valid_saving() {
         let saved = 100.0 - (assumed.as_secs_f64() / verified.as_secs_f64() * 100.0);
         println!(
             "{label}: inputs={} verified={:?} assume_valid={:?} saved={:.1}%",
-            spec.inputs.len(), verified, assumed, saved
+            spec.inputs.len(),
+            verified,
+            assumed,
+            saved
         );
     }
 }
@@ -949,7 +976,10 @@ fn assume_valid_still_enforces_structure() {
     let context = context_of(NOTE_TRANSFER, std::slice::from_ref(&input));
     let output = make_output(&mut rng, &address, 0, 1_000, &context);
     let built = build(&mut rng, &Spec::transfer(vec![input], vec![output], 0));
-    assert!(payload::effects_assume_valid(&built.request).is_ok(), "the sound payload");
+    assert!(
+        payload::effects_assume_valid(&built.request).is_ok(),
+        "the sound payload"
+    );
 
     // Truncating the membership section is a length violation, not a proof failure.
     let mut short = built.request.clone();
@@ -1088,9 +1118,7 @@ fn first_spend_pays_lazy_generator_setup() {
     println!(
         "warm process: shield={shield_time:?} first_spend={first_spend:?} second_spend={second_spend:?}"
     );
-    println!(
-        "cold process, measured separately: first spend 6.2 s, subsequent spends 0.12 s"
-    );
+    println!("cold process, measured separately: first spend 6.2 s, subsequent spends 0.12 s");
 }
 
 /// Verification cost must not depend on which notes a payload names, only on its shape.
@@ -1236,7 +1264,10 @@ fn build_all(seed: u64) -> Vec<(String, Built)> {
             });
         }
     });
-    results.into_iter().map(|slot| slot.expect("built")).collect()
+    results
+        .into_iter()
+        .map(|slot| slot.expect("built"))
+        .collect()
 }
 
 /// A mutation the validator accepted.
@@ -1359,7 +1390,11 @@ fn random_structural_mutation_is_rejected() {
 
     for (label, spec, mut build_rng) in cases(3) {
         let built = build(&mut build_rng, &spec);
-        assert_eq!(validate(&built.request), Ok(()), "baseline must hold: {label}");
+        assert_eq!(
+            validate(&built.request),
+            Ok(()),
+            "baseline must hold: {label}"
+        );
         let payload_len = built.request.len() - built.payload_at;
 
         for _ in 0..400 {
@@ -1391,7 +1426,8 @@ fn random_structural_mutation_is_rejected() {
                         let a = rng.next_u32() as usize % (payload_len - 64);
                         let b = rng.next_u32() as usize % (payload_len - 64);
                         for index in 0..32 {
-                            mutated.swap(built.payload_at + a + index, built.payload_at + b + index);
+                            mutated
+                                .swap(built.payload_at + a + index, built.payload_at + b + index);
                         }
                     }
                 }
@@ -1495,9 +1531,8 @@ fn value_is_conserved() {
                 .expect("fee region is mapped");
             let mut mutated = built.request.clone();
             let at = built.payload_at + region.start;
-            let current = u64::from_le_bytes(
-                mutated[at..at + 8].try_into().expect("fee is 8 bytes"),
-            );
+            let current =
+                u64::from_le_bytes(mutated[at..at + 8].try_into().expect("fee is 8 bytes"));
             let Some(changed) = current.checked_add_signed(delta) else {
                 continue;
             };
@@ -1613,7 +1648,10 @@ fn a_key_image_is_unique_per_note() {
             .iter()
             .find(|region| region.name == "key_image")
             .expect("mapped");
-        field32(&built.request, built.payload_at + region.start..built.payload_at + region.end)
+        field32(
+            &built.request,
+            built.payload_at + region.start..built.payload_at + region.end,
+        )
     };
 
     let first = image_for(10, &mut rng);
@@ -1745,7 +1783,10 @@ fn a_mask_reveals_exactly_its_named_fields() {
         let expect_receiver = spec.disclosure_mask & 2 == 0 && !spec.outputs.is_empty();
         let expect_amount = spec.disclosure_mask & 4 == 0 && !spec.outputs.is_empty();
         assert_eq!(has_sender, expect_sender, "sender record presence: {label}");
-        assert_eq!(has_receiver, expect_receiver, "receiver record presence: {label}");
+        assert_eq!(
+            has_receiver, expect_receiver,
+            "receiver record presence: {label}"
+        );
         assert_eq!(has_amount, expect_amount, "amount record presence: {label}");
 
         // Flipping the mask alone must be rejected: the mask sits inside the signed prefix
@@ -1969,9 +2010,9 @@ fn the_wallet_decoder_agrees_with_the_consensus_decoder() {
         let base = records_at(&response);
         for index in 0..matches {
             let start = base + (index * SCAN_RECORD_BYTES);
-            let output_index = u32::from_le_bytes(
-                response[start + 2..start + 6].try_into().expect("4 bytes"),
-            ) as usize;
+            let output_index =
+                u32::from_le_bytes(response[start + 2..start + 6].try_into().expect("4 bytes"))
+                    as usize;
             // The record republishes O, the derived I and C before the opened note, so the
             // wallet's view of the output is checkable against the payload's.
             assert_eq!(
@@ -1987,7 +2028,9 @@ fn the_wallet_decoder_agrees_with_the_consensus_decoder() {
             let opened = &response[start + 102..start + SCAN_RECORD_BYTES];
             let expected = spec.outputs[output_index].amount;
             assert!(
-                opened.windows(8).any(|window| window == expected.to_le_bytes()),
+                opened
+                    .windows(8)
+                    .any(|window| window == expected.to_le_bytes()),
                 "output {output_index} must scan to the amount it was built with: {label}"
             );
             checked += 3;
@@ -2047,7 +2090,8 @@ fn batch_verification_agrees_with_single_verification() {
             bytes[0] |= 1;
             bytes
         };
-        let (proofs, membership) = fcmp_prove(anonymity.root, signable, entropy, &anonymity.witnesses);
+        let (proofs, membership) =
+            fcmp_prove(anonymity.root, signable, entropy, &anonymity.witnesses);
         let mut request = Vec::new();
         request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
         request.push(8);
@@ -2059,7 +2103,9 @@ fn batch_verification_agrees_with_single_verification() {
         request.extend_from_slice(&proofs[0].pseudo_out);
         request.extend_from_slice(&proofs[0].key_image);
         request.extend_from_slice(
-            &u32::try_from(membership.len()).expect("bounded").to_le_bytes(),
+            &u32::try_from(membership.len())
+                .expect("bounded")
+                .to_le_bytes(),
         );
         request.extend_from_slice(&membership);
         assert_eq!(fcmp::verify(&request), Ok(()), "each proof verifies alone");
@@ -2075,9 +2121,7 @@ fn batch_verification_agrees_with_single_verification() {
         frame.extend_from_slice(&[0; 2]);
         // Length and body are interleaved, one member at a time.
         for member in members {
-            frame.extend_from_slice(
-                &u32::try_from(member.len()).expect("bounded").to_le_bytes(),
-            );
+            frame.extend_from_slice(&u32::try_from(member.len()).expect("bounded").to_le_bytes());
             frame.extend_from_slice(member);
         }
         frame
@@ -2146,7 +2190,10 @@ fn tree_root_is_deterministic_and_incremental() {
 
     let one_shot = tree_state(&bytes);
     let one_shot_again = tree_state(&bytes);
-    assert_eq!(one_shot, one_shot_again, "the tree state must be a function of its leaves");
+    assert_eq!(
+        one_shot, one_shot_again,
+        "the tree state must be a function of its leaves"
+    );
 
     // Batched differently, the same leaves must give the same state.
     let mut state: Option<Vec<u8>> = None;
@@ -2159,7 +2206,9 @@ fn tree_root_is_deterministic_and_incremental() {
             request.extend_from_slice(previous);
         }
         request.extend_from_slice(
-            &u32::try_from(batch.len() / 96).expect("bounded").to_le_bytes(),
+            &u32::try_from(batch.len() / 96)
+                .expect("bounded")
+                .to_le_bytes(),
         );
         request.extend_from_slice(batch);
         state = Some(tree::update(&request).expect("tree update").to_vec());
@@ -2175,7 +2224,10 @@ fn tree_root_is_deterministic_and_incremental() {
     let mut swapped = notes.clone();
     swapped.swap(0, 1);
     let reordered = tree_state(&leaf_bytes(&swapped));
-    assert_ne!(reordered, one_shot, "leaf order must be part of the tree state");
+    assert_ne!(
+        reordered, one_shot,
+        "leaf order must be part of the tree state"
+    );
 }
 
 /// The nullifier accumulator is a rolling hash over ordered key images: it refuses a repeat
@@ -2272,7 +2324,9 @@ fn note_ciphertext_is_authenticated() {
     .expect("the note must open under its own view key");
     println!("note scan (honest): {} bytes", honest.len());
     assert!(
-        honest.windows(8).any(|window| window == 1_234_u64.to_le_bytes()),
+        honest
+            .windows(8)
+            .any(|window| window == 1_234_u64.to_le_bytes()),
         "the recovered note must carry the amount it was built with"
     );
 
@@ -2302,7 +2356,10 @@ fn note_ciphertext_is_authenticated() {
         "note AEAD: {} single-bit ciphertext mutations, {opened} opened",
         subject.recipient_ciphertext.len() * 8
     );
-    assert_eq!(opened, 0, "the note MAC must reject every ciphertext mutation");
+    assert_eq!(
+        opened, 0,
+        "the note MAC must reject every ciphertext mutation"
+    );
 }
 
 /// Elligator-2 hashing must be deterministic, domain-separated and never the identity.
@@ -2315,20 +2372,32 @@ fn hash_to_point_is_deterministic_and_separated() {
         rng.fill_bytes(&mut input);
         let first = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[&input]);
         let again = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[&input]);
-        let other_domain =
-            crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/B", &[&input]);
+        let other_domain = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/B", &[&input]);
         assert_eq!(first, again, "hashing must be a function of its input");
         assert_ne!(first, other_domain, "domains must not collide");
-        assert!(!bool::from(first.is_identity()), "the identity must never be produced");
-        assert!(first.is_torsion_free(), "the result must be in the prime-order subgroup");
+        assert!(
+            !bool::from(first.is_identity()),
+            "the identity must never be produced"
+        );
+        assert!(
+            first.is_torsion_free(),
+            "the result must be in the prime-order subgroup"
+        );
         seen.insert(first.compress().to_bytes());
     }
-    assert_eq!(seen.len(), 2_000, "2,000 distinct inputs must give 2,000 distinct points");
+    assert_eq!(
+        seen.len(),
+        2_000,
+        "2,000 distinct inputs must give 2,000 distinct points"
+    );
 
     // Length framing must be real: two field splits of the same bytes must differ.
     let joined = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[b"abcd"]);
     let split = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[b"ab", b"cd"]);
-    assert_ne!(joined, split, "field boundaries must be framed, not concatenated");
+    assert_ne!(
+        joined, split,
+        "field boundaries must be framed, not concatenated"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2348,7 +2417,11 @@ fn declared_tree_size_is_checked_by_the_caller_not_the_validator() {
 
     let honest = Spec::transfer(inputs.clone(), outputs.clone(), 10);
     let built = build(&mut rng, &honest);
-    assert_eq!(validate(&built.request), Ok(()), "the honest payload validates");
+    assert_eq!(
+        validate(&built.request),
+        Ok(()),
+        "the honest payload validates"
+    );
 
     let capacity = 38_u64.pow(4) * 18_u64.pow(4);
     for claimed in [0_u64, 1, 44, 46, 1_000_000, capacity] {
@@ -2526,9 +2599,8 @@ fn an_effectless_payload_has_no_pool_effect() {
     // multiple of G can equal.
     let spec = Spec::base(NOTE_TRANSFER, Vec::new(), Vec::new(), 500, 100);
     let mut case_rng = ChaCha20Rng::from_seed([0xf8; 32]);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        build(&mut case_rng, &spec)
-    }));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&mut case_rng, &spec)));
     assert!(
         outcome.is_err(),
         "an unbalanced empty payload must not be provable at all"
@@ -2600,7 +2672,11 @@ fn a_note_vote_spends_one_note_and_reissues_it_whole() {
     // The boundary the vote names is reported after the member key, so the connect rules
     // read it from the effects and never re-decode the payload.
     assert_eq!(&effects[318..350], &boundary, "the named boundary block");
-    assert_eq!(&effects[350..354], &1_200_u32.to_le_bytes(), "the named boundary height");
+    assert_eq!(
+        &effects[350..354],
+        &1_200_u32.to_le_bytes(),
+        "the named boundary height"
+    );
 
     // Each refusal below is on shape: the prover made every proof over the shape as built.
     let refused = |label: &str, spec: Spec| {
@@ -2769,7 +2845,10 @@ fn one_collateral_note_backs_one_identity() {
 
     let (first_image, first_ok) = image_for([0x11; 32], &mut rng);
     let (second_image, second_ok) = image_for([0x22; 32], &mut rng);
-    assert!(first_ok && second_ok, "both attestations validate in isolation");
+    assert!(
+        first_ok && second_ok,
+        "both attestations validate in isolation"
+    );
     println!(
         "two registrations from one note share a key image: {}",
         first_image == second_image

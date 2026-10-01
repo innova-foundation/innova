@@ -152,7 +152,7 @@ pub const NOTE_OPERATION_NONE: u8 = 255;
 pub const COLLATERAL_ATTESTATION_AMOUNT: u64 = 25_000 * 100_000_000;
 /// Atomic units a note must hold to cast a finality vote, enforced inside the proof statement.
 /// Must move with the C++ height-keyed floor under a new wire version (the decoder has no
-/// height); check_iv5_protocol_contract.py pins the pair.
+/// height); `check_iv5_protocol_contract.py` pins the pair.
 pub const NOTE_VOTE_MIN_WEIGHT: u64 = 500 * 100_000_000;
 /// Compressed secp256k1 encoding length of a committee member's tally-encryption key.
 pub const FINALITY_MEMBER_KEY_BYTES: usize = 33;
@@ -209,14 +209,15 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
     )
 }
 
-/// Whether this operation is a NullSend mix: several participants spending into one
+/// Whether this operation is a `NullSend` mix: several participants spending into one
 /// payload, each proving its own input, so no party ever holds another's spend scalar.
+#[must_use]
 pub const fn is_nullsend_operation(operation: u8) -> bool {
     operation == NOTE_NULLSEND
 }
 
 /// Participants a mix may carry. The membership section is one proof per input and the
-/// section cap is MAX_PROOF_SECTION_BYTES, so this is arithmetic rather than policy:
+/// section cap is `MAX_PROOF_SECTION_BYTES`, so this is arithmetic rather than policy:
 /// nine one-input proofs do not fit.
 pub const MAX_NULLSEND_INPUTS: usize = 8;
 
@@ -270,15 +271,13 @@ const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 6] = [
 
 /// Whether a digest names a contract text this binary's lineage published.
 ///
-/// Provenance reporting only -- never a validity test. See PRIOR_PARAMETER_DIGESTS.
+/// Provenance reporting only -- never a validity test. See `PRIOR_PARAMETER_DIGESTS`.
 #[must_use]
 pub fn parameter_digest_is_accepted(digest: &[u8; 32]) -> bool {
     if digest[..] == Sha256::digest(PRODUCT_CONTRACT)[..] {
         return true;
     }
-    PRIOR_PARAMETER_DIGESTS
-        .iter()
-        .any(|prior| prior == digest)
+    PRIOR_PARAMETER_DIGESTS.iter().any(|prior| prior == digest)
 }
 
 #[must_use]
@@ -1593,8 +1592,9 @@ pub unsafe extern "C" fn innova_privacy_vnext_mix_balance_sign(
 
 /// Combine a mix's shares into the balance proof the payload carries.
 ///
-/// Request: the facts as in the nonce request, then `input_count * nonce_32 || input_count
-/// * response_32` in input order, then `output_count * output_mask_32` in output order.
+/// Request: the facts as in the nonce request, then `input_count * nonce_32` followed by
+/// `input_count * response_32` in input order, then `output_count * output_mask_32` in
+/// output order.
 /// Each seat signs with its pseudo-output mask alone, so the combiner folds the output
 /// openings in here; only their sum enters the proof. Response: the 64-byte proof
 /// `payload_validate` verifies, verified here first so a wrong share yields no proof rather
@@ -1843,15 +1843,36 @@ mod tests {
     fn a_mix_is_admitted_only_with_its_amounts_disclosed() {
         // A mix discloses its amounts and nothing else: equal denominations are what make it a mix,
         // while sender and receiver stay hidden.
-        assert!(envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 3));
+        assert!(envelope_allows(
+            2008,
+            NOTE_NULLSEND,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            3
+        ));
 
         // Hiding the amounts would restore the aggregated range proof, whose single
         // prover is what made the first construction custody rather than a mix.
-        assert!(!envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 7));
+        assert!(!envelope_allows(
+            2008,
+            NOTE_NULLSEND,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
         // And disclosing more than the amounts defeats the point of mixing at all.
         for mask in [0_u8, 1, 2, 4, 5, 6] {
             assert!(
-                !envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, mask),
+                !envelope_allows(
+                    2008,
+                    NOTE_NULLSEND,
+                    FINALITY_NONE,
+                    AUTH_OWNER,
+                    FINALITY_OBJECT_NONE,
+                    mask
+                ),
                 "mask {mask} must not carry a mix"
             );
         }
@@ -1859,14 +1880,36 @@ mod tests {
         // Owner authorization only, like every other 2008 operation: no verifier
         // dispatches on the authorization field, so admitting a mode nothing enforces
         // would take a fork to withdraw.
-        assert!(!envelope_allows(2008, NOTE_NULLSEND, FINALITY_NONE, AUTH_COLD_STAKER, FINALITY_OBJECT_NONE, 3));
+        assert!(!envelope_allows(
+            2008,
+            NOTE_NULLSEND,
+            FINALITY_NONE,
+            AUTH_COLD_STAKER,
+            FINALITY_OBJECT_NONE,
+            3
+        ));
 
         // The transfer path is unchanged by the mix's arrival.
-        assert!(envelope_allows(2008, NOTE_TRANSFER, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 7));
-        assert!(envelope_allows(2008, NOTE_TRANSFER, FINALITY_NONE, AUTH_OWNER, FINALITY_OBJECT_NONE, 3));
+        assert!(envelope_allows(
+            2008,
+            NOTE_TRANSFER,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+        assert!(envelope_allows(
+            2008,
+            NOTE_TRANSFER,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            3
+        ));
     }
 
     #[test]
+    #[allow(clippy::items_after_statements)]
     fn the_mix_participant_bound_is_what_the_section_can_carry() {
         // Arithmetic, not policy: the membership section is one proof per input under a
         // fixed cap, so the bound is whatever fits. If either constant moves, this says

@@ -200,7 +200,10 @@ mod tests {
 
         // A scan that matched nothing would satisfy every check below.
         let count = domains.len();
-        assert!(count >= 30, "expected the crate's domain set, found {count}");
+        assert!(
+            count >= 30,
+            "expected the crate's domain set, found {count}"
+        );
 
         for domain in &domains {
             assert!(

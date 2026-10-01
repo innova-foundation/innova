@@ -9,13 +9,11 @@ use zeroize::Zeroize;
 
 use crate::{
     disclosure, envelope_allows, fcmp, is_attestation_operation, is_note_vote_operation,
-    is_nullsend_operation, MAX_NULLSEND_INPUTS,
-    validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
-    COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE,
-    FINALITY_VOTE_CONTEXT_BYTES, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX,
-    NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, NOTE_VOTE_MIN_WEIGHT,
-    PAYLOAD_SCHEMA_U16,
-    TREE_LAYERS,
+    is_nullsend_operation, validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX,
+    AUTH_M_OF_N_HIDDEN_SIGNERS, COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES,
+    FINALITY_OBJECT_NONE, FINALITY_VOTE_CONTEXT_BYTES, MAX_INPUTS, MAX_NULLSEND_INPUTS,
+    MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD,
+    NOTE_TRANSFER, NOTE_UNSHIELD, NOTE_VOTE_MIN_WEIGHT, PAYLOAD_SCHEMA_U16, TREE_LAYERS,
 };
 
 /// `[wire version u32][network u8][reserved 3][genesis 32]`.
@@ -492,7 +490,9 @@ fn parse_payload_prefix<'a>(
 
 /// Whether 33 bytes are a canonical compressed secp256k1 x-coordinate encoding.
 /// Structural only; the on-curve check belongs to the caller.
-fn validate_compressed_secp256k1(bytes: &[u8; FINALITY_MEMBER_KEY_BYTES]) -> Result<(), ResultCode> {
+fn validate_compressed_secp256k1(
+    bytes: &[u8; FINALITY_MEMBER_KEY_BYTES],
+) -> Result<(), ResultCode> {
     if bytes[0] != 2 && bytes[0] != 3 {
         return Err(ResultCode::ConsensusInvalid);
     }
@@ -512,6 +512,12 @@ pub(crate) enum VerifyProofs {
     No,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::collapsible_if,
+    clippy::manual_range_contains,
+    clippy::range_plus_one
+)]
 fn validate_payload(
     wire_version: u32,
     payload: &[u8],
@@ -659,7 +665,9 @@ fn validate_payload(
                     signing_hash,
                     &pseudo_outs[index..index + 1],
                     &key_images[index..index + 1],
-                    membership.get(from..to).ok_or(ResultCode::ConsensusInvalid)?,
+                    membership
+                        .get(from..to)
+                        .ok_or(ResultCode::ConsensusInvalid)?,
                 )?;
             }
         } else {
@@ -723,23 +731,23 @@ fn validate_payload(
         if operation_proof.len() != value::AMOUNT_EQUALITY_PROOF_BYTES
             || (verify
                 && !value::verify_amount_equality(
-                &pseudo_outs[0],
-                COLLATERAL_ATTESTATION_AMOUNT,
-                &signing_hash,
-                operation_proof,
-            )
-            .map_err(|error| match error {
-                value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
-                _ => ResultCode::ConsensusInvalid,
-            })?)
+                    &pseudo_outs[0],
+                    COLLATERAL_ATTESTATION_AMOUNT,
+                    &signing_hash,
+                    operation_proof,
+                )
+                .map_err(|error| match error {
+                    value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                    _ => ResultCode::ConsensusInvalid,
+                })?)
         {
             return Err(ResultCode::ConsensusInvalid);
         }
     } else if is_note_vote_operation(operation) {
         // Stake floor as a range statement (the amount is hidden, mask 7). Since
         // v_out = v_in + tvb, proving v_out - W_MIN - tvb in range is v_in >= W_MIN.
-        let entering = u64::try_from(transparent_value_balance)
-            .map_err(|_| ResultCode::ConsensusInvalid)?;
+        let entering =
+            u64::try_from(transparent_value_balance).map_err(|_| ResultCode::ConsensusInvalid)?;
         let shift = NOTE_VOTE_MIN_WEIGHT
             .checked_add(entering)
             .ok_or(ResultCode::ConsensusInvalid)?;
@@ -748,11 +756,11 @@ fn validate_payload(
         if operation_proof.is_empty()
             || (verify
                 && !value::verify_range(&[shifted], operation_proof, &signing_hash).map_err(
-                |error| match error {
-                    value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
-                    _ => ResultCode::ConsensusInvalid,
-                },
-            )?)
+                    |error| match error {
+                        value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                        _ => ResultCode::ConsensusInvalid,
+                    },
+                )?)
         {
             return Err(ResultCode::ConsensusInvalid);
         }
@@ -780,13 +788,13 @@ fn validate_payload(
         let o_tilde = fcmp::input_o_tilde(membership, input_count, input_index)?;
         if verify
             && !disclosure::verify_sender(
-            authority,
-            &o_tilde,
-            &signing_hash,
-            u32::try_from(input_index).map_err(|_| ResultCode::ResourceLimit)?,
-            &disclosure_proof[disclosure_offset..end],
-        )
-        .map_err(|_| ResultCode::ConsensusInvalid)?
+                authority,
+                &o_tilde,
+                &signing_hash,
+                u32::try_from(input_index).map_err(|_| ResultCode::ResourceLimit)?,
+                &disclosure_proof[disclosure_offset..end],
+            )
+            .map_err(|_| ResultCode::ConsensusInvalid)?
         {
             return Err(ResultCode::ConsensusInvalid);
         }
@@ -796,16 +804,16 @@ fn validate_payload(
         let end = disclosure_offset + disclosure::RECEIVER_PROOF_BYTES;
         if verify
             && !disclosure::verify_receiver(
-            spend,
-            view,
-            &output_owners[output_index],
-            &output_tweak_ephemerals[output_index],
-            &signing_hash,
-            u32::try_from(output_index).map_err(|_| ResultCode::ResourceLimit)?,
-            &input_context,
-            &disclosure_proof[disclosure_offset..end],
-        )
-        .map_err(|_| ResultCode::ConsensusInvalid)?
+                spend,
+                view,
+                &output_owners[output_index],
+                &output_tweak_ephemerals[output_index],
+                &signing_hash,
+                u32::try_from(output_index).map_err(|_| ResultCode::ResourceLimit)?,
+                &input_context,
+                &disclosure_proof[disclosure_offset..end],
+            )
+            .map_err(|_| ResultCode::ConsensusInvalid)?
         {
             return Err(ResultCode::ConsensusInvalid);
         }
@@ -2598,7 +2606,14 @@ mod tests {
 
         // Only the fully private mask, and only owner authorization, for both.
         for operation in [NOTE_COLLATERAL_REGISTER, NOTE_FINALITY_MEMBER_REGISTER] {
-            assert!(envelope_allows(2008, operation, 0, 0, FINALITY_OBJECT_NONE, 7));
+            assert!(envelope_allows(
+                2008,
+                operation,
+                0,
+                0,
+                FINALITY_OBJECT_NONE,
+                7
+            ));
             for mask in 0..7_u8 {
                 assert!(
                     !envelope_allows(2008, operation, 0, 0, FINALITY_OBJECT_NONE, mask),
@@ -2793,7 +2808,11 @@ mod tests {
         assert_eq!(verdict(vote, 1, 0, 0, 0), INVALID, "no output");
         assert_eq!(verdict(vote, 1, 1, 0, 1), INVALID, "a fee");
         assert_eq!(verdict(vote, 1, 1, -1, 0), INVALID, "value leaving");
-        assert_eq!(verdict(vote, 1, 1, i64::MIN, 0), INVALID, "value leaving, at the edge");
+        assert_eq!(
+            verdict(vote, 1, 1, i64::MIN, 0),
+            INVALID,
+            "value leaving, at the edge"
+        );
         for entering in [1_i64, 292_187_500, i64::MAX] {
             assert_eq!(
                 verdict(vote, 1, 1, entering, 0),

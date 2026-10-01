@@ -1017,11 +1017,11 @@ pub(crate) struct MembershipSecrets {
     pub c_tilde: [u8; 32],
     pub rerandomized_y: [u8; 32],
     pub mask_delta: [u8; 32],
-    /// r_i in the key image relation's sign (L = x*I~ - (x*r_i)*U). `i_blind` reports -r_i,
+    /// `r_i` in the key image relation's sign (`L = x*I~ - (x*r_i)*U`). `i_blind` reports `-r_i`,
     /// so this is its negation.
     pub i_blind: [u8; 32],
-    /// r_r_i, which `i_blind_blind` already reports unnegated. Needed to open R alongside
-    /// r_i, since R = r_i*V + r_r_i*T is what pins r_i to the instance.
+    /// `r_r_i`, which `i_blind_blind` already reports unnegated. Needed to open R alongside
+    /// `r_i`, since `R = r_i*V + r_r_i*T` is what pins `r_i` to the instance.
     pub i_blind_blind: [u8; 32],
 }
 
