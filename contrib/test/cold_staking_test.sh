@@ -219,10 +219,11 @@ test_delegation_creation() {
 
     log "Mining on owner node until $delegation_amount INN is spendable..."
     rpc_owner setgenerate true 150 >/dev/null 2>&1 || true
-    if ! wait_for_balance rpc_owner "$delegation_amount" 600; then
+    # The delegation pays a fee, so the balance must exceed the amount.
+    if ! wait_for_balance rpc_owner "$((delegation_amount + 1))" 600; then
         # Keep mining rather than delegating against a balance that cannot cover it.
         rpc_owner setgenerate true 150 >/dev/null 2>&1 || true
-        wait_for_balance rpc_owner "$delegation_amount" 600 || {
+        wait_for_balance rpc_owner "$((delegation_amount + 1))" 600 || {
             fail "owner never reached $delegation_amount INN; cannot test delegation"
             return 0
         }
@@ -239,7 +240,7 @@ test_delegation_creation() {
     log "Staker address: $staker_addr"
 
     log "Delegating $delegation_amount INN to staker..."
-    local result=$(rpc_owner delegatestake "$staker_addr" "$delegation_amount" 2>/dev/null || echo "ERROR")
+    local result=$(rpc_owner delegatestake "$staker_addr" "$delegation_amount" 2>&1 || true)
 
     if echo "$result" | grep -q "txid"; then
         local txid=$(echo "$result" | grep -o '"txid" *: *"[a-f0-9]*"' | grep -o '[a-f0-9]\{64\}')
@@ -437,7 +438,7 @@ test_large_delegation() {
 
     log "Mining until $large_amount INN is spendable..."
     rpc_owner setgenerate true 200 >/dev/null 2>&1 || true
-    if ! wait_for_balance rpc_owner "$large_amount" 900; then
+    if ! wait_for_balance rpc_owner "$((large_amount + 1))" 900; then
         warn "owner never reached $large_amount INN; skipping the large-delegation case"
         return
     fi
