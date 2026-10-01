@@ -38,12 +38,7 @@ Designer: http://www.everaldo.com
 Icon Pack: Crystal SVG
 License: LGPL
 
-Icon: src/qt/res/icons/bitcoin.png, src/qt/res/icons/toolbar.png
-Designer: Bitboy (optimized for 16x16 by Wladimir van der Laan)
-License: Public Domain
-Site: http://forum.bitcoin.org/?topic=1756.0
-
-Icon:  scripts/img/reload.xcf (modified),src/qt/res/movies/update_spinner.mng
+Icon:  share/qt/img/reload.xcf (modified),src/qt/res/movies/update_spinner.mng
 Icon Pack: Kids
 Designer: Everaldo (Everaldo Coelho)
 License: GNU/GPL 

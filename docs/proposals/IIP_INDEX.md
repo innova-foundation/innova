@@ -50,21 +50,23 @@ source. Every gate returns `ShiftMainnetV5Activation(base)`, which adds
 `MAINNET_V5_ACTIVATION_SHIFT` (`src/v5activation.h`) to the base value, so the
 whole ladder moves as a unit and the gaps between gates cannot drift. The
 **Fork Height** column below is the *base*; the effective mainnet height is
-base + shift. At the current shift of 180,000 the first gate is 7,980,000, and
+base + shift. At the current shift of 350,040 the first gate is 8,150,040, and
 no gate in the v5 ladder has been reached. The release preflight recomputes the
 shift against a fresh trusted mainnet tip, so these effective heights change
 when it does.
 
-**2. The legacy privacy envelopes are consensus-disabled regardless of height.**
-Transaction versions 2000–2007 are rejected on mainnet and testnet at every
-height by `IsLegacyPrivacyPolicyDisabled()` (`src/main.h`); their decoders are
-retained only for regtest replay and rejection tests. Their production
+**2. The legacy prototype privacy envelopes are consensus-disabled regardless of
+height.** Transaction versions 2000–2007 are rejected on mainnet and testnet at
+every height by `IsLegacyPrivacyPolicyDisabled()` (`src/main.h`); their decoders
+are retained only for regtest replay and rejection tests. Their production
 replacement is the unified version-2008 envelope, which activates at
-Boundary B — `FORK_HEIGHT_BOUNDARY_B` (`src/main.h`) is a fail-closed sentinel
-on mainnet and testnet, pending an independent review of the FCMP++ candidate.
-So the privacy IIPs are **implemented, not enabled**: passing their ladder
-height would not turn them on. This is a staging decision, not a retirement of
-the privacy product; see
+Boundary B — `FORK_HEIGHT_BOUNDARY_B` (`src/main.h`) is scheduled on mainnet and
+testnet (equal to Boundary A, `FORK_HEIGHT_DAG` + 300; only regtest's Boundary B
+defaults unset, pending an explicit `-regtestboundaryb` rehearsal height). So
+the privacy IIPs below are implemented and scheduled, not yet reached: each
+one's own legacy tx version (2000–2007) never activates, but the production
+path it specifies ships in the version-2008 envelope at Boundary B. This is a
+staging decision, not a retirement of the privacy product; see
 [`docs/architecture/PRIVACY.md`](../architecture/PRIVACY.md) for the Boundary-B
 product contract.
 
@@ -80,23 +82,26 @@ Fork Height is the *base* height; the effective mainnet height is base + shift
 | IIP | Title | Category | Status | Fork Height (base) | TX Version |
 |-----|-------|----------|--------|--------------------|------------|
 | [IIP-0001](#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Consensus | Scheduled | 7,800,000 | 1 |
-| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Active | 0 (all networks) | 1000 |
+| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Scheduled | 7,800,000 (0 on regtest/testnet) | 1000 |
 
 ### Privacy
 
-Every row here is gated on Boundary B, which is unset on mainnet and testnet.
-The base heights are retained for reference but are not in effect: versions
-2000–2007 are rejected on public networks at every height.
+Every row here is gated on Boundary B, which is scheduled (not unset) on
+mainnet and testnet, equal to Boundary A at `FORK_HEIGHT_DAG` + 300. The base
+heights below are each IIP's own legacy tx version's ladder height; that
+version itself is never in effect — versions 2000–2007 are rejected on public
+networks at every height regardless of the ladder — but the production path
+each IIP specifies ships in the unified version-2008 envelope at Boundary B.
 
 | IIP | Title | Category | Status | Fork Height (base) | TX Version |
 |-----|-------|----------|--------|--------------------|------------|
-| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Implemented (inactive) | 7,810,000 (not in effect) | 2000 |
-| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Implemented (inactive) | 7,815,000 (not in effect) | 2001 prototype; 2008 production |
-| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Implemented (inactive) | 7,820,000 (not in effect) | 2000 |
-| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Implemented (inactive) | 7,820,000 (not in effect) | 2002 |
+| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Scheduled | 7,800,060 (own tx version not in effect; production at Boundary B) | 2000 |
+| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Scheduled | 7,800,120 (own tx version not in effect; production at Boundary B) | 2001 prototype; 2008 production |
+| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Scheduled | 7,800,120 (own tx version not in effect; production at Boundary B) | 2000 |
+| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Scheduled | 7,800,120 (own tx version not in effect; production at Boundary B) | 2002 |
 | [IIP-0007](#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Privacy | Partly active | none (see below) | 2000 for silent shielding |
-| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Implemented (inactive) | 7,825,000 (not in effect) | 2003 |
-| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Implemented (inactive) | 7,830,000 (not in effect) | 2004 |
+| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Scheduled | 7,800,180 (own tx version not in effect; production at Boundary B) | 2003 |
+| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Scheduled | 7,800,240 (own tx version not in effect; production at Boundary B) | 2004 |
 
 ### Network
 
@@ -116,15 +121,15 @@ The base heights are retained for reference but are not in effect: versions
 | **Title** | Cold Staking via Pay-to-Cold-Staking Scripts |
 | **Category** | Consensus |
 | **Status** | Scheduled |
-| **Fork Height** | base 7,800,000; effective = base + `MAINNET_V5_ACTIVATION_SHIFT` (7,980,000 at the current shift) |
+| **Fork Height** | base 7,800,000; effective = base + `MAINNET_V5_ACTIVATION_SHIFT` (8,150,040 at the current shift) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Introduces Pay-to-Cold-Staking (P2CS) scripts that separate spending authority from staking authority. A P2CS output has two key hashes: the `staker` key can produce coinstake transactions, while only the `owner` key can create spending transactions. This enables hardware wallet cold staking where the spending key never touches an online machine.
 
 **Key Parameters**:
-- Script format: `OP_DUP OP_HASH160 <staker_hash> OP_EQUALVERIFY OP_CHECKSIG OP_ELSE OP_DUP OP_HASH160 <owner_hash> OP_EQUALVERIFY OP_CHECKSIG OP_ENDIF`
+- Script format: `OP_DUP OP_HASH160 OP_ROT OP_IF OP_CHECKCOLDSTAKEVERIFY <staker_hash> OP_ELSE <owner_hash> OP_ENDIF OP_EQUALVERIFY OP_CHECKSIG` (`GetScriptForColdStaking()`, `src/script.cpp`)
 - Self-delegation prohibited (staker != owner)
-- Revocation via owner key spending with `nLockTime` enforcement
+- Revocation via owner key spending (the `OP_ELSE` branch; no `nLockTime` requirement)
 
 **References**: See `src/script.cpp` (P2CS validation), `src/wallet.cpp` (cold staking creation)
 
@@ -137,8 +142,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0002 |
 | **Title** | Shielded Transactions with Pedersen Commitments and Bulletproof Range Proofs |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,810,000, **not in effect** — version 2000 is rejected on mainnet and testnet at every height; activation is Boundary B, unset |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,060, **own tx version not in effect** — version 2000 is rejected on mainnet and testnet at every height; the production path ships in the version-2008 envelope, scheduled at Boundary B |
 | **TX Version** | `SHIELDED_TX_VERSION = 2000` |
 | **Author** | 0xcircuitbreaker |
 
@@ -170,14 +175,14 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0003 |
 | **Title** | Deprecation of Legacy Ring Signatures |
 | **Category** | Consensus |
-| **Status** | Active |
-| **Fork Height** | 0 — `GetForkHeightRingSigDeprecation()` returns 0 on every network, so version 1000 is rejected from genesis |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,000 (the first v5 gate); `GetForkHeightRingSigDeprecation()` returns 0 only on regtest/testnet — on mainnet it is `ShiftMainnetV5Activation(7800000)` = 8,150,040 |
 | **TX Version** | `1000` (rejected) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Disables legacy ring signature transactions (TX version 1000). Ring signatures with a fixed ring size of 16 provided limited anonymity; the shielded pool with Lelantus (N=64) and FCMP++ (full chain) are the intended successors, and provide strictly stronger guarantees once Boundary B activates them.
 
-**Note on the effective height**: rejection is from height 0 on every network, not from a v5 ladder height. A full replay of mainnet to 7,889,246 counted zero ring-signature transactions ever — no outputs, no key images, nothing unclaimed — so rejecting from genesis cannot change how any historical block validates. `GetForkHeightRingSigDeprecation()` returns 0 rather than deleting the checks, which keeps every `>=` comparison site rejecting, including the consensus ones in `ConnectInputs`, `ConnectBlock`, and `AcceptBlock`.
+**Note on the effective height**: rejection is from height 0 on regtest and testnet, but on mainnet `ANON_TXN_VERSION` (1000) stays valid until the first v5 gate (8,150,040 at the current shift), as in v4.3.9.5 — `src/main.h`'s own comment states this explicitly. A full replay of mainnet to 7,889,246 counted zero ring-signature transactions ever — no outputs, no key images, nothing unclaimed — so moving the mainnet gate does not change how any historical block validates. `GetForkHeightRingSigDeprecation()` keeps every `>=` comparison site rejecting from its height, including the consensus ones in `ConnectInputs`, `ConnectBlock`, and `AcceptBlock`.
 
 **Note on succession**: IIP-0002 and IIP-0006 are implemented but not consensus-enabled (see [Activation status](#activation-status-read-this-before-the-tables)). Ring signatures are therefore retired without their replacement being live: transparent transactions are the public-network path until Boundary B.
 
@@ -190,8 +195,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0004 |
 | **Title** | Dynamic Selective Privacy (DSP) |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,815,000, **not in effect** — the 2001 prototype is rejected on public networks; production DSP rides version 2008, gated on Boundary B, unset |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,120, **own tx version not in effect** — the 2001 prototype is rejected on public networks; production DSP rides version 2008, scheduled at Boundary B |
 | **TX Version** | `SHIELDED_TX_VERSION_DSP_PROTOTYPE = 2001` (prototype; production DSP is `SHIELDED_TX_VERSION_DSP = 2008`) |
 | **Author** | 0xcircuitbreaker |
 
@@ -227,8 +232,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0005 |
 | **Title** | Confidential CoinJoin with MuSig Blind Aggregation |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,820,000, **not in effect** — activation is Boundary B, unset |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,120, **own tx version not in effect** — production ships at Boundary B |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Enables multi-party shielded CoinJoin transactions where participants collaboratively construct a shielded transaction with aggregated binding signatures. The protocol uses MuSig partial blind aggregation so that no single participant learns the values of other participants' inputs or outputs.
@@ -244,8 +249,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0006 |
 | **Title** | Full-Chain Membership Proofs via Dual-Curve Trees |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,820,000 (`GetForkHeightFCMP()`, `curvetree.h`), **not in effect** — activation is Boundary B, unset pending independent review of the FCMP++ candidate |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,120 (`GetForkHeightFCMP()`, `curvetree.h`), **own tx version not in effect** — production ships at Boundary B |
 | **TX Version** | `SHIELDED_TX_VERSION_FCMP = 2002` |
 | **Author** | 0xcircuitbreaker |
 
@@ -273,7 +278,7 @@ The base heights are retained for reference but are not in effect: versions
 | **Title** | Silent Payments (BIP-352 Adaptation) with Silent Shielding |
 | **Category** | Privacy |
 | **Status** | Partly active |
-| **Fork Height** | none. Silent payments are wallet/addressing over transparent outputs (`sp_send`, `silentpayments.*`) and are live on mainnet with no height gate. Silent shielding needs the shielded pool, so it is inactive until Boundary B. |
+| **Fork Height** | none. Silent payments are wallet/addressing over transparent outputs (`silentpayments.*`, `CWallet::GenerateNewSilentPaymentKey`/`ScanForSilentPayments`) and are live on mainnet with no height gate, but receive-side only: the GUI can generate an address and the wallet auto-scans incoming transactions for a match; there is no RPC (no `sp_send`) and no send-side integration yet. Silent shielding needs the shielded pool, so it is inactive until Boundary B. |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Adapts BIP-352 Silent Payments for Innova, enabling recipients to publish a single static address `(B_scan, B_spend)` that senders use to derive unique one-time output keys via ECDH. Introduces **Silent Shielding** -- the first protocol combining BIP-352 stealth addressing with a ZK shielded pool in a single atomic transaction.
@@ -301,15 +306,17 @@ The base heights are retained for reference but are not in effect: versions
 | **Fork Height** | none — Dandelion++ is relay policy, not a consensus rule. Enabled by default (`-dandelion`, `init.cpp`); no height gate. |
 | **Author** | 0xcircuitbreaker |
 
-**Abstract**: Implements the Dandelion++ two-phase relay protocol to prevent IP-to-transaction linking. Transactions first propagate through a private "stem" phase (forwarded to exactly one peer per hop), then transition to a public "fluff" phase (standard gossip broadcast). Shielded transactions receive mandatory stem phase for enhanced privacy.
+**Abstract**: Implements the Dandelion++ two-phase relay protocol to prevent IP-to-transaction linking. Transactions first propagate through a private "stem" phase (forwarded to exactly one peer per hop), then transition to a public "fluff" phase (standard gossip broadcast). A shielded transaction is tagged on the dandelion state, but the fluff decision does not currently read that tag (see Key Parameters).
 
 **Key Parameters**:
-- Fluff probability: 50% per hop (`DANDELION_FLUFF_PROBABILITY = 0.5`)
+- Fluff probability: 10% per hop (`DANDELION_FLUFF_PROBABILITY = 0.1`)
 - Stem timeout: 30 +/- 15 seconds (cryptographically randomized)
 - Epoch duration: 600 seconds
 - Stem peers per epoch: 2 (Fisher-Yates shuffle with `RAND_bytes`)
 - Maximum stem hops: 10
-- Shielded transactions: Mandatory full stem (fluff overridden to 0%)
+- Shielded transactions: tracked by a `fShielded` flag on the dandelion state, but
+  `CDandelionRouter::ShouldFluff()` does not read it — shielded and transparent
+  transactions currently get the same probabilistic fluff decision
 
 **References**: See `src/dandelion.h/cpp`. Based on Fanti et al. [FGKM18].
 
@@ -322,8 +329,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0009 |
 | **Title** | NullStake V1: Zero-Knowledge Private Staking via Sigma Protocol |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,825,000, **not in effect** — activation is Boundary B, unset |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,180, **own tx version not in effect** — production ships at Boundary B |
 | **TX Version** | `SHIELDED_TX_VERSION_NULLSTAKE = 2003` |
 | **Author** | 0xcircuitbreaker |
 
@@ -350,8 +357,8 @@ The base heights are retained for reference but are not in effect: versions
 | **IIP** | 0010 |
 | **Title** | NullStake V2: ZK Kernel Privacy via Poseidon2 + Bulletproof Arithmetic Circuits |
 | **Category** | Privacy |
-| **Status** | Implemented (inactive) |
-| **Fork Height** | base 7,830,000, **not in effect** — activation is Boundary B, unset |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,240, **own tx version not in effect** — production ships at Boundary B |
 | **TX Version** | `SHIELDED_TX_VERSION_NULLSTAKE_V2 = 2004` |
 | **Supersedes** | IIP-0009 (V1 remains valid below fork height) |
 | **Author** | 0xcircuitbreaker |

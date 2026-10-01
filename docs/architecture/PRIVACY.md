@@ -2,13 +2,13 @@
 
 > **v5 recovery status:** the unsafe transaction-2000–2007 encodings are
 > quarantined on public networks and retained for isolated historical/regtest
-> replay. This is not retirement of Innova privacy. Boundary B must restore the
+> replay. This is not retirement of Innova privacy. Boundary B restores the
 > complete product in the distinct transaction-2008 protocol: full-chain
 > FCMP++, selectable privacy masks 0–7, NullSend, and NullStake V1/V2/V3 as
-> post-DAG private-finality modes. Boundary B remains unconfigured and fails
-> closed until that proof/tree ABI, wallet integration, review, and release
-> evidence are complete. Nothing here authorizes enabling the root-unbound
-> legacy verifier.
+> post-DAG private-finality modes. Boundary B is configured at the v5.0.0
+> mainnet activation ladder (height 8,151,540; see
+> `docs/release-notes-v5.0.0.md`) and activates there. Nothing here authorizes
+> enabling the root-unbound legacy verifier.
 
 This document describes Innova's optional privacy stack: the shielded value
 pool, the zero-knowledge proof systems that protect it, the private-staking
@@ -326,9 +326,13 @@ generations exist:
 `CShieldedCoinstake` packages the shielded stake input, the return-to-self
 output, the reward output, and the kernel proof for a staking transaction.
 
-Because PoS block minting is disabled post-DAG, a satisfied stake kernel is
-repurposed as a **finality vote**: the same NullStake proof authorizes a node's
-vote in the epoch-finality committee rather than minting a block.
+Because PoS block minting is disabled post-DAG, a satisfied stake kernel no
+longer mints a block. A NullStake proof could instead feed a committee-based
+private finality vote/certificate (Section 7.3); that committee is never
+drawn in v5 (`GetCanonicalFinalityCommittee` always answers none), so this
+path cannot count toward finality. The live post-DAG finality vote is the
+separate note-vote lane: an op-10 transaction that spends and reissues an
+IV5 note (see `docs/v5-finality-semantics.md`).
 
 ### 7.2 M-of-N authorization tiers
 

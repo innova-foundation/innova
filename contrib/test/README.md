@@ -18,11 +18,11 @@ it a second place to go stale.
 | Script | Focus Area | Nodes | Mode |
 |--------|-----------|-------|------|
 | `quick_test.sh` | Basic sanity checks | 1 | Testnet |
-| `regtest_test.sh` | Regtest block generation | 1 | Regtest |
+| `regtest_test.sh` | Regtest block generation | 2 | Regtest |
 | `innova_stress_test.sh` | Multi-node stress (legacy) | 3-5 | Testnet |
 | `staking_stress_test.sh` | PoS staking validation | 2 | Regtest |
-| `cold_staking_test.sh` | P2CS cold staking | 2 | Regtest |
-| `spv_staking_test.sh` | SPV/HybridSPV staking | 2 | Regtest |
+| `cold_staking_test.sh` | P2CS cold staking | 3 | Regtest |
+| `spv_staking_test.sh` | SPV/HybridSPV staking | 3 | Regtest |
 | `wallet_stress_test.sh` | Wallet operations | 2 | Regtest |
 | `transaction_stress_test.sh` | Transaction types & edge cases | 2 | Regtest |
 | `blockchain_stress_test.sh` | Chain structure & reorgs | 3 | Regtest |
@@ -277,7 +277,7 @@ process to read it from.
 
 `check_v5_release_policy.py` requires a SHA-256 for every field of
 `REQUIRED_VERIFICATION_FIELDS` in the release manifest's `verification` block.
-Ten of those fields are produced here, one producer each:
+Eleven of those fields are produced here, one producer each:
 
 | Field | Producer | Host |
 |-------|----------|------|
@@ -291,6 +291,7 @@ Ten of those fields are produced here, one producer each:
 | `performance_sha256` | `produce_performance_evidence.sh` | any, built `innovad` |
 | `crash_injection_sha256` | `produce_crash_injection_evidence.sh` | any, built `innovad`, `sha256sum` |
 | `rust_audit_sha256` | `produce_rust_audit_evidence.sh` | any, `cargo-deny` |
+| `history_replay_sha256` | `produce_history_replay_evidence.sh` | any, built `innovad` |
 
 Each producer either reuses the document already written for this commit or
 performs the run, and writes `<obligation>.json` plus `<obligation>.log` into
@@ -312,6 +313,7 @@ they name, so one from another commit, or one whose log was edited afterwards, i
 refused rather than reused.
 
 `performance_sha256` additionally needs a reviewed floor in
-`contrib/test/performance_baseline.json`. None is committed yet, so that producer
-measures, writes `performance_baseline.candidate.json` for review and fails: a
+`contrib/test/performance_baseline.json`, which is committed; the producer
+measures and compares against it. Without that file, the producer instead
+measures, writes `performance_baseline.candidate.json` for review, and fails: a
 throughput figure with nothing to fail against is a number, not evidence.

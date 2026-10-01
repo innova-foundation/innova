@@ -61,7 +61,10 @@ The Qt wallet adds:
 - **qrencode** — QR-code rendering (`USE_QRCODE`).
 - **protobuf** — payment-protocol support.
 
-The tree builds against both Qt 5.15 and Qt 6. Linux and Windows release builds use Qt 6 (`qmake6`); macOS builds Qt 6 with CMake (`CMakeLists.txt`), because Homebrew's Qt 6 ships no qmake platform mkspec.
+The tree builds against both Qt 5.15 and Qt 6. Most Linux release builds and
+Windows use Qt 6 (`qmake6`); Debian 11 and Fedora still build against Qt 5
+(`qmake-qt5`). macOS builds Qt 6 with CMake (`CMakeLists.txt`), because
+Homebrew's Qt 6 ships no qmake platform mkspec.
 
 The build embeds git revision info via `share/genbuild.sh`, so build from a git
 checkout (a shallow tarball works but yields less version detail).
@@ -103,12 +106,12 @@ reproducible. Release archives also ship a `vendor.tar.zst` for air-gapped build
 ## Linux
 
 Tested distributions (all built in CI): Ubuntu 22.04 / 24.04 / 26.04,
-Debian 11 / 12, Fedora 40 / 41, and Arch Linux. aarch64 and armhf are
-cross/emulated-built in CI as well.
+Debian 11 / 12, Fedora 40 / 41, and Arch Linux. aarch64 (daemon, and
+daemon+Qt) is also built in CI, on native arm runners.
 
 ### 1. Install dependencies
 
-**Debian / Ubuntu (22.04, 24.04, Debian 11/12):**
+**Debian / Ubuntu (22.04, 24.04, Debian 12):**
 
 ```sh
 sudo apt-get update
@@ -116,9 +119,13 @@ sudo apt-get install -y build-essential libtool autotools-dev automake pkg-confi
   libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
   libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
   libsecp256k1-dev \
-  libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+  qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
   libprotobuf-dev protobuf-compiler
 ```
+
+**Debian 11** still builds against Qt 5 (bullseye predates Qt 6 packaging);
+substitute `qtbase5-dev qttools5-dev qttools5-dev-tools libgl1-mesa-dev` for the
+`qt6-*` packages above, and use `qmake` from `qt5` (see step 3).
 
 **Ubuntu 26.04** ships a renamed Berkeley DB C++ package. Use `libdb5.3++-dev`
 instead of `libdb++-dev`, and replace `bsdmainutils` with `bsdextrautils`:
@@ -128,7 +135,7 @@ sudo apt-get install -y build-essential libtool autotools-dev automake pkg-confi
   libssl-dev libevent-dev bsdextrautils libboost-all-dev libdb5.3++-dev \
   libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
   libsecp256k1-dev \
-  libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+  qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
   libprotobuf-dev protobuf-compiler
 ```
 
@@ -161,7 +168,7 @@ sudo dnf install -y gcc-c++ make libtool automake pkgconfig \
 
 ```sh
 sudo pacman -Syu --noconfirm base-devel boost boost-libs openssl libevent db \
-  miniupnpc qrencode curl gmp qt5-base qt5-tools protobuf git
+  miniupnpc qrencode curl gmp qt6-base qt6-tools protobuf git
 ```
 
 On Arch, `boost_system` is header-only and no longer ships a link library.
@@ -192,12 +199,12 @@ clear.)
 From the repository root:
 
 ```sh
-qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
 make -j$(nproc)
 ```
 
 This produces the `Innova` GUI binary. On Fedora the qmake binary is
-`qmake-qt5`.
+`qmake-qt5`; on Debian 11 it is `/usr/lib/x86_64-linux-gnu/qt5/bin/qmake`.
 
 Two environment notes that CI applies and you may need locally:
 
@@ -219,7 +226,7 @@ detects automatically.
 ### 1. Install dependencies (Homebrew)
 
 ```sh
-brew install boost openssl@3 berkeley-db@5 miniupnpc libevent qt@5 qrencode \
+brew install boost openssl@3 berkeley-db@5 miniupnpc libevent qrencode \
   curl gmp secp256k1
 ```
 
@@ -268,28 +275,39 @@ hdiutil create -volname "Innova" -srcfolder dmg_contents \
 
 ---
 
-## Windows (MSYS2 / MINGW64)
+## Windows (MSYS2 / UCRT64)
 
-Windows binaries are built with the MSYS2 MINGW64 toolchain and linked **fully
+Windows binaries are built with the MSYS2 UCRT64 toolchain and linked **fully
 static** so the released `.exe` runs without extra runtime DLLs.
 
 ### 1. Install MSYS2 and packages
 
-Install [MSYS2](https://www.msys2.org/), open a **MINGW64** shell, and install:
+Install [MSYS2](https://www.msys2.org/), open a **UCRT64** shell, and install:
 
 ```sh
 pacman -Syu   # then reopen the shell if it asks you to
 pacman -S --needed \
-  mingw-w64-x86_64-toolchain \
-  mingw-w64-x86_64-boost \
-  mingw-w64-x86_64-openssl \
-  mingw-w64-x86_64-db \
-  mingw-w64-x86_64-miniupnpc \
-  mingw-w64-x86_64-libevent \
-  mingw-w64-x86_64-curl \
-  mingw-w64-x86_64-gmp \
-  mingw-w64-x86_64-qt5-static \
-  mingw-w64-x86_64-protobuf \
+  mingw-w64-ucrt-x86_64-toolchain \
+  mingw-w64-ucrt-x86_64-boost \
+  mingw-w64-ucrt-x86_64-openssl \
+  mingw-w64-ucrt-x86_64-db \
+  mingw-w64-ucrt-x86_64-miniupnpc \
+  mingw-w64-ucrt-x86_64-libevent \
+  mingw-w64-ucrt-x86_64-curl \
+  mingw-w64-ucrt-x86_64-gmp \
+  mingw-w64-ucrt-x86_64-qt6-static \
+  mingw-w64-ucrt-x86_64-freetype \
+  mingw-w64-ucrt-x86_64-harfbuzz \
+  mingw-w64-ucrt-x86_64-graphite2 \
+  mingw-w64-ucrt-x86_64-libpng \
+  mingw-w64-ucrt-x86_64-libjpeg-turbo \
+  mingw-w64-ucrt-x86_64-jbigkit \
+  mingw-w64-ucrt-x86_64-lerc \
+  mingw-w64-ucrt-x86_64-libdeflate \
+  mingw-w64-ucrt-x86_64-glib2 \
+  mingw-w64-ucrt-x86_64-libtiff \
+  mingw-w64-ucrt-x86_64-libwebp \
+  mingw-w64-ucrt-x86_64-protobuf \
   make git
 ```
 
@@ -307,19 +325,19 @@ cd ../..
 ### 3. Build the daemon (static)
 
 Boost and Berkeley DB library filenames carry a toolchain-specific suffix under
-MSYS2 (e.g. `-mt`). Point the makefile at `/mingw64` and pass the detected
+MSYS2 (e.g. `-mt`). Point the makefile at `/ucrt64` and pass the detected
 suffixes. `makefile.mingw` defaults `USE_UPNP=0`; enable it if you installed
 miniupnpc.
 
 ```sh
 cd src
 make -f makefile.mingw \
-  BOOST_ROOT=/mingw64 \
-  BDB_ROOT=/mingw64 \
-  OPENSSL_ROOT=/mingw64 \
-  LIBEVENT_ROOT=/mingw64 \
-  CURL_ROOT=/mingw64 \
-  MINIUPNPC_ROOT=/mingw64 \
+  BOOST_ROOT=/ucrt64 \
+  BDB_ROOT=/ucrt64 \
+  OPENSSL_ROOT=/ucrt64 \
+  LIBEVENT_ROOT=/ucrt64 \
+  CURL_ROOT=/ucrt64 \
+  MINIUPNPC_ROOT=/ucrt64 \
   BOOST_LIB_SUFFIX=-mt \
   BDB_LIB_SUFFIX= \
   USE_UPNP=1 \
@@ -332,14 +350,14 @@ make -f makefile.mingw \
 This produces `src/innovad.exe`. `STATIC=1` pulls in the full static curl
 dependency chain (ssh2, brotli, nghttp2/3, ngtcp2, idn2, etc.); those libraries
 come from the MSYS2 packages above. To confirm the exact suffixes on your
-install, list `/mingw64/lib/libboost_filesystem*` and `/mingw64/lib/libdb_cxx*`.
+install, list `/ucrt64/lib/libboost_filesystem*` and `/ucrt64/lib/libdb_cxx*`.
 
 ### 4. Build the Qt wallet (static)
 
-Use the static Qt from `mingw-w64-x86_64-qt5-static`:
+Use the static Qt from `mingw-w64-ucrt-x86_64-qt6-static`:
 
 ```sh
-/mingw64/qt5-static/bin/qmake \
+/ucrt64/qt6-static/bin/qmake \
   "BOOST_LIB_SUFFIX=-mt" \
   "BOOST_THREAD_LIB_SUFFIX=-mt" \
   "BDB_LIB_SUFFIX=" \
@@ -350,9 +368,10 @@ Use the static Qt from `mingw-w64-x86_64-qt5-static`:
 make -j$(nproc)
 ```
 
-`innova-qt.pro` auto-detects an MSYS2 MINGW64 layout under `$MINGW_PREFIX`
-(falling back to `C:/msys64/mingw64`) and enables Windows ASLR/DEP linker flags.
-The GUI executable is emitted as `release/Innova.exe`.
+`innova-qt.pro` auto-detects the MSYS2 layout via the `$MINGW_PREFIX`
+environment variable (`/ucrt64` in a UCRT64 shell; falls back to
+`C:/msys64/mingw64` if unset) and enables Windows ASLR/DEP linker flags. The
+GUI executable is emitted as `release/Innova.exe`.
 
 ---
 
@@ -390,7 +409,7 @@ macOS. The consensus-critical suites are wired as individual `make` targets:
 
 ```sh
 cd src
-make -f makefile.unix release-check      # builds innovad + runs all 38 test translation units
+make -f makefile.unix release-check      # builds innovad + runs all 131 test translation units
 # or run individual suites:
 make -f makefile.unix check-finality-tally
 make -f makefile.unix check-idag-validation
@@ -401,18 +420,15 @@ make -f makefile.unix check-epoch-state-determinism
 # ...see the check-* targets in makefile.unix for the full list
 ```
 
-`release-check` builds the daemon and runs the bulletproof, finality-tally,
-FCMP-root, IDAG-validation, nullifier-binding, vote-binding, NullSend-binding,
-coinstake-guard, committee-signature, half-aggregated NullStake authorization,
-epoch-state determinism, name-index recovery, deserialize-limit, and secure
-message HMAC suites. It also runs all 24 historical/legacy suites for allocator,
-base/key/number codecs, checkpoints, denial-of-service controls, argument and
-utility handling, MRU/network behavior, ring signatures, scripts/P2SH,
-transactions, wallet/accounting/miner behavior, multisig/RPC, and signature-
-operation counting. That is every one of the repository's 38 Boost test
-translation units (39 suites) plus the test harness. Stateful accounting and
-miner coverage is ordered last; isolated suite invocations remain available for
-diagnosis.
+`release-check` builds the daemon, runs the full `test_innova` binary unfiltered
+(`check-all`, covering all of the repository's 131 Boost test translation
+units), and additionally runs roughly 60 named consensus-critical `check-*`
+targets (bulletproof, finality-tally, FCMP-root, IDAG-validation,
+nullifier-binding, vote-binding, NullSend-binding, coinstake-guard,
+committee-signature, half-aggregated NullStake authorization, epoch-state
+determinism, and more) for explicit per-suite CI visibility — see the
+`check-*` targets in `makefile.unix` for the full list. Isolated suite
+invocations remain available for diagnosis.
 `makefile.osx` builds the same test binary and exposes the same release-critical
 targets, so both Linux and macOS run those mandatory suites. Both makefiles load
 `obj/test/*.P`; this prevents stale test objects after consensus/proof headers
@@ -425,27 +441,28 @@ passed into LevelDB itself, not only into the daemon objects that call it.
 
 ## Continuous integration and releases
 
-`.github/workflows/build.yml` is the canonical build definition. On a `v*` tag
-push (or a manual dispatch with `publish_release` set) it runs a 13-target
-matrix:
+`.github/workflows/build.yml` is the canonical build definition. It runs a
+12-target matrix on every push to `master`, on a `v*` tag push, and on a manual
+dispatch. A `master` push, a tag push, or a dispatch with `publish_release` set
+publishes a GitHub release once the matrix and audit gates pass:
 
 - Ubuntu 22.04 / 24.04 / 26.04 (daemon + Qt)
 - Debian 11 / 12 (daemon + Qt)
 - Fedora 40 / 41 (daemon + Qt)
 - Arch Linux (daemon + Qt)
-- Linux aarch64 (daemon), aarch64-Qt (daemon + Qt, via QEMU), armhf/armv7
-  (daemon, via QEMU)
+- Linux aarch64 (daemon), aarch64-Qt (daemon + Qt), on native arm runners
 - macOS arm64 (daemon + Qt, `.dmg`)
 - Windows x86_64 (static daemon + Qt, `.zip`, via MSYS2)
 
 Each job requires its documented binaries and archive, uploads with missing-file
 failure enabled, and includes a `SHA256SUMS.txt`. The final `release` job requires
-exactly one of every named platform archive only after the clean Linux
-unit/warning gate, ASan,
-UBSan, full local v5 integration gate, macOS consensus gate, and testnet-V3
-release policy all pass. It generates a combined `SHA256SUMS.txt` and publishes
-a GitHub release via `softprops/action-gh-release`. The release version comes
-from the tag (`v<version>`) or from `release-version` in `build.properties`.
+exactly one of every named platform archive, plus four audit gates: the clean-Linux
+unit/warning build (`audit-linux-clean`), the ASan/UBSan sanitizer runs
+(`audit-linux-sanitizers`), the Rust vendored-provenance/offline gate
+(`audit-rust-vnext`), and the local regtest v5 integration gate (`audit-regtest`).
+It generates a combined `SHA256SUMS.txt` and publishes a GitHub release via
+`softprops/action-gh-release`. The version comes from
+`contrib/versioning/next-version.sh`; see `docs/RELEASING.md`.
 
 If you are reproducing a specific release build, read the matching job in
 `build.yml` for the exact package list and flags — it is kept current, and this

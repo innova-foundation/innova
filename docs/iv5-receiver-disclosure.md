@@ -12,9 +12,9 @@ later, learns which address received the output.
 
 It is also retroactive for the next spender. The proof publishes `S = view·r_tweak`,
 and the output key satisfies `O = spend + tweak·G + y·T` with
-`tweak = H(S, r_tweak·G, spend, view, index)`. Every input to that hash is public in a
-receiver-disclosed payload, so the sender authority `A = spend + tweak·G` of whoever
-later spends that output is computable from chain bytes alone
+`tweak = H(S, r_tweak·G, spend, view, index, input context)`. Every input to that hash
+is public in a receiver-disclosed payload, so the sender authority `A = spend + tweak·G`
+of whoever later spends that output is computable from chain bytes alone
 (`src/privacy_vnext/rust/src/disclosure.rs`, `prove_receiver` / `verify_receiver`).
 
 ## How the wallet guards it

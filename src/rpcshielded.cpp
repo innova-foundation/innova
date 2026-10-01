@@ -2715,7 +2715,7 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_DSP));
     obj.push_back(Pair("privacy_vnext_consensus_ready", fVNextReady));
     // Whether consensus accepts an IV5 transaction now: verifier ready and Boundary B active.
-    // Differs from privacy_vnext_consensus_active, which the ABI reports as 0.
+    // Differs from privacy_vnext_consensus_active, the ABI's build-time flag.
     obj.push_back(Pair("privacy_vnext_transactions_accepted",
                        IsShieldedVNextConsensusReady() &&
                            IsBoundaryBActiveAtHeight(nCurrentHeight)));

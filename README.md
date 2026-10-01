@@ -83,12 +83,12 @@ today.
 
 * Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses — retired; existing ones keep working and their funds stay spendable, but new ones are not issued. Superseded by IV5 shielded addresses, which hide the amount and sender as well as the recipient
-* Ring signatures (legacy tx version 1000) — retired; rejected on every network from height 0 (IIP-0003)
+* Ring signatures (legacy tx version 1000) — rejected from height 0 on testnet/regtest; on mainnet valid until the v5 first gate, height 8,150,040 (IIP-0003)
 * Native Optional Tor Onion Node (-nativetor=1)
 * Encrypted Messaging (SecureMsg) — optional, disabled by default; enable with `smsg=1`
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
-* SLIP-44 coin type 116 registered, so BIP39/BIP44 wallets can derive Innova keys; `innovad` itself has no recovery phrase yet
+* SLIP-44 coin type 116 registered, so BIP39/BIP44 wallets can derive Innova keys; `innovad` has its own 24-word recovery phrase (`z_exportphrase`/`z_importphrase`) covering the shielded seed and HD-derived transparent keys
 * Proof of Data (Image/Data Timestamping)
 * ~15 second block times pre-DAG; ~1 second block ordering post-DAG (IDAG)
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
@@ -104,8 +104,8 @@ on the mainnet ladder (see [IIP table](#privacy--protocol-innovations-iips) for
 effective heights); none has activated yet on a mainnet whose tip is ~7.9M.
 
 * IDAG — DAG block-ordering layer for high throughput (~1 second post-DAG)
-* Epoch finality — M-of-N committee finality gadget with soft/hard tiers,
-  transparent-tier voting
+* Epoch finality — weight-threshold finality gadget with soft/hard tiers
+  (no committee by default), transparent-tier voting
 * POEM entropy weighting
 * IDNS name reset
 * Cold staking (P2CS)
@@ -120,10 +120,9 @@ Implemented in this tree and regtest-mature, but **inert on every public
 network** in this build. The legacy envelopes (transaction versions 2000–2007)
 are rejected on mainnet and testnet at every height by
 `IsLegacyPrivacyPolicyDisabled()` (`main.h`), and the unified version-2008
-envelope that replaces them activates only at Boundary B, which is unset on
-mainnet and testnet (`FORK_HEIGHT_BOUNDARY_B`, `main.h`) pending an independent
-FCMP++ review. These features are not removed from the product — they are staged
-behind that boundary.
+envelope that replaces them activates only at Boundary B — height 8,151,540 on
+mainnet, the same height as Boundary A (`FORK_HEIGHT_BOUNDARY_B`, `main.h`). These features are not removed from the
+product — they are staged behind that boundary.
 
 * Shielded pool — Pedersen commitments, Bulletproofs, and Lelantus-style proofs
 * FCMP++ full-chain membership proofs (curve-tree + inner-product argument)
@@ -164,28 +163,28 @@ Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP
 Nothing in the v5 ladder has activated on mainnet. Mainnet gate heights are not
 literals in the source: every gate returns
 `ShiftMainnetV5Activation(base)`, adding `MAINNET_V5_ACTIVATION_SHIFT`
-(`src/v5activation.h`, currently 270,000) to its base, so the whole ladder moves
+(`src/v5activation.h`, currently 350,040) to its base, so the whole ladder moves
 as a unit. The effective heights below are base + shift for the current shift and
 are re-derived by the release preflight against a fresh mainnet tip.
 
 | IIP | Title | Status | Mainnet activation |
 |-----|-------|--------|--------------------|
-| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Scheduled | height 7,980,000 |
-| [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Implemented (inactive) | Boundary B — unset |
-| [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | height 0, all networks |
-| [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Implemented (inactive) | Boundary B — unset |
-| [IIP-0005](docs/proposals/IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Implemented (inactive) | Boundary B — unset |
-| [IIP-0006](docs/proposals/IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Implemented (inactive) | Boundary B — unset |
-| [IIP-0007](docs/proposals/IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Partly active | silent payments: no gate, live. Silent shielding: Boundary B — unset |
+| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Scheduled | height 8,150,040 |
+| [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Scheduled | height 8,151,540 |
+| [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Scheduled | height 8,150,040 (mainnet); height 0 on testnet/regtest |
+| [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Scheduled | height 8,151,540 |
+| [IIP-0005](docs/proposals/IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Scheduled | height 8,151,540 |
+| [IIP-0006](docs/proposals/IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Scheduled | height 8,151,540 |
+| [IIP-0007](docs/proposals/IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Partly active | silent payments: no gate, live. Silent shielding: height 8,151,540 |
 | [IIP-0008](docs/proposals/IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | no fork height — relay policy, on by default |
-| [IIP-0009](docs/proposals/IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Implemented (inactive) | Boundary B — unset |
-| [IIP-0010](docs/proposals/IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Implemented (inactive) | Boundary B — unset |
+| [IIP-0009](docs/proposals/IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Scheduled | height 8,151,540 |
+| [IIP-0010](docs/proposals/IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Scheduled | height 8,151,540 |
 
 The privacy IIPs above carry a ladder height in the source
 (`FORK_HEIGHT_SHIELDED` and its siblings, `main.h`), but reaching it does not
 enable them: the transaction versions they ride (2000–2007) are rejected on
 mainnet and testnet at *every* height, and their production replacement is the
-version-2008 envelope gated on Boundary B, which is unset on public networks.
+version-2008 envelope gated on Boundary B, height 8,151,540 on mainnet.
 
 ## Links
 

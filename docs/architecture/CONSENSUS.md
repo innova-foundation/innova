@@ -1,18 +1,20 @@
 # Innova Consensus
 
 > **v5 recovery status:** this source is a fail-closed recovery candidate, not
-> an activated v5 release. Unsafe legacy privacy encodings are quarantined;
-> selectable privacy, NullSend, and NullStake are not removed from the product.
-> Public-testnet Boundary A is deliberately unset pending four-node preflight,
-> and Boundary B is unset on every network pending a complete full-chain FCMP++
-> version-2008 implementation and evidence gates. The descriptions below do not
-> override those activation guards.
+> an activated v5 release — the ladder has not been reached on mainnet. Unsafe
+> legacy privacy encodings are quarantined; selectable privacy, NullSend, and
+> NullStake are not removed from the product. Boundary A and Boundary B are
+> both scheduled on mainnet and testnet (Boundary B equals Boundary A, at
+> `FORK_HEIGHT_DAG` + 300); only regtest's Boundary B still defaults unset,
+> pending an explicit `-regtestboundaryb` rehearsal height. The descriptions
+> below do not override those activation guards.
 
 This document describes the consensus rules of Innova (INN) as implemented in the
 v5.0.0.0 source tree. It covers the hybrid Proof-of-Work / Proof-of-Stake base
-layer, the v5 IDAG block-ordering layer, epoch finality with the M-of-N tally
-committee, and the height-gated fork-activation schedule. Function and constant
-references point at the current code so the prose can be checked against it.
+layer, the v5 IDAG block-ordering layer, epoch finality (and the closed M-of-N
+tally-committee path), and the height-gated fork-activation schedule. Function
+and constant references point at the current code so the prose can be checked
+against it.
 
 All heights and constants below are the mainnet values unless noted. Regtest
 uses low heights for historical/recovery coverage. Public-testnet recovery
@@ -37,13 +39,15 @@ JH-512 -> Keccak-512 -> ECHO-512, truncated to 256 bits
 PoW block is valid when `CheckProofOfWork(GetPoWHash(), nBits)` holds against the
 compact difficulty target.
 
-Block reward is `GetProofOfWorkReward(nHeight, nFees)` in `main.cpp`. Emission is
+Block reward is `GetProofOfWorkReward(nHeight, nFees, pindexPrev, nCommitted)` in
+`main.cpp`. Emission is
 a piecewise, height-tiered schedule: a launch/premine block, an instamine-guard
 window up to `FAIR_LAUNCH_BLOCK`, an early ramp, a long zero-reward stretch
 (`ZERO_POW_BLOCK` to block 2,000,000), the post-hack restart, and repeating
 250,000-block cycles that step the per-block subsidy up and down (0.01–1.0 INN)
-to periodically release the equivalent of one collateralnode, tailing to a
-terminal 0.0001 INN/block beyond block 10,000,000. The function takes `nHeight`
+to periodically release the equivalent of one collateralnode; the schedule's
+last explicit tier sits at block 8,500,000, already inside the post-DAG era at
+the current shift (section 6). The function takes `nHeight`
 explicitly (not `pindexBest`) so non-tip blocks validate to the correct reward.
 The post-DAG scaling applied at the end of this function is described in
 section 6.
@@ -63,16 +67,17 @@ PoS follows the PPCoin kernel model. The kernel hash and target are computed in
   entropy-mixed value produced by `ComputeNextStakeModifier()` /
   `GetKernelStakeModifier()`, so kernels cannot be precomputed far ahead.
 - **Target test.** The proof passes when
-  `hash * COIN * 86400 <= value * weight * targetPerCoinDay`. The comparison is
-  cross-multiplied (rather than dividing to a coin-day weight first) to avoid
-  integer-division precision loss for small-value inputs.
+  `hash <= coinDayWeight * targetPerCoinDay`, where
+  `coinDayWeight = value * weight / COIN / 86400` is truncated by integer
+  division before the multiply, as in v4.3.9.x.
 
 `CheckProofOfStake()` (`kernel.cpp`) wraps the kernel check for the coinstake
 transaction and also dispatches the private NullStake coinstake variants (V1 / V2
 / V3-cold) to their ZK verifiers when the coinstake carries a NullStake kernel
 proof instead of a transparent input.
 
-Stake reward is `GetProofOfStakeReward(nCoinAge, nFees)` in `main.cpp`, paying
+Stake reward is `GetProofOfStakeReward(nCoinAge, nFees, pindexPrev, nCommitted)`
+in `main.cpp`, paying
 `COIN_YEAR_REWARD` = 6% per annum on coin-age (coin-days), i.e.
 `nCoinAge/365 * 0.06 + remainder`.
 
@@ -213,11 +218,12 @@ At each epoch boundary the DAG manager freezes a `CEpochState` (`dag.h`) for the
 completed epoch: the DAG-ordered block set, the shielded curve-tree root, the
 nullifier root, a digest of the finality votes embedded in that epoch's blocks
 (`hashVoteSetRoot`), the finality certificate hash, the tier, and a deterministic
-running-max finalized height (`nFinalizedHeightAsOf`). `ComputeEpochState()` is a
+running-max finalized height (`nFinalizedHeightAsOf`). `BuildEpochState()` is a
 **pure function of a canonical anchor block** (post `FORK_HEIGHT_EPOCH_STATE_V2`),
 recomputed from the new best tip on reorg, so every node freezes identical epoch
 roots — the fix for the earlier split where epoch state derived from the
-node-local live tip.
+node-local live tip (the legacy node-local-tip path, `ComputeEpochState()` /
+`BuildEpochStateV2Compat()`, remains only for epochs ending below that fork).
 
 ### 4.2 Votes
 
@@ -238,7 +244,7 @@ inclusion is capped at `FINALITY_MAX_BLOCK_VOTES` = 32, and an epoch needs at
 least `FINALITY_MIN_VOTERS` = 2 unique voters. Private votes carry a note- and
 epoch-bound nullifier, so a note votes at most once per epoch.
 
-Vote reward is `GetFinalityVoteReward(nVoteWeight, nEpochInterval)`
+Vote reward is `GetFinalityVoteReward(nVoteWeight, nEpochUnits, nRatePerCoinYear)`
 (`finality.cpp`), which reproduces the legacy 6%/yr PoS curve on the coin-age a
 voter's stake accrues over one epoch — stake earns from finality participation
 what it used to earn from minting.
@@ -270,27 +276,27 @@ weight. The certificate must cover **exactly** the epoch-E votes connected withi
 the inclusion window (coverage equality against `hashVoteSetRoot`), so a producer
 cannot drop connected votes or certify a minority block.
 
-### 4.4 The M-of-N tally committee
+### 4.4 The M-of-N tally committee (removed from consensus)
 
-The private tally is administered by a bounded committee (up to
-`FINALITY_MAX_TALLY_COMMITTEE` = 64 members) with an M-of-N threshold. Members
-publish encrypted committee aggregate evaluations (tally shares,
-`CFinalityTallyShare`), which combine into the certificate; the certificate binds
-the committee-set hash and threshold for its epoch.
+A private tally certificate's format still carries committee fields: a bounded
+committee size (up to `FINALITY_MAX_TALLY_COMMITTEE` = 64 members), an M-of-N
+threshold, and encrypted tally shares (`CFinalityTallyShare`) that combine into
+the certificate and bind a committee-set hash for its epoch.
 
-From `FORK_HEIGHT_TALLY_GOVERNANCE` (D2), the committee becomes a **consensus
-trust root**: a v3 tally certificate must carry at least M detached signatures
-from the canonical committee for its epoch (strictly ascending signer indices),
-verified by `CheckTallyCertificateCommitteeSignatures()` /
-`VerifyMofNCommitteeSignatures()`. The canonical committee for an epoch is
-resolved by `GetCanonicalFinalityCommittee()`, pinned at startup by
-`PinFinalityCommitteeConstants()`. The committee **rotates itself**: a
-`CFinalityCommitteeRotation` authorized by >= M signatures from the *current*
-committee installs a new set and threshold, chained by `hashPrevCommitteeSet`,
-with no central key — verified by `CheckFinalityCommitteeRotation()`. On mainnet
-the committee-signature requirement co-activates with the DAG fork (the first
-height a private certificate can exist) so no window exists where private certs
-are accepted without M-of-N authorization.
+From `FORK_HEIGHT_TALLY_GOVERNANCE` (D2), a v3 tally certificate carrying private
+weight must carry >= M detached signatures from the canonical committee for its
+epoch, checked by `CheckTallyCertificateCommitteeSignatures()` /
+`VerifyMofNCommitteeSignatures()`. In this tree `GetCanonicalFinalityCommittee()`
+is a stub that always returns no committee ("No committee is drawn... it remains
+only for the legacy v3 private-certificate path", `finality.cpp`); no pinning or
+self-rotation mechanism exists in the code. Consequently any certificate with
+private weight at or above `FORK_HEIGHT_TALLY_GOVERNANCE` is rejected outright
+("no finality committee is seated for this certificate's term") on every public
+network — the private (NullStake) tally path is consensus-closed, not
+committee-governed. The signature verifiers remain exercised only by unit tests
+against an injected committee. The M-of-N committee is not part of v5;
+`-finalitytallymode` (default off) is an unrelated, node-local operator mode for
+producing tally shares, independent of this consensus gate.
 
 ---
 
@@ -312,21 +318,21 @@ fresh trusted mainnet tip; the effective height of any gate is base + shift.
 | Fork | Helper / macro | Base height | What it activates |
 |------|----------------|-------------|-------------------|
 | Cold staking (P2CS) | `FORK_HEIGHT_COLD_STAKING` | 7,800,000 | cold-staking scripts; also the CN-payment / tighter-drift base hardening |
-| Shielded | `FORK_HEIGHT_SHIELDED` | 7,810,000 | shielded (zk) transactions; nullifier-binding is born here |
-| RingSig deprecation | `FORK_HEIGHT_RINGSIG_DEPRECATION` | 7,815,000 | rejects legacy `ANON_TXN_VERSION` ring-sig txns |
-| DSP (Dynamic Selective Privacy) | `FORK_HEIGHT_DSP` | 7,815,000 | 3-bit `nPrivacyMode` field in `SHIELDED_TX_VERSION_DSP_PROTOTYPE` (2001). Production DSP is the 2008 envelope's disclosure mask. |
-| NullSend / CoinJoin | `FORK_HEIGHT_NULLSEND` (`= FORK_HEIGHT_CJOIN`) | 7,820,000 | NullSend CoinJoin-style mixing |
-| FCMP++ | `FORK_HEIGHT_FCMP` (`= FORK_HEIGHT_FCMP_VALIDATION`) | 7,820,000 | FCMP++ curve-tree membership proofs |
-| NullStake V1 | `FORK_HEIGHT_NULLSTAKE` | 7,825,000 | private staking via ZK kernel proofs |
-| NullStake V2 | `FORK_HEIGHT_NULLSTAKE_V2` | 7,830,000 | V2 ZK kernel (hides kernel params); kernel-pinning born here |
-| NullStake V3 | `FORK_HEIGHT_NULLSTAKE_V3` | 7,835,000 | private cold staking |
-| Chaumian CoinJoin | `FORK_HEIGHT_CHAUMIAN_CJ` | 7,840,000 | blind-signature CoinJoin/NullSend upgrade |
-| POEM | `FORK_HEIGHT_POEM` | 7,940,000 | POEM entropy weighting |
-| Finality | `FORK_HEIGHT_FINALITY` | 7,945,000 | PoS epoch finality gadget |
-| DAG | `FORK_HEIGHT_DAG` | 7,950,000 | IDAG ordering, 1s blocks, PoS-minting disabled, reward /15; co-activates epoch-state (`EPOCH_ROOT_FCMP`, `VOTESET_ROOT`, `EPOCH_STATE_V2`) and tally governance |
-| DAGKnight | `FORK_HEIGHT_DAGKNIGHT` | 8,000,000 | adaptive-`k` DAGKNIGHT ordering (replaces GHOSTDAG) |
-| NullStake deleg-set / reclaim / B2-c | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | 8,060,000 | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim |
-| IDNS name reset | `FORK_HEIGHT_IDNS_RESET` | 7,900,000 | names registered before this height expire and registrations resume here; seated after the first gate and before DAG, so a term bought in the window spans the 15s→1s spacing change |
+| Shielded | `FORK_HEIGHT_SHIELDED` | 7,800,060 | shielded (zk) transactions; nullifier-binding is born here |
+| RingSig deprecation | `FORK_HEIGHT_RINGSIG_DEPRECATION` | 7,800,000 | rejects legacy `ANON_TXN_VERSION` ring-sig txns |
+| DSP (Dynamic Selective Privacy) | `FORK_HEIGHT_DSP` | 7,800,120 | 3-bit `nPrivacyMode` field in `SHIELDED_TX_VERSION_DSP_PROTOTYPE` (2001). Production DSP is the 2008 envelope's disclosure mask. |
+| NullSend / CoinJoin | `FORK_HEIGHT_NULLSEND` (`= FORK_HEIGHT_CJOIN`) | 7,800,120 | NullSend CoinJoin-style mixing |
+| FCMP++ | `FORK_HEIGHT_FCMP` (`= FORK_HEIGHT_FCMP_VALIDATION`) | 7,800,120 | FCMP++ curve-tree membership proofs |
+| NullStake V1 | `FORK_HEIGHT_NULLSTAKE` | 7,800,180 | private staking via ZK kernel proofs |
+| NullStake V2 | `FORK_HEIGHT_NULLSTAKE_V2` | 7,800,240 | V2 ZK kernel (hides kernel params); kernel-pinning born here |
+| NullStake V3 | `FORK_HEIGHT_NULLSTAKE_V3` | 7,800,300 | private cold staking |
+| Chaumian CoinJoin | `FORK_HEIGHT_CHAUMIAN_CJ` | 7,800,360 | blind-signature CoinJoin/NullSend upgrade |
+| POEM | `FORK_HEIGHT_POEM` | 7,800,780 | POEM entropy weighting |
+| Finality | `FORK_HEIGHT_FINALITY` | 7,800,820 | PoS epoch finality gadget |
+| DAG | `FORK_HEIGHT_DAG` | 7,801,200 | IDAG ordering, 1s blocks, PoS-minting disabled, reward /15; co-activates epoch-state (`EPOCH_ROOT_FCMP`, `VOTESET_ROOT`, `EPOCH_STATE_V2`) and tally governance |
+| DAGKnight | `FORK_HEIGHT_DAGKNIGHT` | 7,851,200 (DAG base + 50,000) | adaptive-`k` DAGKNIGHT ordering (replaces GHOSTDAG) |
+| NullStake deleg-set / reclaim / B2-c | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | unset (sentinel) off regtest | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim; regtest-only (12 / 12 / 14), not on the mainnet or testnet ladder |
+| IDNS name reset | `FORK_HEIGHT_IDNS_RESET` | 7,800,420 | names registered before this height expire and registrations resume here; seated after the first gate and before DAG, so a term bought in the window spans the 15s→1s spacing change |
 | Committee signature canonicality | `FORK_HEIGHT_COMMITTEE_SIG_CANONICAL` | 7,800,000 | requires low-S DER on committee signatures; an unenforced encoding is third-party malleable and changes a certificate's hash without its signers |
 | Legacy FCMP proof policy | `VerifyFCMPProof()` | n/a | the in-tree path-proof layer is removed; the envelope decodes so historical transactions parse, but no membership statement is accepted on any network at any height |
 
@@ -334,7 +340,9 @@ Several sibling gates are pinned to `FORK_HEIGHT_DAG` deliberately:
 `FORK_HEIGHT_EPOCH_ROOT_FCMP` (FCMP spends bind to the last finalized epoch
 curve-tree snapshot), `FORK_HEIGHT_VOTESET_ROOT` (per-epoch vote-set
 accumulator), `FORK_HEIGHT_EPOCH_STATE_V2` (deterministic reorg-safe epoch
-anchor), and `FORK_HEIGHT_TALLY_GOVERNANCE` (M-of-N committee authorization).
+anchor), and `FORK_HEIGHT_TALLY_GOVERNANCE` (height above which a private tally
+certificate needs committee signatures that, per section 4.4, none can ever
+provide).
 `FORK_HEIGHT_NULLIFIER_BINDING` and `FORK_HEIGHT_KERNEL_PINNING`, by contrast,
 are anchored to the shielded / NullStake-V2 forks respectively — they must be
 enforced from the first height their target objects can exist, to avoid a window
@@ -383,14 +391,13 @@ value of `nTargetSpacing`.
 - **Block spacing:** `GetTargetSpacingForHeight()`, `nTargetSpacing` (`main.h` /
   `main.cpp`).
 - **DAG:** `CDAGManager`, `SelectBestDAGTip()`, `GetDAGLinearOrder()`,
-  `ColorBlock()` / `ColorBlockDAGKnight()`, `ComputeEpochState()`,
+  `ColorBlock()` / `ColorBlockDAGKnight()`, `BuildEpochState()`,
   `GetDeterministicFinalizedHeight()`, `CEpochState`, `CBlockDAGData` (`dag.h` /
   `dag.cpp`).
 - **Finality:** `GetEpochInterval()`, `FinalityDetermineTier()`,
   `GetFinalityVoteReward()`, `CFinalityVote`, `CFinalityTallyCertificate`,
-  `CFinalityCommitteeRotation`, `GetCanonicalFinalityCommittee()`,
-  `CheckTallyCertificateCommitteeSignatures()`,
-  `CheckFinalityCommitteeRotation()` (`finality.h` / `finality.cpp`); tier and
-  epoch constants at the top of `finality.h`.
+  `GetCanonicalFinalityCommittee()` (stub, no committee),
+  `CheckTallyCertificateCommitteeSignatures()` (`finality.h` / `finality.cpp`);
+  tier and epoch constants at the top of `finality.h`.
 - **Fork gates:** `GetForkHeight*()` (`main.h`), `GetForkHeightFCMP()`
   (`curvetree.h`).

@@ -25,9 +25,11 @@ to you.
 
 | Tier | Gateway | Max File Size | Chunk Size |
 |------|---------|---------------|------------|
-| Free | Infura (fallback) | 100 MB | 1 MB |
 | Self-Hosted | Your own IPFS node | 10 TB | 1-4 MB (adaptive) |
 | Innova Foundation | ipfs.innova-foundation.com | 10 TB | 1-4 MB (adaptive) |
+
+There is no public fallback endpoint: `hyperfileip` must point at a reachable
+IPFS API, or Hyperfile refuses to run.
 
 ## Quick Setup (Ubuntu/Debian)
 
@@ -123,13 +125,19 @@ hyperfileip=ipfs.yourdomain.com:5001
 
 ## Security Notes
 
-- **All files are AES-256-GCM encrypted BEFORE upload** — IPFS stores only ciphertext
-- **Encryption keys travel via smessage** (E2E encrypted) — never touch IPFS
-- **GCM authentication tags** prevent tampering — modified files are rejected
-- **Chunked uploads** split files into 1-4MB encrypted pieces with per-chunk nonces
-- **No plaintext ever touches IPFS** — even if your IPFS node is compromised, files are unreadable
+Chat attachments and Hyperfile uploads are different paths (see above):
 
-## Architecture
+- **Chat attachments only** are AES-256-GCM encrypted client-side before
+  upload — IPFS stores only ciphertext for that path. The key travels via
+  smessage (E2E encrypted) and never touches IPFS. GCM authentication tags
+  catch tampering, and chunked uploads use per-chunk nonces.
+- **The Hyperfile tab and `hyperfile*` RPCs upload in the clear.** IPFS stores
+  plaintext content for that path; run your own gateway if that matters to you.
+
+## Architecture (chat-attachment encryption path)
+
+Hyperfile tab/RPC uploads skip the encrypt/decrypt steps below and send
+plaintext chunks directly.
 
 ```
 Sender Wallet                          IPFS Node                    Recipient Wallet

@@ -1,18 +1,17 @@
 # Innova privacy-vNext Rust provenance spine
 
-This directory pins the source and dependency inputs for Boundary B without
-enabling transaction version 2008. Its exported functions report metadata and
-calculate the exact serialized FCMP++ proof size for the fixed eight-layer tree.
-There is deliberately no proving, verification, tree mutation, address,
-transaction, or wallet API in this crate.
+This directory pins the source and dependency inputs for the FCMP++ fork and
+implements the IV5 consensus ABI for transaction version 2008: FCMP++ proving
+and verification, tree and nullifier-accumulator maintenance, address/key
+derivation, note scan and encryption, payload validation, and disclosure/vote/
+mix-balance proofs, in addition to the metadata and FCMP++ proof-size exports.
 
-The canonical product contract fixes the intended shape without claiming an
-activation: FCMP++ revision
+The canonical product contract fixes the intended shape: FCMP++ revision
 `76399e58bfc7e652d900936f84b3785ea59ab4cd`, eight tree layers, 16-input and
 16-output caps, a 256 KiB payload cap, disclosure modes 0 through 7, NullStake
 generations 1 through 3, and the required shield, unshield, transfer, NullSend,
 three NullStake/private-cold modes, public- and hidden-signer M-of-N, reclaim,
-and private-finality operations. `consensus_active` is fixed to zero.
+and private-finality operations. `consensus_active` is 1.
 
 Pinned inputs:
 
@@ -24,10 +23,10 @@ Pinned inputs:
 - a deterministic SPDX 2.3 SBOM in `sbom.spdx.json`.
 
 `innova_privacy_vnext_parameter_digest` is SHA-256 of the exact bytes of
-`contract/iv5_protocol_v1.json`. It identifies the normative typed protocol;
-it is not an activation digest and must not be interpreted as making version
-2008 consensus-valid. Proving and verification are implemented but reach no
-consensus path: `consensus_capabilities` is zero on every network.
+`../contract/iv5_protocol_v1.json`. It identifies the normative typed protocol;
+it is not an activation digest. `consensus_capabilities` equals
+`implemented_capabilities`: every operation this crate implements is marked
+authorized for consensus use.
 
 `innova_privacy_vnext_fcmp_proof_size` calls the pinned upstream
 `FcmpPlusPlus::proof_size` implementation. It accepts only 1 through 16 inputs

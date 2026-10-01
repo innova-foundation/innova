@@ -134,20 +134,16 @@ succeeded, then closes the socket. It has no address to report either.
 ### 4.3 Why the default is an external tor, not the bundled one
 
 The tree bundles a full Tor daemon (`src/tor`, started in-process by `StartTor`
-with `--SocksPort 9089`). It is **Tor 0.3.0.9**:
+with `--SocksPort 9089`, enabled by `-nativetor=1`). It is **Tor 0.4.9.12**
+(`src/tor/PROVENANCE`), with a full v3 implementation: `hs_service.c` (4,745
+lines) and `hs_client.c` (2,825 lines) under `src/tor/src/feature/hs/`; no
+v2-only `rendservice.c` remains in the tree. The bundled daemon can create and
+visit v3 onion services.
 
-- `hs_service.c` is a 172-line stub whose own comment says the functions are
-  unused outside unit-test data generation;
-- the 4,569-line `rendservice.c` is v2-only onion-service code;
-- there is no `hs_client.c` at all — the v3 client landed in Tor 0.3.2.
-
-v2 onion services were removed from the live Tor network in 2021. The bundled
-daemon can therefore neither create nor visit a v3 onion service, however cleanly
-it compiles. It is a working SOCKS proxy for ordinary traffic and nothing more.
-
-The descriptor and resolver are consequently built against a *configurable* SOCKS5
-endpoint. Point `-idnssocks` at an external tor ≥ 0.4.8 today. If the vendored
-Tor is later upgraded, point it at `127.0.0.1:9089` and nothing else changes.
+The rendezvous dial still defaults to an **external** tor at `127.0.0.1:9050`,
+because `-nativetor` itself defaults to 0 (`init.cpp`); `GetIDnsSocksEndpoint()`
+only prefers the bundled daemon's `127.0.0.1:9089` once `-nativetor=1` is set.
+Point `-idnssocks` at either endpoint, or at any other reachable tor.
 
 `CNetAddr::SetSpecial` is also v2-only (10-byte OnionCat mapping), so a 56-character
 v3 hostname cannot be represented as a `CService` at all. This is why the dial
@@ -200,9 +196,9 @@ single default key.
 
 ## 7. Known gaps
 
-1. **The bundled Tor cannot rendezvous.** Upgrading vendored Tor from 0.3.0.9 to
-   a release with a v3 client (0.4.8.x) or replacing it with arti is a separate
-   item.
+1. **Resolved.** The vendored Tor is 0.4.9.12, not 0.3.0.9 (`src/tor/PROVENANCE`),
+   with a full v3 client and service implementation. `-nativetor=1` enables it;
+   the default (`-nativetor=0`) still dials an external tor (section 4.3).
 2. **No v3 checksum validation**, for want of SHA3-256 (section 2).
 3. **No live rendezvous has been demonstrated** from this tree. The codec, the
    classification, the DNS refusal and the request encoding are covered by unit

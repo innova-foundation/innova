@@ -8,8 +8,8 @@ and how to build and test the daemon and Qt wallet before you propose a change.
 ## Code style
 
 Innova follows the coding conventions inherited from its Bitcoin/PPCoin/Denarius
-lineage, described in `doc/coding.txt`. Please stay consistent with the
-surrounding code; a diff that matches the existing style is easier to review.
+lineage, described below. Please stay consistent with the surrounding code; a
+diff that matches the existing style is easier to review.
 
 ### Formatting
 
@@ -80,7 +80,7 @@ The core is multi-threaded and protects shared state with mutexes and the
 `CRITICAL_BLOCK` / `TRY_CRITICAL_BLOCK` macros. Keep lock ordering consistent to
 avoid deadlocks (for example, always take `cs_main` before `cs_wallet`). You can
 build with `-DDEBUG_LOCKORDER` to have lock-order inconsistencies reported in
-`debug.log`. See `doc/coding.txt` for more detail.
+`debug.log`.
 
 ## Git and pull-request workflow
 
@@ -94,11 +94,12 @@ build with `-DDEBUG_LOCKORDER` to have lock-order inconsistencies reported in
    bug-report phrasing over dramatized wording.
 3. **Open a pull request against `master`.** Explain what the change does, why it
    is needed, and how you verified it. Reference any related issues.
-4. **CI must pass.** Every tagged release and pull request is built across the
-   platform matrix defined in `.github/workflows/build.yml` (Ubuntu 22.04 /
-   24.04 / 26.04, Debian 11 / 12, Fedora 40 / 41, Arch, linux-arm64, linux-armhf,
-   macOS-arm64, and Windows via MSYS2). A pull request will not be merged until
-   the build is green on all platforms.
+4. **CI must pass.** Pull requests run `.github/workflows/ci.yml`: an Ubuntu Qt
+   5/6 smoke build, ASan/UBSan sanitizer runs, and a macOS consensus gate. The
+   full platform-release matrix in `.github/workflows/build.yml` (Ubuntu 22.04 /
+   24.04 / 26.04, Debian 11 / 12, Fedora 40 / 41, Arch, Linux aarch64 daemon and
+   daemon+Qt, macOS arm64, and Windows via MSYS2) runs on a push to `master` or a
+   tagged release. A pull request will not be merged until its CI is green.
 5. **Consensus changes.** Changes to consensus code (`main.cpp`, `kernel.cpp`,
    `dag.cpp`, `finality.cpp`, and related headers) receive extra scrutiny.
    New rules that change block validity must be gated behind a fork height (see
@@ -108,7 +109,7 @@ build with `-DDEBUG_LOCKORDER` to have lock-order inconsistencies reported in
 ## Building and testing
 
 Innova builds with the standard makefiles under `src/`, or with the `qmake`
-project files (`innova.pro`, `innova-qt.pro`) for the Qt wallet.
+project file (`innova-qt.pro`) for the Qt wallet.
 
 ### Daemon (`innovad`)
 

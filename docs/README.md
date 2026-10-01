@@ -12,7 +12,7 @@ is the landing page; this directory holds the detailed docs.
 
 ## Architecture
 
-- [architecture/CONSENSUS.md](architecture/CONSENSUS.md) — Tribus PoW/PoS hybrid, the IDAG DAG-ordering layer, and epoch finality with the M-of-N committee
+- [architecture/CONSENSUS.md](architecture/CONSENSUS.md) — Tribus PoW/PoS hybrid, the IDAG DAG-ordering layer, and epoch finality (weight-threshold tiers by default, plus the optional M-of-N tally committee)
 - [architecture/PRIVACY.md](architecture/PRIVACY.md) — the privacy stack: shielded pool, Lelantus, FCMP++, NullSend, NullStake, silent payments, Dandelion++
 - [architecture/COLLATERALNODES.md](architecture/COLLATERALNODES.md) — collateralnodes: the 25,000 INN collateral, registration, and payments
 

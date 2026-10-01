@@ -126,27 +126,32 @@ Registration and liveness ride three P2P messages (handled in
 
 ## Payment mechanism
 
-### `GetCollateralnodePayment`
+### `CBlockSubsidySplit`
 
 The size of a collateralnode's slice of a block is computed by
-`GetCollateralnodePayment(int nHeight, int64_t blockValue)` in `main.cpp`:
+`CBlockSubsidySplit::ForBlock(nHeight, nIssuance, nFees, cnShare)` /
+`.Collateralnode()` (`src/subsidy.{h,cpp}`), which replaced the old free
+function `GetCollateralnodePayment()`. The 65% arithmetic itself is
+`CBlockSubsidySplit::CollateralnodeShareOfBase()`:
 
 ```cpp
-int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue)
+int64_t CBlockSubsidySplit::CollateralnodeShareOfBase(int64_t nBase)
 {
-    if (blockValue <= 0)
+    if (nBase <= 0)
         return 0;
-    return (blockValue / 100) * 65 + ((blockValue % 100) * 65) / 100;
+    return (nBase / 100) * 65 + ((nBase % 100) * 65) / 100;
 }
 ```
 
-This is integer arithmetic for **65% of the block value**, split into a
+This is integer arithmetic for **65% of the paid base**, split into a
 whole-hundreds term and a remainder term to avoid overflow and round down cleanly.
-The collateralnode therefore receives 65% of the block reward and the block producer
-(miner for PoW, staker for PoS) keeps the remaining ~35%. `blockValue` is the reward
-the payment is carved out of: the PoW subsidy plus fees for PoW blocks, or the
-computed coinstake reward (`GetProofOfStakeReward(...)` after `ApplyBlockSizePenalty`)
-for PoS blocks.
+`nBase` is issuance net of the post-DAG finality reserve (`FINALITY_RESERVE_BPS`
+= 10% of issuance, withheld to fund the epoch note-vote budget; zero pre-DAG and
+on PoS blocks, since PoS block production ends at the DAG fork) plus fees. The
+collateralnode receives 65% of that base and the block producer (miner for PoW,
+staker for PoS) keeps the remainder; `ForBlock()`'s `nSubsidy` input is the PoW
+subsidy for PoW blocks, or the computed coinstake reward
+(`GetProofOfStakeReward(...)` after `ApplyBlockSizePenalty`) for PoS blocks.
 
 ### Who gets paid — the election
 
@@ -176,11 +181,12 @@ rotation/score election so payouts spread across the active set over time:
    burn address if none is known.
 2. It appends that payee as an extra coinbase/coinstake output (`payments =
    vout.size()+1`, value initialised to 0).
-3. After computing `blockValue`, it sets
-   `collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue)`,
-   writes it into the reserved output, and **subtracts it from `blockValue`** so the
-   producer's own output only receives the remainder. A guard clamps the payment if it
-   ever exceeds `blockValue`.
+3. It builds `CBlockSubsidySplit::ForBlock(nHeight, nIssuance, blockValue - nIssuance,
+   CollateralnodeShare::Paid)`, reassigns `blockValue` to the split's
+   `PaidToBlock()` (issuance net of the post-DAG finality reserve, plus fees),
+   writes `subsidySplit.Collateralnode()` into the reserved output, and
+   **subtracts it from `blockValue`** so the producer's own output only receives
+   the remainder. A guard clamps the payment if it ever exceeds `blockValue`.
 
 ### Consensus validation (main.cpp)
 
@@ -193,20 +199,26 @@ active. Activation is height-gated:
   `MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET` (both 999999 — effectively disabled for the
   clean IDAG public testnet).
 
-When active, the validator recomputes the expected amount with
-`GetCollateralnodePayment(...)` and scans the block's coinbase (PoW, `vtx[0]`) or
-coinstake (PoS, `vtx[1]`) outputs for one whose `nValue` equals that amount and whose
-`scriptPubKey` matches an accepted payee (a registered collateralnode's key, the
-anonymous/burn payee `INNXXX…ZeeDTw` on mainnet / `8Test…bCvpq` on testnet, etc.). A
-missing payment or payee is a `DoS(100)` rejection ("Couldn't find collateralnode
-payment or payee"). Helpers `CheckCNPayment` / `CheckPoSCNPayment` back these checks.
+When active, the validator recomputes the expected amount via
+`CBlockSubsidySplit` / `CollateralnodeShareOfBase(...)` and scans the block's coinbase
+(PoW, `vtx[0]`) or coinstake (PoS, `vtx[1]`) outputs for one whose `nValue` equals that
+amount and whose `scriptPubKey` matches an accepted payee (a registered collateralnode's
+key, the anonymous/burn payee `INNXXX…ZeeDTw` on mainnet / `8Test…bCvpq` on testnet,
+etc.). A missing payment or payee is a `TransientFailure` ("Couldn't find
+collateralnode payment or payee") — not DoS-scored, since the collateralnode list is
+node-local gossiped state and a rejection under this gate must not reach the block
+index. Helpers `CheckCNPayment` / `CheckPoSCNPayment` back these checks.
 
 ## Interaction with the reward split and PoS/NullStake
 
-The collateralnode payment is a top-slice of the *same* reward the block already
-produces — it does not mint new coins. The producer's reward output and the
-collateralnode output together sum to the original `blockValue` (see the
-`blockValue -= collateralnodePayment` step in miner.cpp).
+The collateralnode payment is a top-slice of the block's paid allowance — it does
+not mint new coins. Post-DAG, `CBlockSubsidySplit` withholds a 10% finality
+reserve (`FINALITY_RESERVE_BPS`, `src/subsidy.cpp`) from issuance before the
+split, to fund the epoch note-vote budget (zero pre-DAG and on PoS blocks). The
+producer's reward output and the collateralnode output together sum to
+`CBlockSubsidySplit::PaidToBlock()` (see the `blockValue -= collateralnodePayment`
+step in miner.cpp, where `blockValue` has already been reassigned to
+`PaidToBlock()`).
 
 Important cross-feature interactions:
 
@@ -278,5 +290,6 @@ the same collateralnode tier described above.
 | `collateralnodeconfig.h/.cpp` | Parse/maintain `collateralnode.conf` (alias/ip/key/txhash/index). |
 | `collateral.h/.cpp` | NullSend mixing pool (`CCollaTeralPool`), signer, queues, denominations. |
 | `rpccollateral.cpp` | `collateralnode`/`masternode` and `getpoolinfo` RPCs. |
-| `main.cpp` | `GetCollateralnodePayment`, consensus payment checks in `CheckBlock`/`ConnectBlock`, height gates. |
+| `subsidy.h/.cpp` | `CBlockSubsidySplit` (producer/collateralnode/finality-reserve split), `CollateralnodeShareOfBase`. |
+| `main.cpp` | Consensus payment checks in `CheckBlock`/`ConnectBlock`, height gates. |
 | `miner.cpp` | Reserves and funds the collateralnode payout output during block assembly. |
