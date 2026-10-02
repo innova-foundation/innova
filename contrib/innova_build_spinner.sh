@@ -32,7 +32,8 @@ spinner_loop() {
             --scroll-region \
             --output-lines 5 \
             --min-output 5 \
-            --max-output 15
+            --max-output 15 \
+            --frames "$SCRIPT_DIR/innova_coin_frames.txt"
     fi
 }
 

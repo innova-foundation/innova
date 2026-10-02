@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import math
+import os
 import signal
 import sys
 import time
@@ -164,10 +165,17 @@ def main():
     parser.add_argument("--max-output", type=int, default=15)
     parser.add_argument("--scroll-region", action="store_true")
     parser.add_argument("--tty", default=None)
+    parser.add_argument("--frames", default=None, help="precomputed frames, separated by form feeds")
     args = parser.parse_args()
 
-    raw_lines = read_ascii(args.ascii_file)
-    normalized = normalize_ascii(raw_lines)
+    precomputed = None
+    if args.frames and os.path.exists(args.frames):
+        with open(args.frames) as f:
+            precomputed = [normalize_ascii(block.split("\n")) for block in f.read().split("\f\n")]
+        normalized = precomputed[0]
+    else:
+        raw_lines = read_ascii(args.ascii_file)
+        normalized = normalize_ascii(raw_lines)
     out = sys.stderr if args.stderr else sys.stdout
     printed_lines = 0
     last_size = None
@@ -202,7 +210,10 @@ def main():
         global WIDTH, HEIGHT
         WIDTH = max(2, int(max_width * scale + 0.5))
         HEIGHT = max(2, int(max_height * scale + 0.5))
-        frames = spin_frames_from_ascii(normalized)
+        if precomputed:
+            frames = [scale_ascii(fr, WIDTH, HEIGHT) for fr in precomputed]
+        else:
+            frames = spin_frames_from_ascii(normalized)
         height = len(frames[0]) if frames else 0
         last_size = (cols, rows)
         if args.scroll_region and rows > 0:
