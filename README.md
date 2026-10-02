@@ -9,8 +9,6 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 [![GitHub Commit Activity](https://img.shields.io/github/commit-activity/m/innova-foundation/innova)](https://github.com/innova-foundation/innova/pulse)
 
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Finnova-foundation%2Finnova&count_bg=%231283C4&title_bg=%23555555&icon=&icon_color=%231283C4&title=Hits+-+Daily%2FTotal&edge_flat=false)](https://hits.seeyoufarm.com)
-
 ![Discord Online Users](https://img.shields.io/discord/391676334956347395?label=Discord&color=%230F80C1)
 [![Join Discord](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/mNM59znzNG)
 
@@ -101,11 +99,11 @@ per-feature status.
 
 What the v5 fork activates on public networks. Each is a height-gated flag day
 on the mainnet ladder (see [IIP table](#privacy--protocol-innovations-iips) for
-effective heights); none has activated yet on a mainnet whose tip is ~7.9M.
+effective heights); none has activated on mainnet yet.
 
 * IDAG — DAG block-ordering layer for high throughput (~1 second post-DAG)
-* Epoch finality — weight-threshold finality gadget with soft/hard tiers
-  (no committee by default), transparent-tier voting
+* Epoch finality — 300-block epochs finalized by a participation quorum of
+  transparent and anonymous note votes (no committee)
 * POEM entropy weighting
 * IDNS name reset
 * Cold staking (P2CS)
