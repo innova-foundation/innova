@@ -59,17 +59,10 @@ scratch/
 contrib/testnet_tools/fleet*.json
 !contrib/testnet_tools/fleet.example.json
 
-# Private audit and release-evidence files are kept outside this repository.
-# Only their SHA-256 digests belong in the release manifest.
 docs/audits/
 docs/proposals/
 datasets/
 
-# Rust IV5 layer: third-party crates are restored with `cargo vendor` and are
-# verified against the SHA-256 checksums pinned in Cargo.lock, so they do not
-# belong in history. The pinned monero-oxide sources under rust/upstream/ ARE
-# tracked: they are path dependencies with no crates.io equivalent.
-# Release builds ship vendor/ as a signed archive for air-gapped reproducibility.
 src/privacy_vnext/rust/vendor/
 src/privacy_vnext/rust/target/
 src/privacy_vnext/rust/upstream/target/
