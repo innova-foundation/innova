@@ -14,7 +14,6 @@
         <file alias="twitter">res/icons/TW.png</file>
         <file alias="face">res/icons/face.png</file>
         <file alias="mark">res/icons/mark.png</file>
-        <file alias="btc">res/icons/btc.png</file>
         <file alias="mn">res/icons/mn.png</file>
         <file alias="names">res/icons/names.png</file>
         <file alias="denominate">res/icons/multi.png</file>
