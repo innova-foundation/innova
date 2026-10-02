@@ -36,7 +36,7 @@ IPFS API, or Hyperfile refuses to run.
 ### 1. Install IPFS
 
 ```bash
-wget https://dist.ipfs.tech/kubo/v0.24.0/kubo_v0.24.0_linux-amd64.tar.gz
+wget https://github.com/ipfs/kubo/releases/download/v0.24.0/kubo_v0.24.0_linux-amd64.tar.gz
 tar xvfz kubo_v0.24.0_linux-amd64.tar.gz
 cd kubo && sudo bash install.sh
 ipfs init
