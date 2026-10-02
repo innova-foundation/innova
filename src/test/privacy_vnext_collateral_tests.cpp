@@ -944,7 +944,7 @@ BOOST_AUTO_TEST_CASE(a_spend_deregisters_and_a_reorg_restores)
                                                    fLocalFailure));
 
     // Replayed the other way round, the spend lands first and the attestation is then
-    // simply invalid, so both orders end with the node not registered.
+    // invalid, so both orders end with the node not registered.
     BOOST_REQUIRE(DisconnectPrivacyVNextAttestations(txdb, attestation, effects,
                                                      error));
     BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(watched, spent));

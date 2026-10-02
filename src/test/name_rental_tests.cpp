@@ -445,7 +445,7 @@ BOOST_AUTO_TEST_CASE(blocks_and_seconds_round_trip_across_the_gate)
     }
 }
 
-// Wall-clock length must not depend on which side of the gate you buy from.
+// Wall-clock length must not depend on which side of the gate the purchase falls on.
 BOOST_AUTO_TEST_CASE(term_length_is_spacing_independent)
 {
     CNetworkOverride mainnet(false, false);
@@ -662,7 +662,7 @@ BOOST_AUTO_TEST_CASE(undecodable_name_tx_survives_a_reorg)
     BOOST_CHECK(prepared.vEffects.empty());
 }
 
-// R-IDNS-001: the reset driven through NameActive against a record read from the name DB.
+// The reset driven through NameActive against a record read from the name DB.
 // Every arm holds the term far past the reset, so an inactive name can only be the reset.
 BOOST_AUTO_TEST_CASE(name_active_expires_only_registrations_under_the_reset)
 {
@@ -705,7 +705,7 @@ BOOST_AUTO_TEST_CASE(name_active_expires_only_registrations_under_the_reset)
     }
 }
 
-// R-IDNS-002: a name_new over a name registered under the reset must connect. The arms
+// A name_new over a name registered under the reset must connect. The arms
 // differ in exactly one input; the accepted arm is the control for the refused ones.
 BOOST_AUTO_TEST_CASE(name_new_over_a_pre_reset_registration_connects)
 {

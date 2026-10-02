@@ -841,7 +841,7 @@ inline int GetForkHeightTallyGovernance()
 // M-of-N cold-staking gates, off the public ladder: they return the sentinel off regtest
 // so the guarded paths fail closed.
 
-// B2-e: half-aggregated Schnorr M-of-N shielded cold staking (public-signer tier).
+// Half-aggregated Schnorr M-of-N shielded cold staking (public-signer tier).
 inline int GetForkHeightNullStakeDelegSet()
 {
     extern bool fRegTest;
@@ -850,7 +850,7 @@ inline int GetForkHeightNullStakeDelegSet()
 }
 #define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
 
-// B2-e Phase 3c.4: owner-override reclaim of an idle M-of-N cold-stake note.
+// Owner-override reclaim of an idle M-of-N cold-stake note.
 inline int GetForkHeightNullStakeReclaim()
 {
     extern bool fRegTest;
@@ -859,7 +859,7 @@ inline int GetForkHeightNullStakeReclaim()
 }
 #define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
 
-// B2-c: ZK-hidden-signer M-of-N tier (NULLSTAKE_AUTHMODE_B2C_HIDDEN). Must be
+// ZK-hidden-signer M-of-N tier (NULLSTAKE_AUTHMODE_B2C_HIDDEN). Must be
 // >= FORK_HEIGHT_NULLSTAKE_DELEGSET. Gated at the consensus call sites, not the verifier.
 inline int GetForkHeightNullStakeB2C()
 {
@@ -869,7 +869,7 @@ inline int GetForkHeightNullStakeB2C()
 }
 #define FORK_HEIGHT_NULLSTAKE_B2C (GetForkHeightNullStakeB2C())
 
-// B2-e: blocks a spent cv3 leaf must sit un-restaked before an owner reclaim. Must exceed
+// Blocks a spent cv3 leaf must sit un-restaked before an owner reclaim. Must exceed
 // the realistic re-stake interval and be >> MIN_SHIELDED_SPEND_DEPTH. Only regtest reaches it.
 inline int GetReclaimTimelock()
 {
@@ -1234,7 +1234,7 @@ bool LoadExternalBlockFile(FILE* fileIn);
 // decides DAG merging; nothing is persisted.
 static const int REORG_LATCH_ANCHOR_LAG_EPOCHS = 3;
 
-// Verdict of the reorg finality guard (R-FIN-001). No verdict is persisted: a refusal
+// Verdict of the reorg finality guard. No verdict is persisted: a refusal
 // is re-evaluated against the tip in force whenever a switch is next considered.
 enum ReorgFinalityVerdict
 {
@@ -1708,7 +1708,7 @@ public:
     // NullStake V3 coinstake — only for SHIELDED_TX_VERSION_NULLSTAKE_COLD
     CNullStakeKernelProofV3 nullstakeProofV3;
 
-    // B2-e Phase 3c.4 owner reclaim — only for SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
+    // Owner reclaim — only for SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
     CNullStakeReclaimAuth reclaimAuth;
 
     // Denial-of-service detection:
@@ -1803,7 +1803,7 @@ public:
                         nType, nVersion, ser_action);
                 }
             }
-            // B2-e M-of-N mint output extension (version-gated, like the DSP fields): a per-output
+            // M-of-N mint output extension (version-gated, like the DSP fields): a per-output
             // type marker; marked outputs additionally carry the fresh value commitment Vv and the
             // 97-byte Okamoto (G,J) link. Existing shielded versions are byte-for-byte unchanged.
             if (this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
@@ -1837,7 +1837,7 @@ public:
             {
                 READWRITE(nullstakeProofV3);
             }
-            // B2-e Phase 3c.4 owner reclaim authorization (version 2007)
+            // Owner reclaim authorization (version 2007)
             if (this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
             {
                 READWRITE(reclaimAuth);
@@ -1928,7 +1928,7 @@ public:
                     ss << vShieldedOutput[i].vchPlaintextBlind;
                     ss << vShieldedOutput[i].vchRecipientScript;
                 }
-                // B2-e M-of-N mint fields committed to the binding-sig hash (INV-4): without this an
+                // M-of-N mint fields committed to the binding-sig hash: without this an
                 // in-flight adversary could re-randomize cv3/Vv/link and permanently brick the note.
                 if (nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
                 {
@@ -1955,7 +1955,7 @@ public:
             // NullStake V3 coinstake proof committed to binding sig hash
             if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
                 ss << nullstakeProofV3;
-            // B2-e Phase 3c.4: the reclaim authorization (set + M + owner + delegationHash) is committed
+            // The reclaim authorization (set + M + owner + delegationHash) is committed
             // here so the owner spend-auth signature (rk == vchPkOwner) binds the revealed set/owner and
             // cannot be re-targeted; vchRk / vchSpendAuthSig themselves are deliberately NOT in the sighash.
             if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
@@ -2043,7 +2043,7 @@ public:
                 privacyVNext.IsPresent());
     }
 
-    // B2-e Phase 3c.4: an owner-override reclaim of an idle M-of-N cold-stake note. NOT a coinstake
+    // An owner-override reclaim of an idle M-of-N cold-stake note. NOT a coinstake
     // (deliberately excluded from IsCoinStake), so fValidatedCoinstake is always false for it.
     bool IsMofNReclaim() const
     {

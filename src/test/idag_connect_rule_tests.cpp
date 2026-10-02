@@ -286,7 +286,7 @@ const char* DAG005_CONSERVE  = "ConnectBlock() : block mints value";
 
 } // namespace
 
-// R-DAG-005: block-level value conservation. The allowance check refuses an
+// Block-level value conservation. The allowance check refuses an
 // over-paying block first, at DoS 50 rather than 100.
 BOOST_AUTO_TEST_CASE(block_value_conservation_stands_behind_the_coinbase_allowance)
 {
@@ -355,7 +355,7 @@ BOOST_AUTO_TEST_CASE(block_value_conservation_stands_behind_the_coinbase_allowan
     BOOST_CHECK_EQUAL(gross.block.nDoS, 50);
 }
 
-// R-DAG-009: below the DAG fork a tagged OP_RETURN is plain data; at or above it a PoW
+// Below the DAG fork a tagged OP_RETURN is plain data; at or above it a PoW
 // block validates the carrier and a PoS block is refused.
 
 namespace {
@@ -623,7 +623,7 @@ BOOST_AUTO_TEST_CASE(finality_carriers_are_refused_outside_a_post_dag_proof_of_w
                    nPostForkHeight, nPreForkHeight);
 }
 
-// R-DAG-010: a tally certificate must target a post-DAG proof-of-work epoch block;
+// A tally certificate must target a post-DAG proof-of-work epoch block;
 // each arm changes one property of the index it resolves to.
 
 namespace {
@@ -788,7 +788,7 @@ BOOST_AUTO_TEST_CASE(a_tally_certificate_must_target_a_post_dag_proof_of_work_ep
     }
 }
 
-// R-DAG-011: a name transaction the DAG ordering skips invalidates the block, since the
+// A name transaction the DAG ordering skips invalidates the block, since the
 // name index is keyed by operation and would depend on sibling arrival order.
 
 namespace {
@@ -982,7 +982,7 @@ BOOST_AUTO_TEST_CASE(a_dag_skipped_name_transaction_invalidates_the_block)
     }
 }
 
-// R-BA-007: every retained schema-V3 vertex commits a non-empty bounded parent list
+// Every retained schema-V3 vertex commits a non-empty bounded parent list
 // headed by its own predecessor, else the load fails and asks for a reindex.
 
 namespace {

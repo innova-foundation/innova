@@ -23,7 +23,7 @@ static const size_t MAX_BULLETPROOF_PROOF_SIZE = 1024;
 static const size_t BINDING_SIGNATURE_SIZE = 65;
 static const size_t BLINDING_FACTOR_SIZE = 32;
 
-// B2-e: consensus DoS bounds for the half-aggregated M-of-N staking authorization.
+// Consensus DoS bounds for the half-aggregated M-of-N staking authorization.
 // The staker set and the signer subset are committee-sized; these caps are enforced at
 // the earliest validation point (right after deserialize) BEFORE any O(N^2) loop or EC op.
 static const unsigned int MAX_NULLSTAKE_MOFN_MEMBERS = 32;  // upper bound on N (set size)
@@ -42,7 +42,7 @@ public:
 
     static const std::vector<unsigned char>& GetGeneratorH();
 
-    // B2-e: independent generator J for the M-of-N delegation-binding commitment
+    // Independent generator J for the M-of-N delegation-binding commitment
     // (value*H + blind*G + delegationHash*J). Nothing-up-my-sleeve, distinct domain.
     static const std::vector<unsigned char>& GetGeneratorJ();
 
@@ -264,7 +264,7 @@ bool AssembleBindingSignature(const std::vector<unsigned char>& vchAggNonce,
                                CBindingSignature& sigOut);
 
 
-// --- B2-e: half-aggregated Schnorr M-of-N staking authorization (public signers) ---
+// --- Half-aggregated Schnorr M-of-N staking authorization (public signers) ---
 // Each of M signers independently signs the stake spend digest with its own key
 // (no ceremony, no aggregate key). The s-scalars are summed into one s_agg while the
 // M R-points are kept; verification is a single relation
@@ -295,7 +295,7 @@ bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >&
                                  const uint256& sighash,
                                  std::string& strError);
 
-// B2-e: delegation-binding commitment  C = value*H + blind*G + delegationHash*J  (J independent
+// Delegation-binding commitment  C = value*H + blind*G + delegationHash*J  (J independent
 // of G and H). Binds the staked value, its blinding, and the public delegation-set commitment
 // into one curve point, so the FCMP membership proof ties delegationHash to the note while the
 // value stays hidden. Reduces to the plain value commitment when delegationHash == 0.
@@ -310,7 +310,7 @@ bool VerifyNullStakeMofNCommitment(const CPedersenCommitment& commit,
                                    const std::vector<unsigned char>& vchBlind,
                                    const uint256& delegationHash);
 
-// B2-e: recover the plain value commitment cv_plain = cv3 - delegationHash*J from the
+// Recover the plain value commitment cv_plain = cv3 - delegationHash*J from the
 // 3-generator leaf. Public derivation (delegationHash + J are public); the existing
 // 2-generator range/kernel/linking/nullifier checks run on cv_plain, while the FCMP
 // membership proof runs on cv3. A wrong delegationHash yields a cv_plain that the range
@@ -326,7 +326,7 @@ bool NullStakeMofNReconstructLeaf(const CPedersenCommitment& cvPlain,
                                   const uint256& delegationHash,
                                   CPedersenCommitment& cv3Out);
 
-// B2-e MINT LINK: a 2-generator Okamoto representation proof (R || s_a || s_b = 97 bytes) that
+// MINT LINK: a 2-generator Okamoto representation proof (R || s_a || s_b = 97 bytes) that
 // (cv3 - Vv) lies in <G, J>, proving cv3 (the 3-generator leaf) and Vv (a fresh 2-generator value
 // commitment) carry the SAME value while hiding the blind difference and delegationHash. Lets a
 // standard 2-generator range proof over Vv bind the value of cv3 without revealing the delegation

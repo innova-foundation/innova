@@ -844,7 +844,7 @@ public:
     std::vector<uint256> vTallyShareHashes;
     std::vector<unsigned char> vchAggregateThresholdProof;
     std::vector<unsigned char> vchRewardBudgetProof;
-    // nVersion 3 (D2): committee signer-set. >= M distinct, strictly ascending
+    // nVersion 3: committee signer-set. >= M distinct, strictly ascending
     // indexes into the canonical committee for nEpoch, with parallel detached
     // signatures over GetSignatureDigest(). Enforced in CheckTallyCertificate
     // from FORK_HEIGHT_TALLY_GOVERNANCE. A v4 certificate carries none.

@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// Settlement payout clamp (R-RSV-004); the headroom is read from the block's parent.
+// Settlement payout clamp; the headroom is read from the block's parent.
 
 #include <boost/test/unit_test.hpp>
 

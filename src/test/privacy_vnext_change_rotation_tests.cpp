@@ -693,7 +693,7 @@ BOOST_AUTO_TEST_CASE(a_rotated_change_note_reopens_under_the_payload_scan_list)
 
     // The positive control first, and the backward-compatibility case in one: change
     // paid at the pre-rotation index must still open under the base list, or every
-    // wallet holding change from before this change loses it.
+    // wallet holding change from before the rotation loses it.
     PrivacyVNextDerivedKeys legacyChange;
     std::vector<unsigned char> legacyPayload;
     BOOST_REQUIRE_MESSAGE(

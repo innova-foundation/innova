@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// R-FIN-001, the reorg finality guard. Invariant: no honest node grades PERMANENT a branch
+// The reorg finality guard. Invariant: no honest node grades PERMANENT a branch
 // another follows; the tolerated tip skew is exactly REORG_LATCH_ANCHOR_LAG_EPOCHS-1 epochs.
 
 #include <boost/test/unit_test.hpp>
@@ -332,7 +332,7 @@ BOOST_AUTO_TEST_CASE(max_skew_pair_anchors_touch_exactly)
     BOOST_CHECK_LT(nCurPast, nLatchLead);
 }
 
-// R-FIN-001, the property under test. One block of honest tip skew across an epoch
+// The property under test. One block of honest tip skew across an epoch
 // boundary must never produce a permanent grade on one node and an acceptance on the
 // other.
 BOOST_AUTO_TEST_CASE(no_permanent_condemnation_of_a_branch_the_peer_follows)

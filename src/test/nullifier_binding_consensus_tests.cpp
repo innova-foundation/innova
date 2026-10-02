@@ -1,4 +1,4 @@
-// R-NB-001: the nullifier-binding checks are unreachable because the FCMP-era rule
+// The nullifier-binding checks are unreachable because the FCMP-era rule
 // refuses first. Pins that dominance; if it fails, restore the binding cases.
 
 #include <boost/test/unit_test.hpp>

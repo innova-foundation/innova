@@ -10874,7 +10874,7 @@ bool CWallet::IsShieldedOutputMine(
             uint256 expectedCmu = noteOut.GetCommitment();
             if (expectedCmu == output.cmu)
                 return true;
-            // B2-e Phase 3c.5: an M-of-N cold-stake note's leaf is cv3 = value*H + blind*G + D*J, so its
+            // An M-of-N cold-stake note's leaf is cv3 = value*H + blind*G + D*J, so its
             // cmu is SHA256d(cv3), NOT SHA256d(cv_plain) (= the decrypted note's GetCommitment). If this
             // output is marked M-of-N, match it against the wallet's known delegations by reconstructing
             // cv3 from the decrypted (value, blind) and each candidate D.
@@ -14607,7 +14607,7 @@ unsigned int CWallet::ReconcilePrivacyVNextNotes()
             std::map<uint256, CBlockIndex*>::const_iterator mi =
                 mapBlockIndex.find(hashBlock);
             // Indexed and off the chain this wallet follows is the one case that is
-            // positive evidence. Not indexed at all is not: the index may simply not
+            // positive evidence. Not indexed at all is not: the index may not
             // reach back this far.
             if (mi != mapBlockIndex.end() && mi->second != NULL &&
                 !mi->second->IsInMainChain())

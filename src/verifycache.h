@@ -31,7 +31,7 @@
 enum VerifyCacheDomain
 {
     VERIFYCACHE_NULLSTAKE_V2   = 1,
-    VERIFYCACHE_NULLSTAKE_V3   = 2,   // also carries B2-c hidden proofs: keyed on the FULL serialized
+    VERIFYCACHE_NULLSTAKE_V3   = 2,   // also carries hidden-signer proofs: keyed on the FULL serialized
                                       // CNullStakeKernelProofV3 bytes (incl. the entire hiddenAuth blob),
                                       // never on a recomputed statement hash -- a statement-keyed cache
                                       // would false-accept a distinct invalid proof over the same statement.

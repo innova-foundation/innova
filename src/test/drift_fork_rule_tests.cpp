@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// Rules crossing FORK_HEIGHT_TIGHTER_DRIFT (R-DRIFT-001, -003..-006). Mainnet/testnet
+// Rules crossing FORK_HEIGHT_TIGHTER_DRIFT. Mainnet/testnet
 // values are asserted under a network guard.
 
 #include <boost/test/unit_test.hpp>
@@ -323,7 +323,7 @@ int FindSubsidyStepAtOrAbove(int nFrom, int nLimit)
 
 } // namespace
 
-// R-DRIFT-003: the PoW allowance uses the block's own height. Tested at a height where
+// The PoW allowance uses the block's own height. Tested at a height where
 // the neighbouring height's subsidy differs.
 BOOST_AUTO_TEST_CASE(the_coinbase_allowance_follows_the_block_own_height)
 {
@@ -381,7 +381,7 @@ BOOST_AUTO_TEST_CASE(the_coinbase_allowance_follows_the_block_own_height)
                         << strOverpaidLog);
 }
 
-// R-DRIFT-004: from the gate, scripts verify under mandatory flags plus STRICTENC and
+// From the gate, scripts verify under mandatory flags plus STRICTENC and
 // CHECKLOCKTIMEVERIFY. An undefined sighash type is refused by STRICTENC alone.
 BOOST_AUTO_TEST_CASE(strict_script_flags_apply_from_the_gate)
 {
@@ -498,7 +498,7 @@ BOOST_AUTO_TEST_CASE(strict_script_flags_apply_from_the_gate)
                         << vLogs[3]);
 }
 
-// R-DRIFT-005. Each input's contribution to coin age is capped at one year, so
+// Each input's contribution to coin age is capped at one year, so
 // an input older than that scores exactly one year and not its true age.
 BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
 {
@@ -577,7 +577,7 @@ BOOST_AUTO_TEST_CASE(coin_age_is_capped_at_one_year)
     }
 }
 
-// R-DRIFT-006. A stake kernel is refused when the staked output is more than
+// A stake kernel is refused when the staked output is more than
 // ninety days older than the transaction time. Both arms run the same kernel
 // on the same block; only nTimeTx moves, by one second across the boundary.
 BOOST_AUTO_TEST_CASE(a_stake_kernel_older_than_ninety_days_is_refused)
@@ -691,7 +691,7 @@ unsigned int BlockTimeOf(const CTransaction& txPrev)
 
 } // namespace
 
-// R-KERN-003b. CheckProofOfStake hands the kernel the carrying block's height,
+// CheckProofOfStake hands the kernel the carrying block's height,
 // so the ninety-day maximum is decided by that height and not by the tip. The
 // arms put the two on opposite sides of the mainnet gate.
 BOOST_AUTO_TEST_CASE(check_proof_of_stake_reads_the_maximum_age_at_the_block_height)
@@ -740,7 +740,7 @@ BOOST_AUTO_TEST_CASE(check_proof_of_stake_reads_the_maximum_age_at_the_block_hei
                         "tip below the gate; log: " << vLogs[1]);
 }
 
-// R-KERN-004b: coin age is capped at the block's own height, not the tip's. Each arm
+// Coin age is capped at the block's own height, not the tip's. Each arm
 // overpays by one satoshi so the refusal prints the reward it was scored against.
 BOOST_AUTO_TEST_CASE(connect_block_scores_coin_age_at_the_block_height)
 {
@@ -844,7 +844,7 @@ BOOST_AUTO_TEST_CASE(connect_block_scores_coin_age_at_the_block_height)
     }
 }
 
-// R-DRIFT-001 on all three networks, the only place the ten-minute branch is reachable.
+// The drift bound on all three networks, the only place the ten-minute branch is reachable.
 BOOST_AUTO_TEST_CASE(the_drift_window_is_two_minutes_from_the_gate)
 {
     const int64_t nRef = 1700000000;
@@ -878,7 +878,7 @@ BOOST_AUTO_TEST_CASE(the_drift_window_is_two_minutes_from_the_gate)
     BOOST_CHECK_EQUAL(FutureDrift(nRef), nRef + 10 * 60);
 }
 
-// R-DRIFT-001 on the block path: a timestamp more than two minutes before the parent's
+// The drift bound on the block path: a timestamp more than two minutes before the parent's
 // is refused, one inside is accepted. The clock is advanced first so median-time-past
 // does not decide the arms.
 BOOST_AUTO_TEST_CASE(a_block_more_than_two_minutes_before_its_parent_is_refused)

@@ -296,7 +296,7 @@ else
     fail "z_getnewaddress failed"
 fi
 
-# Legacy shielded versions are sealed off regtest (R-SEAL-001), so only shield
+# Legacy shielded versions are sealed off regtest, so only shield
 # confirmation and the pending-note refusal are checked. The v5 private path is
 # covered by the iv5_*_regtest_test.sh suites.
 SHIELD_TX=$(rpc1 z_shield "*" 100.0 "$Z_ADDR" 2>/dev/null)

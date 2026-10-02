@@ -2099,7 +2099,7 @@ BOOST_AUTO_TEST_CASE(harness_blocks_carry_and_reread_their_transactions)
 }
 
 
-// R-CFC-002. A V2 build whose anchor does not reach the epoch's final height must
+// A V2 build whose anchor does not reach the epoch's final height must
 // fail; the FindBlockByHeight fallback is gated out, and a zero hashBoundaryBlock
 // would enter a consensus digest.
 BOOST_AUTO_TEST_CASE(a_v2_epoch_build_without_a_canonical_anchor_fails_closed)
@@ -2167,7 +2167,7 @@ BOOST_AUTO_TEST_CASE(a_v2_epoch_build_without_a_canonical_anchor_fails_closed)
 }
 
 
-// R-ERF-001. From the epoch-root height an epoch accumulates its own outputs even
+// From the epoch-root height an epoch accumulates its own outputs even
 // with no prior curve tree, so pruned and unpruned nodes commit the same root.
 BOOST_AUTO_TEST_CASE(an_epoch_accumulates_its_outputs_with_no_prior_curve_tree)
 {

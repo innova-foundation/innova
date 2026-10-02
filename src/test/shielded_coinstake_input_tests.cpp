@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// R-SH-005: a plain coinstake may not spend a shielded tx's transparent output (NullStake
+// A plain coinstake may not spend a shielded tx's transparent output (NullStake
 // generations exempt). Two blocks differ only in that input; matched on the logged reason.
 
 #include <boost/test/unit_test.hpp>

@@ -54,7 +54,7 @@ public:
         READWRITE(this->nVersion);
         nVersion = this->nVersion;
         READWRITE(nCreateTime);
-        // Version 1 records predate the path and simply do not carry one; reading them
+        // Version 1 records predate the path and do not carry one; reading them
         // must not consume bytes that are not there.
         if (this->nVersion >= VERSION_WITH_HDPATH)
             READWRITE(strHDKeyPath);
@@ -698,7 +698,7 @@ public:
         return Erase(std::make_pair(std::string("csdeleg"), hashOwner));
     }
 
-    // B2-e M-of-N cold-stake delegation persistence (keyed by delegationHash D).
+    // M-of-N cold-stake delegation persistence (keyed by delegationHash D).
     bool WriteMofNDelegation(const uint256& delegationHash, const CMofNDelegation& deleg)
     {
         nWalletDBUpdated++;
@@ -711,7 +711,7 @@ public:
         return Erase(std::make_pair(std::string("mofndeleg"), delegationHash));
     }
 
-    // B2-e M-of-N staker member secret-key persistence (keyed by 33-byte half-agg pubkey).
+    // M-of-N staker member secret-key persistence (keyed by 33-byte half-agg pubkey).
     bool WriteMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret)
     {
         nWalletDBUpdated++;

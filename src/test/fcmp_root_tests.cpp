@@ -82,7 +82,7 @@ CTransaction BuildBindingHashCoverageTx(int nVersion)
     return tx;
 }
 
-// B2-e Phase 3c: a SHIELDED_TX_VERSION_MOFN_MINT tx with one M-of-N mint output (marker 1: cv3 leaf
+// A SHIELDED_TX_VERSION_MOFN_MINT tx with one M-of-N mint output (marker 1: cv3 leaf
 // + fresh value commitment Vv + 97-byte Okamoto link, hidden-amount) and one ordinary change output
 // (marker 0, carries no M-of-N fields).
 CTransaction BuildMofNMintTx()
@@ -117,7 +117,7 @@ CTransaction BuildMofNMintTx()
     return tx;
 }
 
-// B2-e Phase 3c.4: a SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM tx with an owner reclaim-auth struct.
+// A SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM tx with an owner reclaim-auth struct.
 CTransaction BuildReclaimTx()
 {
     CTransaction tx;
@@ -294,7 +294,7 @@ BOOST_AUTO_TEST_CASE(binding_sighash_covers_dsp_fields_for_versions_2001_to_2005
     }
 }
 
-// B2-e Phase 3c: the version-gated M-of-N mint output fields must round-trip through serialization,
+// The version-gated M-of-N mint output fields must round-trip through serialization,
 // and a marker-0 output in the same tx must carry none of them.
 BOOST_AUTO_TEST_CASE(mofn_mint_output_serialization_roundtrip)
 {
@@ -326,7 +326,7 @@ BOOST_AUTO_TEST_CASE(mofn_mint_output_serialization_roundtrip)
     BOOST_CHECK(tx.GetHash() == tx2.GetHash());
 }
 
-// INV-4: the binding-sig hash MUST commit the M-of-N marker, Vv, and the link, or an in-flight
+// The binding-sig hash MUST commit the M-of-N marker, Vv, and the link, or an in-flight
 // adversary could re-randomize them and permanently brick the minted note.
 BOOST_AUTO_TEST_CASE(binding_sighash_covers_mofn_mint_fields)
 {
@@ -346,7 +346,7 @@ BOOST_AUTO_TEST_CASE(binding_sighash_covers_mofn_mint_fields)
     BOOST_CHECK(hashBase != mLink.GetBindingSigHash());
 }
 
-// B2-e Phase 3c.4: the version-gated reclaim-auth fields must round-trip through serialization.
+// The version-gated reclaim-auth fields must round-trip through serialization.
 BOOST_AUTO_TEST_CASE(reclaim_auth_serialization_roundtrip)
 {
     CTransaction tx = BuildReclaimTx();

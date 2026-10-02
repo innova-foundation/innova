@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// R-SH-006: DisconnectBlock undoes everything ConnectBlock wrote for a block with
+// DisconnectBlock undoes everything ConnectBlock wrote for a block with
 // shielded outputs, for both the legacy and the V3 index.
 
 #include <boost/test/unit_test.hpp>

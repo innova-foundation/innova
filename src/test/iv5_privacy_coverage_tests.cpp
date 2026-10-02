@@ -801,7 +801,7 @@ CTransaction MakeMofNMintTx()
 BOOST_AUTO_TEST_SUITE(iv5_privacy_coverage_tests)
 
 // ---------------------------------------------------------------------------
-// R-SEAL-002: an IV5-envelope tx is invalid unless vNext consensus is active.
+// An IV5-envelope tx is invalid unless vNext consensus is active.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(an_iv5_envelope_validates_on_every_network)
@@ -897,7 +897,7 @@ BOOST_AUTO_TEST_CASE(the_iv5_seal_is_mirrored_on_the_block_connection_path)
 }
 
 // ---------------------------------------------------------------------------
-// R-SEAL-003: private votes refused everywhere; private-weight certs off regtest and above A.
+// Private votes refused everywhere; private-weight certs off regtest and above A.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
@@ -1033,7 +1033,7 @@ BOOST_AUTO_TEST_CASE(legacy_private_finality_objects_are_sealed_off_regtest)
 }
 
 // ---------------------------------------------------------------------------
-// R-DSP-001: DSP tx invalid before the DSP height; its privacy mode may not exceed the mask.
+// DSP tx invalid before the DSP height; its privacy mode may not exceed the mask.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_dsp_transaction_is_bounded_by_its_height_and_its_mode)
@@ -1080,7 +1080,7 @@ BOOST_AUTO_TEST_CASE(a_dsp_transaction_is_bounded_by_its_height_and_its_mode)
 }
 
 // ---------------------------------------------------------------------------
-// R-CJ-001: a NullSend session at or above the Chaumian height generates a session RSA key.
+// A NullSend session at or above the Chaumian height generates a session RSA key.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_nullsend_session_is_chaumian_from_its_fork_height)
@@ -1118,7 +1118,7 @@ BOOST_AUTO_TEST_CASE(a_nullsend_session_is_chaumian_from_its_fork_height)
 
 
 // ---------------------------------------------------------------------------
-// R-DELEG-001 mint leg: an M-of-N mint output is invalid below the delegation-set height.
+// Mint leg: an M-of-N mint output is invalid below the delegation-set height.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(an_mofn_mint_output_is_refused_below_the_delegation_set_fork)
@@ -1164,7 +1164,7 @@ BOOST_AUTO_TEST_CASE(an_mofn_mint_output_is_refused_below_the_delegation_set_for
 }
 
 // ---------------------------------------------------------------------------
-// R-ANON-001: a ring-signature tx is invalid in any connected block (ConnectInputs, ConnectBlock).
+// A ring-signature tx is invalid in any connected block (ConnectInputs, ConnectBlock).
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_ring_signature_transaction_is_refused_at_every_height)
@@ -1330,7 +1330,7 @@ BOOST_AUTO_TEST_CASE(a_block_carrying_a_ring_signature_transaction_does_not_conn
 }
 
 // ---------------------------------------------------------------------------
-// R-SH-002: the activation block seeds the genesis commitment set exactly once.
+// The activation block seeds the genesis commitment set exactly once.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(the_activation_block_seeds_the_genesis_commitment_set_once)
@@ -1377,7 +1377,7 @@ BOOST_AUTO_TEST_CASE(the_activation_block_seeds_the_genesis_commitment_set_once)
 }
 
 // ---------------------------------------------------------------------------
-// R-SH-001: every block from the shielded fork persists a tree snapshot and pool value.
+// Every block from the shielded fork persists a tree snapshot and pool value.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_block_with_no_shielded_transaction_still_persists_the_tree)
@@ -1423,7 +1423,7 @@ BOOST_AUTO_TEST_CASE(a_block_with_no_shielded_transaction_still_persists_the_tre
 }
 
 // ---------------------------------------------------------------------------
-// R-NS-004: a legacy NullStake coinstake block does not connect; reason derived from height.
+// A legacy NullStake coinstake block does not connect; reason derived from height.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_block_whose_coinstake_is_a_nullstake_encoding_does_not_connect)
@@ -1526,7 +1526,7 @@ BOOST_AUTO_TEST_CASE(the_nullstake_coinstake_branches_have_no_reachable_shape)
 }
 
 // ---------------------------------------------------------------------------
-// R-B2C-001 (retired): the DAG-gate PoS refusal and CheckVote answer first at each limb.
+// Retired hidden-signer bound: the DAG-gate PoS refusal and CheckVote answer first at each limb.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_b2c_hidden_coinstake_is_refused_before_its_own_bound)
@@ -1664,7 +1664,7 @@ BOOST_AUTO_TEST_CASE(a_b2c_hidden_private_vote_is_refused_before_its_own_bound)
 }
 
 // ---------------------------------------------------------------------------
-// R-FCMP-001: curve-tree snapshots from FCMP activation until the epoch-root height only.
+// Curve-tree snapshots from FCMP activation until the epoch-root height only.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(the_mutable_curve_tree_window_is_where_the_ladder_puts_it)
@@ -1712,7 +1712,7 @@ BOOST_AUTO_TEST_CASE(the_mutable_curve_tree_window_is_where_the_ladder_puts_it)
 
 
 // ---------------------------------------------------------------------------
-// R-SH-004: a coinstake-shaped tx with legacy shielded version outside 2003-2005 is invalid.
+// A coinstake-shaped tx with legacy shielded version outside 2003-2005 is invalid.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_shielded_coinstake_is_refused_outside_the_nullstake_versions)
@@ -1776,7 +1776,7 @@ BOOST_AUTO_TEST_CASE(a_shielded_coinstake_is_refused_outside_the_nullstake_versi
 }
 
 // ---------------------------------------------------------------------------
-// R-SEAL-004: a block with an FCMP-era shielded spend does not connect; one field per arm.
+// A block with an FCMP-era shielded spend does not connect; one field per arm.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_block_carrying_an_fcmp_era_shielded_spend_does_not_connect)
@@ -1886,7 +1886,7 @@ BOOST_AUTO_TEST_CASE(a_block_carrying_an_fcmp_era_shielded_spend_does_not_connec
 
 
 // ---------------------------------------------------------------------------
-// R-MASK-014: a coinbase IV5 payload spends nothing, charges no fee, balance = fee sum.
+// A coinbase IV5 payload spends nothing, charges no fee, balance = fee sum.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(a_coinbase_iv5_note_is_worth_exactly_the_block_iv5_fee_sum)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Periodic collateralnode-list refresh on a single-peer node (T-CN-2HOP): node0 announces,
+# Periodic collateralnode-list refresh on a single-peer node: node0 announces,
 # node1 relays, leaf node2 must list 127.0.0.1:14539 via its own periodic iseg refresh.
 # The funded chain is cached under CN2HOP_FIXTURE; CN2HOP_USE_FIXTURE=0 always rebuilds.
 set -u

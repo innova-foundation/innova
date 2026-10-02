@@ -225,7 +225,7 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
                                       const std::vector<unsigned char>& vchPkOwner,
                                       uint256& delegationHashOut);
 
-// B2-e: delegation commitment for an M-of-N staker set (public-signer tier). Binds the
+// Delegation commitment for an M-of-N staker set (public-signer tier). Binds the
 // sorted, de-duplicated set of N staker pubkeys, the threshold M, and the owner key into
 // delegationHash. Value-decoupled (per-set authority) so the verifier can recompute it
 // from public data; order-independent and rejects duplicate members. Distinct from the
@@ -235,7 +235,7 @@ bool ComputeNullStakeV3DelegationSetHash(std::vector<std::vector<unsigned char> 
                                          const std::vector<unsigned char>& vchPkOwner,
                                          uint256& delegationHashOut);
 
-// B2-e: verify M-of-N authorization of a stake digest by the set committed in delegationHash.
+// Verify M-of-N authorization of a stake digest by the set committed in delegationHash.
 // Checks set<->hash consistency, distinct M-of-N membership, and the half-aggregated signature.
 // Does NOT bind delegationHash to the staked note (the shielded spend path does that); pass a
 // delegationHash taken from the committed note.
@@ -249,7 +249,7 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
                                       const uint256& stakeDigest,
                                       std::string& strError);
 
-// B2-e: deterministic stake-authorization digest signed by the M-of-N set. Binds the
+// Deterministic stake-authorization digest signed by the M-of-N set. Binds the
 // delegation, the stake kernel parameters, and the value commitment (anti cross-stake/note replay).
 uint256 ComputeNullStakeMofNStakeDigest(const uint256& delegationHash,
                                         uint64_t nStakeModifier,

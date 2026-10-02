@@ -860,7 +860,7 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
     return delegationHashOut != uint256(0);
 }
 
-// B2-e: value-decoupled delegation commitment for an M-of-N staker set. This is the
+// Value-decoupled delegation commitment for an M-of-N staker set. This is the
 // anti-theft LINCHPIN (set-substitution resistance): the spend reveals a public set and
 // the verifier recomputes this hash and requires it to equal the note's committed
 // delegationHash. It is recomputed ONLY in plain verifier code (never inside a circuit),
@@ -921,7 +921,7 @@ bool ComputeNullStakeV3DelegationSetHash(std::vector<std::vector<unsigned char> 
     return delegationHashOut != uint256(0);
 }
 
-// B2-e: verify that M-of-N members of the set committed in delegationHash authorized the
+// Verify that M-of-N members of the set committed in delegationHash authorized the
 // stake digest. This is the AUTHORIZATION component only: it proves (set <-> delegationHash)
 // consistency, distinct M-of-N membership, and a valid half-aggregated signature over the
 // stake digest. It does NOT by itself bind delegationHash to the staked note -- that binding

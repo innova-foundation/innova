@@ -332,7 +332,7 @@ public:
     int Port() const { return nBoundPort; }
 
     /** Waits up to nTimeoutMs for one connection. Returns false with no error set when
-     *  the wait simply expired, so a service loop can tell "nobody called" from "the
+     *  the wait expired, so a service loop can tell "nobody called" from "the
      *  listener is broken". */
     bool Accept(CMixStream& streamOut, int nTimeoutMs, std::string* pstrError = NULL);
 

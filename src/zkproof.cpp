@@ -448,7 +448,7 @@ bool NullStakeMofNReconstructLeaf(const CPedersenCommitment& cvPlain,
     return PointToBytes(group, res, cv3Out.vchCommitment, ctx);
 }
 
-// B2-e MINT LINK (INV-2/INV-6/INV-7): a 2-generator Okamoto representation proof that the point
+// MINT LINK: a 2-generator Okamoto representation proof that the point
 // (cv3 - Vv) lies in <G, J>, i.e. cv3 - Vv = a*G + b*J for prover-known (a, b) =
 // (blindCv3 - blindVv, delegationHash). Because G, H, J are independent NUMS generators with no
 // known DL relation, proving the difference has NO H-component proves cv3 and Vv carry the SAME
@@ -2976,7 +2976,7 @@ bool AggregatePartialSigs(const std::vector<std::vector<unsigned char>>& vPartia
     return true;
 }
 
-// --- B2-e: half-aggregated Schnorr M-of-N staking authorization ---
+// --- Half-aggregated Schnorr M-of-N staking authorization ---
 
 // e_j = H("Innova_HalfAggStake_v1" || R_j(33) || pk_j(33) || sighash(32)) mod n
 static bool HalfAggStakeChallenge(const unsigned char* rBuf33,

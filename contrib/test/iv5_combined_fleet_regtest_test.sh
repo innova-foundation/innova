@@ -3113,7 +3113,7 @@ else
 fi
 
 # The clamp has to have actually bitten, or the assertion above is satisfied by a
-# cap that was simply never approached.
+# cap that was never approached.
 CAP_LAST_CB="$(coinbase_value 0 "$(height 0)")"
 if [ -n "$CAP_BASELINE_CB" ] && [ -n "$CAP_LAST_CB" ] && fgt "$CAP_BASELINE_CB" "$CAP_LAST_CB"; then
     success "the producer's claim fell from $CAP_BASELINE_CB to $CAP_LAST_CB: the clamp is what stopped issuance, not the schedule"

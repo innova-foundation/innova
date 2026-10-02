@@ -1289,7 +1289,7 @@ BOOST_AUTO_TEST_CASE(anonymous_preimage_is_wallet_independent_and_bounded)
 }
 
 
-// R-EPV2-003: V2-range epochs are staged in the best-chain batch, never at index insert.
+// V2-range epochs are staged in the best-chain batch, never at index insert.
 // No V2-range epoch exists at shipping values; if V3 moves, add a behavioural test.
 BOOST_AUTO_TEST_CASE(no_epoch_crossing_hands_a_v2_range_epoch_to_the_index_path)
 {

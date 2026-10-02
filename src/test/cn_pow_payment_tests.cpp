@@ -485,7 +485,7 @@ BOOST_AUTO_TEST_CASE(a_payee_this_node_does_not_recognise_is_refused)
                         << (int)refused);
     BOOST_CHECK(!ConnectResultMayPersistVerdict(refused));
 
-    // Nothing about the block changes; this node simply hears about the payee.
+    // Nothing about the block changes; this node only hears about the payee.
     AnnounceCollateralnode(payeeKey, true);
     BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cb.Height(), payeeScript));
     RequirePaymentBranchEntered(cb);
@@ -524,7 +524,7 @@ BOOST_AUTO_TEST_CASE(with_the_era_closed_the_payment_branch_never_runs)
                         "the era is closed, got result " << (int)accepted);
 }
 
-// R-CN-003: only a payment of at least 95% of the expected share counts as a
+// Only a payment of at least 95% of the expected share counts as a
 // collateralnode's last payment.
 BOOST_AUTO_TEST_CASE(a_payment_below_the_expected_share_is_not_a_last_payment)
 {

@@ -4310,7 +4310,7 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
         return FinalityReject(pstrError,
                               "canonical tally certificate has too few voters");
 
-    // v3 (D2) carries a committee signer-set. Structural checks only here;
+    // v3 carries a committee signer-set. Structural checks only here;
     // signature verification against the canonical committee for nEpoch happens
     // in CheckTallyCertificate (it needs chain context). v1/v2 must not carry one.
     if (nVersion >= 3)
@@ -8972,7 +8972,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
             if (!wnote.note.GetPedersenCommitment(stakeCommitment))
                 continue;
 
-            // B2-e: detect whether this note is an M-of-N cold-stake note -- its curve-tree leaf is
+            // Detect whether this note is an M-of-N cold-stake note -- its curve-tree leaf is
             // cv3 = cv_plain + D*J for some delegation D this wallet minted -- and whether this wallet
             // holds >= M of that delegation's staker-set member secret keys (needed to co-produce the
             // half-aggregated vote). membershipLeaf is the REAL leaf (cv3 for M-of-N, cv_plain for the
@@ -9067,7 +9067,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 CNullStakeKernelProofV3 nullStakeProofV3;
                 if (fIsMofN)
                 {
-                    // B2-c hidden-signer tier: opt-in (-b2chidden) once the chain is past the B2C fork.
+                    // Hidden-signer tier: opt-in (-b2chidden) once the chain is past the B2C fork.
                     // mofnSecrets already holds exactly mofnM member secrets (resized above).
                     bool fB2CHidden = GetBoolArg("-b2chidden", false) &&
                                       pEpochBlock->nHeight >= FORK_HEIGHT_NULLSTAKE_B2C;

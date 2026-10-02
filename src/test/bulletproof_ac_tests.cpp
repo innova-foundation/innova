@@ -929,7 +929,7 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
                                               delegationHash, losingProofV3));
 }
 
-// B2-e: M-of-N (half-aggregated Schnorr) cold-stake kernel proof, end-to-end create->verify
+// M-of-N (half-aggregated Schnorr) cold-stake kernel proof, end-to-end create->verify
 // plus adversarial cases (the consensus crypto wiring; FCMP membership is enforced separately
 // in ConnectBlock and binds the 3-generator leaf cv3 to the tree).
 BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
@@ -1063,7 +1063,7 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
     }
 }
 
-// B2-e MINT LINK: the 2-generator Okamoto (G,J) representation proof binding the 3-generator leaf
+// MINT LINK: the 2-generator Okamoto (G,J) representation proof binding the 3-generator leaf
 // cv3 to a fresh 2-generator value commitment Vv. This is the load-bearing mint value-binding (it
 // FAILS OPEN if omitted), so the adversarial cases are the inflation/forgery guards.
 BOOST_AUTO_TEST_CASE(nullstake_mofn_mint_link_create_verify)

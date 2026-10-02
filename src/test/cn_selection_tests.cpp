@@ -240,7 +240,7 @@ BOOST_AUTO_TEST_CASE(the_payee_score_varies_with_the_candidate)
                         << " candidates");
 }
 
-// R-CS-004. From FORK_HEIGHT_COLD_STAKING the payee election compares full 256-bit
+// From FORK_HEIGHT_COLD_STAKING the payee election compares full 256-bit
 // scores; below it, the low 32 bits. The case requires a pair the two widths order
 // differently, then moves only the height.
 BOOST_AUTO_TEST_CASE(the_payee_election_widens_from_the_cold_staking_gate)
@@ -346,7 +346,7 @@ BOOST_AUTO_TEST_CASE(the_payee_election_widens_from_the_cold_staking_gate)
                         "distinguished at all");
 }
 
-// R-CN-001. From FORK_HEIGHT_CN_PAYMENT_VALIDATION a collateralnode must advertise at
+// From FORK_HEIGHT_CN_PAYMENT_VALIDATION a collateralnode must advertise at
 // least FORK_MIN_CN_PROTO_VERSION to be ranked. Control: same nodes before the drop.
 BOOST_AUTO_TEST_CASE(the_ranking_excludes_a_collateralnode_below_the_protocol_floor)
 {
@@ -403,7 +403,7 @@ BOOST_AUTO_TEST_CASE(the_ranking_excludes_a_collateralnode_below_the_protocol_fl
         "a collateralnode below FORK_MIN_CN_PROTO_VERSION entered the ranking");
 }
 
-// R-CN-004. From FORK_HEIGHT_CN_PAYMENT_VALIDATION a collateralnode with more than 100
+// From FORK_HEIGHT_CN_PAYMENT_VALIDATION a collateralnode with more than 100
 // payments is excluded from the average-income mean. Regtest gate is 1: heights 0 and 1
 // give the two answers.
 BOOST_AUTO_TEST_CASE(the_income_average_excludes_an_over_paid_collateralnode)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A heavier private branch below the finality anchor on a regtest fleet (T-H2-4): nodes keep
+# A heavier private branch below the finality anchor on a regtest fleet: nodes keep
 # their tip, index the branch as side blocks, score no peer and do not re-download it; a late
 # syncer killed mid-catch-up and the branch's own miner both converge on the fleet tip.
 set -u

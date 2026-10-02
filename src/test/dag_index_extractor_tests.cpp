@@ -104,7 +104,7 @@ void MineTo(int nTarget)
 
 } // namespace
 
-// R-DK-001. Identifies which arm coloured the block: DAGKnight writes k clamped to
+// Identifies which arm coloured the block: DAGKnight writes k clamped to
 // [DAGKNIGHT_K_FLOOR, DAGKNIGHT_K_CEILING]; GHOSTDAG leaves -1. The read must be passive
 // (GetDAGData), since InferLocalK would compute k on either arm.
 BOOST_AUTO_TEST_CASE(the_dagknight_arm_is_the_one_that_colours_a_post_fork_block)
@@ -162,7 +162,7 @@ BOOST_AUTO_TEST_CASE(a_pushdata4_payload_is_read_by_one_decoder_only)
     BOOST_CHECK(vCanonical == vReal);
 }
 
-// R-BA-011. One reader, and the height picks the decoder.
+// One reader, and the height picks the decoder.
 BOOST_AUTO_TEST_CASE(the_block_height_selects_the_parent_decoder)
 {
     BOOST_REQUIRE(fRegTest);
@@ -228,7 +228,7 @@ BOOST_AUTO_TEST_CASE(the_block_height_selects_the_parent_decoder)
     BOOST_CHECK(vParents.empty());
 }
 
-// R-BA-011, end to end. A block with a decoy commitment ahead of its real one is
+// End to end: a block with a decoy commitment ahead of its real one is
 // accepted and indexed against the canonical parents (checked in the DAG store).
 BOOST_AUTO_TEST_CASE(a_decoy_commitment_never_reaches_the_dag_record)
 {
@@ -303,7 +303,7 @@ BOOST_AUTO_TEST_CASE(a_decoy_commitment_never_reaches_the_dag_record)
     BOOST_CHECK(data.vDAGParents[0] == pindexNew->pprev->GetBlockHash());
 }
 
-// R-BA-012. GetMissingDAGMergeParents (in ProcessBlock) must use the canonical decoder,
+// GetMissingDAGMergeParents (in ProcessBlock) must use the canonical decoder,
 // or a decoy naming an unknown merge parent parks a valid block as a DAG orphan.
 // ProcessBlock returns true when parking, so assert index membership instead.
 BOOST_AUTO_TEST_CASE(a_decoy_merge_parent_never_diverts_the_parent_fetch)

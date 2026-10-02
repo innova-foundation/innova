@@ -184,7 +184,7 @@ CScript RawParentScript(unsigned int nCount)
 
 } // namespace
 
-// R-POEM-001: below POEM the inverse-target work, at or above it the entropy weight (hashProof
+// Below POEM the inverse-target work, at or above it the entropy weight (hashProof
 // for pre-DAG stake, else block hash); a post-DAG stake index contributes nothing.
 BOOST_AUTO_TEST_CASE(post_poem_chain_trust_is_entropy_and_not_inverse_target)
 {
@@ -231,7 +231,7 @@ BOOST_AUTO_TEST_CASE(post_poem_chain_trust_is_entropy_and_not_inverse_target)
     fTestNet = fOldTestNet;
 }
 
-// R-DAG-003. Both decoders refuse more than MAX_DAG_PARENTS parents; in the permissive
+// Both decoders refuse more than MAX_DAG_PARENTS parents; in the permissive
 // decoder the count check is the only enforcement.
 BOOST_AUTO_TEST_CASE(a_parent_count_over_the_bound_is_refused_by_both_decoders)
 {
@@ -287,7 +287,7 @@ BOOST_AUTO_TEST_CASE(the_permissive_decoder_reaches_the_declared_bound)
     }
 }
 
-// R-DAG-008: at or above the DAG height the limit is the adaptive one from the parent,
+// At or above the DAG height the limit is the adaptive one from the parent,
 // flooring at ADAPTIVE_BLOCK_FLOOR, far below ADAPTIVE_BLOCK_CEILING.
 BOOST_AUTO_TEST_CASE(post_dag_block_size_limit_is_the_adaptive_limit)
 {
@@ -321,7 +321,7 @@ BOOST_AUTO_TEST_CASE(post_dag_block_size_limit_is_the_adaptive_limit)
                                "rejected it");
 }
 
-// R-DAG-001. A stake block is invalid from the DAG height up. Its nBits are the
+// A stake block is invalid from the DAG height up. Its nBits are the
 // stake target, so the rule under test is the only thing wrong with it.
 BOOST_AUTO_TEST_CASE(a_post_dag_proof_of_stake_block_is_refused)
 {
@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(a_post_dag_proof_of_stake_block_is_refused)
                             << " instead of being refused for its type");
 }
 
-// R-DAG-002. A post-DAG block must carry a parent commitment, and its first
+// A post-DAG block must carry a parent commitment, and its first
 // entry must be the block's own predecessor.
 BOOST_AUTO_TEST_CASE(a_post_dag_block_commits_its_predecessor_first)
 {
@@ -363,7 +363,7 @@ BOOST_AUTO_TEST_CASE(a_post_dag_block_commits_its_predecessor_first)
                            "its predecessor scored " << wrong.nDoS);
 }
 
-// R-DAG-004: merge parents must be lower, not post-DAG stake, within DAG_MERGE_DEPTH and
+// Merge parents must be lower, not post-DAG stake, within DAG_MERGE_DEPTH and
 // unique. Depth scores 50 and the rest 100, so the score names the leg.
 BOOST_AUTO_TEST_CASE(merge_parents_must_be_lower_recent_and_distinct)
 {
@@ -417,7 +417,7 @@ BOOST_AUTO_TEST_CASE(merge_parents_must_be_lower_recent_and_distinct)
                         "a repeated merge parent scored " << repeat.nDoS);
 }
 
-// R-BA-010. A committed merge parent that has not arrived defers the child. It
+// A committed merge parent that has not arrived defers the child. It
 // is the one rejection in the parent loop that must not score the peer, so the
 // assertion is on the score staying at zero rather than on the false return.
 BOOST_AUTO_TEST_CASE(an_unavailable_merge_parent_defers_without_scoring)
@@ -441,7 +441,7 @@ BOOST_AUTO_TEST_CASE(an_unavailable_merge_parent_defers_without_scoring)
                                "like a misbehaving one");
 }
 
-// R-BA-002: from Boundary A the parent set must also have a DAGKnight selected parent and a
+// From Boundary A the parent set must also have a DAGKnight selected parent and a
 // resolvable merge history.
 BOOST_AUTO_TEST_CASE(a_committed_parent_set_must_satisfy_dagknight_selection)
 {

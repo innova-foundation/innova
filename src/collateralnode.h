@@ -215,7 +215,7 @@ public:
 
     // Set when this node registered by attestation rather than by transparent outpoint.
     // The key image is the note's public pseudonym: the node is registered until it appears
-    // in a spend, at which point it is simply gone.
+    // in a spend, at which point it is gone.
     uint256 attestationKeyImage;
     std::string strPoolPayout;
 

@@ -1,4 +1,4 @@
-// B2-e: half-aggregated Schnorr M-of-N staking authorization — unit tests.
+// Half-aggregated Schnorr M-of-N staking authorization — unit tests.
 //
 // Exercises the public-signer half-aggregation primitives: each signer produces a
 // detached (R_j, s_j) share over a stake spend digest; the s-scalars are summed
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_count_mismatch_fails)
                         "mismatched R-point/signer counts must be rejected");
 }
 
-// --- Phase 2: delegation-set commitment ---
+// --- Delegation-set commitment ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_set_hash)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -275,7 +275,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_set_hash)
                         "an invalid owner point must be rejected");
 }
 
-// --- Phase 2: V3 proof M-of-N fields serialize/deserialize round-trip ---
+// --- V3 proof M-of-N fields serialize/deserialize round-trip ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_proof_serialization_roundtrip)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -340,7 +340,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_proof_serialization_roundtrip)
                         "legacy serialization must be independent of unused M-of-N members");
 }
 
-// --- Phase 3: M-of-N authorization verifier (adversarial) ---
+// --- M-of-N authorization verifier (adversarial) ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_authorization_valid)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -427,7 +427,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_authorization_wrong_digest_fails)
                         "authorization must not verify under a different stake digest");
 }
 
-// --- Phase 3b step 1: stake-authorization digest ---
+// --- Stake-authorization digest ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_digest_deterministic_and_bound)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -474,7 +474,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_digest_endtoend_authorization)
                         "signature must not authorize a different stake (replay protection)");
 }
 
-// --- Phase 3b step 2: delegationHash-binding commitment ---
+// --- delegationHash-binding commitment ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_commitment)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -513,7 +513,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_commitment)
     BOOST_CHECK(cOther.vchCommitment != c.vchCommitment);
 }
 
-// --- Phase 3b step 3 (core): cv_plain derivation from the 3-generator leaf ---
+// --- cv_plain derivation from the 3-generator leaf ---
 BOOST_AUTO_TEST_CASE(halfagg_stake_cvplain_derivation)
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -599,7 +599,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_sagg_out_of_range_rejected)
                         "an out-of-range aggregated s-scalar (>= n) must be rejected");
 }
 
-// --- B2-c hidden-signer research prototype: BPAC gate + threshold-ring xM fallback ---
+// --- Hidden-signer research prototype: BPAC gate + threshold-ring xM fallback ---
 namespace
 {
 bool BuildHiddenFixture(unsigned int N, unsigned int M,

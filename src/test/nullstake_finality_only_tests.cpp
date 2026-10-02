@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE(checktransaction_refuses_every_nullstake_generation_publicl
     }
 }
 
-// The B2-c hidden-signer bound is reachable only in [FORK_HEIGHT_NULLSTAKE_DELEGSET,
+// The hidden-signer bound is reachable only in [FORK_HEIGHT_NULLSTAKE_DELEGSET,
 // FORK_HEIGHT_NULLSTAKE_B2C), above the DAG gate; on mainnet the window is empty.
 BOOST_AUTO_TEST_CASE(the_b2c_hidden_coinstake_bound_has_no_height_to_decide_at)
 {

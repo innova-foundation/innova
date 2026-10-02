@@ -3729,7 +3729,7 @@ Value n_delegatestake(const Array& params, bool fHelp)
 }
 
 
-// B2-e Phase 3c.5: mint an M-of-N cold-stake note. The note's curve-tree leaf is the value-hiding
+// Mint an M-of-N cold-stake note. The note's curve-tree leaf is the value-hiding
 // 3-generator commitment cv3 = value*H + blind*G + D*J, with the value bound by a fresh 2-generator
 // commitment Vv (range-proven) plus the Okamoto (G,J) link. The note is encrypted to the owner so the
 // owner can later reclaim it. Funded from transparent coins (like z_shield).
@@ -3841,7 +3841,7 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
     if (!CreateNullStakeMofNMintLink(cv3, Vv, note.vchBlind, blindV, D, link))
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build mint link");
 
-    // cmu = SHA256d(cv3) (INV-8) so the owner's wallet can match the note to its cv3 leaf, NOT cv_plain.
+    // cmu = SHA256d(cv3) so the owner's wallet can match the note to its cv3 leaf, NOT cv_plain.
     uint256 cmu = cv3.GetHash();
 
     std::vector<unsigned char> vchEphemeralKey, vchEncCiphertext;
@@ -3929,7 +3929,7 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
         }
 
         // Binding signature: the M-of-N output's value commitment for the balance is Vv (its blind is
-        // blindV), NOT cv3 -- so the binding sig is over blindV (matching the consensus INV-1 carve-out).
+        // blindV), NOT cv3 -- so the binding sig is over blindV (matching the consensus cv_plain carve-out).
         vector<vector<unsigned char>> vInputBlinds, vOutputBlinds;
         vOutputBlinds.push_back(blindV);
         vInputBlinds.push_back(vector<unsigned char>(32, 0));   // fee blind placeholder
@@ -3964,7 +3964,7 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
 }
 
 
-// B2-e Phase 3c.5: generate (or import) an M-of-N staker MEMBER key. The half-aggregated Schnorr
+// Generate (or import) an M-of-N staker MEMBER key. The half-aggregated Schnorr
 // public key is used in z_mintmofncoldstake's staker set; the secret is held by this wallet so it can
 // co-produce M-of-N private finality votes for notes delegated to this member (M signers each hold one).
 Value n_newmofnmemberkey(const Array& params, bool fHelp)
@@ -4008,7 +4008,7 @@ Value n_newmofnmemberkey(const Array& params, bool fHelp)
 }
 
 
-// B2-e Phase 3c.4: owner-reclaim an idle M-of-N cold-stake note (cv3 leaf) back to a transparent address,
+// Owner-reclaim an idle M-of-N cold-stake note (cv3 leaf) back to a transparent address,
 // by OWNER authority, after the inactivity timelock. Builds a version-2007 tx that the reclaim consensus
 // gates (D recompute, owner spend-auth rk==vchPkOwner, timelock) accept. Mirrors z_unshield, diverging for
 // the cv3/cv_plain split (value proofs over cv_plain = cv3 - D*J, membership over cv3) and skipping Lelantus.

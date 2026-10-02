@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE(widened_window_only_moves_the_threshold)
 }
 
 // ---------------------------------------------------------------------------
-// The fix
+// Boundary-triggered schedule
 // ---------------------------------------------------------------------------
 
 // Every configuration above, run through the schedule on the same event stream. The

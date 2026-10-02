@@ -115,11 +115,11 @@ static bool CheckShieldedAnonSetChainState(
     return true;
 }
 
-// B2-e Phase 3c: the value commitment used for the binding signature + value balance (INV-1):
+// The value commitment used for the binding signature + value balance:
 // the fresh 2-generator Vv for a 2006 M-of-N mint output, cv_plain_out for a 2005 M-of-N cold-stake
 // coinstake re-mint, the raw cv otherwise -- see MofNOutputBindingCommitment below.
 
-// B2-e: true when this shielded tx is a kernel-validated M-of-N cold-stake coinstake (vtx[1] of a PoS
+// True when this shielded tx is a kernel-validated M-of-N cold-stake coinstake (vtx[1] of a PoS
 // block, identified by the position-only fValidatedCoinstake flag -- NEVER tx shape). Its staked-note
 // SPEND and ALL its re-minted OUTPUTS are bound to the single public delegation D =
 // nullstakeProofV3.delegationHash (3c.2 principal-continuity: no value can leave the owner-bound D).
@@ -130,8 +130,8 @@ static inline bool IsMofNColdCoinstake(const CTransaction& tx, bool fValidatedCo
         && tx.nullstakeProofV3.nThresholdM > 0;
 }
 
-// B2-e: the 2-generator value commitment for a shielded OUTPUT in the binding signature / value balance:
-//   - a 2006 M-of-N mint output      -> its fresh Vv (INV-1);
+// The 2-generator value commitment for a shielded OUTPUT in the binding signature / value balance:
+//   - a 2006 M-of-N mint output      -> its fresh Vv;
 //   - a 2005 M-of-N coinstake re-mint -> cv_plain_out = cv3 - D*J (3c.2: forces every re-minted output
 //       under the owner-bound D; a wrong D leaves a J residual the range proof rejects, and the J terms
 //       cancel the spend-side cv_plain so the homomorphic balance stays exact);
@@ -152,7 +152,7 @@ static bool MofNOutputBindingCommitment(const CTransaction& tx, size_t i, bool f
     return true;
 }
 
-// B2-e Phase 3c.1: the 2-generator VALUE commitment for a shielded SPEND. For the staked note of an
+// The 2-generator VALUE commitment for a shielded SPEND. For the staked note of an
 // M-of-N cold-stake coinstake (vtx[1].vShieldedSpend[0]) it is cv_plain = cv3 - delegationHash*J; for
 // every other spend it is the raw cv. The value-based spend checks (range proof, nullifier-binding,
 // binding signature) use this; the MEMBERSHIP proofs (FCMP, Lelantus) MUST keep the raw cv3 leaf, and
@@ -172,7 +172,7 @@ static bool MofNSpendValueCommitment(const CTransaction& tx, size_t i, bool fVal
         return NullStakeMofNDeriveValueCommitment(tx.vShieldedSpend[i].cv,
                                                   tx.nullstakeProofV3.delegationHash, cvValueOut);
     }
-    // B2-e Phase 3c.4: an owner reclaim (an ordinary tx, never fValidatedCoinstake) spends the idle cv3
+    // An owner reclaim (an ordinary tx, never fValidatedCoinstake) spends the idle cv3
     // note at spend[0] via the SAME cv_plain = cv3 - D*J derivation, using the reclaim's delegationHash.
     // This branch is reachable only once ConnectInputs's reclaim gates (D recompute, rk==owner + the
     // mandatory owner spend-auth sig, and the inactivity timelock) have passed.
@@ -184,7 +184,7 @@ static bool MofNSpendValueCommitment(const CTransaction& tx, size_t i, bool fVal
     return true;
 }
 
-// B2-e Phase 3c: validate the M-of-N mint extension on one shielded output (INV-2/5/9/10/11).
+// Validate the M-of-N mint extension on one shielded output.
 // Sets fIsMofN. For an M-of-N output it runs the two value-binding checks (range over Vv + the
 // mandatory (G,J) link cv3<->Vv); the caller must NOT also run the normal range/plaintext path on
 // such an output (it would run over cv3 and fail). For a normal output it only enforces that no
@@ -208,19 +208,19 @@ static bool CheckMofNMintOutput(const CTransaction& tx, size_t i, bool fHideAmou
 
     if (o.nMofNType == 0)
         return true;   // ordinary output inside a mint tx; carries no wire-level M-of-N data
-    if (o.nMofNType != 1) { strErr = "invalid M-of-N output marker"; return false; }   // INV-5
+    if (o.nMofNType != 1) { strErr = "invalid M-of-N output marker"; return false; }
 
     fIsMofN = true;
     if (nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)                                       // INV-9
     { strErr = "M-of-N mint output before DELEGSET fork height"; return false; }
-    if (!fHideAmount || o.nPlaintextValue != -1 || !o.vchPlaintextBlind.empty())        // INV-10
+    if (!fHideAmount || o.nPlaintextValue != -1 || !o.vchPlaintextBlind.empty())
     { strErr = "M-of-N mint output must be hidden-amount"; return false; }
     if (o.cv.vchCommitment.size() != 33 || o.valueCommitmentVv.vchCommitment.size() != 33 ||
-        o.vchMofNLink.size() != NULLSTAKE_MOFN_MINTLINK_SIZE)                           // INV-5 shape
+        o.vchMofNLink.size() != NULLSTAKE_MOFN_MINTLINK_SIZE)                           // shape
     { strErr = "M-of-N mint output malformed shape"; return false; }
-    if (!VerifyBulletproofRangeProof(o.valueCommitmentVv, o.rangeProof))                // INV-2(a)
+    if (!VerifyBulletproofRangeProof(o.valueCommitmentVv, o.rangeProof))                // range
     { strErr = "M-of-N mint Vv range proof failed"; return false; }
-    if (!VerifyNullStakeMofNMintLink(o.cv, o.valueCommitmentVv, o.vchMofNLink))         // INV-2(b), MANDATORY
+    if (!VerifyNullStakeMofNMintLink(o.cv, o.valueCommitmentVv, o.vchMofNLink))         // MANDATORY
     { strErr = "M-of-N mint (G,J) value-binding link failed"; return false; }
     return true;
 }
@@ -1122,7 +1122,7 @@ bool Finalise()
     finaliseRingSigs();
 
     // Closing a database this process never opened would open it first, which throws
-    // while another process holds it -- the case that brought us here.
+    // while another process holds it (a start refused the datadir lock).
     if (IsTxDBOpen())
     {
         try
@@ -2497,7 +2497,7 @@ bool IsPrivacyVNextCollateralRegistered(
         return false;
     }
     // The spend is the deregistration. Nothing is erased for it: the record stays
-    // and simply stops meaning "registered", which is what makes a reorg that
+    // and stops meaning "registered", which is what makes a reorg that
     // reorders the attestation and the spend land the same way on every node.
     return spentStatus != TXDB_READ_FOUND;
 }
@@ -3331,7 +3331,7 @@ bool RunPrivacyVNextBackgroundVerification(int nMaxBlocks, int& nVerifiedOut,
             break;
 
         // Filling the cache is all this does; every verdict below is still taken one
-        // payload at a time, and a payload that does not verify is simply left uncached
+        // payload at a time, and a payload that does not verify is left uncached
         // for that loop to reject.
         {
             std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
@@ -4285,7 +4285,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         }
                         for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
                         {
-                            CPedersenCommitment cvOut;   // Vv for a 2006 M-of-N mint output (INV-1); cv otherwise
+                            CPedersenCommitment cvOut;   // Vv for a 2006 M-of-N mint output; cv otherwise
                             if (!MofNOutputBindingCommitment(tx, i, false, cvOut))
                                 return error("CTxMemPool::accept() : M-of-N output %d value commitment derivation failed", (int)i);
                             vOutCommits.push_back(cvOut);
@@ -4861,7 +4861,7 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
                 remove(txToRemove, true);
             }
         }
-        // A spend of an attested note is legitimate and simply deregisters the node,
+        // A spend of an attested note is legitimate and deregisters the node,
         // but a second attestation of the same note is not, so only a pending
         // attestation is evicted here and never a pending spend.
         for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
@@ -8823,7 +8823,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                           nVersion, SHIELDED_TX_VERSION_FCMP));
                 }
 
-                // B2-e Phase 3c.4: owner-reclaim gates. A reclaim (version 2007) spends an idle cv3 note by
+                // Owner-reclaim gates. A reclaim (version 2007) spends an idle cv3 note by
                 // OWNER authority instead of the M-of-N quorum. These fail-closed checks gate the cv_plain
                 // carve-out (MofNSpendValueCommitment) so it is reachable ONLY for a real, timelocked,
                 // owner-signed reclaim -- the spend-lock is not re-opened for an attacker.
@@ -8873,7 +8873,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
                 {
-                    // B2-e Phase 3c.1: the value-based checks (range, nullifier-binding, binding sig)
+                    // The value-based checks (range, nullifier-binding, binding sig)
                     // use cv_plain = cv3 - delegationHash*J for an M-of-N cold-stake coinstake's staked
                     // note; the FCMP/Lelantus MEMBERSHIP proofs keep the raw cv3 leaf below.
                     CPedersenCommitment cvSpendValue;
@@ -8946,7 +8946,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                             return DoS(100, error("ConnectInputs() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i));
                         if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
                             return DoS(100, error("ConnectInputs() : shielded spend %d nullifier does not match bound note", (int)i));
-                        // B2-e Phase 3c.1: bind the nullifier to the value commitment cv_plain (NOT cv3) for an
+                        // Bind the nullifier to the value commitment cv_plain (NOT cv3) for an
                         // M-of-N stake spend. This MUST be re-run over cv_plain, never skipped: dropping it would
                         // let the staked note be re-spent under a mismatched nullifier (infinite-stake / double-spend).
                         if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof, fBlock ? nBlockHeight : nBlockHeight + 1))
@@ -9022,7 +9022,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                     std::vector<CPedersenCommitment> vInCommits, vOutCommits;
                     for (size_t i = 0; i < vShieldedSpend.size(); i++)
                     {
-                        // cv_plain for the M-of-N stake spend (INV-1): cv3 would inject a delegationHash*J
+                        // cv_plain for the M-of-N stake spend: cv3 would inject a delegationHash*J
                         // residual that breaks the homomorphic value balance. Outputs already use Vv below.
                         CPedersenCommitment cvIn;
                         if (!MofNSpendValueCommitment(*this, i, fValidatedCoinstake, cvIn))
@@ -10593,13 +10593,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             if (pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V3)
                 return DoS(100, error("ConnectBlock() : NullStake V3 cold stake coinstake before fork height"));
 
-            // B2-e: half-aggregated M-of-N (nThresholdM > 0) cold staking activates only at
+            // Half-aggregated M-of-N (nThresholdM > 0) cold staking activates only at
             // the DELEGSET fork. Before it, only the legacy 1-of-1 (nThresholdM == 0) is valid.
             if (vtx[1].nullstakeProofV3.nThresholdM > 0 &&
                 pindex->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
                 return DoS(100, error("ConnectBlock() : NullStake V3 M-of-N coinstake before DELEGSET fork height"));
-            // B2-c: the ZK-hidden-signer tier (nAuthMode == B2C_HIDDEN) activates only at the B2C fork.
-            // Defense-in-depth on the coinstake path (the live B2-c staking path is the finality vote).
+            // The ZK-hidden-signer tier (nAuthMode == B2C_HIDDEN) activates only at the B2C fork.
+            // Defense-in-depth on the coinstake path (the live hidden-signer staking path is the finality vote).
             if (vtx[1].nullstakeProofV3.nThresholdM > 0 &&
                 vtx[1].nullstakeProofV3.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN &&
                 pindex->nHeight < FORK_HEIGHT_NULLSTAKE_B2C)
@@ -10616,9 +10616,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                        (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize(),
                                        (unsigned int)BPAC_V3_MAX_PROOF_SIZE));
 
-            // B2-e/B2-c: bound the M-of-N vectors before the kernel verifier (defense in depth; the tier
+            // Bound the M-of-N vectors before the kernel verifier (defense in depth; the tier
             // verifiers also enforce these). Branch on nAuthMode so the bounds match the tier the verifier
-            // dispatches to -- otherwise a B2-c hidden proof (empty half-agg triple) would be wrongly
+            // dispatches to -- otherwise a hidden-signer proof (empty half-agg triple) would be wrongly
             // rejected here before the tier-aware verifier runs.
             if (vtx[1].nullstakeProofV3.nThresholdM > 0)
             {
@@ -12695,7 +12695,7 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
     return true;
 }
 
-// Reorg finality guard (R-FIN-001) for Reorganize and SetBestChain: refuse a candidate
+// Reorg finality guard for Reorganize and SetBestChain: refuse a candidate
 // lacking the as-of-epoch(tip)-1 attested block; permanent if it also lacks the anchor
 // REORG_LATCH_ANCHOR_LAG_EPOCHS-1 older. Nothing is persisted.
 
@@ -15337,7 +15337,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                         pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
                 }
                 // Unscored, and asked for again unless it could never fit: the
-                // block is admissible and the pool simply has no room for it now.
+                // block is admissible and the pool has no room for it now.
                 ReAskForRefusedOrphan(pfrom, hash, nFootprint, owner, vMissingDAGParents);
                 return error("ProcessBlock() : orphan pool cannot hold %s", hash.ToString().substr(0,20).c_str());
             }
@@ -15634,7 +15634,7 @@ bool CBlock::CheckBlockSignature() const
     }
 
     // NullStake V3 (Private Cold Staking): verify the block signature against pk_stake (1-of-1)
-    // or, for B2-e M-of-N, against any member of the committed staker set.
+    // or, for M-of-N, against any member of the committed staker set.
     if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
     {
         if (vchBlockSig.empty())

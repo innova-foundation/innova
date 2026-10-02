@@ -604,7 +604,7 @@ public:
                                                bool& fUseV3,
                                                std::string& strError);
     bool ClearShieldedCommitmentIndexV3(std::string& strError);
-    // B2-e Phase 3c.4: erase the per-leaf height ('sch') + cv->index ('sci') entries on reorg, so a
+    // Erase the per-leaf height ('sch') + cv->index ('sci') entries on reorg, so a
     // disconnected block's leaves cannot leave stale data that mis-dates the owner-reclaim timelock.
     bool EraseShieldedCommitmentHeight(uint64_t nIndex);
     bool EraseShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment);

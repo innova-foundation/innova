@@ -586,7 +586,7 @@ BOOST_AUTO_TEST_CASE(collateralnode_payment_base_excludes_settlement)
 }
 
 
-// R-SETTLE-002: the settlement vote set is walked off the settlement block's own
+// The settlement vote set is walked off the settlement block's own
 // ancestors; blocks are written to disk and reread so every window block is decoded.
 
 namespace {

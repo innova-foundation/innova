@@ -632,12 +632,12 @@ public:
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
     bool ImportColdStakeDelegation(const CColdStakeDelegation& deleg);
 
-    // B2-e Phase 3c.5: M-of-N cold-stake delegations this wallet has minted, keyed by delegationHash D
+    // M-of-N cold-stake delegations this wallet has minted, keyed by delegationHash D
     // (CMofNDelegation defined in shielded.h). Persisted to walletdb ("mofndeleg").
     std::map<uint256, CMofNDelegation> mapMofNDelegations;
     bool AddMofNDelegation(const CMofNDelegation& deleg);
 
-    // B2-e Phase 3c.5: imported M-of-N staker MEMBER secret keys (half-agg pubkey -> secret scalar), so this
+    // Imported M-of-N staker MEMBER secret keys (half-agg pubkey -> secret scalar), so this
     // wallet can co-produce M-of-N finality votes for delegations whose committed set includes these members.
     // Persisted to walletdb ("mofnmkey"). Keyed by the 33-byte half-agg pubkey = HalfAggStakeDerivePubKey(secret).
     std::map<std::vector<unsigned char>, uint256> mapMofNMemberKeys;

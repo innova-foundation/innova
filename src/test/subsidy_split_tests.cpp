@@ -123,8 +123,8 @@ BOOST_AUTO_TEST_SUITE(subsidy_split_tests)
 // 1. ONE SUBSIDY.
 // ---------------------------------------------------------------------------
 
-// The three shares sum to the total at every height and every value. This is
-// the whole point: one number to clamp and one number to audit, with no fourth
+// The three shares sum to the total at every height and every value. These
+// give one number to clamp and one number to audit, with no fourth
 // destination and no rounding residue that has to be tracked somewhere else.
 BOOST_AUTO_TEST_CASE(split_sums_to_the_total_exactly)
 {

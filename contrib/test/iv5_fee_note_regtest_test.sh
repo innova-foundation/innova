@@ -658,7 +658,7 @@ else
 fi
 
 # The producer refusing its own coinbase is silent everywhere else: the block is
-# simply never announced, so the only surface is this line.
+# never announced, so the only surface is this line.
 TOTAL_BINDING="$(binding_rejections)"
 if [ "$TOTAL_BINDING" = "0" ]; then
     success "no coinbase payload was refused for its transparent binding in the whole run"

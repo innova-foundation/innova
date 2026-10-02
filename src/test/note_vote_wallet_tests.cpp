@@ -535,7 +535,7 @@ std::vector<PrivacyVNextScanKey> ScanKeysForPayload(
 BOOST_AUTO_TEST_SUITE(note_vote_wallet_tests)
 
 // The positive control: the builder's payload is shaped the way the decoder pins it, and
-// the connect-time rules increment 2 enforces accept it inside its window, on its own
+// the connect-time rules accept it inside its window, on its own
 // chain, against epoch state E-1.
 BOOST_AUTO_TEST_CASE(the_builder_makes_a_vote_the_connect_rules_accept)
 {

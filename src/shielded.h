@@ -38,12 +38,12 @@ static const int SHIELDED_TX_VERSION_NULLSTAKE_V2 = 2004;
 
 static const int SHIELDED_TX_VERSION_NULLSTAKE_COLD = 2005;
 
-// B2-e Phase 3c: a shielded send that may mint M-of-N cold-stake notes. Its outputs may carry the
+// A shielded send that may mint M-of-N cold-stake notes. Its outputs may carry the
 // M-of-N mint extension (a cv3 leaf + a fresh value commitment Vv + an Okamoto (G,J) link), so the
 // delegation set stays hidden at mint while the value is range-proven over Vv.
 static const int SHIELDED_TX_VERSION_MOFN_MINT = 2006;
 
-// B2-e Phase 3c.4: an OWNER-OVERRIDE RECLAIM of an idle M-of-N cold-stake note. The owner reveals the
+// An OWNER-OVERRIDE RECLAIM of an idle M-of-N cold-stake note. The owner reveals the
 // staker set + M + owner pubkey (recomputed to the note's delegation hash D), proves control of the
 // owner key (the mandatory spend-auth sig with rk == ownerPubKey), and spends the cv3 note via the
 // cv_plain carve-out -- but ONLY after the note has been staking-inactive for the reclaim timelock.
@@ -531,7 +531,7 @@ public:
     std::vector<unsigned char> vchPlaintextBlind;
     std::vector<unsigned char> vchRecipientScript;
 
-    // B2-e M-of-N cold-stake mint (Phase 3c). nMofNType == 1 marks an output whose curve-tree leaf
+    // M-of-N cold-stake mint. nMofNType == 1 marks an output whose curve-tree leaf
     // cv == cv3 = value*H + blind*G + delegationHash*J hides the delegation: the value is bound by a
     // fresh 2-generator value commitment valueCommitmentVv (range-proven) plus vchMofNLink, a 97-byte
     // Okamoto (G,J) proof that (cv - Vv) in <G,J> (same value). Consensus runs the range proof + the
@@ -852,7 +852,7 @@ public:
     bool VerifyOwnerSignature(const std::vector<unsigned char>& vchOwnerPubKey) const;
 };
 
-// B2-e M-of-N cold-stake delegation a wallet has minted, keyed by delegationHash D = SetHash(set, M, owner).
+// M-of-N cold-stake delegation a wallet has minted, keyed by delegationHash D = SetHash(set, M, owner).
 // Lets note-scanning recognize the wallet's M-of-N notes (leaf cv3 = value*H + blind*G + D*J) and lets the
 // finality-vote / owner-reclaim builders reconstruct the staker set + owner. Persisted to walletdb ("mofndeleg").
 class CMofNDelegation

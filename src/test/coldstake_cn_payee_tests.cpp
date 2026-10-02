@@ -495,7 +495,7 @@ BOOST_AUTO_TEST_CASE(a_gossip_derived_refusal_is_never_persistable)
                         "collateralnode list would then permanently condemn a "
                         "block the rest of the network accepted");
 
-    // Arm 2: nothing about the block changes; this node simply hears about the
+    // Arm 2: nothing about the block changes; this node only hears about the
     // payee. The same bytes now connect -- the split stated as an experiment.
     AnnounceCollateralnode(payeeKey, true);
     BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
@@ -544,7 +544,7 @@ BOOST_AUTO_TEST_CASE(the_cold_staking_rehearsal_knob_is_regtest_only)
     BOOST_CHECK_EQUAL(FORK_HEIGHT_COLD_STAKING, ShiftMainnetV5Activation(7800000));
 }
 
-// R-CS-001. A coinstake carrying a P2CS output is invalid below the gate. The
+// A coinstake carrying a P2CS output is invalid below the gate. The
 // coinstake spends a plain input, so only the gate (moved via -regtestcoldstaking)
 // differs between arms.
 BOOST_AUTO_TEST_CASE(a_cold_staking_output_below_the_gate_is_refused)
@@ -595,7 +595,7 @@ BOOST_AUTO_TEST_CASE(a_cold_staking_output_below_the_gate_is_refused)
                         "the refusal must be persistable");
 }
 
-// R-CS-002. The P2CS output value may not fall below the P2CS input value.
+// The P2CS output value may not fall below the P2CS input value.
 // The interpreter cannot see input value, so this floor is ConnectBlock's alone.
 BOOST_AUTO_TEST_CASE(a_cold_stake_may_not_return_less_than_it_delegated)
 {
@@ -694,7 +694,7 @@ BOOST_AUTO_TEST_CASE(a_cold_stake_may_not_return_less_than_it_delegated)
     }
 }
 
-// R-CS-003. The collateralnode leg is capped at ~30% of the stake reward.
+// The collateralnode leg is capped at ~30% of the stake reward.
 // The interpreter caps at 30% of total output, so every arm sits in the band only
 // ConnectBlock refuses.
 BOOST_AUTO_TEST_CASE(a_cold_stake_collateralnode_payment_is_capped_at_a_share_of_the_reward)

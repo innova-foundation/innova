@@ -205,12 +205,12 @@ static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_BPAC = 1;
 static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ = 2;
 static const unsigned int NULLSTAKE_B2C_BPAC_AUTH_CONSTRAINT_CAP = 8192;
 
-// M-of-N authorization tier tag on CNullStakeKernelProofV3 (nThresholdM > 0 only). HALFAGG = B2-e public
-// half-aggregated signers; B2C_HIDDEN = B2-c ring-DLEQ hidden signers. 1-of-1 (nThresholdM == 0) carries no
+// M-of-N authorization tier tag on CNullStakeKernelProofV3 (nThresholdM > 0 only). HALFAGG = public-signer
+// half-aggregated signers; B2C_HIDDEN = ring-DLEQ hidden signers. 1-of-1 (nThresholdM == 0) carries no
 // nAuthMode. Each tier requires the OTHER tier's authorization material empty (the empty-vchPkStake analogue).
 static const unsigned int NULLSTAKE_AUTHMODE_HALFAGG    = 0;
 static const unsigned int NULLSTAKE_AUTHMODE_B2C_HIDDEN = 1;
-// Consensus wire cap for a B2-c hidden-auth blob (headroom over the 32-of-32 worst case ~66.7 KiB), enforced
+// Consensus wire cap for a hidden-signer auth blob (headroom over the 32-of-32 worst case ~66.7 KiB), enforced
 // structurally before any expensive EC work at every call site.
 static const size_t NULLSTAKE_B2C_MAX_AUTH_SIZE = 96 * 1024;
 
@@ -271,8 +271,8 @@ public:
     )
 };
 
-// B2-c off-consensus hidden M-of-N authorization proof envelope. This object is deliberately
-// separate from CNullStakeKernelProofV3 so the B2-e wire format remains byte-compatible while
+// Off-consensus hidden-signer M-of-N authorization proof envelope. This object is deliberately
+// separate from CNullStakeKernelProofV3 so the public-signer wire format remains byte-compatible while
 // the hidden-signer construction is researched and benchmarked.
 class CNullStakeMofNHiddenAuthProof
 {
@@ -362,7 +362,7 @@ public:
     std::vector<unsigned char> vchPkStake;  // 33 bytes compressed
     std::vector<unsigned char> vchPkOwner;  // 33 bytes compressed
 
-    // B2-e: half-aggregated Schnorr M-of-N staking authorization (public-signer tier).
+    // Half-aggregated Schnorr M-of-N staking authorization (public-signer tier).
     // nThresholdM == 0 selects the legacy single-key path (vchPkStake, value-coupled in-circuit
     // delegation chain). nThresholdM >= 1 selects M-of-N: vStakerSet is the full ordered
     // (strictly-ascending, duplicate-free) N-member staker set that hashes to delegationHash;
@@ -371,16 +371,16 @@ public:
     // The full set is carried in the proof so the verifier can recompute the set hash for a
     // real threshold (M < N) and so the set is covered by the txid and the verify cache.
     unsigned int nThresholdM;
-    // B2-c (Increment 4): authorization tier tag for M-of-N (nThresholdM > 0) proofs.
-    // NULLSTAKE_AUTHMODE_HALFAGG (0) = B2-e public half-agg signers (the four vectors below);
-    // NULLSTAKE_AUTHMODE_B2C_HIDDEN (1) = B2-c ring-DLEQ hidden signers (hiddenAuth). Each tier
+    // Authorization tier tag for M-of-N (nThresholdM > 0) proofs.
+    // NULLSTAKE_AUTHMODE_HALFAGG (0) = public-signer half-agg signers (the four vectors below);
+    // NULLSTAKE_AUTHMODE_B2C_HIDDEN (1) = ring-DLEQ hidden signers (hiddenAuth). Each tier
     // requires the other's authorization material EMPTY (verified). Absent on the 1-of-1 wire.
     unsigned int nAuthMode;
     std::vector<std::vector<unsigned char> > vStakerSet;
     std::vector<std::vector<unsigned char> > vSignerPubKeys;
     std::vector<std::vector<unsigned char> > vSignerRPoints;
     std::vector<unsigned char> vchAggregatedSScalar;
-    CNullStakeMofNHiddenAuthProof hiddenAuth;   // B2-c hidden-signer auth (nAuthMode == B2C_HIDDEN only)
+    CNullStakeMofNHiddenAuthProof hiddenAuth;   // Hidden-signer auth (nAuthMode == B2C_HIDDEN only)
 
     CNullStakeKernelProofV3()
     {
@@ -420,7 +420,7 @@ public:
         // The M-of-N fields exist only for nThresholdM > 0. A legacy 1-of-1 proof serializes
         // nThresholdM == 0 and nothing further (wire byte-identical + self-describing). For M-of-N,
         // nAuthMode selects the authorization tier: mode B2C_HIDDEN carries only the staker set + the
-        // hidden-auth blob; every other mode carries the B2-e public half-agg triple. Height gates
+        // hidden-auth blob; every other mode carries the public-signer half-agg triple. Height gates
         // (DELEGSET for any M-of-N, B2C for the hidden tier) are enforced at the consensus call sites.
         if (nThresholdM > 0)
         {
@@ -457,7 +457,7 @@ public:
 };
 
 
-// B2-e Phase 3c.4: owner-override reclaim authorization (carried on a SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
+// Owner-override reclaim authorization (carried on a SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
 // tx). The owner reveals the full staker set + threshold + owner pubkey; consensus recomputes
 // SetHash(set, M, owner) and requires it to equal delegationHash (the spent note's J-coefficient), so a
 // substituted set/owner leaves a J residual the cv_plain checks reject. The owner authorization itself is
@@ -504,7 +504,7 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
                                   const uint256& delegationHash,
                                   CNullStakeKernelProofV3& proofOut);
 
-// B2-e: build an M-of-N (half-aggregated Schnorr) cold-stake kernel proof. The leaf cv3 is the
+// Build an M-of-N (half-aggregated Schnorr) cold-stake kernel proof. The leaf cv3 is the
 // 3-generator commitment to (nValue, vchBlind, delegationHash); vStakerSet is the ordered
 // N-member set (hashing to delegationHash); vSignerSecrets are the >= M member secret scalars
 // that sign the stake digest. Routed through VerifyNullStakeKernelProofV3 (nThresholdM > 0).
@@ -525,7 +525,7 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
                                       const std::vector<uint256>& vSignerSecrets,
                                       CNullStakeKernelProofV3& proofOut);
 
-// B2-c hidden-signer variant: same value spine, ring-DLEQ authorization (nAuthMode = B2C_HIDDEN).
+// Hidden-signer variant: same value spine, ring-DLEQ authorization (nAuthMode = B2C_HIDDEN).
 bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
                                            const std::vector<unsigned char>& vchBlind,
                                            const CPedersenCommitment& cv3,

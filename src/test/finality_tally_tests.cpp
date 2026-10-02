@@ -1924,7 +1924,7 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     BOOST_CHECK_EQUAL(error, "epoch block is not known");
 
     // Once the claimed epoch block is known, an absent transaction index is
-    // still peer-invalid: the outpoint simply does not exist.  An existing
+    // still peer-invalid: the outpoint does not exist.  An existing
     // index whose block/transaction body cannot be read is local corruption.
     ScopedBlockIndexEntry knownVoteTarget(unavailableVote.hashBlock,
                                            voteHeight);
@@ -2233,7 +2233,7 @@ BOOST_AUTO_TEST_CASE(connect_context_rejects_note_votes_naming_unresolvable_epoc
 }
 
 
-// R-VOTE-001: an epoch-E vote is block-valid only inside
+// An epoch-E vote is block-valid only inside
 // [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW), checked before the block-index lookup.
 BOOST_AUTO_TEST_CASE(a_vote_outside_its_epoch_inclusion_window_is_rejected_at_connect)
 {
@@ -2301,7 +2301,7 @@ BOOST_AUTO_TEST_CASE(a_vote_outside_its_epoch_inclusion_window_is_rejected_at_co
     }
 }
 
-// R-VOTE-002: an epoch-E certificate is block-valid at or after H_E + K and at most
+// An epoch-E certificate is block-valid at or after H_E + K and at most
 // FINALITY_CONFIRMATION_EPOCHS behind the containing epoch.
 BOOST_AUTO_TEST_CASE(a_tally_certificate_is_valid_only_inside_its_position_bounds)
 {
@@ -2424,7 +2424,7 @@ BOOST_AUTO_TEST_CASE(the_future_epoch_clause_is_unreachable_behind_the_window_fl
     }
 }
 
-// R-VOTE-003: a certificate covers exactly the epoch's connected vote set (equal count
+// A certificate covers exactly the epoch's connected vote set (equal count
 // plus full containment).
 BOOST_AUTO_TEST_CASE(a_tally_certificate_covers_the_connected_vote_set_exactly)
 {
@@ -2573,7 +2573,7 @@ CertVerdict CheckCertAtContext(CFinalityTracker& tracker, CTxDB& txdb,
     return verdict;
 }
 
-// R-GOV-004: a private certificate needs a seated committee; a v4 note certificate is
+// A private certificate needs a seated committee; a v4 note certificate is
 // accepted only with no committee and no signer-set.
 BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical_committee)
 {
@@ -2718,7 +2718,7 @@ BOOST_AUTO_TEST_CASE(a_certificate_claiming_committee_weight_needs_the_canonical
     }
 }
 
-// R-BA-004: each tampered field of the note certificate's skeleton is refused, as is a
+// Each tampered field of the note certificate's skeleton is refused, as is a
 // wrong note root or count and a tier weaker than the counts support.
 BOOST_AUTO_TEST_CASE(note_certificate_transparent_skeleton_must_be_the_exact_rebuild)
 {

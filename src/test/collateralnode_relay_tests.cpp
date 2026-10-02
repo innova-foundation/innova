@@ -77,7 +77,7 @@ COutPoint OutpointNumber(unsigned int n)
 
 } // namespace
 
-// Papercut 1. Two peers, one address. The second must get its own slot.
+// Two peers, one address. The second must get its own slot.
 BOOST_AUTO_TEST_CASE(iseg_slot_is_per_peer_not_per_address)
 {
     CollateralnodeAskedForClear();
@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(iseg_slot_is_per_peer_not_per_address)
         "peer id is what stops peers sharing an address from sharing a 60 s budget");
 }
 
-// Papercut 4. The refusal is not a protocol violation, so nobody is scored.
+// The refusal is not a protocol violation, so nobody is scored.
 BOOST_AUTO_TEST_CASE(a_refused_list_request_scores_nobody)
 {
     CollateralnodeAskedForClear();
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(a_refused_list_request_scores_nobody)
         "the refused request armed a second slot for the same peer");
 }
 
-// Papercut 2, peer map. A departing peer takes its slot with it, so the map is
+// Peer map: a departing peer takes its slot with it, so the map is
 // bounded by the live peer count.
 BOOST_AUTO_TEST_CASE(a_departing_peer_takes_its_iseg_slot_with_it)
 {
@@ -159,7 +159,7 @@ BOOST_AUTO_TEST_CASE(a_departing_peer_takes_its_iseg_slot_with_it)
         "churn for the life of the process");
 }
 
-// Papercut 2, both maps. An expired slot is dropped when it is next read.
+// Both maps: an expired slot is dropped when it is next read.
 BOOST_AUTO_TEST_CASE(expired_slots_are_pruned_on_the_next_read)
 {
     CollateralnodeAskedForClear();
@@ -182,7 +182,7 @@ BOOST_AUTO_TEST_CASE(expired_slots_are_pruned_on_the_next_read)
     CollateralnodeAskedForClear();
 }
 
-// Papercut 2, outpoint map. An iseep names an unknown vin and arms a slot before
+// Outpoint map: an iseep names an unknown vin and arms a slot before
 // any signature is checked, so only a cap bounds it.
 BOOST_AUTO_TEST_CASE(the_entry_pull_map_is_capped)
 {
@@ -206,7 +206,7 @@ BOOST_AUTO_TEST_CASE(the_entry_pull_map_is_capped)
         "expected exactly " << COLLATERALNODE_ASKED_ENTRY_MAX);
 }
 
-// Papercut 3. The refresh clock is stamped by the request, not by the socket.
+// The refresh clock is stamped by the request, not by the socket.
 BOOST_AUTO_TEST_CASE(the_handshake_request_stamps_the_refresh_clock)
 {
     CNode node(INVALID_SOCKET, LoopbackAt(kBasePort + 5), "", false);
@@ -248,7 +248,7 @@ BOOST_AUTO_TEST_CASE(the_handshake_request_stamps_the_refresh_clock)
         "the refresh never came due a full interval after the request");
 }
 
-// Papercut 5. The drop the log hid: the tolerance is measured against the tip
+// The drop the log hid: the tolerance is measured against the tip
 // block time, so a stalled chain refuses every registration offered to it.
 BOOST_AUTO_TEST_CASE(a_future_sigtime_is_dropped_against_the_tip_time)
 {
@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE(a_future_sigtime_is_dropped_against_the_tip_time)
         "a registration signed an hour past a stalled tip was accepted");
 }
 
-// Papercut 6. Relaying an entry learned from a list reply is opt-in, and a fresh
+// Relaying an entry learned from a list reply is opt-in, and a fresh
 // announcement is relayed either way.
 BOOST_AUTO_TEST_CASE(relaying_a_learned_entry_is_opt_in)
 {

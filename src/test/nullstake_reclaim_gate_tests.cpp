@@ -1,7 +1,7 @@
 // Copyright (c) 2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-// Owner-reclaim gates in ConnectInputs (R-RECL-001/002), regtest only; rejections are read
+// Owner-reclaim gates in ConnectInputs, regtest only; rejections are read
 // from the log since every gate returns false.
 
 #include <boost/test/unit_test.hpp>
@@ -513,7 +513,7 @@ BOOST_AUTO_TEST_CASE(an_owner_reclaim_of_an_unindexed_leaf_is_refused)
                           "reclaim of a leaf the index does not carry");
 }
 
-// R-RECL-002: the inactivity timelock. The two arms differ only by one block of
+// The inactivity timelock. The two arms differ only by one block of
 // leaf-insertion height; the accepted arm prints no reclaim message.
 BOOST_AUTO_TEST_CASE(an_owner_reclaim_before_the_inactivity_timelock_is_refused)
 {

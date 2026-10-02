@@ -506,7 +506,7 @@ BOOST_AUTO_TEST_CASE(a_full_parent_set_is_accepted_and_indexed)
 }
 
 
-// R-SETTLE-005: post-DAG the coinbase may pay subsidy minus the withheld reserve plus the
+// Post-DAG the coinbase may pay subsidy minus the withheld reserve plus the
 // settlement leg, never the reserve. Arithmetic is in subsidy_split_tests.
 
 namespace {

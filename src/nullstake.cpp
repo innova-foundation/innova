@@ -1168,7 +1168,7 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
 }
 
 // ============================================================================
-// B2-e: M-of-N (half-aggregated Schnorr) cold-stake kernel proof (value-decoupled,
+// M-of-N (half-aggregated Schnorr) cold-stake kernel proof (value-decoupled,
 // public-signer tier). The note leaf is the 3-generator commitment
 //   cv3 = value*H + blind*G + delegationHash*J.
 // The kernel proof proves range+weight over the J-free commitment
@@ -1422,7 +1422,7 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
     return true;
 }
 
-// B2-c (Increment 4): build a HIDDEN-signer M-of-N kernel proof. Identical value spine to the B2-e builder
+// Build a HIDDEN-signer M-of-N kernel proof. Identical value spine to the public-signer builder
 // (range/weight over a fresh Vv, value-link Vv<->cv_plain, stake digest over cv3), swapping ONLY the
 // authorization: instead of revealing M half-aggregated signatures it emits a ring-DLEQ hidden-auth proof
 // over the SAME stake digest. Requires EXACTLY nThresholdM signer secrets. The staker set is sorted up front
@@ -1533,7 +1533,7 @@ bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
     proofOut.vSignerRPoints.clear();
     proofOut.vchAggregatedSScalar.clear();
 
-    // Value-commitment link: D = Vv - cv_plain = (rv - r)*G (identical to the B2-e spine).
+    // Value-commitment link: D = Vv - cv_plain = (rv - r)*G (identical to the public-signer spine).
     CNullStakeBNGuard bnRV, bnR, bnS;
     BN_bin2bn(vchRv.data(), 32, bnRV);
     BN_bin2bn(vchBlind.data(), 32, bnR);
@@ -1601,7 +1601,7 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
                                              unsigned int nBits)
 {
     // Structural + DoS caps (bound before any heavy work).
-    // Tier tag: the B2-c hidden mode is dispatched away before this function; every other value must be
+    // Tier tag: the hidden-signer mode is dispatched away before this function; every other value must be
     // the public half-agg tier exactly (rejects an out-of-range nAuthMode that would otherwise slip in).
     if (proof.nAuthMode != NULLSTAKE_AUTHMODE_HALFAGG)
         return false;
@@ -1742,7 +1742,7 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
 }
 
 
-// B2-c (Increment 4): hidden-signer M-of-N kernel verifier. IDENTICAL value spine to the B2-e verifier
+// Hidden-signer M-of-N kernel verifier. IDENTICAL value spine to the public-signer verifier
 // (derive cv_plain from the FCMP-verified cv3, AC range/weight over Vv, recompute the stake digest, value-
 // link Vv<->cv_plain); it swaps ONLY the authorization predicate -- the revealed half-agg signers become a
 // ring-DLEQ hidden-auth proof. Every statement input is recomputed here from consensus data (cv3 + kernel
@@ -1761,7 +1761,7 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
         return false;
     if (proof.nThresholdM > proof.vStakerSet.size())
         return false;
-    // The B2-e public half-agg triple MUST be empty for a hidden proof (the empty-vchPkStake analogue:
+    // The public-signer half-agg triple MUST be empty for a hidden proof (the empty-vchPkStake analogue:
     // a hidden proof never carries revealed signers).
     if (!proof.vSignerPubKeys.empty() || !proof.vSignerRPoints.empty() || !proof.vchAggregatedSScalar.empty())
         return false;
@@ -1831,7 +1831,7 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
     if (!EC_GROUP_get_order(group, bnOrder, ctx))
         return false;
 
-    // Recover the J-free commitment from the FCMP-verified leaf cv3 (identical to the B2-e spine).
+    // Recover the J-free commitment from the FCMP-verified leaf cv3 (identical to the public-signer spine).
     CPedersenCommitment cvPlain;
     if (!NullStakeMofNDeriveValueCommitment(cv3, proof.delegationHash, cvPlain))
         return false;
@@ -1847,7 +1847,7 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
         return false;
     }
 
-    // Value-commitment link Vv <-> cv_plain (identical to the B2-e spine).
+    // Value-commitment link Vv <-> cv_plain (identical to the public-signer spine).
     std::vector<unsigned char> vchRL(proof.vchLinkProof.begin(), proof.vchLinkProof.begin() + 33);
     CZarcECPointGuard RLink(group);
     if (!EC_POINT_oct2point(group, RLink, vchRL.data(), 33, ctx))
@@ -2041,15 +2041,15 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
     if (proof.IsNull() || cv.IsNull())
         return false;
 
-    // B2-e: route M-of-N (nThresholdM > 0) proofs to the value-decoupled verifier. This verify
+    // Route M-of-N (nThresholdM > 0) proofs to the value-decoupled verifier. This verify
     // is height-independent (so it can be verify-cached deterministically); the fork-height gate
     // rejecting nThresholdM > 0 before FORK_HEIGHT_NULLSTAKE_DELEGSET is enforced by the
     // height-aware consensus call sites: ConnectBlock (main.cpp, on pindex->nHeight) and the
     // finality vote path (finality.cpp, on pEpochBlock->nHeight). The legacy 1-of-1
     // (nThresholdM == 0) path below is unchanged; a 3-generator M-of-N leaf submitted as
     // nThresholdM == 0 fails the 1-of-1 link (which targets the raw leaf with its J term).
-    // B2-c hidden tier (nAuthMode == B2C_HIDDEN) routes to the ring-DLEQ verifier; the B2C height gate
-    // is enforced at the call sites (like DELEGSET). Any other M-of-N nAuthMode is the B2-e public tier.
+    // Hidden-signer tier (nAuthMode == B2C_HIDDEN) routes to the ring-DLEQ verifier; the B2C height gate
+    // is enforced at the call sites (like DELEGSET). Any other M-of-N nAuthMode is the public-signer tier.
     if (proof.nThresholdM > 0 && proof.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN)
         return VerifyNullStakeB2CHiddenKernelProofV3(proof, cv, nBits);
     if (proof.nThresholdM > 0)
@@ -2183,7 +2183,7 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
 
 
 // ============================================================================
-// B2-c research prototype: hidden M-of-N authorization, off-consensus.
+// Hidden-signer research prototype: hidden M-of-N authorization, off-consensus.
 //
 // The BPAC track is explicitly gated below. Under the current cap, full secp256k1
 // membership+authorization inside BPAC is estimated too large, so Create... uses a
@@ -2226,7 +2226,7 @@ bool EstimateNullStakeB2CHiddenAuthBPACBudget(unsigned int nMembers,
 
     // A complete secp256k1 Schnorr/public-key relation inside this BPAC system needs field
     // arithmetic, point decompression, scalar multiplication, and challenge binding per hidden
-    // signer. This dominates the selector budget and exceeds the current B2-c cap even at M=1.
+    // signer. This dominates the selector budget and exceeds the current hidden-signer cap even at M=1.
     budgetOut.nECAuthConstraints = fIncludeECAuth ? (32000 * nThresholdM) : 0;
     budgetOut.nTotalConstraints = budgetOut.nSelectorConstraints +
                                   budgetOut.nThresholdConstraints +

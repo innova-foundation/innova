@@ -2,7 +2,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// NullStake generation gates in ConnectBlock (R-NS-001..003): each needs its own fork height
+// NullStake generation gates in ConnectBlock: each needs its own fork height
 // and kernel proof. Arms are spend-free fork candidates connected and rolled back, with a
 // plain PoS coinstake at the same height as control.
 
@@ -315,7 +315,7 @@ bool BuildStakeCandidate(CBlockIndex* pindexParent, const CTransaction& txPrev,
         // refuses the transparent pay-back before the version gate.
         txStake.vout[1].nValue = 0;
 
-        // The shape the B2-c bound names: an M-of-N V3 kernel proof tagged with
+        // The shape the hidden-signer bound names: an M-of-N V3 kernel proof tagged with
         // the hidden-signer authorization mode. Set before the signature and the
         // binding seal so the arm is signed over the body it carries.
         txStake.nullstakeProofV3.acProof.vchAI.assign(33, 0x33);
@@ -596,7 +596,7 @@ BOOST_AUTO_TEST_CASE(the_window_admits_no_fully_valid_nullstake_block)
                         "a positive control, not this measurement");
 }
 
-// R-B2C-001: the B2-c bound is only reached after the DELEGSET bound, whose window
+// The hidden-signer bound is only reached after the DELEGSET bound, whose window
 // lies at or above the DAG gate. Below it, the DELEGSET bound must answer.
 BOOST_AUTO_TEST_CASE(the_b2c_hidden_bound_never_answers_where_the_branch_is_alive)
 {
@@ -610,7 +610,7 @@ BOOST_AUTO_TEST_CASE(the_b2c_hidden_bound_never_answers_where_the_branch_is_aliv
                           "DELEGSET 12 and B2C 14 above it");
 
     // What the two bounds' windows are, restated from the gates themselves: the
-    // branch is alive on [V3, DAG) and the B2-c bound can only decide on
+    // branch is alive on [V3, DAG) and the hidden-signer bound can only decide on
     // [DELEGSET, B2C). The two do not meet.
     BOOST_REQUIRE_GE(FORK_HEIGHT_NULLSTAKE_DELEGSET, FORK_HEIGHT_DAG);
     BOOST_REQUIRE_GT(FORK_HEIGHT_DAG, FORK_HEIGHT_NULLSTAKE_V3);
