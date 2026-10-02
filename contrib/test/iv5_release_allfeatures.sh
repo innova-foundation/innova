@@ -28,9 +28,9 @@ STUB_PIDFILE="$BASE/mixstub.pid"
 HARNESS="$BASE/harness.sh"
 T0=$(date +%s)
 
-export DELL_SSH=- DELL_BIN="$BIN" DELL_BASE="$NODES_DIR" DELL_NODES=$N_NODES
-export MAC_NODES=0 MAC_BASE="$BASE/unused" MAC_BIN="$BIN"
-export DELL_P2P_BASE=$P2P_BASE DELL_RPC_BASE=$RPC_BASE DELL_IDNS_BASE=$IDNS_BASE
+export PRIMARY_SSH=- PRIMARY_BIN="$BIN" PRIMARY_BASE="$NODES_DIR" PRIMARY_NODES=$N_NODES
+export SECONDARY_NODES=0 SECONDARY_BASE="$BASE/unused" SECONDARY_BIN="$BIN"
+export PRIMARY_P2P_BASE=$P2P_BASE PRIMARY_RPC_BASE=$RPC_BASE PRIMARY_IDNS_BASE=$IDNS_BASE
 export ROLE_NOTE="d1 d2" MIX_COORD=d3 MIX_SEATS="d1 d2"
 export MIX_STUB_PORT=$MIX_BASE MIX_COORD_PORT=$((MIX_BASE + 1)) MIX_DIR_PORT=$((MIX_BASE + 2))
 export MIX_STUB_LOG="$BASE/mixstub.log" MIX_STUB_PIDFILE="$STUB_PIDFILE"
@@ -172,8 +172,8 @@ preflight() {
 import sys
 p = sys.argv[1]; s = open(p).read()
 subs = [
- ('"d dell 18444 18500 18600 $DELL_NODES"',
-  '"d dell ${DELL_P2P_BASE:-18444} ${DELL_RPC_BASE:-18500} ${DELL_IDNS_BASE:-18600} $DELL_NODES"'),
+ ('"d primary 18444 18500 18600 $PRIMARY_NODES"',
+  '"d primary ${PRIMARY_P2P_BASE:-18444} ${PRIMARY_RPC_BASE:-18500} ${PRIMARY_IDNS_BASE:-18600} $PRIMARY_NODES"'),
  ('emit_conf "$n" > "/tmp/iv5tc_$n.conf"', 'emit_conf "$n" > "${IV5TC_CONFDIR:-/tmp}/iv5tc_$n.conf"'),
  ('cp "/tmp/iv5tc_$n.conf" "$base/$n/innova.conf"', 'cp "${IV5TC_CONFDIR:-/tmp}/iv5tc_$n.conf" "$base/$n/innova.conf"'),
  ('local stub=contrib/test/mix_socks_stub.py', 'local stub; stub="$(dirname "${BASH_SOURCE[0]}")/mix_socks_stub.py"'),

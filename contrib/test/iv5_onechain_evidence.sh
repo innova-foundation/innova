@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 The Innova developers
-# Evidence pass over a live two-machine IV5 chain: per v5 feature, the block or tx that
+# Evidence pass over a live multi-host IV5 chain: per v5 feature, the block or tx that
 # exercised it, read from bytes and every node. Usage: discover | run | rpc <node> <args>.
 
 set -uo pipefail
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DECODE="$SCRIPT_DIR/iv5_onechain_evidence.py"
 
-DELL_SSH="${DELL_SSH:-user@linux-host}"
+PRIMARY_SSH="${PRIMARY_SSH:-user@linux-host}"
 OUT_DIR="${IV5_EVIDENCE_DIR:-$HOME/iv5-onechain-evidence}"
 INVENTORY="${IV5_EVIDENCE_INVENTORY:-$OUT_DIR/inventory.tsv}"
 
@@ -71,8 +71,8 @@ node_index() {
 
 on_host() {
     local host="$1"; shift
-    if [ "$host" = "dell" ]; then
-        ssh -o ConnectTimeout=10 -o BatchMode=yes "$DELL_SSH" "$@"
+    if [ "$host" = "primary" ]; then
+        ssh -o ConnectTimeout=10 -o BatchMode=yes "$PRIMARY_SSH" "$@"
     else
         bash -c "$@"
     fi
@@ -100,20 +100,20 @@ discover_host() {
 }
 
 cmd_discover() {
-    local macbase="${1:-}" dellbase="${2:-}"
-    local macbin="${MAC_BIN:-$INNOVA_ROOT/src/innovad}"
-    local dellbin="${DELL_BIN:-}"
+    local secondarybase="${1:-}" primarybase="${2:-}"
+    local secondarybin="${SECONDARY_BIN:-$INNOVA_ROOT/src/innovad}"
+    local primarybin="${PRIMARY_BIN:-}"
     : > "$INVENTORY.tmp"
-    if [ -n "$macbase" ]; then
-        discover_host mac "$macbase" "$macbin" >> "$INVENTORY.tmp"
+    if [ -n "$secondarybase" ]; then
+        discover_host secondary "$secondarybase" "$secondarybin" >> "$INVENTORY.tmp"
     fi
-    if [ -n "$dellbase" ]; then
-        if [ -z "$dellbin" ]; then
+    if [ -n "$primarybase" ]; then
+        if [ -z "$primarybin" ]; then
             # The binary the live daemon is actually running, off its command line.
-            dellbin="$(on_host dell "ps -eo args= | grep -m1 -- '-datadir=$dellbase' | awk '{print \$1}'" 2>/dev/null)"
+            primarybin="$(on_host primary "ps -eo args= | grep -m1 -- '-datadir=$primarybase' | awk '{print \$1}'" 2>/dev/null)"
         fi
-        [ -n "$dellbin" ] || { echo "set DELL_BIN: no running daemon under $dellbase" >&2; return 1; }
-        discover_host dell "$dellbase" "$dellbin" >> "$INVENTORY.tmp"
+        [ -n "$primarybin" ] || { echo "set PRIMARY_BIN: no running daemon under $primarybase" >&2; return 1; }
+        discover_host primary "$primarybase" "$primarybin" >> "$INVENTORY.tmp"
     fi
     mv "$INVENTORY.tmp" "$INVENTORY"
     echo "inventory -> $INVENTORY"
@@ -282,5 +282,5 @@ case "${1:-}" in
     discover) shift; cmd_discover "$@" ;;
     run)      shift; cmd_run "$@" ;;
     rpc)      shift; load_inventory >/dev/null && rpc "$@" ;;
-    *) echo "usage: $0 {discover <mac-base> [dell-base]|run [inventory]|rpc <node> <args...>}"; exit 1 ;;
+    *) echo "usage: $0 {discover <secondary-base> [primary-base]|run [inventory]|rpc <node> <args...>}"; exit 1 ;;
 esac

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Multi-machine IV5 regtest chain: d* on the Linux host, m* on the Mac, optional w*, in a line.
+# Multi-machine IV5 regtest chain: d* on the primary host, m* on the secondary host, optional w*, in a line.
 # Subcommands: setup | start | prepare | unlock | relink | mixstub | mixround | mine | status | verify | monitor | stop | wipe
 
 set -uo pipefail
@@ -8,7 +8,7 @@ set -uo pipefail
 # rows, which at script scope overwrites the script's own arguments.
 ARGV=("$@")
 
-MAC_BIN="${MAC_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/innovad}"
+SECONDARY_BIN="${SECONDARY_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/innovad}"
 
 RPCUSER=iv5tc
 RPCPASS=iv5tcpass_local_only
@@ -28,44 +28,44 @@ SUPPLY_CAP_HEIGHT="${SUPPLY_CAP_HEIGHT:-1511}"
 # a note vote requires it unlocked. Local throwaway chain only.
 WALLETPASS="${WALLETPASS:-iv5tcfleetpass}"
 
-# How many nodes each machine carries. The Linux host has the cores, so it takes
-# the depth; the Mac side stays small because its value here is being a second
+# How many nodes each machine carries. The primary host has the cores, so it takes
+# the depth; the secondary side stays small because its value here is being a second
 # platform, not a second crowd.
-DELL_NODES="${DELL_NODES:-2}"
-MAC_NODES="${MAC_NODES:-2}"
-WORKSTATION_NODES="${WORKSTATION_NODES:-2}"
+PRIMARY_NODES="${PRIMARY_NODES:-2}"
+SECONDARY_NODES="${SECONDARY_NODES:-2}"
+EXTRA_NODES="${EXTRA_NODES:-2}"
 
 # A third machine is opt-in: without its address there is nothing to dial.
 THIRD=0
-[ -n "${WORKSTATION_SSH:-}" ] && THIRD=1
+[ -n "${EXTRA_SSH:-}" ] && THIRD=1
 
-# Nothing dials the Mac in a two-machine run, so loopback is a fine default
+# Nothing dials the secondary host in a two-machine run, so loopback is a fine default
 # there; with a third machine w0 dials it, and loopback would silently make the
 # link local and the test meaningless.
-if [ "$THIRD" -eq 1 ] && [ -z "${MAC_TS:-}" ]; then
-  echo "set MAC_TS to the address the third machine reaches this one on" >&2
+if [ "$THIRD" -eq 1 ] && [ -z "${SECONDARY_TS:-}" ]; then
+  echo "set SECONDARY_TS to the address the third machine reaches this one on" >&2
   exit 1
 fi
 
 # name  ssh-target ("-" is this machine)  address peers dial  binary  datadir base
 HOSTS=(
-  "dell ${DELL_SSH:-user@linux-host} ${DELL_TS:-linux-host} ${DELL_BIN:-/home/user/innova-testchain/src/innovad} ${DELL_BASE:-/home/user/iv5tc}"
-  "mac  -                            ${MAC_TS:-127.0.0.1}     $MAC_BIN                                           ${MAC_BASE:-$HOME/iv5tc}"
+  "primary ${PRIMARY_SSH:-user@linux-host} ${PRIMARY_TS:-linux-host} ${PRIMARY_BIN:-/home/user/innova-testchain/src/innovad} ${PRIMARY_BASE:-/home/user/iv5tc}"
+  "secondary  -                            ${SECONDARY_TS:-127.0.0.1}     $SECONDARY_BIN                                           ${SECONDARY_BASE:-$HOME/iv5tc}"
 )
 
 if [ "$THIRD" -eq 1 ]; then
-  WORKSTATION_USER="${WORKSTATION_SSH%@*}"
-  [ "$WORKSTATION_USER" = "$WORKSTATION_SSH" ] && WORKSTATION_USER="$(id -un)"
-  HOSTS+=("workstation $WORKSTATION_SSH ${WORKSTATION_TS:-${WORKSTATION_SSH#*@}} ${WORKSTATION_BIN:-/home/$WORKSTATION_USER/innova/src/innovad} ${WORKSTATION_BASE:-/home/$WORKSTATION_USER/iv5tc}")
+  EXTRA_USER="${EXTRA_SSH%@*}"
+  [ "$EXTRA_USER" = "$EXTRA_SSH" ] && EXTRA_USER="$(id -un)"
+  HOSTS+=("extra $EXTRA_SSH ${EXTRA_TS:-${EXTRA_SSH#*@}} ${EXTRA_BIN:-/home/$EXTRA_USER/innova/src/innovad} ${EXTRA_BASE:-/home/$EXTRA_USER/iv5tc}")
 fi
 
-# Per machine, contiguous p2p/rpc/idns port runs; only the base node's port faces the tailnet.
+# Per machine, contiguous p2p/rpc/idns port runs; only the base node's port faces the other machines.
 # prefix  host  p2p-base  rpc-base  idns-base  count
 LAYOUT=(
-  "d dell 18444 18500 18600 $DELL_NODES"
-  "m mac  18700 18800 18900 $MAC_NODES"
+  "d primary 18444 18500 18600 $PRIMARY_NODES"
+  "m secondary  18700 18800 18900 $SECONDARY_NODES"
 )
-[ "$THIRD" -eq 1 ] && LAYOUT+=("w workstation 19000 19100 19200 $WORKSTATION_NODES")
+[ "$THIRD" -eq 1 ] && LAYOUT+=("w extra 19000 19100 19200 $EXTRA_NODES")
 
 NODES=()
 for row in "${LAYOUT[@]}"; do
@@ -86,13 +86,13 @@ set_key() {
     [ "$1" = "$name" ] && { NODES[$j]="$1 $2 $3 $4 $5 $index"; return; }
   done
 }
-LAST_D="d$((DELL_NODES - 1))"
+LAST_D="d$((PRIMARY_NODES - 1))"
 if [ "$THIRD" -eq 1 ]; then
   set_key d0 0; set_key m0 1; set_key w0 2
 else
   # Two machines: the miner, the far end of its line, and the other platform.
   set_key d0 0
-  if [ "$DELL_NODES" -ge 2 ]; then set_key "$LAST_D" 1; else set_key m1 1; fi
+  if [ "$PRIMARY_NODES" -ge 2 ]; then set_key "$LAST_D" 1; else set_key m1 1; fi
   set_key m0 2
 fi
 
@@ -155,9 +155,9 @@ links_of() {
   [ "$idx" -ge 2 ] && echo "127.0.0.1:$(nport "$prefix$((idx - 2))")"
   if [ "$idx" -eq 0 ]; then
     case "$prefix" in
-      d) [ "$DELL_NODES" -ge 2 ] && echo "127.0.0.1:$(nport d1)" ;;
-      m) echo "$(host_addr dell):$(nport d0)" ;;
-      w) echo "$(host_addr mac):$(nport m0)" ;;
+      d) [ "$PRIMARY_NODES" -ge 2 ] && echo "127.0.0.1:$(nport d1)" ;;
+      m) echo "$(host_addr primary):$(nport d0)" ;;
+      w) echo "$(host_addr secondary):$(nport m0)" ;;
     esac
   fi
   return 0
@@ -247,7 +247,7 @@ emit_conf() {
   for l in $(links_of "$n"); do echo "addnode=$l"; done
 }
 
-# The far end of the Linux line. Mining there rather than at d0 is what makes
+# The far end of the primary line. Mining there rather than at d0 is what makes
 # the hop to the next machine the last link in the chain instead of the first.
 MINER="$LAST_D"
 
@@ -457,7 +457,7 @@ cmd_mixround() {
   pubkey=$(echo "$co" | tr -d '"[:space:]' | grep -o '[0-9a-f]\{66\}' | head -1)
   [ -n "$pubkey" ] || { echo "mixcoordinate: $(echo "$co" | tr -d '\n' | cut -c1-200)"; return 1; }
   echo "coordinator $MIX_COORD opened a round, pubkey $pubkey"
-  # Every seat joins at the COORDINATOR's record slot -- it is where the round was
+  # Every seat joins at the coordinator's record slot -- it is where the round was
   # published, not a per-seat index. The slot is fixed only once the coordinator's
   # plan lands in a publishing window, so it is read back rather than assumed.
   local slot= i
@@ -479,7 +479,7 @@ cmd_mixround() {
 }
 
 # Sample every node's height on a fixed interval and record divergence.
-# Deliberately does NOT re-dial or re-request: a peer that stalls behind is the
+# Does not re-dial or re-request: a peer that stalls behind is the
 # observation this run is for.
 cmd_monitor() {
   local secs=${1:-300} out=${2:-/tmp/iv5tc_monitor.tsv}
@@ -501,7 +501,7 @@ cmd_monitor() {
   echo "monitor written to $out"
 }
 
-[ "$THIRD" -eq 1 ] || echo "note: two machines. set WORKSTATION_SSH=user@host to add w0/w1 as a third." >&2
+[ "$THIRD" -eq 1 ] || echo "note: two machines. set EXTRA_SSH=user@host to add w0/w1 as a third." >&2
 
 set -- "${ARGV[@]:-}"
 case "${1:-}" in
