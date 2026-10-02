@@ -16,8 +16,7 @@ and wallet users upgrading from the v4.3.9.5 series.
 - **Epoch finality.** 300-block epochs collect two kinds of votes: transparent
   votes from a staked output, and anonymous note votes that spend and reissue an
   IV5 note. An epoch is HARD once at least 2 distinct voters are counted for its
-  boundary block; a height finalizes after 3 consecutive HARD epochs. See
-  `docs/v5-finality-semantics.md` for the full rule and its limits - this is a
+  boundary block; a height finalizes after 3 consecutive HARD epochs. This is a
   participation quorum, not Byzantine fault tolerance, and weight does not affect
   the tier.
 - **IV5 private transactions.** A new transaction type (versions 2000-2008)
@@ -104,9 +103,8 @@ gate to confirm your build agrees with the table below.
 
 ## 3. Wallet migration
 
-Do this in order. Steps 1-4 can be done as soon as you have upgraded; step 5
-needs the shielded pool gate (8,150,100) and step 6 needs the IV5 pool active
-(Boundary B, 8,151,540) on the network you're using.
+Do this in order. Steps 1-6 can be done as soon as you have upgraded; step 7
+needs the IV5 pool active (Boundary B, 8,151,540) on the network you're using.
 
 ### 3a. Headless (`innovad` / `innova-cli`)
 
@@ -223,7 +221,7 @@ otherwise.
 transaction confirms, but it is not *spendable* until the epoch containing it
 is finalized and its commitment has a position in the current tree - this is
 the `shielded_pending` figure in `z_gettotalbalance`. There is no way to spend
-a note ahead of that; the wallet and the RPCs simply do not count it as
+a note ahead of that; the wallet and the RPCs do not count it as
 spendable balance until then.
 
 **Fees.** Shielding uses the flat shielded transaction fee (`MIN_TX_FEE_SHIELDED`,
@@ -498,8 +496,8 @@ innovad -printactivations
   cover the amount it reports insufficient spendable balance; send a smaller
   amount to yourself first to merge notes.
 - Epoch finality is a 2-voter participation quorum, not a stake-weighted
-  Byzantine-fault-tolerant threshold. See `docs/v5-finality-semantics.md` for
-  what HARD does and does not guarantee.
+  Byzantine-fault-tolerant threshold: HARD means 2 distinct voters were counted,
+  not that a stake majority agreed.
 - `z_iv5unshield` is retired outright from height 8,151,540 onward: there is no
   path back to a transparent output from the IV5 pool after that height (see
   section 4).

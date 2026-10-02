@@ -1,7 +1,6 @@
 # Innova Consensus
 
-> **v5 recovery status:** this source is a fail-closed recovery candidate, not
-> an activated v5 release — the ladder has not been reached on mainnet. Unsafe
+> **v5 status:** the v5 activation ladder has not been reached on mainnet. Unsafe
 > legacy privacy encodings are quarantined; selectable privacy, NullSend, and
 > NullStake are not removed from the product. Boundary A and Boundary B are
 > both scheduled on mainnet and testnet (Boundary B equals Boundary A, at
@@ -17,10 +16,7 @@ and constant references point at the current code so the prose can be checked
 against it.
 
 All heights and constants below are the mainnet values unless noted. Regtest
-uses low heights for historical/recovery coverage. Public-testnet recovery
-heights must be filled only from the frozen four-node preflight (see the
-`GetForkHeight*` helpers in `main.h`); unset sentinels are intentional release
-blockers.
+and testnet use low heights (see the `GetForkHeight*` helpers in `main.h`).
 
 ---
 
@@ -122,7 +118,7 @@ and the DAGKNIGHT-inferred `k`.
 
 The canonical best tip is `SelectBestDAGTip()` (highest blue-set score), and
 `GetDAGLinearOrder(hashTip)` yields the deterministic linear ordering from a tip
-back toward genesis. Crucially, `GetDAGLinearOrder` is **anchor-pure**: it is a
+back toward genesis. `GetDAGLinearOrder` is **anchor-pure**: it is a
 function only of the selected-parent chain, the committed `vDAGParents`, and the
 coloring — never of node-local live state — which is what lets epoch state be
 recomputed identically on every node after a reorg.
@@ -252,8 +248,12 @@ what it used to earn from minting.
 ### 4.3 Tally, thresholds, and tiers
 
 Votes are aggregated per candidate block. The winning block's weight versus the
-total active weight determines the epoch's tier (`FinalityDetermineTier()` in
-`finality.cpp`):
+active weight determines the epoch's tier (`FinalityDetermineTier()` in
+`finality.cpp`). Active weight is the total weight of the votes counted for the
+epoch, not of all stake, so when every vote names the same block the ratio is 1.
+An epoch with fewer than `FINALITY_MIN_VOTERS` (2) distinct voters has no tier.
+In practice HARD means at least 2 distinct voters agreed; it is a participation
+quorum, not a stake-weighted Byzantine fault tolerance bound.
 
 | Tier | Enum | Condition |
 |------|------|-----------|
@@ -283,7 +283,7 @@ committee size (up to `FINALITY_MAX_TALLY_COMMITTEE` = 64 members), an M-of-N
 threshold, and encrypted tally shares (`CFinalityTallyShare`) that combine into
 the certificate and bind a committee-set hash for its epoch.
 
-From `FORK_HEIGHT_TALLY_GOVERNANCE` (D2), a v3 tally certificate carrying private
+From `FORK_HEIGHT_TALLY_GOVERNANCE`, a v3 tally certificate carrying private
 weight must carry >= M detached signatures from the canonical committee for its
 epoch, checked by `CheckTallyCertificateCommitteeSignatures()` /
 `VerifyMofNCommitteeSignatures()`. In this tree `GetCanonicalFinalityCommittee()`
@@ -331,7 +331,7 @@ fresh trusted mainnet tip; the effective height of any gate is base + shift.
 | Finality | `FORK_HEIGHT_FINALITY` | 7,800,820 | PoS epoch finality gadget |
 | DAG | `FORK_HEIGHT_DAG` | 7,801,200 | IDAG ordering, 1s blocks, PoS-minting disabled, reward /15; co-activates epoch-state (`EPOCH_ROOT_FCMP`, `VOTESET_ROOT`, `EPOCH_STATE_V2`) and tally governance |
 | DAGKnight | `FORK_HEIGHT_DAGKNIGHT` | 7,851,200 (DAG base + 50,000) | adaptive-`k` DAGKNIGHT ordering (replaces GHOSTDAG) |
-| NullStake deleg-set / reclaim / B2-c | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | unset (sentinel) off regtest | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim; regtest-only (12 / 12 / 14), not on the mainnet or testnet ladder |
+| NullStake deleg-set / reclaim / hidden-signer | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | unset (sentinel) off regtest | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim; regtest-only (12 / 12 / 14), not on the mainnet or testnet ladder |
 | IDNS name reset | `FORK_HEIGHT_IDNS_RESET` | 7,800,420 | names registered before this height expire and registrations resume here; seated after the first gate and before DAG, so a term bought in the window spans the 15s→1s spacing change |
 | Committee signature canonicality | `FORK_HEIGHT_COMMITTEE_SIG_CANONICAL` | 7,800,000 | requires low-S DER on committee signatures; an unenforced encoding is third-party malleable and changes a certificate's hash without its signers |
 | Legacy FCMP proof policy | `VerifyFCMPProof()` | n/a | the in-tree path-proof layer is removed; the envelope decodes so historical transactions parse, but no membership statement is accepted on any network at any height |

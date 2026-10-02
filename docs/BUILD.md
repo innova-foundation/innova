@@ -1,8 +1,7 @@
 # Building Innova
 
 This document describes how to build Innova [INN] from source on Linux, macOS,
-and Windows. It replaces the older per-platform notes (`doc/build-unix.txt`,
-`doc/build-osx.txt`, `doc/build-msw.txt`, and `doc/readme-qt.rst`).
+and Windows. It replaces the older per-platform build notes.
 
 Innova is a Tribus-algorithm Proof-of-Work / Proof-of-Stake hybrid chain. From
 the v5 series onward it also carries the IDAG DAG-ordering and epoch-finality

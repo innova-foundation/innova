@@ -1,13 +1,12 @@
 # IV5 normative protocol contract
 
-Status: normative and consensus-inactive.
+Status: normative.
 
 The exact machine-readable source of this contract is
-`src/privacy_vnext/contract/iv5_protocol_v1.json`. Its SHA-256 identifies the
-protocol contract used by the inactive ABI-v1 metadata scaffold. It does not
-activate any transaction. Boundary B remains invalid until ABI v2, the selected
-benchmark caps, the final parameter digest, proving and verification, state
-integration, wallet support, review, and activation are complete.
+`src/privacy_vnext/contract/iv5_protocol_v1.json`; its SHA-256 identifies the
+contract. The file describes the protocol and activates nothing itself: the
+version-2008 envelope activates at Boundary B (`FORK_HEIGHT_BOUNDARY_B`,
+`src/main.h`).
 
 ## Envelope
 
@@ -112,4 +111,4 @@ and Qt. No C++ fallback verifier is permitted.
 
 Run `python3 contrib/test/check_iv5_protocol_contract.py` to compare the
 contract's constants and capability matrix with C++, Rust, RPC, and release
-evidence declarations.
+schema declarations.

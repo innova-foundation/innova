@@ -1,6 +1,6 @@
 # Innova Privacy Architecture
 
-> **v5 recovery status:** the unsafe transaction-2000–2007 encodings are
+> **v5 status:** the unsafe transaction-2000–2007 encodings are
 > quarantined on public networks and retained for isolated historical/regtest
 > replay. This is not retirement of Innova privacy. Boundary B restores the
 > complete product in the distinct transaction-2008 protocol: full-chain
@@ -18,13 +18,12 @@ in Zcash, Monero, Firo, and Dash. Each section states what a feature does, the
 key source files, and how it fits into the wider system.
 
 Innova privacy is *opt-in*. Transparent UTXO transactions remain the only
-public-network path in the current recovery candidate while the unsafe legacy
-proof is quarantined. The product contract preserves the sender's per-
+public-network path until Boundary B, while the unsafe legacy proof is
+quarantined. The product contract preserves the sender's per-
 transaction mode mask
 (`PRIVACY_HIDE_SENDER`, `PRIVACY_HIDE_RECEIVER`, `PRIVACY_HIDE_AMOUNT`, or the
-combined `PRIVACY_MODE_FULL`), defined in `shielded.h`. Version 2008 will use a
-distinct canonical three-bit disclosure mask after a separately reviewed
-Boundary-B activation; it does not reuse the unsafe legacy proof or wire
+combined `PRIVACY_MODE_FULL`), defined in `shielded.h`. From Boundary B, version
+2008 uses a distinct canonical three-bit disclosure mask; it does not reuse the unsafe legacy proof or wire
 format.
 
 ---
@@ -194,8 +193,10 @@ the primary membership mechanism. A serial-format upgrade is gated at
 
 FCMP++ ("Full-Chain Membership Proofs") lets a spend prove that its note is one
 of *all* notes ever added to the pool, without a bounded decoy set and without
-revealing which one — a much larger anonymity set than Lelantus. It is Innova's
-current membership proof.
+revealing which one — a much larger anonymity set than Lelantus. From Boundary
+B, version-2008 spends prove membership with the vendored FCMP++ prover and
+verifier in the IV5 Rust layer (`src/privacy_vnext/rust`), over the
+Helios/Selene curve cycle.
 
 ### 5.1 The curve tree — `curvetree.*`
 
@@ -208,13 +209,11 @@ so a path from leaf to `GetRoot()` can be proven with an algebraic argument
 rather than a hash preimage. The alternating curves let each layer's proof be
 expressed efficiently on the curve where the child points live.
 
-`CFCMPProof` is the membership proof; its version byte selects the construction
-(`FCMP_PROOF_VERSION_*`): legacy, blinded, encrypted, IPA-based (V5, current
-default via `FCMP_PROOF_VERSION_CURRENT`), and cross-curve (V6).
-`CreateFCMPProof` / `VerifyFCMPProof` / `BatchVerifyFCMPProofs` build and check
-proofs against a root node. A spend embeds its `fcmpProof` and the
-`curveTreeRoot` it was built against (`CShieldedSpendDescription`), so consensus
-can confirm the note existed under a known historical root.
+`CFCMPProof` is the serialized proof container (`vchProof`, at most
+`FCMP_PROOF_MAX_SIZE` bytes) that a legacy spend carries as `fcmpProof`, next to
+the `curveTreeRoot` it was built against (`CShieldedSpendDescription`). The
+earlier C++ proof constructions (V5 IPA-based, V6 cross-curve) were removed; see
+Section 2.3.
 
 ### 5.2 ed25519 backend — `ed25519_zk.*`
 
@@ -225,14 +224,6 @@ hash-to-point (`Ed25519HashToPoint`), Pedersen commitments over ed25519, and
 torsion-safe encode/decode. `curvetree.*` re-exports thin wrappers
 (`Ed25519PointFromBytes` with torsion rejection, `Ed25519ScalarMult`, etc.) so
 the tree code stays curve-agnostic.
-
-### 5.3 Cross-curve proofs — `ipa.*`
-
-The V6 cross-curve proof (`CCrossCurveFCMPProof`, `CCrossCurveLayerProof`,
-`CreateFCMPProofV6` / `VerifyFCMPProofV6`) proves each tree layer on its own
-curve and binds adjacent layers with a re-randomization commitment plus a
-binding proof, so a single membership statement traverses both curves. The
-per-layer engine is the IPA of Section 2.3.
 
 FCMP++ activation is gated at `FORK_HEIGHT_FCMP` (`GetForkHeightFCMP`).
 
@@ -332,7 +323,7 @@ private finality vote/certificate (Section 7.3); that committee is never
 drawn in v5 (`GetCanonicalFinalityCommittee` always answers none), so this
 path cannot count toward finality. The live post-DAG finality vote is the
 separate note-vote lane: an op-10 transaction that spends and reissues an
-IV5 note (see `docs/v5-finality-semantics.md`).
+IV5 note.
 
 ### 7.2 M-of-N authorization tiers
 
@@ -340,7 +331,7 @@ For a delegated (M-of-N) note, V3 must additionally prove that at least `M` of
 the `N` set members authorized the stake. Two tiers exist, selected by
 `nAuthMode`:
 
-- **B2-e — public half-aggregated signers (`NULLSTAKE_AUTHMODE_HALFAGG`).**
+- **Public half-aggregated signers (`NULLSTAKE_AUTHMODE_HALFAGG`).**
   Each of `M` members signs the stake digest with its own key; the `s`-scalars
   are summed into one aggregate while the `M` `R`-points are kept, and
   verification checks a single Schnorr relation
@@ -349,7 +340,7 @@ the `N` set members authorized the stake. Two tiers exist, selected by
   `ComputeNullStakeV3DelegationSetHash`, `VerifyNullStakeMofNAuthorization`,
   `ComputeNullStakeMofNStakeDigest` in `bulletproof_ac.*`). Signer identities
   are public. `CreateNullStakeMofNKernelProofV3` builds it.
-- **B2-c — hidden signers (`NULLSTAKE_AUTHMODE_B2C_HIDDEN`).** A ring-DLEQ
+- **Hidden signers (`NULLSTAKE_AUTHMODE_B2C_HIDDEN`).** A ring-DLEQ
   construction (`CNullStakeMofNHiddenAuthProof`,
   `CNullStakeMofNHiddenAuthRingSlotProof`,
   `CreateNullStakeMofNHiddenAuthProof` / `VerifyNullStakeMofNHiddenAuthProof`,

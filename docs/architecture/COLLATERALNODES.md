@@ -62,7 +62,7 @@ The collateral is **not spent or transferred** to register — it stays in the
 operator's wallet as an ordinary UTXO. Registration merely proves the operator
 controls it, and the daemon calls `pwalletMain->LockCoin(vin.prevout)` so the wallet
 will not accidentally spend it while the node is running. Spending the collateral
-later simply makes the node ineligible; `CheckCollateralnodeVin()` also rejects an
+later makes the node ineligible; `CheckCollateralnodeVin()` also rejects an
 input whose txindex shows it has been spent.
 
 The collateral output must additionally have matured:
@@ -220,7 +220,7 @@ producer's reward output and the collateralnode output together sum to
 step in miner.cpp, where `blockValue` has already been reassigned to
 `PaidToBlock()`).
 
-Important cross-feature interactions:
+Cross-feature interactions:
 
 - **PoW blocks** carve the 65% out of the coinbase (`vtx[0]`); the miner keeps the
   rest.

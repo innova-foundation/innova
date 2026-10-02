@@ -1,8 +1,8 @@
 Translations
 ============
 
-The Qt GUI can be easily translated into other languages. Here's how we
-handle those translations.
+The Qt GUI can be translated into other languages. This section describes how
+translations are handled.
 
 Files and Folders
 -----------------
@@ -14,8 +14,8 @@ automated.
 
 ### src/qt/bitcoin.qrc
 
-This file must be updated whenever a new translation is added. Please note that
-files must end with `.qm`, not `.ts`.
+This file must be updated whenever a new translation is added. Files must end
+with `.qm`, not `.ts`.
 
     <qresource prefix="/translations">
         <file alias="en">locale/bitcoin_en.qm</file>

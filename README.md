@@ -37,12 +37,12 @@ carsenk) and Proof-of-Stake hybrid cryptocurrency with an optional privacy stack
 Ticker: INN
 
 The privacy stack (shielded pool, FCMP++, NullSend, NullStake, silent shielding)
-is implemented in this tree and exercised on regtest, but it is **not
-consensus-enabled on mainnet or testnet in this build**: the transaction versions
-it rides are rejected on public networks, and its activation boundary is
-deliberately unset. See [Privacy & Protocol Innovations](#privacy--protocol-innovations-iips)
-for the per-feature status. Transparent transactions are the public-network path
-today.
+activates with the v5 hardfork. The legacy prototype transaction versions
+(2000–2007) are rejected on public networks; the version-2008 envelope that
+replaces them activates at Boundary B, height 8,151,540 on mainnet. Until then,
+transparent transactions are the public-network path. See
+[Privacy & Protocol Innovations](#privacy--protocol-innovations-iips) for the
+per-feature status.
 
 ## Supported Operating Systems
 
@@ -95,7 +95,7 @@ today.
 * Tribus PoW/PoS Hybrid
 * Full decentralization
 * Hyperfile - IPFS API Implementation for Decentralized File Uploads (UI and RPC)
-* Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
+* Name Value System supporting the IDNS for decentralized blockchain domains
 
 ### v5 Consensus Stack
 
@@ -114,15 +114,13 @@ Already live on mainnet today, ungated: Dandelion++ transaction-origin privacy
 (relay policy, on by default), silent payments, stealth addresses, Proof of Data
 timestamping, and the IDNS name-value system.
 
-### v5 Privacy Stack — implemented, not consensus-enabled
+### v5 Privacy Stack — activates at Boundary B
 
-Implemented in this tree and regtest-mature, but **inert on every public
-network** in this build. The legacy envelopes (transaction versions 2000–2007)
-are rejected on mainnet and testnet at every height by
-`IsLegacyPrivacyPolicyDisabled()` (`main.h`), and the unified version-2008
-envelope that replaces them activates only at Boundary B — height 8,151,540 on
-mainnet, the same height as Boundary A (`FORK_HEIGHT_BOUNDARY_B`, `main.h`). These features are not removed from the
-product — they are staged behind that boundary.
+The legacy envelopes (transaction versions 2000–2007) are rejected on mainnet
+and testnet at every height by `IsLegacyPrivacyPolicyDisabled()` (`main.h`). The
+unified version-2008 envelope that replaces them activates at Boundary B:
+height 8,151,540 on mainnet, the same height as Boundary A
+(`FORK_HEIGHT_BOUNDARY_B`, `main.h`).
 
 * Shielded pool — Pedersen commitments, Bulletproofs, and Lelantus-style proofs
 * FCMP++ full-chain membership proofs (curve-tree + inner-product argument)
@@ -188,10 +186,10 @@ version-2008 envelope gated on Boundary B, height 8,151,540 on mainnet.
 
 ## Links
 
-* Official Website(https://innova-foundation.com/)
-* Innova Twitter(https://twitter.com/innovacoin)
-* Innova Discord Chat(https://discord.gg/mNM59znzNG)
-* Innova Telegram Chat(https://t.me/innova_foundation)
+* [Official Website](https://innova-foundation.com/)
+* [Innova Twitter](https://twitter.com/innovacoin)
+* [Innova Discord Chat](https://discord.gg/mNM59znzNG)
+* [Innova Telegram Chat](https://t.me/innova_foundation)
 
 ## installdaemon.sh
 

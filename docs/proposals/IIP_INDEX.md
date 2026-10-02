@@ -3,9 +3,8 @@
 **Version 1.1 -- August 2026**
 
 Statuses and heights in this document are checked against the source tree
-(`src/main.h`, `src/v5activation.h`, `src/curvetree.h`). Read
-[Activation status](#activation-status-read-this-before-the-tables) before the
-tables: a fork height alone does not mean a feature is live.
+(`src/main.h`, `src/v5activation.h`, `src/curvetree.h`). A fork height alone
+does not mean a feature is live; see [Activation status](#activation-status).
 
 ---
 
@@ -41,7 +40,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 
 ---
 
-## Activation status (read this before the tables)
+## Activation status
 
 Two rules govern whether an IIP is live, and both must hold.
 
@@ -77,7 +76,7 @@ product contract.
 ### Consensus
 
 Fork Height is the *base* height; the effective mainnet height is base + shift
-(see [Activation status](#activation-status-read-this-before-the-tables)).
+(see [Activation status](#activation-status)).
 
 | IIP | Title | Category | Status | Fork Height (base) | TX Version |
 |-----|-------|----------|--------|--------------------|------------|
@@ -184,7 +183,7 @@ each IIP specifies ships in the unified version-2008 envelope at Boundary B.
 
 **Note on the effective height**: rejection is from height 0 on regtest and testnet, but on mainnet `ANON_TXN_VERSION` (1000) stays valid until the first v5 gate (8,150,040 at the current shift), as in v4.3.9.5 — `src/main.h`'s own comment states this explicitly. A full replay of mainnet to 7,889,246 counted zero ring-signature transactions ever — no outputs, no key images, nothing unclaimed — so moving the mainnet gate does not change how any historical block validates. `GetForkHeightRingSigDeprecation()` keeps every `>=` comparison site rejecting from its height, including the consensus ones in `ConnectInputs`, `ConnectBlock`, and `AcceptBlock`.
 
-**Note on succession**: IIP-0002 and IIP-0006 are implemented but not consensus-enabled (see [Activation status](#activation-status-read-this-before-the-tables)). Ring signatures are therefore retired without their replacement being live: transparent transactions are the public-network path until Boundary B.
+**Note on succession**: IIP-0002 and IIP-0006 are implemented but not consensus-enabled (see [Activation status](#activation-status)). Ring signatures are therefore retired without their replacement being live: transparent transactions are the public-network path until Boundary B.
 
 ---
 
@@ -264,7 +263,7 @@ each IIP specifies ships in the unified version-2008 envelope at Boundary B.
 - Proof verification: O(d * 256) EC operations across two curves
 - Hybrid upgrade: Both Lelantus and FCMP++ proofs accepted during transition
 
-**Novel Contribution**: Hybrid FCMP++/Lelantus upgrade path with deterministic fallback -- the first smooth transition from fixed-size to full-chain anonymity sets.
+**Design note**: Hybrid FCMP++/Lelantus upgrade path with deterministic fallback, for the transition from fixed-size to full-chain anonymity sets.
 
 **References**: See `src/curvetree.h/cpp` (tree construction), `src/ipa.h/cpp` (inner product argument), `src/ed25519_zk.h/cpp` (Ed25519 operations). Based on Campanelli et al. [LS23].
 
@@ -281,7 +280,7 @@ each IIP specifies ships in the unified version-2008 envelope at Boundary B.
 | **Fork Height** | none. Silent payments are wallet/addressing over transparent outputs (`silentpayments.*`, `CWallet::GenerateNewSilentPaymentKey`/`ScanForSilentPayments`) and are live on mainnet with no height gate, but receive-side only: the GUI can generate an address and the wallet auto-scans incoming transactions for a match; there is no RPC (no `sp_send`) and no send-side integration yet. Silent shielding needs the shielded pool, so it is inactive until Boundary B. |
 | **Author** | 0xcircuitbreaker |
 
-**Abstract**: Adapts BIP-352 Silent Payments for Innova, enabling recipients to publish a single static address `(B_scan, B_spend)` that senders use to derive unique one-time output keys via ECDH. Introduces **Silent Shielding** -- the first protocol combining BIP-352 stealth addressing with a ZK shielded pool in a single atomic transaction.
+**Abstract**: Adapts BIP-352 Silent Payments for Innova, enabling recipients to publish a single static address `(B_scan, B_spend)` that senders use to derive unique one-time output keys via ECDH. Introduces **Silent Shielding**, which combines BIP-352 stealth addressing with a ZK shielded pool in a single atomic transaction.
 
 **Silent Shielding Protocol**:
 1. Sender derives output key `P` via standard Silent Payment ECDH
@@ -289,7 +288,7 @@ each IIP specifies ships in the unified version-2008 envelope at Boundary B.
 3. Sender creates shielded output addressed to derived address
 4. Output enters shielded pool, protected by all privacy mechanisms
 
-**Novel Contribution**: First protocol combining BIP-352 with a ZK shielded pool, eliminating the two-step "send then shield" pattern that leaks timing information.
+**Design note**: Combining BIP-352 with a ZK shielded pool removes the two-step "send then shield" pattern that leaks timing information.
 
 **References**: See `src/silentpayments.h/cpp`. Based on Rubin and Josibake [RJ23].
 

@@ -44,10 +44,5 @@ Designer: Everaldo (Everaldo Coelho)
 License: GNU/GPL 
 Site: http://findicons.com/icon/17102/reload?id=17102
 
-Image: src/qt/res/images/splash2.jpg (Wallet image)
-Designer: Crobbo (forum)
-Site: https://bitcointalk.org/index.php?topic=32273.0
-License: Public domain
-
 Innova Logo
 License: Creative Commons Attribution 4.0 International License

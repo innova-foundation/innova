@@ -1,8 +1,8 @@
 # Releasing Innova
 
 This document describes how Innova [INN] releases are produced. It replaces the
-legacy `doc/release-process.txt`, which described a Bitcoin-era Gitian /
-SourceForge flow that Innova no longer uses.
+legacy Bitcoin-era Gitian / SourceForge release process, which Innova no longer
+uses.
 
 Innova releases are built and published entirely by GitHub Actions
 (`.github/workflows/build.yml`, "Build & Release Innova"). The workflow runs on
@@ -10,7 +10,7 @@ every push to `master`, on push of a `v*` tag, and on manual
 `workflow_dispatch`. A push to `master` or a `v*` tag auto-publishes a GitHub
 release once the full build and audit matrix passes, unless the head commit
 message carries `[release:none]`. There is no separate manual
-signing/evidence/policy gate in front of publication; see "How the release is
+signing or policy gate in front of publication; see "How the release is
 published" below for what does gate it.
 
 ## Version scheme

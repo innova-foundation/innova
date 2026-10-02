@@ -65,13 +65,17 @@ the documentation can be extracted and cross-referenced.
 
 ```cpp
 /**
- * Validate an epoch finality certificate against the active committee.
+ * Consensus check for a settlement block: its coinbase must carry the full
+ * settlement leg for vCountedVotes at nEpochBudget.
  *
- * @param cert   the certificate to check
- * @param nEpoch the epoch the certificate claims to finalize
- * @return true if the certificate meets the 2/3 signing threshold
+ * @param nTotalOut the settled total (0 on failure)
+ * @return false if any settlement output is missing or wrong
  */
-bool VerifyFinalityCert(const CFinalityCert& cert, int nEpoch);
+bool CheckFinalitySettlementOutputs(const CBlock& block,
+                                    const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t nEpochBudget,
+                                    int64_t& nTotalOut,
+                                    std::string* pstrError = NULL);
 ```
 
 ### Locking
@@ -103,7 +107,7 @@ build with `-DDEBUG_LOCKORDER` to have lock-order inconsistencies reported in
 5. **Consensus changes.** Changes to consensus code (`main.cpp`, `kernel.cpp`,
    `dag.cpp`, `finality.cpp`, and related headers) receive extra scrutiny.
    New rules that change block validity must be gated behind a fork height (see
-   the `GetForkHeight*` helpers in `main.cpp`) so existing nodes are not split
+   the `GetForkHeight*` helpers in `main.h`) so existing nodes are not split
    before the activation point.
 
 ## Building and testing
@@ -152,8 +156,7 @@ For an overview of the major subsystems — the UTXO ledger, P2P networking, the
 PoW/PoS hybrid consensus, the v5 IDAG DAG-ordering and epoch-finality layer, the
 optional privacy features (shielded pool, NullSend, stealth addresses,
 NullStake), and collateralnodes — see the design notes under
-[`docs/architecture/`](architecture/). Start there before making structural
-changes so your contribution fits the existing component boundaries.
+[`docs/architecture/`](architecture/).
 
 ## License
 

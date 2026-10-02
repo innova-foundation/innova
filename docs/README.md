@@ -17,8 +17,6 @@ is the landing page; this directory holds the detailed docs.
 - [architecture/COLLATERALNODES.md](architecture/COLLATERALNODES.md) — collateralnodes: the 25,000 INN collateral, registration, and payments
 - [architecture/IV5-PROTOCOL.md](architecture/IV5-PROTOCOL.md) — the IV5 protocol contract
 - [architecture/IDNS-RENDEZVOUS.md](architecture/IDNS-RENDEZVOUS.md) — IDNS names and onion rendezvous
-- [v5-finality-semantics.md](v5-finality-semantics.md) — what v5 finality guarantees and its limits
-- [iv5-receiver-disclosure.md](iv5-receiver-disclosure.md) — IV5 receiver disclosure
 
 ## Protocol proposals
 
