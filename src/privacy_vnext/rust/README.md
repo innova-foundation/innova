@@ -1,4 +1,4 @@
-# Innova privacy-vNext Rust provenance spine
+# Innova privacy-vNext Rust layer
 
 This directory pins the source and dependency inputs for the FCMP++ fork and
 implements the IV5 consensus ABI for transaction version 2008: FCMP++ proving
@@ -9,7 +9,8 @@ mix-balance proofs, in addition to the metadata and FCMP++ proof-size exports.
 The canonical product contract fixes the intended shape: FCMP++ revision
 `76399e58bfc7e652d900936f84b3785ea59ab4cd`, eight tree layers, 16-input and
 16-output caps, a 256 KiB payload cap, disclosure modes 0 through 7, NullStake
-generations 1 through 3, and the required shield, unshield, transfer, NullSend,
+generations 1 through 3, and the shield, unshield (refused from Boundary B),
+transfer, NullSend,
 three NullStake/private-cold modes, public- and hidden-signer M-of-N, reclaim,
 and private-finality operations. `consensus_active` is 1.
 
@@ -18,7 +19,8 @@ Pinned inputs:
 - monero-oxide commit `76399e58bfc7e652d900936f84b3785ea59ab4cd`;
 - upstream `Cargo.lock` preserved verbatim in `upstream/Cargo.lock`;
 - Rust `1.94.1`, preserved verbatim in both `rust-toolchain.toml` locations;
-- registry packages under `vendor/`, selected through `.cargo/config.toml`;
+- registry packages restored into `vendor/` by `cargo vendor --locked`
+  (not tracked in git), selected through `.cargo/config.toml`;
 - all upstream tracked source and license material under `upstream/`;
 - a deterministic SPDX 2.3 SBOM in `sbom.spdx.json`.
 
