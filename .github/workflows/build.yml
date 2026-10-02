@@ -536,6 +536,9 @@ jobs:
 
       - name: Build daemon (fully static)
         run: |
+          # MSYS2 does not inherit the Windows PATH; the Rust step built the GNU target.
+          export PATH="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin:$PATH"
+          export CARGO_BUILD_TARGET=x86_64-pc-windows-gnu
           cd src
           make -f makefile.mingw \
             BOOST_ROOT=/ucrt64 \
@@ -555,6 +558,8 @@ jobs:
 
       - name: Build Qt wallet (fully static)
         run: |
+          export PATH="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin:$PATH"
+          export CARGO_BUILD_TARGET=x86_64-pc-windows-gnu
           /ucrt64/qt6-static/bin/qmake \
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BOOST_THREAD_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \

@@ -211,8 +211,8 @@ BOOST_AUTO_TEST_CASE(the_coin_day_weight_is_truncated_before_the_target_multiply
     const CBigNum bnValueControl = CeilDiv((bnFloor + 1) * bnDay, CBigNum(nWeight));
     BOOST_REQUIRE(bnValueCross < CBigNum(MAX_MONEY));
     BOOST_REQUIRE(bnValueControl < CBigNum(MAX_MONEY));
-    const int64_t nValueCross = (int64_t)bnValueCross.getuint64();
-    const int64_t nValueControl = (int64_t)bnValueControl.getuint64();
+    const int64_t nValueCross = (int64_t)CBigNum(bnValueCross).getuint64();
+    const int64_t nValueControl = (int64_t)CBigNum(bnValueControl).getuint64();
 
     // The refused case is exactly the one the cross-multiplied form accepts.
     BOOST_REQUIRE(CBigNum(nValueCross) * nWeight / COIN / (int64_t)ONE_DAY == bnFloor);
