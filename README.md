@@ -25,7 +25,7 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 [![Github Actions](https://github.com/innova-foundation/innova/actions/workflows/build.yml/badge.svg)](https://github.com/innova-foundation/innova/actions)
 [![CircleCI](https://circleci.com/gh/innova-foundation/innova.svg?style=shield)](https://app.circleci.com/pipelines/github/innova-foundation/innova)
 
-<a href="https://twitter.com/intent/follow?screen_name=Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=twitter" alt="follow on Twitter"></a>
+<a href="https://x.com/Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=x" alt="follow on X"></a>
 
 [Links](#links)
 
@@ -187,7 +187,7 @@ version-2008 envelope gated on Boundary B, height 8,151,540 on mainnet.
 ## Links
 
 * [Official Website](https://innova-foundation.com/)
-* [Innova Twitter](https://twitter.com/innovacoin)
+* [Innova on X (@Innova_Fdn)](https://x.com/Innova_Fdn)
 * [Innova Discord Chat](https://discord.gg/mNM59znzNG)
 * [Innova Telegram Chat](https://t.me/innova_foundation)
 
