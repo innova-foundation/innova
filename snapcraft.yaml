@@ -1,4 +1,4 @@
-# Innova - Snapcraft Build - Known to build in most Ubuntu Versions
+# Innova snap: innovad and the Qt6 wallet (v5), amd64 and arm64.
 # https://innova-foundation.com
 # https://github.com/innova-foundation/innova
 # By Carsen Klock - Edited by CircuitBreaker
@@ -11,6 +11,10 @@ description: |
 grade: stable
 confinement: strict
 base: core22
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
 
 plugs: # plugs for theming, font settings, cursor and to use gtk3 file chooser
   gtk-3-themes:
@@ -52,73 +56,34 @@ apps:
       HOME: $SNAP_USER_COMMON
 
 parts:
-  daemon:
-    source: .
-    plugin: nil
-    build-packages:
-      - g++
-      - build-essential
-      - zlib1g-dev
-      - libdb++-dev
-      - libboost-all-dev
-      - libqrencode-dev
-      - libminiupnpc-dev
-      - libevent-dev
-      - libcurl4-openssl-dev
-      - libssl-dev
-      - libtool
-      - libminizip-dev
-    stage-packages:
-      - libdb5.3++
-      - libboost-system1.74.0
-      - libboost-filesystem1.74.0
-      - libboost-program-options1.74.0
-      - libboost-thread1.74.0
-      - libboost-chrono1.74.0
-      - libqrencode4
-      - libminiupnpc17
-      - libevent-2.1-7
-      - libcurl4
-      - libssl3
-      - libminizip1
-    override-build: |
-      set -x
-      ARCH=$(uname -m)
-      MF=makefile.unix
-      if [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv6l" ] || [ "$ARCH" = "aarch64" ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "i686" ] || [ "$ARCH" = "i386" ]; then
-          MF="makefile.unix"
-      else
-          MF="makefile.arm"
-      fi
-      cd src
-      make -f "${MF}" -j4
-      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
-      cp $SNAPCRAFT_PART_BUILD/src/innovad $SNAPCRAFT_PART_INSTALL/bin
   innova:
     source: .
     plugin: nil
     build-packages:
-      - g++
+      - curl
+      - ca-certificates
+      - git
       - build-essential
+      - pkg-config
       - zlib1g-dev
-      - libdb++-dev
-      - libboost-all-dev
-      - libqrencode-dev
-      - libminiupnpc-dev
-      - libevent-dev
-      - libcurl4-openssl-dev
       - libssl-dev
-      - libtool
+      - libevent-dev
+      - libboost-all-dev
+      - libdb++-dev
+      - libminiupnpc-dev
+      - libqrencode-dev
+      - libcurl4-openssl-dev
+      - libgmp-dev
+      - libsecp256k1-dev
       - libminizip-dev
-      - libqt5gui5
-      - libqt5core5a
-      - libqt5dbus5
-      - qttools5-dev
-      - qttools5-dev-tools
-      - qtbase5-dev
-      - qtbase5-dev-tools
+      - libprotobuf-dev
+      - protobuf-compiler
+      - qt6-base-dev
+      - qt6-base-dev-tools
+      - qt6-tools-dev
+      - qt6-tools-dev-tools
+      - qt6-l10n-tools
+      - libgl1-mesa-dev
     stage-packages:
       - libdb5.3++
       - libboost-system1.74.0
@@ -128,23 +93,35 @@ parts:
       - libboost-chrono1.74.0
       - libqrencode4
       - libminiupnpc17
-      - libevent-2.1-7
       - libcurl4
       - libssl3
-      - libminizip1
-      - libqt5gui5
-      - libqt5core5a
-      - libqt5dbus5
-      - qtwayland5
+      - libgmp10
+      - libqt6core6
+      - libqt6gui6
+      - libqt6widgets6
+      - libqt6network6
+      - libqt6dbus6
+      - libqt6printsupport6
+      - libqt6svg6
+      - qt6-qpa-plugins
+      - qt6-wayland
+      - qt6-gtk-platformtheme
+      - libgl1
+      - libegl1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libxcb-cursor0
     override-build: |
-      set -x
-      ARCH=$(uname -m)
-      TOROPT="USE_NATIVETOR=-"
-      sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' $SNAPCRAFT_PART_BUILD/innova-qt.pro
-      qmake "USE_UPNP=1" "USE_QRCODE=1" "${TOROPT}" innova-qt.pro
-      make -j4
-      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
-      cp $SNAPCRAFT_PART_BUILD/Innova $SNAPCRAFT_PART_INSTALL/bin
+      set -ex
+      # vendor/ is not in git; restore it from the checksums pinned in Cargo.lock.
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+      export PATH="$HOME/.cargo/bin:$PATH"
+      (cd src/privacy_vnext/rust && CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml > /dev/null)
+      make -C src -f makefile.unix -j"$(nproc)" USE_NATIVETOR=- innovad
+      /usr/lib/qt6/bin/qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+      make -j"$(nproc)"
+      mkdir -p "$SNAPCRAFT_PART_INSTALL/bin"
+      cp src/innovad Innova "$SNAPCRAFT_PART_INSTALL/bin/"
   desktop:
     source: snap/gui
     plugin: dump
