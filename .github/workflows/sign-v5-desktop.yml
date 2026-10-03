@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-14
     environment: v5-release-signing
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
@@ -100,13 +100,13 @@ jobs:
           shasum -a 256 "$unsigned" > signing-evidence/unsigned-package.sha256
           shasum -a 256 "$signed" > signing-evidence/signed-package.sha256
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-macOS-arm64-signed
           path: innova-${{ inputs.version }}-macOS-arm64.dmg
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: v5-macos-signing-evidence
           path: signing-evidence
@@ -117,7 +117,7 @@ jobs:
     runs-on: windows-latest
     environment: v5-release-signing
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
@@ -161,13 +161,13 @@ jobs:
           (Get-FileHash -Algorithm SHA256 $unsigned).Hash.ToLower() | Set-Content signing-evidence/unsigned-package.sha256
           (Get-FileHash -Algorithm SHA256 $signed).Hash.ToLower() | Set-Content signing-evidence/signed-package.sha256
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-win64-signed
           path: innova-${{ inputs.version }}-win64.zip
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: v5-windows-signing-evidence
           path: signing-evidence

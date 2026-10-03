@@ -24,7 +24,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -48,6 +48,9 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev libprotobuf-dev protobuf-compiler
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
 
       - name: Install Qt ${{ matrix.qt }}
         run: |
@@ -101,7 +104,7 @@ jobs:
 
       - name: Upload verification evidence
         if: matrix.qt == 5 && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-evidence-linux-qt5
           path: ${{ runner.temp }}/release-evidence
@@ -122,7 +125,7 @@ jobs:
 
       - name: Upload verification evidence
         if: matrix.qt == 6 && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-evidence-linux-qt6
           path: ${{ runner.temp }}/release-evidence
@@ -153,7 +156,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -168,6 +171,9 @@ jobs:
       # or red and no digest could name it. The producer runs the same clean
       # build and aggregate and writes ${{ matrix.field }}'s document, which the
       # release gate then verifies and the manifest carries.
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
+
       - name: Sanitizer evidence (${{ matrix.field }})
         env:
           V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
@@ -189,7 +195,7 @@ jobs:
 
       - name: Upload verification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-evidence-${{ matrix.sanitizer }}
           path: ${{ runner.temp }}/release-evidence
@@ -202,7 +208,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -211,6 +217,9 @@ jobs:
 
       # Only a Darwin host can produce macos_clean_sha256, so this leg is its
       # producer: the same clean build and aggregate, plus the document.
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
+
       - name: Clean macOS build evidence (macos_clean_sha256)
         env:
           V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
@@ -219,7 +228,7 @@ jobs:
 
       - name: Upload verification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-evidence-macos
           path: ${{ runner.temp }}/release-evidence

@@ -137,7 +137,7 @@ It then:
 4. If a release already exists for tag `v<version>`, deletes it only when
    `replace_existing_release` was set to that exact tag; otherwise the job
    refuses and fails rather than silently replacing a published release.
-5. Creates the release with `softprops/action-gh-release@v2`:
+5. Creates the release with `softprops/action-gh-release@v3`:
    - `tag_name: v<version>`, `target_commitish:` the stamped commit
    - `name: "Innova v<version>"`
    - `files:` the 12 archives, `SHA256SUMS.txt`, and the rust-vendor archive

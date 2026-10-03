@@ -105,7 +105,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-ubuntu2204-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz
@@ -159,7 +159,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-ubuntu2404-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz
@@ -249,7 +249,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-ubuntu2604-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz
@@ -307,7 +307,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-debian12-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz
@@ -352,7 +352,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-linux-aarch64
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz
@@ -371,7 +371,7 @@ jobs:
           fetch-depth: 0
 
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -436,7 +436,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-macOS-arm64
           path: innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
@@ -594,7 +594,7 @@ jobs:
           "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64.zip "$PKGDIR"/*
           test -s innova-${{ needs.get-version.outputs.version }}-win64.zip
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-win64
           path: innova-${{ needs.get-version.outputs.version }}-win64.zip
@@ -655,7 +655,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-debian11-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz
@@ -709,7 +709,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-fedora41-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
@@ -763,7 +763,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-archlinux-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz
@@ -817,7 +817,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-fedora40-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz
@@ -877,7 +877,7 @@ jobs:
             innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
           test -s innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: innova-linux-aarch64-qt
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
@@ -898,7 +898,7 @@ jobs:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -933,7 +933,7 @@ jobs:
           make USE_NATIVETOR=- -f makefile.unix clean
           make USE_NATIVETOR=- -f makefile.unix -j$(nproc) innovad
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: v5-audit-linux-daemon
           path: src/innovad
@@ -949,7 +949,7 @@ jobs:
           git archive --format=tar --prefix=innova-v5-source/ \
             --output="$RUNNER_TEMP/innova-v5-source.tar" "$source_commit"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: v5-immutable-source-artifact
           path: ${{ runner.temp }}/innova-v5-source.tar
@@ -970,7 +970,7 @@ jobs:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -1015,7 +1015,7 @@ jobs:
         with:
           ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -1054,7 +1054,7 @@ jobs:
         with:
           ref: ${{ needs.get-version.outputs.sha }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -1064,7 +1064,7 @@ jobs:
           sudo apt-get install -y libssl-dev libevent-dev libboost-all-dev libdb++-dev \
             libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev python3 bc
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: v5-audit-linux-daemon
           path: src
@@ -1075,7 +1075,7 @@ jobs:
           chmod +x src/innovad
           contrib/test/v5_release_gate.sh --integration 2>&1 | tee v5-integration.log
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: v5-audit-integration-log
@@ -1114,7 +1114,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
@@ -1227,7 +1227,7 @@ jobs:
             echo '```'
           } > release-body.md
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.get-version.outputs.version }}
           target_commitish: ${{ needs.get-version.outputs.sha }}

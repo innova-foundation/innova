@@ -166,7 +166,7 @@ if ! echo "$all_gate_body" | grep -q 'run_integration'; then
         fail "the integration evidence producer does not run the integration gate"
 fi
 
-upload_count=$(grep -c 'uses: actions/upload-artifact@v5' "$ROOT/.github/workflows/build.yml")
+upload_count=$(grep -c 'uses: actions/upload-artifact@v6' "$ROOT/.github/workflows/build.yml")
 missing_file_error_count=$(grep -c 'if-no-files-found: error' "$ROOT/.github/workflows/build.yml")
 [ "$upload_count" -eq "$missing_file_error_count" ] || \
     fail "every uploaded release/audit artifact must fail when its file is missing"
