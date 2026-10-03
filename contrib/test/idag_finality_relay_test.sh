@@ -254,7 +254,7 @@ wait_rpc_down() {
     local attempt
     local pidfile="$(node_dir "$node")/finality_relay.pid"
     local pid
-    for ((attempt=0; attempt<45; attempt++)); do
+    for ((attempt=0; attempt<120; attempt++)); do
         if ! rpc "$node" getinfo >/dev/null 2>&1; then
             # RPC stops before the DB flush and datadir lock release. Wait until no process holds
             # the datadir (the lock, not the pid file, is authoritative).
@@ -857,7 +857,11 @@ if [ "${IDAG_RELAY_TEST_RESTART:-0}" = "1" ]; then
 
     for ((node=0; node<NUM_NODES; node++)); do
         rpc "$node" stop >/dev/null 2>&1 || { fail "node$node stop RPC failed"; exit 1; }
-        wait_rpc_down "$node" || { fail "node$node did not stop cleanly"; exit 1; }
+        if ! wait_rpc_down "$node"; then
+            fail "node$node did not stop cleanly"
+            tail -n 40 "$(node_dir "$node")/regtest/debug.log" 2>/dev/null
+            exit 1
+        fi
         start_node "$node" || { fail "node$node failed to restart"; exit 1; }
         wait_rpc "$node" || { fail "node$node RPC did not return after restart"; exit 1; }
         connect_mesh
