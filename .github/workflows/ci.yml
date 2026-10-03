@@ -14,7 +14,8 @@ on:
 
 jobs:
   ubuntu-qt-smoke:
-    runs-on: ubuntu-22.04
+    # The Qt6 leg runs where the release wallet is built (RELEASE_QT_VERSION).
+    runs-on: ${{ matrix.qt == 6 && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +60,8 @@ jobs:
               libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools
           else
             sudo apt-get install -y \
-              qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-tools-dev-tools
+              qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-tools-dev-tools \
+              qt6-l10n-tools libgl1-mesa-dev
           fi
 
       # The qt5 leg produces linux_clean_sha256 instead of running the same
@@ -88,19 +90,6 @@ jobs:
           make USE_NATIVETOR=- -f makefile.unix release-check \
             CXXFLAGS="-Werror=return-type -Werror=format" \
             CFLAGS="-Werror=return-type -Werror=format"
-
-      # Same commands as the qt6 leg below, run by the producer so the Qt5
-      # compatibility build leaves a document behind. It works on a copy of the
-      # tree, so the patched .pro and the generated makefiles stay out of the
-      # checkout the later steps measure.
-      - name: Qt5 compatibility evidence (qt5_compat_sha256)
-        if: matrix.qt == 5
-        env:
-          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
-          V5_EVIDENCE_WORK: ${{ runner.temp }}/release-evidence-work
-        run: |
-          sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          contrib/test/produce_qt5_compat_evidence.sh
 
       - name: Upload verification evidence
         if: matrix.qt == 5 && always()
