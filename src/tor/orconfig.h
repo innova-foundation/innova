@@ -12,6 +12,13 @@
 #include "orconfig_apple.h"
 #else
 #include "orconfig_linux.h"
+/* orconfig_linux.h was generated on glibc >= 2.38, which added strlcpy/strlcat;
+   older glibc uses tor's own copies. */
+#include <features.h>
+#if defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 38))
+#undef HAVE_STRLCAT
+#undef HAVE_STRLCPY
+#endif
 #endif
 
 /* Normally passed by upstream's configure. Read only by config.c (geoip paths,

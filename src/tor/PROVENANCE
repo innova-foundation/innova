@@ -95,6 +95,11 @@ is a strict subset of the Linux one; the single source that differs is
 src/ext/readpassphrase.c, which macOS does not compile and which self-guards on
 HAVE_READPASSPHRASE, so one source list serves both platforms.
 
+src/ext/strlcpy.c and src/ext/strlcat.c are also kept, byte-identical to the
+tarball. Both hosts' libc provides strlcpy/strlcat, so neither was in the closure,
+but lib/string/compat_string.c includes them on glibc older than 2.38 (orconfig.h
+withdraws HAVE_STRLCPY/HAVE_STRLCAT there).
+
 Two upstream sources share the basename conflux.c (core/or and trunnel), which
 is why objects are built into a mirrored tree under obj/tor rather than a flat
 directory.
