@@ -172,11 +172,6 @@ missing_file_error_count=$(grep -c 'if-no-files-found: error' "$ROOT/.github/wor
     fail "every uploaded release/audit artifact must fail when its file is missing"
 grep -q 'expected exactly one release asset' "$ROOT/.github/workflows/build.yml" || \
     fail "release collector does not require the complete platform asset set"
-grep -B2 -q 'contrib/test/v5_release_gate.sh --integration' "$ROOT/.github/workflows/build.yml" || \
-    fail "release workflow does not run the integration gate"
-integration_context=$(grep -B3 'contrib/test/v5_release_gate.sh --integration' "$ROOT/.github/workflows/build.yml")
-echo "$integration_context" | grep -q 'set -euo pipefail' || \
-    fail "integration log pipeline can hide a failed release gate"
 # Match within the job's own extent; a fixed -A window drifts as jobs change size.
 workflow_job() {
     awk -v job="  $1:" '

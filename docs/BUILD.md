@@ -455,10 +455,11 @@ publishes a GitHub release once the matrix and audit gates pass:
 
 Each job requires its documented binaries and archive, uploads with missing-file
 failure enabled, and includes a `SHA256SUMS.txt`. The final `release` job requires
-exactly one of every named platform archive, plus four audit gates: the clean-Linux
+exactly one of every named platform archive, plus three audit gates: the clean-Linux
 unit/warning build (`audit-linux-clean`), the ASan/UBSan sanitizer runs
-(`audit-linux-sanitizers`), the Rust vendored-provenance/offline gate
-(`audit-rust-vnext`), and the local regtest v5 integration gate (`audit-regtest`).
+(`audit-linux-sanitizers`), and the Rust vendored-provenance/offline gate
+(`audit-rust-vnext`). The multi-node regtest suites
+(`contrib/test/v5_release_gate.sh --integration`) run locally, not in CI.
 It generates a combined `SHA256SUMS.txt` and publishes a GitHub release via
 `softprops/action-gh-release`. The version comes from
 `contrib/versioning/next-version.sh`; see `docs/RELEASING.md`.

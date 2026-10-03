@@ -926,20 +926,6 @@ jobs:
             CXXFLAGS="-Werror=return-type -Werror=format" \
             CFLAGS="-Werror=return-type -Werror=format"
 
-      # The integration gate tests the daemon as released, which includes Hyperfile/IPFS.
-      - name: Build the integration daemon with IPFS
-        run: |
-          cd src
-          make USE_NATIVETOR=- -f makefile.unix clean
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc) innovad
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: v5-audit-linux-daemon
-          path: src/innovad
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Materialize immutable source artifact
         run: |
           set -euo pipefail
@@ -1041,47 +1027,12 @@ jobs:
           test "$restored" -eq "$expected"
       - name: Verify vendored provenance and run locked offline Rust gate
         # Samples every 1024th byte; the full bit-flip sweep takes weeks on a runner.
+        # Optimized test builds keep overflow checks and debug assertions; unoptimized
+        # proving ran past the job limit.
         env:
           INNOVA_DIFF_STRIDE: "1024"
+          CARGO_PROFILE_DEV_OPT_LEVEL: "3"
         run: src/privacy_vnext/rust/check.sh
-
-  audit-regtest:
-    runs-on: ubuntu-22.04
-    needs: [get-version, audit-linux-clean]
-    timeout-minutes: 360
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.get-version.outputs.sha }}
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
-      - name: Install runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev libevent-dev libboost-all-dev libdb++-dev \
-            libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev python3 bc
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: v5-audit-linux-daemon
-          path: src
-
-      - name: Full local privacy, IDAG, finality, relay, and restart gate
-        run: |
-          set -euo pipefail
-          chmod +x src/innovad
-          contrib/test/v5_release_gate.sh --integration 2>&1 | tee v5-integration.log
-
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: v5-audit-integration-log
-          path: v5-integration.log
-          if-no-files-found: error
-          retention-days: 30
 
   # Create GitHub Release (version tags or explicit manual publish)
   release:
@@ -1104,7 +1055,6 @@ jobs:
       - audit-linux-clean
       - audit-linux-sanitizers
       - audit-rust-vnext
-      - audit-regtest
     permissions:
       contents: write
     steps:

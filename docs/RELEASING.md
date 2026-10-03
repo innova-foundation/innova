@@ -97,14 +97,13 @@ these by hand):
   `SHA256SUMS.txt` before archiving, then uploads with
   `if-no-files-found: error`.
 
-Four more jobs are required release/audit gates, all depending on
+Three more jobs are required release/audit gates, all depending on
 `get-version`:
 
 - `audit-linux-clean` — static checks (`contrib/test/v5_release_gate.sh
   --static-checks`), a clean warning-gated build and the `release-check` test
-  aggregate, then a separate IPFS-enabled daemon build
-  that `audit-regtest` downloads. It also materializes an immutable `git
-  archive` of the built commit as an artifact.
+  aggregate. It also materializes an immutable `git archive` of the built
+  commit as an artifact.
 - `audit-linux-sanitizers` — matrix over `address` and `undefined`: a clean
   sanitizer build, two targeted `test_innova` runs
   (`range_proof_malformed_ipa_point_returns_false_without_crash`,
@@ -113,9 +112,12 @@ Four more jobs are required release/audit gates, all depending on
 - `audit-rust-vnext` — installs the pinned Rust `1.94.1` toolchain, restores
   `vendor/` with `CARGO_NET_OFFLINE=false cargo vendor --locked
   --versioned-dirs --sync upstream/Cargo.toml`, then runs
-  `src/privacy_vnext/rust/check.sh` with `INNOVA_DIFF_STRIDE=1024`.
-- `audit-regtest` — needs `audit-linux-clean`'s daemon artifact and runs
-  `contrib/test/v5_release_gate.sh --integration`.
+  `src/privacy_vnext/rust/check.sh` with `INNOVA_DIFF_STRIDE=1024` and
+  optimized test builds (`CARGO_PROFILE_DEV_OPT_LEVEL=3`).
+
+The multi-node regtest suites (`contrib/test/v5_release_gate.sh
+--integration`) are timing-sensitive and run locally before a release, not on
+shared CI runners.
 
 ## How the release is published
 
@@ -123,7 +125,7 @@ The `release` job runs whenever `get-version` reports `release == true`: on
 every `master` push without `[release:none]`, on every `v*` tag push, and on a
 `workflow_dispatch` run with `publish_release` checked. It `needs:` all 12
 build jobs plus `audit-linux-clean`, both `audit-linux-sanitizers` matrix legs,
-`audit-rust-vnext`, and `audit-regtest`, so a failed or skipped required job
+and `audit-rust-vnext`, so a failed or skipped required job
 blocks publication.
 
 It then:
