@@ -619,6 +619,8 @@ jobs:
         run: |
           sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
           echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot
+          # snapshot.debian.org answers 504 under load; retry instead of failing the job.
+          echo 'Acquire::Retries "10";' >> /etc/apt/apt.conf.d/99snapshot
 
       - name: Install dependencies
         run: |
