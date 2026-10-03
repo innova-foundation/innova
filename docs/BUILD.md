@@ -61,7 +61,7 @@ The Qt wallet adds:
 - **protobuf** — payment-protocol support.
 
 The tree builds against both Qt 5.15 and Qt 6. Most Linux release builds and
-Windows use Qt 6 (`qmake6`); Debian 11 and Fedora still build against Qt 5
+Windows use Qt 6 (`qmake6`); Fedora still builds against Qt 5
 (`qmake-qt5`). macOS builds Qt 6 with CMake (`CMakeLists.txt`), because
 Homebrew's Qt 6 ships no qmake platform mkspec.
 
@@ -105,12 +105,12 @@ reproducible. Release archives also ship a `vendor.tar.zst` for air-gapped build
 ## Linux
 
 Tested distributions (all built in CI): Ubuntu 22.04 / 24.04 / 26.04,
-Debian 11 / 12, Fedora 40 / 41, and Arch Linux. aarch64 (daemon, and
+Debian 12 / 13, Fedora 40 / 41, and Arch Linux. aarch64 (daemon, and
 daemon+Qt) is also built in CI, on native arm runners.
 
 ### 1. Install dependencies
 
-**Debian / Ubuntu (22.04, 24.04, Debian 12):**
+**Debian / Ubuntu (22.04, 24.04, Debian 12 / 13):**
 
 ```sh
 sudo apt-get update
@@ -121,10 +121,6 @@ sudo apt-get install -y build-essential libtool autotools-dev automake pkg-confi
   qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
   libprotobuf-dev protobuf-compiler
 ```
-
-**Debian 11** still builds against Qt 5 (bullseye predates Qt 6 packaging);
-substitute `qtbase5-dev qttools5-dev qttools5-dev-tools libgl1-mesa-dev` for the
-`qt6-*` packages above, and use `qmake` from `qt5` (see step 3).
 
 **Ubuntu 26.04** ships a renamed Berkeley DB C++ package. Use `libdb5.3++-dev`
 instead of `libdb++-dev`, and replace `bsdmainutils` with `bsdextrautils`:
@@ -203,7 +199,7 @@ make -j$(nproc)
 ```
 
 This produces the `Innova` GUI binary. On Fedora the qmake binary is
-`qmake-qt5`; on Debian 11 it is `/usr/lib/x86_64-linux-gnu/qt5/bin/qmake`.
+`qmake-qt5`.
 
 Two environment notes that CI applies and you may need locally:
 
@@ -446,7 +442,7 @@ dispatch. A `master` push, a tag push, or a dispatch with `publish_release` set
 publishes a GitHub release once the matrix and audit gates pass:
 
 - Ubuntu 22.04 / 24.04 / 26.04 (daemon + Qt)
-- Debian 11 / 12 (daemon + Qt)
+- Debian 12 / 13 (daemon + Qt)
 - Fedora 40 / 41 (daemon + Qt)
 - Arch Linux (daemon + Qt)
 - Linux aarch64 (daemon), aarch64-Qt (daemon + Qt), on native arm runners

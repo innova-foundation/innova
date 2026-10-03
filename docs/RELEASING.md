@@ -75,8 +75,8 @@ On every trigger, 12 platform build jobs run, each depending on `get-version`:
 | `build-ubuntu-2204` | ubuntu-22.04 | daemon + Qt, `.tar.gz` |
 | `build-ubuntu-2404` | ubuntu-24.04 | daemon + Qt, `.tar.gz` |
 | `build-ubuntu-2604` | `ubuntu:26.04` container | daemon + Qt, `.tar.gz` |
-| `build-debian-11` | `debian:11` container | daemon + Qt, `.tar.gz` |
 | `build-debian-12` | `debian:12` container | daemon + Qt, `.tar.gz` |
+| `build-debian-13` | `debian:13` container | daemon + Qt, `.tar.gz` |
 | `build-fedora-40` | `fedora:40` container | daemon + Qt, `.tar.gz` |
 | `build-fedora-41` | `fedora:41` container | daemon + Qt, `.tar.gz` |
 | `build-archlinux` | `archlinux:latest` container | daemon + Qt, `.tar.gz` |

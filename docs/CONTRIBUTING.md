@@ -101,7 +101,7 @@ build with `-DDEBUG_LOCKORDER` to have lock-order inconsistencies reported in
 4. **CI must pass.** Pull requests run `.github/workflows/ci.yml`: an Ubuntu Qt
    5/6 smoke build, ASan/UBSan sanitizer runs, and a macOS consensus gate. The
    full platform-release matrix in `.github/workflows/build.yml` (Ubuntu 22.04 /
-   24.04 / 26.04, Debian 11 / 12, Fedora 40 / 41, Arch, Linux aarch64 daemon and
+   24.04 / 26.04, Debian 12 / 13, Fedora 40 / 41, Arch, Linux aarch64 daemon and
    daemon+Qt, macOS arm64, and Windows via MSYS2) runs on a push to `master` or a
    tagged release. A pull request will not be merged until its CI is green.
 5. **Consensus changes.** Changes to consensus code (`main.cpp`, `kernel.cpp`,

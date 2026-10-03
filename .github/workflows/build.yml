@@ -314,6 +314,64 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
+  # Debian 13 x86_64 (daemon + Qt) via Docker container
+  # ─────────────────────────────────────────────────────────
+  build-debian-13:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: debian:13
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.get-version.outputs.sha }}
+          fetch-depth: 0
+
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb5.3++-dev \
+            libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
+            libsecp256k1-dev \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
+            libprotobuf-dev protobuf-compiler \
+            git curl ca-certificates
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-debian13-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-debian13-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-debian13-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: innova-debian13-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-debian13-x86_64.tar.gz
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────
   # Linux aarch64 (daemon only)
   # ─────────────────────────────────────────────────────────
   build-linux-arm64:
@@ -598,76 +656,6 @@ jobs:
         with:
           name: innova-win64
           path: innova-${{ needs.get-version.outputs.version }}-win64.zip
-          if-no-files-found: error
-
-  # ─────────────────────────────────────────────────────────
-  # Debian 11 (Bullseye) x86_64 (daemon + Qt) via Docker
-  # ─────────────────────────────────────────────────────────
-  build-debian-11:
-    runs-on: ubuntu-22.04
-    needs: get-version
-    container:
-      # A dated 11.11 image: its base libraries match the point release, so it
-      # installs from deb.debian.org without the pruned bullseye-security pool.
-      image: debian:bullseye-20240926
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.get-version.outputs.sha }}
-          fetch-depth: 0
-
-
-      - name: Configure apt
-        run: |
-          echo 'Acquire::Retries "10";' > /etc/apt/apt.conf.d/80retries
-          # deb.debian.org's bullseye-security index names files its pool no longer
-          # holds (LTS ended); build from the 11.11 point release instead.
-          sed -i '/bullseye-security/d' /etc/apt/sources.list
-          # Once bullseye leaves deb.debian.org, fall back to archive.debian.org.
-          if ! apt-get update --error-on=any; then
-            sed -i 's|http://deb.debian.org|http://archive.debian.org|' /etc/apt/sources.list
-            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
-            apt-get update --error-on=any
-          fi
-
-      - name: Install dependencies
-        run: |
-          apt-get install -y build-essential libtool autotools-dev automake pkg-config \
-            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
-            libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-            qtbase5-dev qttools5-dev qttools5-dev-tools libgl1-mesa-dev \
-            libprotobuf-dev protobuf-compiler git \
-            curl ca-certificates
-
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
-
-      - name: Build daemon
-        run: |
-          cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
-
-      - name: Build Qt wallet
-        run: |
-          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-          /usr/lib/x86_64-linux-gnu/qt5/bin/qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
-          make -j$(nproc)
-
-      - name: Package
-        run: |
-          mkdir -p innova-${{ needs.get-version.outputs.version }}-debian11-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
-          strip innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/*
-          cd innova-${{ needs.get-version.outputs.version }}-debian11-x86_64
-          sha256sum * > SHA256SUMS.txt
-          cd ..
-          tar -czf innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz \
-            innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: innova-debian11-x86_64
-          path: innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
@@ -1052,8 +1040,8 @@ jobs:
       - build-ubuntu-2204
       - build-ubuntu-2404
       - build-ubuntu-2604
-      - build-debian-11
       - build-debian-12
+      - build-debian-13
       - build-fedora-40
       - build-fedora-41
       - build-archlinux
@@ -1102,8 +1090,8 @@ jobs:
             "innova-${VERSION}-ubuntu2204-x86_64.tar.gz"
             "innova-${VERSION}-ubuntu2404-x86_64.tar.gz"
             "innova-${VERSION}-ubuntu2604-x86_64.tar.gz"
-            "innova-${VERSION}-debian11-x86_64.tar.gz"
             "innova-${VERSION}-debian12-x86_64.tar.gz"
+            "innova-${VERSION}-debian13-x86_64.tar.gz"
             "innova-${VERSION}-fedora40-x86_64.tar.gz"
             "innova-${VERSION}-fedora41-x86_64.tar.gz"
             "innova-${VERSION}-archlinux-x86_64.tar.gz"
