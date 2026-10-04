@@ -1,1 +1,5 @@
 src/namecoin.cpp whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+
+# Files under privacy_vnext are hashed into the IV5 startup and consensus digests;
+# a line-ending rewrite on checkout changes those hashes. Keep the bytes as committed.
+src/privacy_vnext/** -text

@@ -614,6 +614,19 @@ jobs:
             INNOVA_SPINNER=0 \
             -j$(nproc)
 
+      # Starts the daemon so the IV5 startup contract check runs on the shipped binary;
+      # "Innova version" is printed only after that check passes.
+      - name: Daemon passes its startup checks
+        run: |
+          d="$(mktemp -d)"
+          printf 'rpcuser=u\nrpcpassword=p\n' > "$d/innova.conf"
+          timeout 60 src/innovad.exe -regtest -datadir="$(cygpath -w "$d")" -printtoconsole \
+            > startup.log 2>&1 || true
+          if ! grep -q 'Innova version' startup.log || grep -qi 'sanity check failed' startup.log; then
+            tail -n 40 startup.log
+            exit 1
+          fi
+
       - name: Build Qt wallet (fully static)
         run: |
           export PATH="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin:$PATH"
