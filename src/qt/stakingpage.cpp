@@ -522,6 +522,11 @@ void StakingPage::updateStakingStatus()
         labelStakingStatus->setText(tr("Status: Synchronizing blockchain..."));
     else
         labelStakingStatus->setText(tr("Status: Staking active"));
+
+    // A refresh skipped on lock contention catches up here; the balance getters walk
+    // the whole wallet, so only while the page is shown.
+    if (isVisible())
+        updateBalances();
 }
 
 void StakingPage::updateBalances()
@@ -529,6 +534,11 @@ void StakingPage::updateBalances()
     if (!model || !pwalletMain)
         return;
 
+    // cs_main before cs_wallet, the order block connection takes them: the balance
+    // getters lock cs_main, and holding cs_wallet first deadlocks against a sync.
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+        return;
     TRY_LOCK(pwalletMain->cs_wallet, lockWallet);
     if (!lockWallet)
         return;
