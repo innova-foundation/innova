@@ -189,6 +189,22 @@ version-2008 envelope gated on Boundary B, height 8,151,540 on mainnet.
 * [Innova Discord Chat](https://discord.gg/mNM59znzNG)
 * [Innova Telegram Chat](https://t.me/innova_foundation)
 
+## Building from source
+
+[docs/BUILD.md](docs/BUILD.md) has the full steps for Linux, macOS and Windows. In
+short:
+
+1. Install the build dependencies for your platform and Rust (`rustup`; the repo
+   pins 1.94.1).
+2. Restore the Rust crates once per clone, in `src/privacy_vnext/rust`:
+   `CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml`
+3. Build the daemon: `make -C src -f makefile.unix USE_NATIVETOR=- innovad`
+   (`makefile.osx` on macOS, `makefile.mingw` on Windows).
+4. Optionally build the Qt wallet (`qmake6 innova-qt.pro && make` on Linux,
+   CMake on macOS, static Qt 6 on Windows).
+
+On Ubuntu 22.04 or later, the two scripts below do all of this for you.
+
 ## installdaemon.sh
 
 Builds and installs the Innova daemon (`innovad`) on Ubuntu 22.04, 24.04 or 26.04:

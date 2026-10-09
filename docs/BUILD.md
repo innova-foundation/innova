@@ -95,12 +95,24 @@ crates.io equivalent.
 
 ```sh
 cd src/privacy_vnext/rust
-cargo vendor          # needs network, once
+CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs \
+  --sync upstream/Cargo.toml > /dev/null     # needs network, once
 cargo build --locked --offline
 ```
 
-`.cargo/config.toml` sets `offline = true`, so every later build is offline and
-reproducible. Release archives also ship a `vendor.tar.zst` for air-gapped builds.
+`.cargo/config.toml` sets `offline = true`, so a plain `cargo vendor` cannot fetch
+anything on a fresh machine; `CARGO_NET_OFFLINE=false` allows this one networked
+step. `--sync upstream/Cargo.toml` restores the full crate set the pinned upstream
+lock names (the wrapper alone resolves fewer crates, and the provenance check in
+`release-check` refuses that set). Every later build is offline and reproducible.
+
+For an air-gapped build, each release also ships
+`innova-<version>-rust-vendor.tar.zst`; unpack it in place of `cargo vendor`:
+
+```sh
+cd src/privacy_vnext/rust
+zstd -dc /path/to/innova-<version>-rust-vendor.tar.zst | tar -xf -
+```
 
 ## Linux
 
@@ -110,7 +122,7 @@ daemon+Qt) is also built in CI, on native arm runners.
 
 ### 1. Install dependencies
 
-**Debian / Ubuntu (22.04, 24.04, Debian 12 / 13):**
+**Debian / Ubuntu (22.04, 24.04, Debian 12):**
 
 ```sh
 sudo apt-get update
@@ -121,6 +133,10 @@ sudo apt-get install -y build-essential libtool autotools-dev automake pkg-confi
   qt6-base-dev qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools libgl1-mesa-dev \
   libprotobuf-dev protobuf-compiler
 ```
+
+**Debian 13** uses the same list with `libdb5.3++-dev` in place of `libdb++-dev`
+(there `libdb++-dev` installs only the C library). Its headers and library sit on
+the default paths, so no further settings are needed.
 
 **Ubuntu 26.04** ships a renamed Berkeley DB C++ package. Use `libdb5.3++-dev`
 instead of `libdb++-dev`, and replace `bsdmainutils` with `bsdextrautils`:
@@ -306,7 +322,34 @@ pacman -S --needed \
   make git
 ```
 
-### 2. Pre-build LevelDB
+### 2. Rust toolchain and the IV5 library
+
+Install Rust for Windows with [rustup](https://rustup.rs/) (`rustup-init.exe`).
+The Windows build links the GNU-ABI archive, so add that target, then make
+`cargo` visible inside the UCRT64 shell (MSYS2 does not inherit the Windows
+`PATH`) and point it at that target:
+
+```sh
+export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+export CARGO_BUILD_TARGET=x86_64-pc-windows-gnu
+
+cd src/privacy_vnext/rust
+rustup toolchain install          # reads rust-toolchain.toml (1.94.1)
+rustup target add x86_64-pc-windows-gnu
+CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs \
+  --sync upstream/Cargo.toml > /dev/null
+cargo build --locked --offline --release
+mkdir -p target/release
+cp target/x86_64-pc-windows-gnu/release/libinnova_privacy_vnext.a target/release/
+cd ../../..
+```
+
+Keep both `export` lines set in the shell you build in: `makefile.mingw` and
+`innova-qt.pro` re-run `cargo` to confirm the library is current. Clone with
+Git for Windows as usual; `.gitattributes` keeps the files the IV5 startup check
+hashes byte-exact.
+
+### 3. Pre-build LevelDB
 
 On Windows the vendored LevelDB must be built explicitly with the native-Windows
 target before linking the daemon:
@@ -317,7 +360,7 @@ TARGET_OS=NATIVE_WINDOWS make libleveldb.a libmemenv.a -j$(nproc)
 cd ../..
 ```
 
-### 3. Build the daemon (static)
+### 4. Build the daemon (static)
 
 Boost and Berkeley DB library filenames carry a toolchain-specific suffix under
 MSYS2 (e.g. `-mt`). Point the makefile at `/ucrt64` and pass the detected
@@ -347,7 +390,7 @@ dependency chain (ssh2, brotli, nghttp2/3, ngtcp2, idn2, etc.); those libraries
 come from the MSYS2 packages above. To confirm the exact suffixes on your
 install, list `/ucrt64/lib/libboost_filesystem*` and `/ucrt64/lib/libdb_cxx*`.
 
-### 4. Build the Qt wallet (static)
+### 5. Build the Qt wallet (static)
 
 Use the static Qt from `mingw-w64-ucrt-x86_64-qt6-static`:
 
