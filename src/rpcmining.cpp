@@ -775,6 +775,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
             "  \"height\" : height of the next block\n"
             "  \"payee\" : required payee\n"
             "  \"payee_amount\" : required amount to pay\n"
+            "  \"payee_script\" : hex scriptPubKey to pay payee_amount to, as the node builds it (may be empty)\n"
 			      "  \"collateralnode_payments\" : true|false,         (boolean) true, if collateralnode payments are enabled"
             "  \"enforce_collateralnode_payments\" : true|false  (boolean) true, if collateralnode payments are enforced"
             "  \"masternode_payments\" : true|false,         (boolean) true, if collateralnode payments are enabled"
@@ -1023,6 +1024,13 @@ Value getblocktemplate(const Array& params, bool fHelp)
 	  } else {
         result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
 	result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
+    }
+    // The CN payment script as the coinbase carries it. With no known collateral node the
+    // node pays the burn fallback, an empty script, which no address decodes to.
+    if (nCNPaymentIndex > 0 && nCNPaymentIndex < (int)pblock->vtx[0].vout.size())
+    {
+        const CScript& scriptCN = pblock->vtx[0].vout[nCNPaymentIndex].scriptPubKey;
+        result.push_back(Pair("payee_script", HexStr(scriptCN.begin(), scriptCN.end())));
     }
 
 	  result.push_back(Pair("collateralnode_payments", bCollateralnodePayments));
