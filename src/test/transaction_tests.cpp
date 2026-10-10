@@ -175,6 +175,54 @@ BOOST_AUTO_TEST_CASE(test_Get)
     BOOST_CHECK(!::AreInputsStandard(t1, dummyInputs));
 }
 
+BOOST_AUTO_TEST_CASE(burn_sweep_standardness)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    CScript scriptAddress;
+    scriptAddress.SetDestination(key.GetPubKey().GetID());
+
+    // An output paid to the empty-script CN burn fallback, next to a normal one.
+    CTransaction prev;
+    prev.vout.resize(2);
+    prev.vout[0].nValue = 13*CENT;
+    prev.vout[1].nValue = 50*CENT;
+    prev.vout[1].scriptPubKey = scriptAddress;
+    MapPrevTx inputs;
+    inputs[prev.GetHash()] = make_pair(CTxIndex(), prev);
+
+    CTransaction sweep;
+    sweep.vin.push_back(CTxIn(COutPoint(prev.GetHash(), 0), CScript() << OP_TRUE));
+    sweep.vout.push_back(CTxOut(12*CENT, CScript() << OP_RETURN));
+    std::string reason;
+    BOOST_CHECK(IsBurnSweepTx(sweep));
+    BOOST_CHECK(::AreInputsStandard(sweep, inputs));
+    BOOST_CHECK_MESSAGE(IsStandardTx(sweep, reason), reason);
+
+    // Spending the burn output to an address stays non-standard.
+    CTransaction theft = sweep;
+    theft.vout[0].scriptPubKey = scriptAddress;
+    BOOST_CHECK(!IsBurnSweepTx(theft));
+    BOOST_CHECK(!::AreInputsStandard(theft, inputs));
+
+    // So does a sweep that also pays an address, or carries more than OP_TRUE.
+    CTransaction mixed = sweep;
+    mixed.vout.push_back(CTxOut(CENT, scriptAddress));
+    BOOST_CHECK(!IsBurnSweepTx(mixed));
+    BOOST_CHECK(!::AreInputsStandard(mixed, inputs));
+    CTransaction padded = sweep;
+    padded.vin[0].scriptSig << OP_TRUE;
+    BOOST_CHECK(!IsBurnSweepTx(padded));
+    BOOST_CHECK(!::AreInputsStandard(padded, inputs));
+
+    // A lone OP_RETURN that does not sweep burn outputs keeps the data-output limit.
+    CTransaction lone;
+    lone.vin.push_back(CTxIn(COutPoint(prev.GetHash(), 1), CScript() << std::vector<unsigned char>(65, 0)));
+    lone.vout.push_back(CTxOut(CENT, CScript() << OP_RETURN));
+    BOOST_CHECK(!IsBurnSweepTx(lone));
+    BOOST_CHECK(!IsStandardTx(lone, reason));
+}
+
 BOOST_AUTO_TEST_CASE(test_GetThrow)
 {
     CBasicKeyStore keystore;

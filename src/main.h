@@ -1595,6 +1595,7 @@ void Misbehaving(NodeId nodeid, int howmuch, const std::string& reason = "");
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);
+bool IsBurnSweepTx(const CTransaction& tx);
 bool IsFinalTx(const CTransaction &tx, int nBlockHeight = 0, int64_t nBlockTime = 0);
 
 /** Get statistics from node state */

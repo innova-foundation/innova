@@ -668,6 +668,89 @@ Value sendrawtransaction(const Array& params, bool fHelp)
     return hashTx.GetHex();
 }
 
+// The CN burn fallback is an empty script, which any miner can spend; this moves those
+// coinbase outputs to OP_RETURN so they are destroyed.
+Value sweepburnoutputs(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "sweepburnoutputs [startheight] [maxinputs=400]\n"
+            "Spends every mature, unspent coinbase output with an empty scriptPubKey from\n"
+            "startheight (default 5000 blocks below the tip) into one OP_RETURN output,\n"
+            "destroying it, and relays the transaction. Returns txid, inputs and burned.");
+
+    const int nMaxInputs = params.size() > 1 ? params[1].get_int() : 400;
+    if (nMaxInputs < 1 || nMaxInputs > 2000)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "maxinputs must be 1..2000");
+
+    CTransaction tx;
+    int64_t nTotal = 0;
+    int nScanned = 0;
+    {
+        LOCK2(cs_main, mempool.cs);
+        CTxDB txdb("r");
+        const int nLast = pindexBest->nHeight - nCoinbaseMaturity - 10;
+        int nFrom = params.size() > 0 ? params[0].get_int() : pindexBest->nHeight - 5000;
+        if (nFrom < 1)
+            nFrom = 1;
+        for (CBlockIndex* pindex = FindBlockByHeight(nFrom);
+             pindex && pindex->nHeight <= nLast && (int)tx.vin.size() < nMaxInputs;
+             pindex = pindex->pnext)
+        {
+            CBlock block;
+            if (!block.ReadFromDisk(pindex, true) || block.vtx.empty())
+                continue;
+            nScanned++;
+            const CTransaction& coinbase = block.vtx[0];
+            CTxIndex txindex;
+            if (!txdb.ReadTxIndex(coinbase.GetHash(), txindex))
+                continue;
+            for (unsigned int n = 0; n < coinbase.vout.size() && (int)tx.vin.size() < nMaxInputs; n++)
+            {
+                const CTxOut& out = coinbase.vout[n];
+                if (!out.scriptPubKey.empty() || out.nValue <= 0)
+                    continue;
+                const COutPoint prevout(coinbase.GetHash(), n);
+                if (n >= txindex.vSpent.size() || !txindex.vSpent[n].IsNull() ||
+                    mempool.mapNextTx.count(prevout))
+                    continue;
+                tx.vin.push_back(CTxIn(prevout, CScript() << OP_TRUE));
+                nTotal += out.nValue;
+            }
+        }
+    }
+
+    Object result;
+    result.push_back(Pair("blocks_scanned", nScanned));
+    if (tx.vin.empty())
+    {
+        result.push_back(Pair("inputs", 0));
+        result.push_back(Pair("burned", ValueFromAmount(0)));
+        return result;
+    }
+
+    tx.nTime = GetAdjustedTime();
+    tx.vout.push_back(CTxOut(nTotal, CScript() << OP_RETURN));
+    const unsigned int nBytes = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    const int64_t nFee = tx.GetMinFee(1000, GMF_RELAY, nBytes);
+    if (nFee >= nTotal)
+        throw JSONRPCError(RPC_MISC_ERROR, "burn outputs do not cover the fee");
+    tx.vout[0].nValue = nTotal - nFee;
+
+    {
+        CTxDB txdb("r");
+        if (!tx.AcceptToMemoryPool(txdb))
+            throw JSONRPCError(RPC_MISC_ERROR, "burn sweep rejected; see debug.log");
+    }
+    RelayTransaction(tx, tx.GetHash());
+
+    result.push_back(Pair("txid", tx.GetHash().GetHex()));
+    result.push_back(Pair("inputs", (int)tx.vin.size()));
+    result.push_back(Pair("burned", ValueFromAmount(tx.vout[0].nValue)));
+    result.push_back(Pair("fee", ValueFromAmount(nFee)));
+    return result;
+}
+
 Value createmultisig(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 3)

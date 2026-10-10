@@ -1475,7 +1475,8 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
     // only one OP_RETURN txout per txn out is permitted
     // An IV5 vout may be a single data stamp; the payload's transparent binding covers it.
     const bool fPrivacyVNextStamp = tx.IsPrivacyVNext() && nDataOut <= 1;
-    if (nDataOut > nTxnOut && !fPrivacyVNextStamp) {
+    const bool fBurnSweep = nDataOut == 1 && IsBurnSweepTx(tx);
+    if (nDataOut > nTxnOut && !fPrivacyVNextStamp && !fBurnSweep) {
         reason = "multi-op-return";
         return false;
     }
@@ -1512,6 +1513,22 @@ bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime)
 // expensive-to-check-upon-redemption script like:
 //   DUP CHECKSIG DROP ... repeated 100 times... OP_1
 //
+// Spends outputs paid to the empty-script CN burn fallback with a bare OP_TRUE and pays
+// only OP_RETURN, destroying them. Any other spend of those outputs stays non-standard.
+bool IsBurnSweepTx(const CTransaction& tx)
+{
+    if (tx.IsCoinBase() || tx.IsCoinStake() || tx.vin.empty() || tx.vout.empty())
+        return false;
+    const CScript scriptTrue = CScript() << OP_TRUE;
+    for (const CTxIn& txin : tx.vin)
+        if (txin.scriptSig != scriptTrue)
+            return false;
+    for (const CTxOut& txout : tx.vout)
+        if (!txout.scriptPubKey.IsUnspendable())
+            return false;
+    return true;
+}
+
 bool AreInputsStandard(const CTransaction& tx, const MapPrevTx& mapInputs)
 {
     if (tx.IsCoinBase())
@@ -1529,6 +1546,8 @@ bool AreInputsStandard(const CTransaction& tx, const MapPrevTx& mapInputs)
         txnouttype whichType;
         // get the scriptPubKey corresponding to this input:
         const CScript& prevScript = prev.scriptPubKey;
+        if (prevScript.empty() && IsBurnSweepTx(tx))
+            continue;
         if (!Solver(prevScript, whichType, vSolutions))
             return false;
         int nArgsExpected = ScriptSigArgsExpected(whichType, vSolutions);
