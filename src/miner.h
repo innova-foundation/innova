@@ -9,8 +9,10 @@
 #include "main.h"
 #include "wallet.h"
 
-/* Generate a new block, without valid proof-of-work */
-CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake=false, int64_t* pFees = 0);
+/* Generate a new block, without valid proof-of-work. pnCNPaymentOut receives the
+   coinbase index of the collateralnode payment, or -1 when there is none. */
+CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake=false, int64_t* pFees = 0,
+                       int* pnCNPaymentOut = 0);
 
 /** Modify the extranonce in a block */
 void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& nExtraNonce);

@@ -760,6 +760,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
             "  \"transactions\" : contents of non-coinbase transactions that should be included in the next block\n"
             "  \"coinbaseaux\" : data that should be included in coinbase\n"
             "  \"coinbasevalue\" : maximum allowable input to coinbase transaction, including the generation award and transaction fees\n"
+            "  \"coinbase_required_outputs\" : [{\"script\" : hex, \"value\" : n}, ...] outputs the coinbase must carry\n"
+            "      unchanged besides the payout and the payee: the IMTS and IDAG commitments, finality votes,\n"
+            "      shares and certificates, and settlement payouts; their values are part of coinbasevalue\n"
+            "  \"coinbase_dag\" : the IDAG commitment script among coinbase_required_outputs (empty before the DAG fork)\n"
             "  \"target\" : hash target\n"
             "  \"mintime\" : minimum timestamp appropriate for next block\n"
             "  \"curtime\" : current timestamp\n"
@@ -808,6 +812,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
     static CBlockIndex* pindexPrev;
     static int64_t nStart;
     static CBlock* pblock;
+    static int nCNPaymentIndex = -1;
     if (pindexPrev != pindexBest ||
         (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - nStart > 5))
     {
@@ -825,7 +830,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
             delete pblock;
             pblock = NULL;
         }
-        pblock = CreateNewBlock(pwalletMain);
+        pblock = CreateNewBlock(pwalletMain, false, NULL, &nCNPaymentIndex);
         if (!pblock)
             throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
 
@@ -901,6 +906,29 @@ Value getblocktemplate(const Array& params, bool fHelp)
     result.push_back(Pair("transactions", transactions));
     result.push_back(Pair("coinbaseaux", aux));
 	  result.push_back(Pair("coinbasevalue", (int64_t)pblock->vtx[0].GetValueOut()));
+    {
+        // A pool writes its own payout and CN payment; every other coinbase output
+        // depends on node state and must be copied as built.
+        const std::vector<CTxOut>& vCoinbaseOut = pblock->vtx[0].vout;
+        const bool fDAG = pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG;
+        Array aRequired;
+        std::string strDAGScript;
+        for (unsigned int n = 1; n < vCoinbaseOut.size(); n++)
+        {
+            if ((int)n == nCNPaymentIndex)
+                continue;
+            const CScript& script = vCoinbaseOut[n].scriptPubKey;
+            const std::string strScript = HexStr(script.begin(), script.end());
+            Object out;
+            out.push_back(Pair("script", strScript));
+            out.push_back(Pair("value", (int64_t)vCoinbaseOut[n].nValue));
+            aRequired.push_back(out);
+            if (fDAG && strDAGScript.empty() && !ExtractDAGParents(script).empty())
+                strDAGScript = strScript;
+        }
+        result.push_back(Pair("coinbase_dag", strDAGScript));
+        result.push_back(Pair("coinbase_required_outputs", aRequired));
+    }
     result.push_back(Pair("target", hashTarget.GetHex()));
     result.push_back(Pair("mintime", (int64_t)pindexPrev->GetPastTimeLimit()+1));
     result.push_back(Pair("mutable", aMutable));

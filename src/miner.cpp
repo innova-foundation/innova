@@ -471,8 +471,10 @@ void StampMsTimestampCommitment(CBlock* pblock, int nHeight)
 }
 
 // CreateNewBlock: create new block (without proof-of-work/proof-of-stake)
-CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
+CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int* pnCNPaymentOut)
 {
+    if (pnCNPaymentOut)
+        *pnCNPaymentOut = -1;
     // Create new block
     unique_ptr<CBlock> pblock(new CBlock());
     if (!pblock.get())
@@ -1532,6 +1534,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
         if (pFees)
             *pFees = nFees;
+        if (pnCNPaymentOut)
+            *pnCNPaymentOut = (payments > 1) ? payments - 1 : -1;
 
         // Fill in header
         pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
