@@ -44,9 +44,7 @@ uint256 CEpochState::GetDigest() const
 // The block at nHeight on pFrom's pprev chain, or NULL when the chain does not reach it.
 static const CBlockIndex* PprevBlockAt(const CBlockIndex* pFrom, int nHeight)
 {
-    const CBlockIndex* p = pFrom;
-    while (p && p->nHeight > nHeight)
-        p = p->pprev;
+    const CBlockIndex* p = pFrom ? pFrom->GetAncestor(nHeight) : NULL;
     return (p && p->nHeight == nHeight && p->phashBlock) ? p : NULL;
 }
 

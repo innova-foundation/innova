@@ -1720,25 +1720,29 @@ unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex)
         return ADAPTIVE_BLOCK_FLOOR;
 
     // Short-term median
-    std::sort(vSizes.begin(), vSizes.end());
+    std::nth_element(vSizes.begin(), vSizes.begin() + vSizes.size() / 2, vSizes.end());
     unsigned int nShortMedian = vSizes[vSizes.size() / 2];
 
     // Apply floor: penalty-free zone
     if (nShortMedian < ADAPTIVE_BLOCK_FLOOR)
         nShortMedian = ADAPTIVE_BLOCK_FLOOR;
 
-    // Long-term median anchor (independent window, starts after short-term window)
+    // Long-term median anchor (independent window, starts after short-term window).
+    // Its cap is at least floor * cap factor; skip the walk while that exceeds the ceiling.
     std::vector<unsigned int> vLongSizes;
-    // pWalk is already at the end of the short-term window — continue from there
-    for (unsigned int i = 0; i < ADAPTIVE_LONG_MEDIAN_WINDOW && pWalk; i++)
+    if ((uint64_t)ADAPTIVE_BLOCK_FLOOR * ADAPTIVE_LONG_MEDIAN_CAP < ADAPTIVE_BLOCK_CEILING)
     {
-        vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
-        pWalk = pWalk->pprev;
+        // pWalk is already at the end of the short-term window — continue from there
+        for (unsigned int i = 0; i < ADAPTIVE_LONG_MEDIAN_WINDOW && pWalk; i++)
+        {
+            vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
+            pWalk = pWalk->pprev;
+        }
     }
 
     if (!vLongSizes.empty())
     {
-        std::sort(vLongSizes.begin(), vLongSizes.end());
+        std::nth_element(vLongSizes.begin(), vLongSizes.begin() + vLongSizes.size() / 2, vLongSizes.end());
         unsigned int nLongMedian = vLongSizes[vLongSizes.size() / 2];
         if (nLongMedian < ADAPTIVE_BLOCK_FLOOR)
             nLongMedian = ADAPTIVE_BLOCK_FLOOR;

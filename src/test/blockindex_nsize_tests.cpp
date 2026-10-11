@@ -766,4 +766,106 @@ BOOST_AUTO_TEST_CASE(restore_rejects_prefix_that_disagrees_with_the_block)
     BOOST_CHECK_EQUAL(stale.nSize, nTrueSize);
 }
 
+// Pre-change GetAdaptiveBlockSizeLimit: full long window, full sorts.
+static unsigned int ReferenceAdaptiveLimit(const CBlockIndex* pindex)
+{
+    if (!pindex)
+        return MAX_BLOCK_SIZE_LEGACY;
+    if (pindex->nHeight < FORK_HEIGHT_DAG)
+        return MAX_BLOCK_SIZE_LEGACY;
+    std::vector<unsigned int> vSizes;
+    const CBlockIndex* pWalk = pindex;
+    for (unsigned int i = 0; i < ADAPTIVE_MEDIAN_WINDOW && pWalk; i++)
+    {
+        vSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
+        pWalk = pWalk->pprev;
+    }
+    if (vSizes.empty())
+        return ADAPTIVE_BLOCK_FLOOR;
+    std::sort(vSizes.begin(), vSizes.end());
+    unsigned int nShortMedian = std::max(vSizes[vSizes.size() / 2], ADAPTIVE_BLOCK_FLOOR);
+    std::vector<unsigned int> vLongSizes;
+    for (unsigned int i = 0; i < ADAPTIVE_LONG_MEDIAN_WINDOW && pWalk; i++)
+    {
+        vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
+        pWalk = pWalk->pprev;
+    }
+    if (!vLongSizes.empty())
+    {
+        std::sort(vLongSizes.begin(), vLongSizes.end());
+        unsigned int nLongMedian = std::max(vLongSizes[vLongSizes.size() / 2], ADAPTIVE_BLOCK_FLOOR);
+        uint64_t nCap64 = (uint64_t)nLongMedian * ADAPTIVE_LONG_MEDIAN_CAP;
+        unsigned int nCap = (nCap64 > ADAPTIVE_BLOCK_CEILING) ? ADAPTIVE_BLOCK_CEILING : (unsigned int)nCap64;
+        if (nShortMedian > nCap)
+            nShortMedian = nCap;
+    }
+    uint64_t nEffective64 = (uint64_t)nShortMedian * 2;
+    return (nEffective64 > ADAPTIVE_BLOCK_CEILING) ? ADAPTIVE_BLOCK_CEILING : (unsigned int)nEffective64;
+}
+
+// Post-DAG chain with random sizes; owns its indexes.
+struct RandomPostDagChain
+{
+    std::vector<uint256> vHash;
+    std::vector<CBlockIndex*> vIndex;
+
+    RandomPostDagChain(int nLen, unsigned int nBigEvery, int nHeightStart)
+    {
+        vHash.resize(nLen);
+        for (int i = 0; i < nLen; i++)
+        {
+            CBlockIndex* p = new CBlockIndex();
+            vHash[i] = GetRandHash();
+            p->phashBlock = &vHash[i];
+            p->pprev = i ? vIndex[i - 1] : NULL;
+            p->nHeight = nHeightStart + i;
+            p->nSize = GetRandInt(10) == 0 ? 0 : 200 + GetRandInt(400000);
+            if (nBigEvery && GetRandInt(nBigEvery) == 0)
+                p->nSize = 300000 + GetRandInt(9000000);
+            p->BuildSkip();
+            vIndex.push_back(p);
+        }
+    }
+    ~RandomPostDagChain()
+    {
+        for (CBlockIndex* p : vIndex)
+            delete p;
+    }
+};
+
+BOOST_AUTO_TEST_CASE(adaptive_limit_matches_full_window_reference)
+{
+    const unsigned int nBigEvery[] = {0, 2, 3, 50};
+    for (unsigned int nBig : nBigEvery)
+    {
+        RandomPostDagChain chain(ADAPTIVE_MEDIAN_WINDOW + ADAPTIVE_LONG_MEDIAN_WINDOW + 3000, nBig,
+                                 FORK_HEIGHT_DAG);
+        const int nLen = (int)chain.vIndex.size();
+        for (int i = 0; i < 40; i++)
+        {
+            const CBlockIndex* pTip = chain.vIndex[i < 10 ? GetRandInt(2 * ADAPTIVE_MEDIAN_WINDOW)
+                                                          : GetRandInt(nLen)];
+            BOOST_CHECK_EQUAL(GetAdaptiveBlockSizeLimit(pTip), ReferenceAdaptiveLimit(pTip));
+        }
+        BOOST_CHECK_EQUAL(GetAdaptiveBlockSizeLimit(chain.vIndex.back()),
+                          ReferenceAdaptiveLimit(chain.vIndex.back()));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ancestor_lookup_matches_pprev_walk)
+{
+    RandomPostDagChain chain(20000, 0, 0);
+    for (int i = 0; i < 2000; i++)
+    {
+        const CBlockIndex* pFrom = chain.vIndex[GetRandInt(chain.vIndex.size())];
+        const int nTarget = GetRandInt(pFrom->nHeight + 2) - 1;
+        const CBlockIndex* pWalk = pFrom;
+        while (pWalk && pWalk->nHeight > nTarget)
+            pWalk = pWalk->pprev;
+        if (pWalk && pWalk->nHeight != nTarget)
+            pWalk = NULL;
+        BOOST_CHECK(pFrom->GetAncestor(nTarget) == pWalk);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
