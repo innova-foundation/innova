@@ -270,15 +270,22 @@ make -C build -j$(sysctl -n hw.ncpu)
 This produces `build/Innova.app`. The build compiles the translations with
 `lrelease` (from `qttools`) and ad-hoc code-signs the bundle on link (recent macOS refuses to run
 unsigned `.app` bundles). To assemble the distributable disk image that CI
-publishes, stage `innovad` and `Innova.app` into a folder and run `hdiutil`:
+publishes, put `innovad` in the bundle, bundle Qt and the Homebrew libraries with
+`macdeployqt`, sign, and run `hdiutil`:
 
 ```sh
+cp src/innovad build/Innova.app/Contents/MacOS/
+macdeployqt build/Innova.app -executable=build/Innova.app/Contents/MacOS/innovad -always-overwrite
+codesign --force --deep --sign - build/Innova.app
 mkdir -p dmg_contents
-cp src/innovad dmg_contents/
 cp -R build/Innova.app dmg_contents/
+ln -s /Applications dmg_contents/Applications
 hdiutil create -volname "Innova" -srcfolder dmg_contents \
   -ov -format UDZO innova-<version>-macOS-arm64.dmg
 ```
+
+Sign last: `strip`, `macdeployqt` or any other edit after signing leaves a stale
+signature, and macOS then reports a downloaded app as damaged.
 
 > Release CI builds and runs `test_innova` on macOS as well as Linux. The
 > `STRICT_WARNINGS=1` gate promotes return-type and format diagnostics to errors

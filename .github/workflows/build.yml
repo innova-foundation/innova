@@ -459,27 +459,23 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          strip src/innovad || true
-          test -s src/innovad
-          mkdir -p dmg_contents
-          cp src/innovad dmg_contents/
-          if [ -d "Innova.app" ]; then
-            strip Innova.app/Contents/MacOS/Innova || true
-            test -s Innova.app/Contents/MacOS/Innova
-            cp -R Innova.app dmg_contents/
-          elif [ -f "Innova" ]; then
-            strip Innova || true
-            test -s Innova
-            cp Innova dmg_contents/
-          else
-            echo "Qt wallet output is missing" >&2
-            exit 1
+          test -d Innova.app
+          strip src/innovad Innova.app/Contents/MacOS/Innova
+          cp src/innovad Innova.app/Contents/MacOS/innovad
+          # Bundle Qt and the Homebrew libraries both executables load.
+          /opt/homebrew/opt/qt@5/bin/macdeployqt Innova.app \
+            -executable=Innova.app/Contents/MacOS/innovad -always-overwrite
+          # Sign after the last edit to the bundle: a stale signature reads as "damaged".
+          codesign --force --deep --sign - Innova.app
+          codesign --verify --deep --strict --verbose=2 Innova.app || echo "::warning::Innova.app signature does not verify"
+          if find Innova.app -type f \( -perm -u+x -o -name '*.dylib' \) -exec otool -L {} + 2>/dev/null \
+               | grep -E '^[[:space:]]+(/opt/homebrew|/usr/local|@rpath)/'; then
+            echo "::warning::Innova.app still links libraries outside the bundle"
           fi
-          (
-            cd dmg_contents
-            find . -type f ! -name SHA256SUMS.txt -exec shasum -a 256 {} \; > SHA256SUMS.txt
-            test -s SHA256SUMS.txt
-          )
+          mkdir -p dmg_contents
+          cp -R Innova.app dmg_contents/
+          ln -s /Applications dmg_contents/Applications
+          shasum -a 256 Innova.app/Contents/MacOS/Innova Innova.app/Contents/MacOS/innovad > dmg_contents/SHA256SUMS.txt
           touch dmg_contents/.metadata_never_index
           dmg="innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg"
           created=0
@@ -1199,7 +1195,7 @@ jobs:
         with:
           tag_name: v${{ needs.get-version.outputs.version }}
           target_commitish: ${{ needs.get-version.outputs.sha }}
-          name: "Innova v${{ needs.get-version.outputs.version }}"
+          name: "v${{ needs.get-version.outputs.version }}"
           body_path: release-body.md
           files: |
             release-assets/*
