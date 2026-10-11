@@ -878,6 +878,15 @@ bool CNode::Misbehaving(int howmuch, const std::string& reason)
 
     if (nCurrentMisbehavior >= GetArg("-banscore", 100))
     {
+        // A whitelisted address may front many peers (a relay): disconnect, don't ban.
+        if (fWhitelisted)
+        {
+            printf("Misbehaving: whitelisted %s (%d -> %d) DISCONNECTING, not banned%s%s\n",
+                   addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior,
+                   reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
+            CloseSocketDisconnect(reason.empty() ? "misbehaving" : reason.c_str());
+            return true;
+        }
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING%s%s\n",
                addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior,
                reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
@@ -1298,7 +1307,7 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
         return;
     }
 
-    if (CNode::IsBanned(addr)) { //  && !whitelisted
+    if (CNode::IsBanned(addr) && !whitelisted) {
         printf("connection from %s dropped (banned)\n", addr.ToString().c_str());
         CloseSocket(hSocket);
         return;
@@ -1963,6 +1972,7 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
+    {"seed.innova-foundation.com", "seed.innova-foundation.com"},
     {"45.77.164.87", "45.77.164.87"},
     {"165.22.181.170", "165.22.181.170"},
     {"159.223.114.4", "159.223.114.4"},

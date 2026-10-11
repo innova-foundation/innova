@@ -49,6 +49,17 @@ BOOST_AUTO_TEST_CASE(DoS_banning)
     CNode::ClearBanned();
 }    
 
+BOOST_AUTO_TEST_CASE(DoS_whitelisted_peer_disconnected_not_banned)
+{
+    CNode::ClearBanned();
+    CAddress addr(ip(0xa0b0c003));
+    CNode dummyNode(INVALID_SOCKET, addr, "", true);
+    dummyNode.fWhitelisted = true;
+    BOOST_CHECK(dummyNode.Misbehaving(100)); // disconnected
+    BOOST_CHECK(!CNode::IsBanned(addr));     // not banned
+    CNode::ClearBanned();
+}
+
 BOOST_AUTO_TEST_CASE(DoS_banscore)
 {
     CNode::ClearBanned();
