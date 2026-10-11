@@ -9785,10 +9785,12 @@ int64_t CollateralnodePaymentWindowSeconds()
     return 20 * (int64_t)nCoinbaseMaturity;
 }
 
+// A node catching up ignores CN announcements, so its list cannot vouch for a payee yet.
 bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
-                                      int64_t nNow, bool fPaymentsEnabled)
+                                      int64_t nNow, bool fPaymentsEnabled,
+                                      bool fIsInitialDownload)
 {
-    return !fJustCheck && fPaymentsEnabled &&
+    return !fJustCheck && fPaymentsEnabled && !fIsInitialDownload &&
            nBlockTime > nNow - CollateralnodePaymentWindowSeconds();
 }
 
@@ -10971,7 +10973,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         CollateralnodePayments ? "enabled" : "disabled"); }
 
     if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
-                                         CollateralnodePayments))
+                                         CollateralnodePayments, fIsInitialDownload))
     {
         BLOCK_PHASE(BP_CB_CNPAY);
         LOCK2(cs_main, mempool.cs);

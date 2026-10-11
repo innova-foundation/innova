@@ -2753,7 +2753,8 @@ private:
 // BLOCK_FAILED_VALID would split the network along clock offsets.
 int64_t CollateralnodePaymentWindowSeconds();
 bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
-                                      int64_t nNow, bool fPaymentsEnabled);
+                                      int64_t nNow, bool fPaymentsEnabled,
+                                      bool fIsInitialDownload = false);
 
 // The cold-stake collateralnode payee check has the same shape: the expected payee
 // comes from the gossiped winner schedule and the gossiped node list, so it runs

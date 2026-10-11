@@ -280,9 +280,10 @@ BOOST_AUTO_TEST_CASE(rule_entry_is_decided_by_the_validators_own_clock)
     BOOST_CHECK(CollateralnodePaymentRuleApplies(false, nBlockTime,
                                                  nBlockTime - 86400, true));
 
-    // The other two gate inputs.
+    // The other gate inputs.
     BOOST_CHECK(!CollateralnodePaymentRuleApplies(true, nBlockTime, nBlockTime, true));
     BOOST_CHECK(!CollateralnodePaymentRuleApplies(false, nBlockTime, nBlockTime, false));
+    BOOST_CHECK(!CollateralnodePaymentRuleApplies(false, nBlockTime, nBlockTime, true, true));
 
     nCoinbaseMaturity = nSaved;
 }
