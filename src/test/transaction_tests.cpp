@@ -182,7 +182,7 @@ BOOST_AUTO_TEST_CASE(burn_sweep_standardness)
     CScript scriptAddress;
     scriptAddress.SetDestination(key.GetPubKey().GetID());
 
-    // An output paid to the empty-script CN burn fallback, next to a normal one.
+    // An empty-script CN burn output and a normal one.
     CTransaction prev;
     prev.vout.resize(2);
     prev.vout[0].nValue = 13*CENT;
@@ -199,13 +199,13 @@ BOOST_AUTO_TEST_CASE(burn_sweep_standardness)
     BOOST_CHECK(::AreInputsStandard(sweep, inputs));
     BOOST_CHECK_MESSAGE(IsStandardTx(sweep, reason), reason);
 
-    // Spending the burn output to an address stays non-standard.
+    // Spending it to an address stays non-standard.
     CTransaction theft = sweep;
     theft.vout[0].scriptPubKey = scriptAddress;
     BOOST_CHECK(!IsBurnSweepTx(theft));
     BOOST_CHECK(!::AreInputsStandard(theft, inputs));
 
-    // So does a sweep that also pays an address, or carries more than OP_TRUE.
+    // So do mixed outputs or a padded scriptSig.
     CTransaction mixed = sweep;
     mixed.vout.push_back(CTxOut(CENT, scriptAddress));
     BOOST_CHECK(!IsBurnSweepTx(mixed));
@@ -215,7 +215,7 @@ BOOST_AUTO_TEST_CASE(burn_sweep_standardness)
     BOOST_CHECK(!IsBurnSweepTx(padded));
     BOOST_CHECK(!::AreInputsStandard(padded, inputs));
 
-    // A lone OP_RETURN that does not sweep burn outputs keeps the data-output limit.
+    // A lone OP_RETURN that sweeps nothing keeps the data-output limit.
     CTransaction lone;
     lone.vin.push_back(CTxIn(COutPoint(prev.GetHash(), 1), CScript() << std::vector<unsigned char>(65, 0)));
     lone.vout.push_back(CTxOut(CENT, CScript() << OP_RETURN));

@@ -668,8 +668,7 @@ Value sendrawtransaction(const Array& params, bool fHelp)
     return hashTx.GetHex();
 }
 
-// The CN burn fallback is an empty script, which any miner can spend; this moves those
-// coinbase outputs to OP_RETURN so they are destroyed.
+// Moves empty-script CN fallback outputs (spendable by any miner) to OP_RETURN.
 Value sweepburnoutputs(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 2)

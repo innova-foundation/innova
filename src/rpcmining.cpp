@@ -908,8 +908,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
     result.push_back(Pair("coinbaseaux", aux));
 	  result.push_back(Pair("coinbasevalue", (int64_t)pblock->vtx[0].GetValueOut()));
     {
-        // A pool writes its own payout and CN payment; every other coinbase output
-        // depends on node state and must be copied as built.
+        // Every coinbase output but the payout and the CN payment.
         const std::vector<CTxOut>& vCoinbaseOut = pblock->vtx[0].vout;
         const bool fDAG = pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG;
         Array aRequired;
@@ -1025,8 +1024,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
         result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
 	result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
     }
-    // The CN payment script as the coinbase carries it. With no known collateral node the
-    // node pays the burn fallback, an empty script, which no address decodes to.
+    // The CN payment script; the burn fallback is an empty script no address decodes to.
     if (nCNPaymentIndex > 0 && nCNPaymentIndex < (int)pblock->vtx[0].vout.size())
     {
         const CScript& scriptCN = pblock->vtx[0].vout[nCNPaymentIndex].scriptPubKey;

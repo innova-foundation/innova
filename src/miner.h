@@ -9,8 +9,7 @@
 #include "main.h"
 #include "wallet.h"
 
-/* Generate a new block, without valid proof-of-work. pnCNPaymentOut receives the
-   coinbase index of the collateralnode payment, or -1 when there is none. */
+/* Generate a new block, without valid proof-of-work. pnCNPaymentOut: CN payment index or -1. */
 CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake=false, int64_t* pFees = 0,
                        int* pnCNPaymentOut = 0);
 

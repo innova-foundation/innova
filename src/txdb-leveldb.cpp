@@ -3668,6 +3668,15 @@ bool CTxDB::LoadBlockIndex()
         nCheckDepth = 1000000000; // suffices until the year 19000
     if (nCheckDepth > nBestHeight)
         nCheckDepth = nBestHeight;
+    // Queue block data a stop during sync left missing (QueueBlockDataRepair).
+    for (CBlockIndex* pindex = pindexBest;
+         pindex && pindex->pprev && pindex->nHeight > nBestHeight - BLOCK_DATA_REPAIR_DEPTH;
+         pindex = pindex->pprev)
+    {
+        if (!BlockDataPresent(pindex))
+            QueueBlockDataRepair(pindex);
+    }
+
     printf("Verifying last %i blocks at level %i\n", nCheckDepth, nCheckLevel);
     CBlockIndex* pindexFork = NULL;
     map<pair<unsigned int, unsigned int>, CBlockIndex*> mapBlockPos;
@@ -3675,9 +3684,18 @@ bool CTxDB::LoadBlockIndex()
     {
         if (fRequestShutdown || pindex->nHeight < nBestHeight-nCheckDepth)
             break;
+        if (IsBlockDataRepairQueued(pindex->GetBlockHash()))
+            continue;
         CBlock block;
-        if (!block.ReadFromDisk(pindex))
+        if (!block.ReadFromDisk(pindex) || block.GetHash() != pindex->GetBlockHash())
+        {
+            if (pindex->nHeight > nBestHeight - BLOCK_DATA_REPAIR_DEPTH)
+            {
+                QueueBlockDataRepair(pindex);
+                continue;
+            }
             return error("LoadBlockIndex() : block.ReadFromDisk failed");
+        }
         // check level 1: verify block validity
         // check level 7: verify block signature too
         if (nCheckLevel>0 && !block.CheckBlock(true, true, (nCheckLevel>6)))

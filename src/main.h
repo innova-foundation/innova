@@ -3217,6 +3217,14 @@ static const size_t BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES = 16;
 /** Restore nSize for indexes loaded without it, from the size prefix that
  *  CBlock::WriteToDisk stores ahead of every block. Fails closed when a sampled
  *  prefix does not match the block's own SER_NETWORK measure. */
+// Block data a stop during sync left missing is refetched and rewritten in place.
+static const int BLOCK_DATA_REPAIR_DEPTH = 2000;
+bool BlockDataPresent(const CBlockIndex* pindex);
+void QueueBlockDataRepair(CBlockIndex* pindex);
+bool IsBlockDataRepairQueued(const uint256& hash);
+bool IsBlockDataRepairPending();
+void RequestBlockDataRepair(CNode* pto);
+
 bool BackfillBlockIndexSizes(const std::vector<CBlockIndex*>& vNeedSize,
                              int& nRestoredOut, std::string& strError);
 

@@ -2182,8 +2182,17 @@ bool AppInit2()
     };
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
+    // Missing block data is repaired first; the checks that read it run after a restart.
+    const bool fBlockDataRepair = IsBlockDataRepairPending();
+    if (fBlockDataRepair)
+    {
+        printf("Block data repair mode: fetching missing block data, then shutting down for a restart\n");
+        uiInterface.InitMessage(_("Repairing block data..."));
+    }
+
     // Validate the retained connect-time DAG plans before loading any wallet or worker. Legacy
     // databases recover only with an exact CTxIndex position for every tx; otherwise fail closed.
+    if (!fBlockDataRepair)
     {
         CTxDB txdbDAGActiveSets("r+");
         std::string strDAGActiveSetError;
@@ -2297,7 +2306,9 @@ bool AppInit2()
             printf("Name index is missing. Rebuilding...\n");
         }
 
-        if (fNeedRebuild)
+        if (fNeedRebuild && fBlockDataRepair)
+            printf("Name index rebuild waits for the restart after the block data repair\n");
+        else if (fNeedRebuild)
         {
             // Berkeley DB handles must be closed through the environment before
             // removal.  Removing the path directly can leave a cached handle
@@ -2445,7 +2456,7 @@ bool AppInit2()
 
     bool fPendingShieldedWalletAcknowledgement = false;
     CShieldedWalletRecoveryRecord pendingShieldedWalletAcknowledgement;
-    if (nLoadWalletRet == DB_LOAD_OK)
+    if (nLoadWalletRet == DB_LOAD_OK && !fBlockDataRepair)
     {
         std::string strShieldedRecoveryError;
         if (!RecoverPendingShieldedWalletTransition(
@@ -2539,7 +2550,8 @@ bool AppInit2()
         fRepairWalletLocator = true;
     }
 
-    if (pindexBest != pindexRescan && pindexBest && pindexRescan && pindexBest->nHeight > pindexRescan->nHeight)
+    if (!fBlockDataRepair && pindexBest != pindexRescan && pindexBest && pindexRescan &&
+        pindexBest->nHeight > pindexRescan->nHeight)
     {
         uiInterface.InitMessage(_("Rescanning..."));
         printf("Rescanning last %i blocks (from block %i)...\n", pindexBest->nHeight - pindexRescan->nHeight, pindexRescan->nHeight);
@@ -2555,12 +2567,13 @@ bool AppInit2()
         printf(" rescan      %15" PRId64"ms\n", GetTimeMillis() - nStart);
     };
 
-    if (fRepairWalletLocator &&
+    if (fRepairWalletLocator && !fBlockDataRepair &&
         !pwalletMain->SetBestChainChecked(CBlockLocator(pindexBest)))
         return InitError("Wallet rescan completed but its best-block locator could not be persisted; check wallet storage and restart with -rescan.");
 
     // Close a recorded IV5 scan gap here: its notes are unrecoverable by any other route now
     // that unshield is retired.
+    if (!fBlockDataRepair)
     {
         const int nScanGap = pwalletMain->GetPrivacyVNextScanGapHeight();
         if (nScanGap >= 0 && !pwalletMain->IsPrivacyVNextSeedUnlocked())

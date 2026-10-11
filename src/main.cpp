@@ -1513,8 +1513,7 @@ bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime)
 // expensive-to-check-upon-redemption script like:
 //   DUP CHECKSIG DROP ... repeated 100 times... OP_1
 //
-// Spends outputs paid to the empty-script CN burn fallback with a bare OP_TRUE and pays
-// only OP_RETURN, destroying them. Any other spend of those outputs stays non-standard.
+// Burns empty-script CN fallback outputs: OP_TRUE inputs, OP_RETURN-only outputs.
 bool IsBurnSweepTx(const CTransaction& tx)
 {
     if (tx.IsCoinBase() || tx.IsCoinStake() || tx.vin.empty() || tx.vout.empty())
@@ -3411,7 +3410,7 @@ void ThreadPrivacyVNextBackgroundVerify(void* parg)
     {
         bool fWorkRemained = false;
         bool fTipMoved = false;
-        if (!IsInitialBlockDownload())
+        if (!IsInitialBlockDownload() && !IsBlockDataRepairPending())
         {
             const int nTipBefore = nBestHeight;
             int nVerified = 0;
@@ -15196,6 +15195,113 @@ bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, uns
     return (nFound >= nRequired);
 }
 
+// Guarded by cs_main.
+static std::map<uint256, CBlockIndex*> mapBlockDataRepair;
+static int64_t nLastBlockDataRepairAsk = 0;
+
+bool BlockDataPresent(const CBlockIndex* pindex)
+{
+    if (pindex->nBlockPos < 8)
+        return false;
+    CAutoFile filein = CAutoFile(OpenBlockFile(pindex->nFile, pindex->nBlockPos - 8, "rb"),
+                                 SER_DISK, CLIENT_VERSION);
+    if (!filein)
+        return false;
+    unsigned char pchMagic[4];
+    unsigned int nSize = 0;
+    try {
+        filein >> FLATDATA(pchMagic) >> nSize;
+    }
+    catch (std::exception& e) {
+        return false;
+    }
+    return memcmp(pchMagic, pchMessageStart, sizeof(pchMagic)) == 0 && nSize > 0;
+}
+
+void QueueBlockDataRepair(CBlockIndex* pindex)
+{
+    LOCK(cs_main);
+    if (mapBlockDataRepair.insert(std::make_pair(pindex->GetBlockHash(), pindex)).second)
+        printf("Block %d %s has no data on disk; fetching it again\n",
+               pindex->nHeight, pindex->GetBlockHash().ToString().substr(0,20).c_str());
+}
+
+bool IsBlockDataRepairQueued(const uint256& hash)
+{
+    LOCK(cs_main);
+    return mapBlockDataRepair.count(hash) != 0;
+}
+
+bool IsBlockDataRepairPending()
+{
+    LOCK(cs_main);
+    return !mapBlockDataRepair.empty();
+}
+
+
+
+void RequestBlockDataRepair(CNode* pto)
+{
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain || mapBlockDataRepair.empty() || !pto->fSuccessfullyConnected)
+        return;
+    // One peer every 30 s.
+    if (GetTime() - nLastBlockDataRepairAsk < 30)
+        return;
+    nLastBlockDataRepairAsk = GetTime();
+    std::vector<CInv> vInv;
+    for (const auto& item : mapBlockDataRepair)
+    {
+        vInv.push_back(CInv(MSG_BLOCK, item.first));
+        if (vInv.size() >= 1000)
+            break;
+    }
+    printf("Requesting %u blocks for data repair from %s\n",
+           (unsigned int)vInv.size(), pto->addrName.c_str());
+    pto->PushMessage("getdata", vInv);
+}
+
+// Writes refetched block data back at its recorded position.
+static bool RepairBlockData(const CBlock& block, CBlockIndex* pindex)
+{
+    AssertLockHeld(cs_main);
+    const uint256 hash = pindex->GetBlockHash();
+    if (block.BuildMerkleTree() != block.hashMerkleRoot)
+        return error("RepairBlockData() : merkle root mismatch for %s", hash.ToString().substr(0,20).c_str());
+    // nSize is the network serialization.
+    const unsigned int nNetSize = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    if (pindex->nSize != 0 && nNetSize != pindex->nSize)
+        return error("RepairBlockData() : %s is %u bytes, its slot holds %u",
+                     hash.ToString().substr(0,20).c_str(), nNetSize, pindex->nSize);
+    const unsigned int nSize = ::GetSerializeSize(block, SER_DISK, CLIENT_VERSION);
+    {
+        CAutoFile fileout = CAutoFile(OpenBlockFile(pindex->nFile, 0, "rb+"), SER_DISK, CLIENT_VERSION);
+        if (!fileout)
+            return error("RepairBlockData() : cannot open block file %u", pindex->nFile);
+        if (fseek(fileout, pindex->nBlockPos - 8, SEEK_SET) != 0)
+            return error("RepairBlockData() : seek failed in block file %u", pindex->nFile);
+        fileout << FLATDATA(pchMessageStart) << nSize;
+        fileout << block;
+        FileCommit(fileout);
+    }
+    CBlock check;
+    if (!check.ReadFromDisk(pindex) || check.GetHash() != hash)
+        return error("RepairBlockData() : %s is still unreadable after the rewrite", hash.ToString().substr(0,20).c_str());
+    mapBlockDataRepair.erase(hash);
+    printf("Repaired block data at height %d; %u left\n",
+           pindex->nHeight, (unsigned int)mapBlockDataRepair.size());
+    if (mapBlockDataRepair.empty())
+    {
+        // Startup skipped the checks that read these blocks; a restart runs them.
+        const std::string strMessage = _("Innova repaired block data that an unexpected shutdown "
+                                         "left incomplete. Start Innova again to finish loading.");
+        printf("Block data repair complete; shutting down for a restart\n");
+        uiInterface.ThreadSafeMessageBox(strMessage, "Innova", CClientUIInterface::OK | CClientUIInterface::ICON_INFORMATION | CClientUIInterface::MODAL);
+        StartShutdown();
+    }
+    return true;
+}
+
 bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 {
     AssertLockHeld(cs_main);
@@ -15214,6 +15320,14 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     uint256 hash = pblock->GetHash();
     if (pfrom != NULL && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
         printf("sync: ProcessBlock %s from %s (height %d)\n", hash.ToString().substr(0,20).c_str(), pfrom->addrName.c_str(), nBestHeight);
+    if (!mapBlockDataRepair.empty())
+    {
+        std::map<uint256, CBlockIndex*>::iterator itRepair = mapBlockDataRepair.find(hash);
+        if (itRepair != mapBlockDataRepair.end())
+            return RepairBlockData(*pblock, itRepair->second);
+        // Hold new blocks until the repair is done.
+        return error("ProcessBlock() : block data repair pending, deferring %s", hash.ToString().substr(0,20).c_str());
+    }
     if (mapBlockIndex.count(hash))
         return error("ProcessBlock() : already have block %d %s", mapBlockIndex[hash]->nHeight, hash.ToString().substr(0,20).c_str());
     if (mapOrphanBlocks.count(hash))
@@ -18024,6 +18138,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 {
     if (pto->nVersion == 0)
         return true;
+
+    RequestBlockDataRepair(pto);
 
     bool pingSend = false;
     if (pto->fPingQueued) {
