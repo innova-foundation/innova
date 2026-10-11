@@ -72,3 +72,6 @@ src/privacy_vnext/rust/upstream/target/
 
 # Visual Studio workspace cache
 .vs/
+
+# Written by the Windows Qt build step.
+qt-msys2.conf

@@ -631,7 +631,15 @@ jobs:
         run: |
           export PATH="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin:$PATH"
           export CARGO_BUILD_TARGET=x86_64-pc-windows-gnu
-          /ucrt64/qt6-static/bin/qmake \
+          # qt6-static 6.12 qmake reports Qt's default layout; qt.conf gives the package's paths.
+          QT_PREFIX="$(cygpath -m /ucrt64/qt6-static)"
+          printf '%s\n' '[Paths]' "Prefix=$QT_PREFIX" 'ArchData=share/qt6' 'Data=share/qt6' \
+            'Documentation=share/doc/qt6' 'Headers=include/qt6' 'Libraries=lib' \
+            'LibraryExecutables=share/qt6/bin' 'Binaries=bin' 'Plugins=share/qt6/plugins' \
+            'QmlImports=share/qt6/qml' 'Translations=share/qt6/translations' \
+            "HostPrefix=$QT_PREFIX" 'HostData=share/qt6' 'HostBinaries=bin' \
+            'HostLibraryExecutables=share/qt6/bin' 'HostLibraries=lib' > qt-msys2.conf
+          /ucrt64/qt6-static/bin/qmake -qtconf qt-msys2.conf \
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BOOST_THREAD_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BDB_LIB_SUFFIX=${{ steps.libs.outputs.bdb_suffix }}" \

@@ -392,10 +392,22 @@ install, list `/ucrt64/lib/libboost_filesystem*` and `/ucrt64/lib/libdb_cxx*`.
 
 ### 5. Build the Qt wallet (static)
 
-Use the static Qt from `mingw-w64-ucrt-x86_64-qt6-static`:
+Use the static Qt from `mingw-w64-ucrt-x86_64-qt6-static`. From Qt 6.12 its
+qmake reports Qt's default directory layout instead of the one the package installs
+(`share/qt6`, `include/qt6`) and fails with "Could not find qmake spec
+'win32-g++'". A `qt.conf` with the package's paths fixes that, and is harmless on
+older versions:
 
 ```sh
-/ucrt64/qt6-static/bin/qmake \
+QT_PREFIX="$(cygpath -m /ucrt64/qt6-static)"
+printf '%s\n' '[Paths]' "Prefix=$QT_PREFIX" 'ArchData=share/qt6' 'Data=share/qt6' \
+  'Documentation=share/doc/qt6' 'Headers=include/qt6' 'Libraries=lib' \
+  'LibraryExecutables=share/qt6/bin' 'Binaries=bin' 'Plugins=share/qt6/plugins' \
+  'QmlImports=share/qt6/qml' 'Translations=share/qt6/translations' \
+  "HostPrefix=$QT_PREFIX" 'HostData=share/qt6' 'HostBinaries=bin' \
+  'HostLibraryExecutables=share/qt6/bin' 'HostLibraries=lib' > qt-msys2.conf
+
+/ucrt64/qt6-static/bin/qmake -qtconf qt-msys2.conf \
   "BOOST_LIB_SUFFIX=-mt" \
   "BOOST_THREAD_LIB_SUFFIX=-mt" \
   "BDB_LIB_SUFFIX=" \
