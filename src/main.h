@@ -20,6 +20,7 @@
 #include "nullstake.h"
 #include "privacy_vnext_ffi.h"
 
+#include <functional>
 #include <list>
 #include <vector>
 
@@ -2834,6 +2835,8 @@ public:
     // so a walk over the index need not re-read coinbases. Always 0 below
     // FORK_HEIGHT_MS_TIMESTAMP, where no commitment may exist.
     uint16_t nTimeMs;
+    // In memory only: index entries whose pprev is this one.
+    unsigned int nChildren;
 
     CBlockIndex()
     {
@@ -2855,6 +2858,7 @@ public:
         nStakeTime = 0;
         nSize = 0;
         nTimeMs = 0;
+        nChildren = 0;
         nFinalizedHeight = 0;
 
         nVersion       = 0;
@@ -2910,6 +2914,7 @@ public:
         // Set by AddToBlockIndex, which is the first point that knows nHeight
         // and so whether a commitment is required at all.
         nTimeMs        = 0;
+        nChildren      = 0;
     }
 
     CBlock GetBlockHeader() const
@@ -3219,6 +3224,15 @@ static const size_t BLOCKINDEX_SIZE_RESTORE_VERIFY_SAMPLES = 16;
  *  prefix does not match the block's own SER_NETWORK measure. */
 // Block data a stop during sync left missing is refetched and rewritten in place.
 static const int BLOCK_DATA_REPAIR_DEPTH = 2000;
+// Index entries no other entry builds on; CreateNewBlock walks back from them instead of
+// scanning mapBlockIndex. Guarded by cs_main.
+void BlockIndexLeavesInsert(CBlockIndex* pindex);
+void BlockIndexLeavesErase(CBlockIndex* pindex);
+const std::set<CBlockIndex*>& GetBlockIndexLeaves();
+// The best index by fBetter, starting from a non-null pBest.
+CBlockIndex* SelectBestIndexFromLeaves(CBlockIndex* pBest,
+    const std::function<bool(CBlockIndex*, const CBlockIndex*)>& fBetter);
+
 bool BlockDataPresent(const CBlockIndex* pindex);
 void QueueBlockDataRepair(CBlockIndex* pindex);
 bool IsBlockDataRepairQueued(const uint256& hash);

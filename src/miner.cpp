@@ -420,14 +420,20 @@ static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred,
     if (IsBetterPoWTemplateParent(pWalk, pBest, tv))
         pBest = pWalk;
 
-    for (std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.begin();
-         mi != mapBlockIndex.end(); ++mi)
+    if (!pBest)
     {
-        if (IsBetterPoWTemplateParent(mi->second, pBest, tv))
-            pBest = mi->second;
+        for (std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.begin();
+             mi != mapBlockIndex.end(); ++mi)
+        {
+            if (IsBetterPoWTemplateParent(mi->second, pBest, tv))
+                pBest = mi->second;
+        }
+        return pBest;
     }
 
-    return pBest;
+    return SelectBestIndexFromLeaves(pBest, [&tv](CBlockIndex* p, const CBlockIndex* pCur) {
+        return IsBetterPoWTemplateParent(p, pCur, tv);
+    });
 }
 
 // Millisecond offset for a template whose header time is already fixed. pblock->nTime is

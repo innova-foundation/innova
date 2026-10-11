@@ -331,4 +331,94 @@ BOOST_AUTO_TEST_CASE(sha256transform_equality)
     BOOST_CHECK(hash == hash_reference);
 }
 
+// The leaf walk must pick what a full mapBlockIndex scan picks, and the leaf set must stay
+// exact through the insert and erase hooks.
+BOOST_AUTO_TEST_CASE(template_parent_leaf_walk_matches_full_scan)
+{
+    LOCK(cs_main);
+    std::vector<CBlockIndex*> vAdded;
+    std::vector<uint256> vHashes;
+    uint64_t nSeed = 12345;
+    auto next = [&nSeed]() { nSeed = nSeed * 6364136223846793005ULL + 1442695040888963407ULL; return nSeed >> 33; };
+    auto addIndex = [&](CBlockIndex* pprev) {
+        CBlockIndex* p = new CBlockIndex();
+        p->pprev = pprev;
+        p->nHeight = pprev ? pprev->nHeight + 1 : 1000000;
+        // Starts far above any fixture index; grows along pprev like chain trust.
+        p->nChainTrust = (pprev ? pprev->nChainTrust : uint256(1) << 200) + uint256(1 + next() % 50);
+        uint256 hash = uint256(next()) << 128 | uint256(next()) << 64 | uint256(vAdded.size() + 1);
+        p->phashBlock = &(mapBlockIndex.insert(std::make_pair(hash, p)).first->first);
+        BlockIndexLeavesInsert(p);
+        vAdded.push_back(p);
+        return p;
+    };
+    auto bruteLeaves = []() {
+        std::set<const CBlockIndex*> setParents, setLeaves;
+        for (const auto& item : mapBlockIndex)
+            if (item.second->pprev)
+                setParents.insert(item.second->pprev);
+        for (const auto& item : mapBlockIndex)
+            if (!setParents.count(item.second))
+                setLeaves.insert(item.second);
+        return setLeaves;
+    };
+    auto leavesMatch = [&]() {
+        const std::set<CBlockIndex*>& setLeaves = GetBlockIndexLeaves();
+        std::set<const CBlockIndex*> setGot(setLeaves.begin(), setLeaves.end());
+        return setGot == bruteLeaves();
+    };
+
+    // A main chain with side branches forking off at random points.
+    CBlockIndex* pTip = addIndex(NULL);
+    for (int i = 0; i < 400; i++)
+    {
+        if (next() % 4 == 0 && vAdded.size() > 2)
+            addIndex(vAdded[next() % vAdded.size()]);
+        else
+            pTip = addIndex(pTip);
+    }
+    BOOST_CHECK(leavesMatch());
+
+    std::set<const CBlockIndex*> setEligible;
+    auto better = [&setEligible](CBlockIndex* p, const CBlockIndex* pCur) {
+        if (!setEligible.count(p))
+            return false;
+        if (p->nChainTrust != pCur->nChainTrust)
+            return p->nChainTrust > pCur->nChainTrust;
+        if (p->nHeight != pCur->nHeight)
+            return p->nHeight > pCur->nHeight;
+        return p->GetBlockHash() < pCur->GetBlockHash();
+    };
+    for (int round = 0; round < 50; round++)
+    {
+        setEligible.clear();
+        for (CBlockIndex* p : vAdded)
+            if (next() % 3 != 0)
+                setEligible.insert(p);
+        CBlockIndex* pSeed = vAdded[next() % vAdded.size()];
+        CBlockIndex* pScan = pSeed;
+        for (const auto& item : mapBlockIndex)
+            if (better(item.second, pScan))
+                pScan = item.second;
+        BOOST_CHECK(SelectBestIndexFromLeaves(pSeed, better) == pScan);
+
+        // Remove a leaf through the hook; the set must stay exact.
+        CBlockIndex* pLeaf = *GetBlockIndexLeaves().rbegin();
+        if (std::find(vAdded.begin(), vAdded.end(), pLeaf) != vAdded.end())
+        {
+            BlockIndexLeavesErase(pLeaf);
+            mapBlockIndex.erase(pLeaf->GetBlockHash());
+            vAdded.erase(std::find(vAdded.begin(), vAdded.end(), pLeaf));
+            delete pLeaf;
+            BOOST_CHECK(leavesMatch());
+        }
+    }
+
+    for (CBlockIndex* p : vAdded)
+        mapBlockIndex.erase(p->GetBlockHash());
+    for (CBlockIndex* p : vAdded)
+        delete p;
+    BOOST_CHECK(leavesMatch());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

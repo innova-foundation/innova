@@ -14214,6 +14214,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
     pindexNew->BuildSkip();
+    BlockIndexLeavesInsert(pindexNew);
 
     // Persistence waits for DAG init and score selection, so the index commits with its DAG
     // records (here for a side block, in SetBestChain's batch for a best-block candidate).
@@ -14254,6 +14255,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     const auto CleanupUncommittedIndex = [&]() {
         if (fDAGDataInitialized)
             g_dagManager.RemoveBlockDAGData(hash);
+        BlockIndexLeavesErase(pindexNew);
         mapBlockIndex.erase(hash);
         if (pindexNew->IsProofOfStake())
             setStakeSeen.erase(make_pair(pindexNew->prevoutStake,
@@ -14570,6 +14572,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     StartShutdown();
                 }
             }
+            BlockIndexLeavesErase(pindexNew);
             mapBlockIndex.erase(hash);
             if (pindexNew->IsProofOfStake())
                 setStakeSeen.erase(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
@@ -15193,6 +15196,73 @@ bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, uns
         pstart = pstart->pprev;
     }
     return (nFound >= nRequired);
+}
+
+// Guarded by cs_main. Rebuilt when mapBlockIndex changed outside the two hooks below.
+static std::set<CBlockIndex*> setBlockIndexLeaves;
+static size_t nBlockIndexLeavesMapSize = 0;
+static bool fBlockIndexLeavesDirty = true;
+
+void BlockIndexLeavesInsert(CBlockIndex* pindex)
+{
+    if (fBlockIndexLeavesDirty || nBlockIndexLeavesMapSize + 1 != mapBlockIndex.size())
+    {
+        fBlockIndexLeavesDirty = true;
+        return;
+    }
+    pindex->nChildren = 0;
+    setBlockIndexLeaves.insert(pindex);
+    if (pindex->pprev && pindex->pprev->nChildren++ == 0)
+        setBlockIndexLeaves.erase(pindex->pprev);
+    nBlockIndexLeavesMapSize = mapBlockIndex.size();
+}
+
+void BlockIndexLeavesErase(CBlockIndex* pindex)
+{
+    if (fBlockIndexLeavesDirty || nBlockIndexLeavesMapSize != mapBlockIndex.size())
+    {
+        fBlockIndexLeavesDirty = true;
+        return;
+    }
+    setBlockIndexLeaves.erase(pindex);
+    if (pindex->pprev && pindex->pprev->nChildren > 0 && --pindex->pprev->nChildren == 0)
+        setBlockIndexLeaves.insert(pindex->pprev);
+    nBlockIndexLeavesMapSize = mapBlockIndex.size() - 1;
+}
+
+const std::set<CBlockIndex*>& GetBlockIndexLeaves()
+{
+    if (fBlockIndexLeavesDirty || nBlockIndexLeavesMapSize != mapBlockIndex.size())
+    {
+        setBlockIndexLeaves.clear();
+        for (const auto& item : mapBlockIndex)
+            item.second->nChildren = 0;
+        for (const auto& item : mapBlockIndex)
+            if (item.second->pprev)
+                item.second->pprev->nChildren++;
+        for (const auto& item : mapBlockIndex)
+            if (item.second->nChildren == 0)
+                setBlockIndexLeaves.insert(item.second);
+        nBlockIndexLeavesMapSize = mapBlockIndex.size();
+        fBlockIndexLeavesDirty = false;
+    }
+    return setBlockIndexLeaves;
+}
+
+CBlockIndex* SelectBestIndexFromLeaves(CBlockIndex* pBest,
+    const std::function<bool(CBlockIndex*, const CBlockIndex*)>& fBetter)
+{
+    // Chain trust never falls along pprev, so walking back from each leaf while a block
+    // can still beat pBest visits every candidate a full mapBlockIndex scan could pick.
+    for (CBlockIndex* pLeaf : GetBlockIndexLeaves())
+    {
+        for (CBlockIndex* p = pLeaf; p && p->nChainTrust >= pBest->nChainTrust; p = p->pprev)
+        {
+            if (fBetter(p, pBest))
+                pBest = p;
+        }
+    }
+    return pBest;
 }
 
 // Guarded by cs_main.
@@ -17300,6 +17370,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 CBlockIndex* pindexNew = new CBlockIndex();
                 pindexNew->phashBlock = &(mapBlockIndex.insert(make_pair(hash, pindexNew)).first->first);
                 pindexNew->pprev = pindexPrev;
+                BlockIndexLeavesInsert(pindexNew);
                 pindexNew->nHeight = nHeaderHeight;
                 pindexNew->nVersion = header.nVersion;
                 pindexNew->hashMerkleRoot = header.hashMerkleRoot;
