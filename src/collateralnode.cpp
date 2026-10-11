@@ -15,6 +15,7 @@
 #include "sync.h"
 #include "core.h"
 #include "hash.h"
+#include "checkpoints.h"
 #include <algorithm>
 #include <deque>
 #include <boost/lexical_cast.hpp>
@@ -2091,8 +2092,22 @@ size_t CNWalkChain(const CBlockIndex* pindex, int nStopHeight,
     return nVisited;
 }
 
+bool CNPayeeFailsEveryCandidate(const CScript& payee)
+{
+    // Candidates are spent with payee as the scriptSig. Once signatures are checked, a
+    // payee that fails unsigned fails them all: a signature cannot commit to its own outpoint.
+    if (!fFullReplayVerify && nBestHeight < Checkpoints::GetTotalBlocksEstimate())
+        return false;
+    CTransaction txProbe;
+    txProbe.vin.push_back(CTxIn(COutPoint(), payee));
+    txProbe.vout.push_back(CTxOut(1 * COIN, payee));
+    return !VerifyScript(payee, payee, txProbe, 0, SCRIPT_VERIFY_NONE, 0);
+}
+
 bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
 {
+    if (CNPayeeFailsEveryCandidate(payee))
+        return false;
     if (fDebug) printf("Searching for CN collateral...\n");
     CTxDB txdb("r");
     int nHeight = 0;

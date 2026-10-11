@@ -331,6 +331,8 @@ enum class CNScanStep { Next, Stop };
 size_t CNWalkChain(const CBlockIndex* pindex, int nStopHeight,
                    const std::function<CNScanStep(const CBlockIndex*)>& fn);
 
+// True when no collateral FindCNPayment could find would pass; it then skips the chain walk.
+bool CNPayeeFailsEveryCandidate(const CScript& payee);
 bool FindCNPayment(CScript& payee, CBlockIndex* pindex=pindexBest);
 
 // for storing the winning payments

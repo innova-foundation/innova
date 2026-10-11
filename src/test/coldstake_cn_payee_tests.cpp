@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "../checkpoints.h"
 #include "../collateralnode.h"
 #include "../kernel.h"
 #include "../key.h"
@@ -822,6 +823,29 @@ BOOST_AUTO_TEST_CASE(the_kernel_signature_check_follows_the_cold_staking_gate)
                             "the kernel accepted a staker-path signature below the gate, DoS "
                             << tx.nDoS);
     }
+}
+
+BOOST_AUTO_TEST_CASE(cn_payee_shortcut_only_for_scripts_that_fail_unsigned)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    CScript p2pkh;
+    p2pkh.SetDestination(key.GetPubKey().GetID());
+    CScript p2pk = CScript() << key.GetPubKey() << OP_CHECKSIG;
+    CScript anyone = CScript() << OP_TRUE;
+
+    const bool fReplaySaved = fFullReplayVerify;
+    fFullReplayVerify = true;
+    BOOST_CHECK(CNPayeeFailsEveryCandidate(p2pkh));
+    BOOST_CHECK(CNPayeeFailsEveryCandidate(p2pk));
+    BOOST_CHECK(CNPayeeFailsEveryCandidate(CScript()));
+    BOOST_CHECK(!CNPayeeFailsEveryCandidate(anyone));
+
+    // Below the last checkpoint signatures are skipped, so the walk still runs.
+    fFullReplayVerify = false;
+    if (nBestHeight < Checkpoints::GetTotalBlocksEstimate())
+        BOOST_CHECK(!CNPayeeFailsEveryCandidate(p2pkh));
+    fFullReplayVerify = fReplaySaved;
 }
 
 BOOST_AUTO_TEST_SUITE_END()
