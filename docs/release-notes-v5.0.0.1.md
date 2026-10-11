@@ -1,9 +1,8 @@
 # Innova v5.0.0.1 release notes
 
-v5.0.0.1 lets mining pools build valid blocks after the IDAG fork. It changes no
-consensus rule: nodes that do not serve a pool or an external miner through
-`getblocktemplate` do not need to upgrade, and v5.0.0.0 and v5.0.0.1 nodes accept
-the same blocks.
+v5.0.0.1 lets mining pools build valid blocks after the IDAG fork, and adds a way
+to burn the collateral node share that blocks pay to the burn fallback. It
+changes no consensus rule: v5.0.0.0 and v5.0.0.1 nodes accept the same blocks.
 
 ## Who should upgrade
 
@@ -11,6 +10,7 @@ the same blocks.
   servers such as YIIMP or NOMP, or custom miners). Upgrade the node your pool
   reads templates from, then update the pool's coinbase builder as described
   below.
+- Miners connected to a pool: nothing to do; the pool's node does the work.
 - Wallet users, stakers, solo miners using `setgenerate`, and exchanges: optional.
   This release also corrects the build guide (`docs/BUILD.md`).
 
@@ -34,17 +34,22 @@ rejected.
 
 ## What changed
 
-`getblocktemplate` returns two new fields:
+`getblocktemplate` returns three new fields:
 
 - `coinbase_required_outputs`: every output of the node's coinbase other than
   the miner payout and the collateral node payment, in order, as
   `[{"script": "<hex>", "value": <satoshis>}, ...]`.
 - `coinbase_dag`: the IDAG commitment script from that list, or an empty string
   before the DAG fork.
+- `payee_script`: the collateral node payment's scriptPubKey as the node builds
+  it. When the node knows no collateral node it pays the burn fallback, an empty
+  script that the reported `payee` address does not decode to, so a pool must
+  use this script rather than decode `payee`.
 
 ## Building the coinbase
 
-1. Pay the collateral node `payee_amount` to `payee`, as before.
+1. Pay the collateral node `payee_amount` to `payee_script` (or, on a node without
+   it, to the address in `payee`).
 2. Pay the pool `coinbasevalue - payee_amount - (sum of every value in
    coinbase_required_outputs)`.
 3. Append each entry of `coinbase_required_outputs` unchanged: same script, same
@@ -56,6 +61,17 @@ already copies `coinbase_dag` and writes its own IMTS output keeps producing
 valid blocks outside settlement heights, but it should switch to the list to pay
 settlements and carry votes.
 
+## Burning the collateral node fallback
+
+With no collateral node to pay, a block pays the collateral node share (65% of
+its paid base) to the burn fallback: an output with an empty script. Consensus
+lets any miner spend such an output, so it is not burned. The new
+`sweepburnoutputs [startheight] [maxinputs]` RPC spends the mature, unspent ones
+into a single `OP_RETURN` output, destroying them. Node policy relays exactly that
+shape (bare `OP_TRUE` inputs, `OP_RETURN`-only outputs); every other spend of
+those outputs stays non-standard. Only the node that runs the sweep and the node
+that mines it need this release; every node accepts the resulting block.
+
 ## Verification
 
 A regtest run built blocks the way a pool does, from the template alone, for
@@ -65,4 +81,8 @@ after it, and a peer node followed them. Finality votes reached the chain
 through the pool-built blocks. The epoch's settlement block, also pool-built,
 paid both voters. A pool block that kept the settlement value for itself was
 rejected, as were blocks missing the IMTS or IDAG commitment, or carrying a
-tampered IDAG commitment.
+tampered IDAG commitment. On mainnet, pool-built blocks paying the collateral node
+share to `payee_script` were accepted from height 8,150,040, and a 400-input sweep
+burning 52 INN was mined at 8,150,581. A unit test covers the sweep policy: the
+sweep is standard, while spending a fallback output to an address, adding an
+address output, or padding the input script is not.
