@@ -1,8 +1,9 @@
 # Innova v5.0.0.3 release notes
 
-v5.0.0.3 makes syncing faster, stops a node from freezing when a block pays a
-collateral node it has not heard of, and fixes the macOS download. It changes no
-consensus rule: every v5.0.0.x node accepts the same blocks.
+v5.0.0.3 makes syncing faster, lets a node that is behind catch up to the tip
+while blocks pay a collateral node, stops a node from freezing when a block pays
+one it has not heard of, and fixes the macOS download. It changes no consensus
+rule: every v5.0.0.x node accepts the same blocks.
 
 ## Who should upgrade
 
@@ -32,9 +33,16 @@ can never succeed: it tests each candidate by spending it with the payee's own
 script and no signature. The node now skips it, asks its peers for the list at once,
 and gives the same answer as before.
 
-A node that is still catching up does not take collateral-node announcements yet, so
-it retries each block paying a collateral node it has not heard of and moves through
-those blocks more slowly. Nodes at the tip are not affected.
+## Catching up while a collateral node is paid
+
+The collateral-node payment check needs the paid node in the local list. A node
+that is catching up ignores collateral-node announcements, so its list cannot have
+a node that started while it was behind. The check only covers blocks from the
+last 20 minutes, so the node waited on each such block until it aged out of that
+window and stayed about 20 minutes behind the tip. The check now waits until the
+node has caught up, as its own "is initial download, skipping" log line already
+described. Nodes at the tip enforce it exactly as before, and a node that catches
+up learns the list from its peers.
 
 ## macOS
 
@@ -55,6 +63,9 @@ xattr -dr com.apple.quarantine /Applications/Innova.app
 
 - Unit tests compare the new size limit and ancestor lookup against the previous
   code on random block chains, and check which payee scripts skip the search.
-- A copy of the mainnet chain synced 12,572 blocks in 76 seconds, past the first
-  collateral-node payment (8,161,864), with no chain search; v5.0.0.2 froze there
-  for about 13 minutes.
+- A copy of the mainnet chain went from height 8,150,529 to the tip (about 15,900
+  blocks) in 120 seconds with no refused block and no chain search, then registered
+  the collateral node from its peer. v5.0.0.2 froze for about 13 minutes at the
+  first collateral-node payment (8,161,864) and then stayed about 20 minutes behind.
+- A unit test checks that the payment rule does not apply while the node is
+  catching up.
