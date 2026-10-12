@@ -22,6 +22,10 @@ public:
 public slots:
     void refresh();
 
+protected:
+    void showEvent(QShowEvent *event);
+    void hideEvent(QHideEvent *event);
+
 private:
     ClientModel *clientModel;
     QTimer *refreshTimer;

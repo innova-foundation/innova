@@ -81,9 +81,19 @@ IDAGPage::IDAGPage(QWidget *parent) :
     mainLayout->addWidget(recentGroup, 1);
 
     connect(refreshTimer, SIGNAL(timeout()), this, SLOT(refresh()));
-    refreshTimer->start(2000);
+}
 
+void IDAGPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
     refresh();
+    refreshTimer->start(2000);
+}
+
+void IDAGPage::hideEvent(QHideEvent *event)
+{
+    refreshTimer->stop();
+    QWidget::hideEvent(event);
 }
 
 QLabel* IDAGPage::addMetric(QGridLayout *layout, int row, int column, const QString &title)
@@ -109,10 +119,6 @@ void IDAGPage::setModel(ClientModel *model)
         disconnect(clientModel, 0, this, 0);
 
     clientModel = model;
-
-    if (clientModel)
-        connect(clientModel, SIGNAL(numBlocksChanged(int,int)), this, SLOT(refresh()));
-
     refresh();
 }
 
@@ -147,6 +153,8 @@ void IDAGPage::setValue(QLabel *label, const QString &value, const QString &tool
 
 void IDAGPage::refresh()
 {
+    if (!isVisible())
+        return;
     if (!clientModel)
     {
         setValue(statusValue, tr("No client model"));
@@ -224,23 +232,24 @@ void IDAGPage::refresh()
             ? tr("N/A")
             : tr("%1 s").arg(activity.intervalSeconds);
 
-        QList<QTableWidgetItem*> items;
-        items << new QTableWidgetItem(QString::number(activity.height));
-        items << new QTableWidgetItem(shortHash(activity.hash));
-        items << new QTableWidgetItem(activity.blockType);
-        items << new QTableWidgetItem(formatBytes(activity.sizeBytes));
-        items << new QTableWidgetItem(QString::number(activity.txCount));
-        items << new QTableWidgetItem(interval);
-        items << new QTableWidgetItem(formatPercent(activity.utilizationPct));
-        items << new QTableWidgetItem(parents);
+        const QStringList cells = QStringList()
+            << QString::number(activity.height) << shortHash(activity.hash) << activity.blockType
+            << formatBytes(activity.sizeBytes) << QString::number(activity.txCount) << interval
+            << formatPercent(activity.utilizationPct) << parents;
 
-        for (int column = 0; column < items.size(); column++)
+        for (int column = 0; column < cells.size(); column++)
         {
-            if (column != 1 && column != 2)
-                items[column]->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            QTableWidgetItem *item = recentBlocksTable->item(row, column);
+            if (!item)
+            {
+                item = new QTableWidgetItem;
+                if (column != 1 && column != 2)
+                    item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                recentBlocksTable->setItem(row, column, item);
+            }
+            item->setText(cells.at(column));
             if (column == 1)
-                items[column]->setToolTip(activity.hash);
-            recentBlocksTable->setItem(row, column, items[column]);
+                item->setToolTip(activity.hash);
         }
     }
 }
