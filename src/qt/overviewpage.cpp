@@ -111,6 +111,7 @@ public:
 OverviewPage::OverviewPage(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::OverviewPage),
+    model(0),
     currentBalance(-1),
     currentStake(0),
     currentUnconfirmedBalance(-1),
