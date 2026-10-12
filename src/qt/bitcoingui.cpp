@@ -156,8 +156,10 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nWeight(0),
     prevBlocks(0),
     spinnerFrame(0),
-    nBlocksInLastPeriod(0),
-    nLastBlocks(0)
+    dBlocksPerSec(0),
+    nLastBlocks(0),
+    nNotifyHeld(0),
+    nNotifyHeldAmount(0)
 {
     // Dynamic window sizing: adapt to actual screen dimensions
     QScreen *screen = QApplication::primaryScreen();
@@ -371,6 +373,23 @@ void BitcoinGUI::applyTheme()
     bool fDark = settings.value("fDarkTheme", true).toBool();
     // Fusion base style so the modern QSS renders consistently across platforms.
     QApplication::setStyle(QStyleFactory::create("Fusion"));
+    // Match the palette to the QSS so widgets styled with palette() follow the theme.
+    QPalette pal;
+    pal.setColor(QPalette::Window, QColor(fDark ? "#14171c" : "#f6f7f9"));
+    pal.setColor(QPalette::WindowText, QColor(fDark ? "#e6e8ec" : "#1c2128"));
+    pal.setColor(QPalette::Base, QColor(fDark ? "#1a1e25" : "#ffffff"));
+    pal.setColor(QPalette::AlternateBase, QColor(fDark ? "#20252e" : "#eef0f3"));
+    pal.setColor(QPalette::Text, QColor(fDark ? "#e6e8ec" : "#1c2128"));
+    pal.setColor(QPalette::Button, QColor(fDark ? "#1a1e25" : "#ffffff"));
+    pal.setColor(QPalette::ButtonText, QColor(fDark ? "#e6e8ec" : "#1c2128"));
+    pal.setColor(QPalette::ToolTipBase, QColor(fDark ? "#1a1e25" : "#ffffff"));
+    pal.setColor(QPalette::ToolTipText, QColor(fDark ? "#e6e8ec" : "#1c2128"));
+    pal.setColor(QPalette::Highlight, QColor("#1283C4"));
+    pal.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    pal.setColor(QPalette::Link, QColor(fDark ? "#1a93d8" : "#1283C4"));
+    pal.setColor(QPalette::Mid, QColor(fDark ? "#2c313b" : "#dfe3e8"));
+    pal.setColor(QPalette::Dark, QColor(fDark ? "#8b929e" : "#8a919c"));
+    qApp->setPalette(pal);
     qApp->setStyleSheet(QString::fromUtf8(fDark ? MODERN_DARK_QSS : MODERN_LIGHT_QSS));
 }
 
@@ -985,19 +1004,18 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
         nLastBlocks = pindexBest->nHeight;
 
         if (count > nLastBlocks && GetTime() - nClientUpdateTime > BPS_PERIOD) {
-            nBlocksInLastPeriod = count - nLastBlocks;
+            dBlocksPerSec = double(count - nLastBlocks) / (GetTime() - nClientUpdateTime);
             nLastBlocks = count;
             nClientUpdateTime = GetTime();
         }
-        if (nBlocksInLastPeriod>0)
-            nBlocksPerSec = nBlocksInLastPeriod / BPS_PERIOD;
-        else
-            nBlocksPerSec = 0;
-
-            if (nBlocksPerSec>0) {
-              nRemainingTime = QDateTime::fromSecsSinceEpoch(
-                  (nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
-          }
+        // The chain keeps growing while we sync, so only the excess rate closes the gap.
+        const double dGain = dBlocksPerSec - 1.0 / std::max(1, (int)GetTargetSpacingForHeight(count + 1));
+        if (dGain > 0.05) {
+            const qint64 nSecs = (qint64)((nTotalBlocks - count) / dGain);
+            nRemainingTime = nSecs >= 86400
+                ? tr("%1d %2h").arg(nSecs / 86400).arg((nSecs % 86400) / 3600)
+                : QDateTime::fromSecsSinceEpoch(nSecs).toUTC().toString("hh'h'mm'm'");
+        }
 
           QDateTime lastBlockDate = clientModel->getLastBlockDate();
           int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
@@ -1031,8 +1049,8 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
         {
             progressBarLabel->setText(tr("Synchronizing with the network..."));
             progressBarLabel->setVisible(true);
-            if (nBlocksPerSec>0)
-                progressBar->setFormat(tr("~%1 block(s) remaining (est: %2 at %3 blocks/sec)").arg(nRemainingBlocks).arg(nRemainingTime).arg(nBlocksPerSec));
+            if (!nRemainingTime.isEmpty())
+                progressBar->setFormat(tr("~%1 block(s) remaining (est: %2 at %3 blocks/sec)").arg(nRemainingBlocks).arg(nRemainingTime).arg(QString::number(dBlocksPerSec, 'f', dBlocksPerSec < 10 ? 1 : 0)));
             else
                 progressBar->setFormat(tr("~%1 block(s) remaining").arg(nRemainingBlocks));
             progressBar->setMaximum(nTotalBlocks);
@@ -1175,6 +1193,20 @@ void BitcoinGUI::incomingTransaction(const QModelIndex & parent, int start, int 
                     .data(Qt::EditRole).toULongLong();
     if(!clientModel->inInitialBlockDownload())
     {
+        // At one block a second a busy wallet would pop a notification each block: after
+        // three in 15 s, hold the rest and show one summary.
+        const qint64 nNow = QDateTime::currentMSecsSinceEpoch();
+        while (!notifyTimes.isEmpty() && nNow - notifyTimes.first() > 15000)
+            notifyTimes.removeFirst();
+        if (notifyTimes.size() >= 3)
+        {
+            if (nNotifyHeld++ == 0)
+                QTimer::singleShot(15000, this, SLOT(flushHeldNotifications()));
+            nNotifyHeldAmount += amount;
+            return;
+        }
+        notifyTimes.append(nNow);
+
         QString date = ttm->index(start, TransactionTableModel::Date, parent)
                         .data().toString();
         QString type = ttm->index(start, TransactionTableModel::Type, parent)
@@ -1197,6 +1229,17 @@ void BitcoinGUI::incomingTransaction(const QModelIndex & parent, int start, int 
                               .arg(type)
                               .arg(address), icon);
     }
+}
+
+void BitcoinGUI::flushHeldNotifications()
+{
+    if (nNotifyHeld == 0 || !walletModel)
+        return;
+    notificator->notify(Notificator::Information, tr("Transactions"),
+                        tr("%n more transaction(s), total %1", "", nNotifyHeld)
+                        .arg(BitcoinUnits::formatWithUnit(walletModel->getOptionsModel()->getDisplayUnit(), nNotifyHeldAmount, true)));
+    nNotifyHeld = 0;
+    nNotifyHeldAmount = 0;
 }
 
 void BitcoinGUI::incomingMessage(const QModelIndex & parent, int start, int end)
@@ -1774,7 +1817,10 @@ void BitcoinGUI::updateStakingIcon()
         }
 
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_on").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-        labelStakingIcon->setToolTip(tr("Staking.<br>Your weight is %1<br>Network weight is %2<br>Expected time to earn reward is %3").arg(nWeight).arg(nNetworkWeight).arg(text));
+        if (nBestHeight >= FORK_HEIGHT_DAG)
+            labelStakingIcon->setToolTip(tr("Staking for finality.<br>Your weight is %1<br>Blocks come from mining; stake votes on finality.").arg(nWeight));
+        else
+            labelStakingIcon->setToolTip(tr("Staking.<br>Your weight is %1<br>Network weight is %2<br>Expected time to earn reward is %3").arg(nWeight).arg(nNetworkWeight).arg(text));
     }
     else
     {
@@ -1786,7 +1832,7 @@ void BitcoinGUI::updateStakingIcon()
         else if (IsInitialBlockDownload())
             labelStakingIcon->setToolTip(tr("Not staking because wallet is syncing"));
         else if (!nWeight)
-            labelStakingIcon->setToolTip(tr("Not staking because you don't have mature coins<br>Coins take 10 hours to mature."));
+            labelStakingIcon->setToolTip(tr("Not staking because you don't have mature coins"));
         else if (!GetBoolArg("-staking", true))
             labelStakingIcon->setToolTip(tr("Not staking because staking is disabled"));
         else

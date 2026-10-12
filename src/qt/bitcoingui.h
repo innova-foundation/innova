@@ -182,6 +182,9 @@ private:
 
     QSystemTrayIcon *trayIcon;
     Notificator *notificator;
+    QList<qint64> notifyTimes;
+    int nNotifyHeld;
+    qint64 nNotifyHeldAmount;
     TransactionView *transactionView;
 	  MintingView *mintingView;
     RPCConsole *rpcConsole;
@@ -194,9 +197,8 @@ private:
 
     int64_t nClientUpdateTime;
     int64_t nLastUpdateTime;
-    int nBlocksInLastPeriod;
     int nLastBlocks;
-    int nBlocksPerSec;
+    double dBlocksPerSec;
 
     /** Create the main UI actions. */
     void createActions();
@@ -310,6 +312,8 @@ private slots:
         The new items are those between start and end inclusive, under the given parent item.
     */
     void incomingTransaction(const QModelIndex & parent, int start, int end);
+    /** Show one summary for transactions held back by the notification rate limit */
+    void flushHeldNotifications();
 
     /** Show incoming message notification for new messages.
 
