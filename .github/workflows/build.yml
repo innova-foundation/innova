@@ -1222,7 +1222,7 @@ jobs:
             cp "$source" release-assets/
           done
           cd release-assets
-          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 12
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq "${#expected[@]}"
           sha256sum -- "${expected[@]}" > SHA256SUMS.txt
           test -s SHA256SUMS.txt
           echo "=== Release Assets ==="
