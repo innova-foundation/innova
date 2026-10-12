@@ -1,14 +1,15 @@
 #!/bin/bash
-# Bundle every non-system library macdeployqt missed. Usage: bundle-libs.sh App.app [libdir...]
+# Bundle every non-system library macdeployqt missed. Usage: bundle-libs.sh App.app|dir [libdir...]
 set -euo pipefail
 
 APP="$1"; shift
-FW="$APP/Contents/Frameworks"
+ROOT="$APP/Contents"; [ -d "$ROOT" ] || ROOT="$APP"
+FW="$ROOT/Frameworks"
 SEARCH=("$@" /opt/homebrew/lib /usr/local/lib)
 mkdir -p "$FW"
 
 machos() {
-    find "$APP/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
+    find "$ROOT" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
         if file -b "$f" | grep -q 'Mach-O'; then echo "$f"; fi
     done
 }
