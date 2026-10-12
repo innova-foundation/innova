@@ -193,6 +193,7 @@ int main(int argc, char *argv[])
 
     // Install global event filter that makes sure that long tooltips can be word-wrapped
     app.installEventFilter(new GUIUtil::ToolTipToRichTextFilter(TOOLTIP_WRAP_THRESHOLD, &app));
+    app.installEventFilter(new GUIUtil::DialogGeometryKeeper(&app));
 
     // ... then bitcoin.conf:
     if (!boost::filesystem::is_directory(GetDataDir(false)))

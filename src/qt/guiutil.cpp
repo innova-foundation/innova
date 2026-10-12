@@ -34,6 +34,11 @@
 #include <QDesktopServices>
 #include <QLocale>
 #include <QThread>
+#include <QSettings>
+#include <QMessageBox>
+#include <QDialog>
+#include <QProgressDialog>
+#include <QInputDialog>
 
 #ifndef Q_MOC_RUN
 #include <boost/filesystem.hpp>
@@ -391,6 +396,30 @@ ToolTipToRichTextFilter::ToolTipToRichTextFilter(int size_threshold, QObject *pa
     QObject(parent), size_threshold(size_threshold)
 {
 
+}
+
+DialogGeometryKeeper::DialogGeometryKeeper(QObject *parent) : QObject(parent)
+{
+}
+
+bool DialogGeometryKeeper::eventFilter(QObject *obj, QEvent *evt)
+{
+    QDialog *dialog = qobject_cast<QDialog*>(obj);
+    if (dialog && (evt->type() == QEvent::Show || evt->type() == QEvent::Hide) &&
+        !qobject_cast<QMessageBox*>(obj) && !qobject_cast<QFileDialog*>(obj) &&
+        !qobject_cast<QProgressDialog*>(obj) && !qobject_cast<QInputDialog*>(obj))
+    {
+        QSettings settings;
+        const QString key = QString("geometry/%1").arg(dialog->metaObject()->className());
+        if (evt->type() == QEvent::Show && !dialog->property("geometryRestored").toBool())
+        {
+            dialog->setProperty("geometryRestored", true);
+            dialog->restoreGeometry(settings.value(key).toByteArray());
+        }
+        else if (evt->type() == QEvent::Hide)
+            settings.setValue(key, dialog->saveGeometry());
+    }
+    return QObject::eventFilter(obj, evt);
 }
 
 bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt)

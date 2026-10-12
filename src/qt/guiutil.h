@@ -129,6 +129,18 @@ namespace GUIUtil
         int size_threshold;
     };
 
+    /** Remembers each dialog type's size and position between sessions. */
+    class DialogGeometryKeeper : public QObject
+    {
+        Q_OBJECT
+
+    public:
+        explicit DialogGeometryKeeper(QObject *parent = 0);
+
+    protected:
+        bool eventFilter(QObject *obj, QEvent *evt);
+    };
+
     bool GetStartOnSystemStartup();
     bool SetStartOnSystemStartup(bool fAutoStart);
 
