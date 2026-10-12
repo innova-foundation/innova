@@ -594,7 +594,7 @@ void CollateralnodeManager::on_startButton_clicked()
       }
 
     QMessageBox msg;
-    msg.setWindowTitle("Innova Message");
+    msg.setWindowTitle(tr("Innova Message"));
     msg.setText(results);
     msg.exec();
 }
@@ -645,7 +645,7 @@ void CollateralnodeManager::on_startAllButton_clicked()
     }
 
     QMessageBox msg;
-    msg.setWindowTitle("Innova Message");
+    msg.setWindowTitle(tr("Innova Message"));
     msg.setText(results);
     msg.exec();
 
@@ -705,7 +705,7 @@ void CollateralnodeManager::on_stopButton_clicked()
     std::string errorMessage;
     bool result = activeCollateralnode.StopCollateralNode(c.sAddress, c.sCollateralnodePrivKey, errorMessage);
     QMessageBox msg;
-    msg.setWindowTitle("Innova Message");
+    msg.setWindowTitle(tr("Innova Message"));
     if(result)
     {
         msg.setText("Hybrid Collateralnode at " + QString::fromStdString(c.sAddress) + " stopped.");
@@ -737,7 +737,7 @@ void CollateralnodeManager::on_stopAllButton_clicked()
     }
 
     QMessageBox msg;
-    msg.setWindowTitle("Innova Message");
+    msg.setWindowTitle(tr("Innova Message"));
     msg.setText(QString::fromStdString(results));
     msg.exec();
 }

@@ -163,7 +163,7 @@ EmojiPicker::EmojiPicker(QWidget *parent) : QWidget(parent)
 {
     setWindowFlags(Qt::Popup);
     setFixedSize(340, 400);
-    setStyleSheet("background-color: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 8px;");
+    setStyleSheet("background-color: palette(window); border: 1px solid palette(mid); border-radius: 8px;");
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(8, 8, 8, 8);
@@ -181,15 +181,15 @@ EmojiPicker::EmojiPicker(QWidget *parent) : QWidget(parent)
     {
         QPushButton *catBtn = new QPushButton(catLabels[i]);
         catBtn->setFixedSize(48, 28);
-        catBtn->setStyleSheet("QPushButton { background: #16213e; color: #aaa; border: none; border-radius: 4px; font-size: 11px; }"
-                             "QPushButton:hover { background: #2a2a5e; color: white; }");
+        catBtn->setStyleSheet("QPushButton { background: palette(alternate-base); color: palette(dark); border: none; border-radius: 4px; font-size: 11px; }"
+                             "QPushButton:hover { background: palette(highlight); color: white; }");
         QString cat = cats[i];
         connect(catBtn, &QPushButton::clicked, [this, cat]() { populateGrid(cat); searchEdit->clear(); });
         catRow->addWidget(catBtn);
     }
     QPushButton *allBtn = new QPushButton("All");
     allBtn->setFixedSize(36, 28);
-    allBtn->setStyleSheet("QPushButton { background: #2a2a5e; color: white; border: none; border-radius: 4px; font-size: 11px; }");
+    allBtn->setStyleSheet("QPushButton { background: palette(highlight); color: white; border: none; border-radius: 4px; font-size: 11px; }");
     connect(allBtn, &QPushButton::clicked, [this]() { populateGrid(); searchEdit->clear(); });
     catRow->addWidget(allBtn);
     mainLayout->addLayout(catRow);
@@ -197,7 +197,7 @@ EmojiPicker::EmojiPicker(QWidget *parent) : QWidget(parent)
     // Search bar
     searchEdit = new QLineEdit();
     searchEdit->setPlaceholderText(tr("Search emoji..."));
-    searchEdit->setStyleSheet("background-color: #16213e; color: #eee; border: 1px solid #2a2a4e; border-radius: 4px; padding: 4px; font-size: 12px;");
+    searchEdit->setStyleSheet("background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 4px; padding: 4px; font-size: 12px;");
     mainLayout->addWidget(searchEdit);
 
     // Scrollable emoji grid
@@ -257,7 +257,7 @@ void EmojiPicker::populateGrid(const QString& filter)
         btn->setText(e.unicode);
         btn->setStyleSheet(
             "QToolButton { font-size: 22px; border: none; border-radius: 4px; }"
-            "QToolButton:hover { background-color: #2a2a5e; }");
+            "QToolButton:hover { background-color: palette(highlight); }");
 
         // On macOS, force the Apple Color Emoji font via QFont
         QFont emojiFont("Apple Color Emoji");
@@ -312,10 +312,10 @@ EmojiAutocomplete::EmojiAutocomplete(QWidget *parent) : QListWidget(parent)
     setFixedWidth(280);
     setMaximumHeight(200);
     setStyleSheet(
-        "QListWidget { background-color: #16213e; color: #eee; border: 1px solid #2a2a4e; font-size: 14px;"
+        "QListWidget { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); font-size: 14px;"
         " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif; }"
         "QListWidget::item { padding: 4px 8px; }"
-        "QListWidget::item:selected { background-color: #2a2a5e; }");
+        "QListWidget::item:selected { background-color: palette(highlight); }");
 
     connect(this, SIGNAL(itemClicked(QListWidgetItem*)), this, SLOT(onItemClicked(QListWidgetItem*)));
 }

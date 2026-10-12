@@ -109,24 +109,24 @@ ChatWidget::ChatWidget(QWidget *parent) :
     QWidget *leftPanel = new QWidget();
     leftPanel->setMinimumWidth(200);
     leftPanel->setMaximumWidth(280);
-    leftPanel->setStyleSheet("background-color: #1a1a2e;");
+    leftPanel->setStyleSheet("background-color: palette(window);");
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(0);
 
     // Contacts header
     QLabel *contactsTitle = new QLabel(tr("  Conversations"));
-    contactsTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: #ddd; padding: 12px 8px; background-color: #16213e;");
+    contactsTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: palette(text); padding: 12px 8px; background-color: palette(alternate-base);");
     contactsTitle->setMinimumHeight(44);
     leftLayout->addWidget(contactsTitle);
 
     // Contact list
     contactList = new QListWidget();
     contactList->setStyleSheet(
-        "QListWidget { background-color: #1a1a2e; border: none; color: #ccc; font-size: 12px; }"
-        "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid #2a2a4e; }"
-        "QListWidget::item:selected { background-color: #2a2a5e; color: white; }"
-        "QListWidget::item:hover { background-color: #222244; }");
+        "QListWidget { background-color: palette(window); border: none; color: palette(text); font-size: 12px; }"
+        "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid palette(mid); }"
+        "QListWidget::item:selected { background-color: palette(highlight); color: white; }"
+        "QListWidget::item:hover { background-color: palette(base); }");
     leftLayout->addWidget(contactList);
 
     // Button row: New Chat + Delete
@@ -160,14 +160,14 @@ ChatWidget::ChatWidget(QWidget *parent) :
 
     // === Right panel: Chat ===
     QWidget *rightPanel = new QWidget();
-    rightPanel->setStyleSheet("background-color: #0f0f23;");
+    rightPanel->setStyleSheet("background-color: palette(base);");
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(0);
 
     // Chat header
     chatHeader = new QLabel(tr("  Select a conversation"));
-    chatHeader->setStyleSheet("font-size: 14px; font-weight: bold; color: #ddd; padding: 12px 8px; background-color: #16213e; border-left: 1px solid #2a2a4e;");
+    chatHeader->setStyleSheet("font-size: 14px; font-weight: bold; color: palette(text); padding: 12px 8px; background-color: palette(alternate-base); border-left: 1px solid palette(mid);");
     chatHeader->setMinimumHeight(44);
     rightLayout->addWidget(chatHeader);
 
@@ -193,7 +193,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
     // Chat messages area
     chatView = new QListWidget();
     chatView->setStyleSheet(
-        "QListWidget { background-color: #0f0f23; border: none; }"
+        "QListWidget { background-color: palette(base); border: none; }"
         "QListWidget::item { background: transparent; border: none; padding: 2px 8px; }");
     chatView->setWordWrap(true);
     chatView->setSpacing(2);
@@ -203,7 +203,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
 
     // Message input area
     QFrame *inputFrame = new QFrame();
-    inputFrame->setStyleSheet("background-color: #1a1a2e; border-top: 1px solid #2a2a4e;");
+    inputFrame->setStyleSheet("background-color: palette(window); border-top: 1px solid palette(mid);");
     QHBoxLayout *inputLayout = new QHBoxLayout(inputFrame);
     inputLayout->setContentsMargins(8, 8, 8, 8);
 
@@ -211,23 +211,23 @@ ChatWidget::ChatWidget(QWidget *parent) :
     messageInput->setPlaceholderText(tr("Type a message..."));
     messageInput->setMaximumHeight(60);
     messageInput->setStyleSheet(
-        "QTextEdit { background-color: #16213e; color: #eee; border: 1px solid #2a2a4e; border-radius: 8px; padding: 6px; font-size: 13px; }");
+        "QTextEdit { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 8px; padding: 6px; font-size: 13px; }");
     inputLayout->addWidget(messageInput);
 
     // File attachment button
     attachButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x93\x8E")); // paperclip
     attachButton->setFixedSize(40, 40);
     attachButton->setStyleSheet(
-        "QPushButton { background-color: #16213e; border: 1px solid #2a2a4e; border-radius: 8px; font-size: 16px; }"
-        "QPushButton:hover { background-color: #2a2a5e; }");
+        "QPushButton { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; font-size: 16px; }"
+        "QPushButton:hover { background-color: palette(highlight); }");
     attachButton->setToolTip(tr("Attach file (encrypted, uploaded via IPFS)"));
     inputLayout->addWidget(attachButton);
 
     emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x98\x84")); // smile emoji
     emojiButton->setFixedSize(40, 40);
     emojiButton->setStyleSheet(
-        "QPushButton { background-color: #16213e; border: 1px solid #2a2a4e; border-radius: 8px; font-size: 18px; }"
-        "QPushButton:hover { background-color: #2a2a5e; }");
+        "QPushButton { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; font-size: 18px; }"
+        "QPushButton:hover { background-color: palette(highlight); }");
     emojiButton->setToolTip(tr("Open emoji picker"));
     inputLayout->addWidget(emojiButton);
 
@@ -484,13 +484,13 @@ void ChatWidget::refreshContacts()
 
         if (hasUnread)
         {
-            contactList->item(i)->setBackground(QColor("#2a3a5e"));
+            contactList->item(i)->setBackground(QColor("palette(mid)"));
             contactList->item(i)->setForeground(QColor("#fff"));
         }
         else
         {
-            contactList->item(i)->setBackground(QColor("#1a1a2e"));
-            contactList->item(i)->setForeground(QColor("#ccc"));
+            contactList->item(i)->setBackground(QColor("palette(window)"));
+            contactList->item(i)->setForeground(QColor("palette(text)"));
         }
 
         if (addr == prevContact)
@@ -599,7 +599,7 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     if (isMine)
         checkHtml = "<span style='font-size:9px;letter-spacing:-1px;'> &#10003;</span>"; // single check = delivered
     QString timeHtml = QString("<br><span style='font-size:9px;color:%1;letter-spacing:0px;'>%2%3</span>")
-                       .arg(isMine ? "#8ab4f8" : "#888", time, checkHtml);
+                       .arg(isMine ? "#8ab4f8" : "palette(dark)", time, checkHtml);
 
     bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
 
@@ -617,7 +617,7 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     {
         bubble->setText(safeText + timeHtml);
         bubble->setStyleSheet(
-            "background-color: #2a2a4e; color: #ddd; border-radius: 12px; "
+            "background-color: palette(mid); color: palette(text); border-radius: 12px; "
             "padding: 8px 12px 10px 12px; font-size: 13px;"
             " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', -apple-system, sans-serif;");
         bubbleLayout->addWidget(bubble);
@@ -652,9 +652,9 @@ void ChatWidget::addFileBubble(const QString& cid, const QString& encKeyHex,
 
     QLabel *fileLabel = new QLabel();
     fileLabel->setTextFormat(Qt::RichText);
-    fileLabel->setText(QString("<b>%1</b><br><span style='font-size: 11px; color: #aaa;'>%2 | Encrypted</span>")
+    fileLabel->setText(QString("<b>%1</b><br><span style='font-size: 11px; color: palette(dark);'>%2 | Encrypted</span>")
                        .arg(filename.toHtmlEscaped(), sizeStr));
-    fileLabel->setStyleSheet("color: #eee; font-size: 13px;");
+    fileLabel->setStyleSheet("color: palette(text); font-size: 13px;");
     cardLayout->addWidget(fileLabel);
 
     // Download button
@@ -675,11 +675,11 @@ void ChatWidget::addFileBubble(const QString& cid, const QString& encKeyHex,
     QString checkMark = isMine ? QString::fromUtf8(" \xE2\x9C\x93") : ""; // single check = delivered
     QLabel *timeLabel = new QLabel();
     timeLabel->setText(time + checkMark);
-    timeLabel->setStyleSheet(QString("font-size:9px;color:%1;letter-spacing:0px;").arg(isMine ? "#8ab4f8" : "#888"));
+    timeLabel->setStyleSheet(QString("font-size:9px;color:%1;letter-spacing:0px;").arg(isMine ? "#8ab4f8" : "palette(dark)"));
     cardLayout->addWidget(timeLabel);
 
-    QString bgColor = isMine ? "#1e3a6e" : "#1e1e3e";
-    fileCard->setStyleSheet(QString("background-color: %1; border-radius: 12px; border: 1px solid #3a3a5e;").arg(bgColor));
+    QString bgColor = isMine ? "#1e3a6e" : "palette(base)";
+    fileCard->setStyleSheet(QString("background-color: %1; border-radius: 12px; border: 1px solid palette(mid);").arg(bgColor));
     fileCard->setMaximumWidth(320);
 
     if (isMine)
@@ -1757,7 +1757,7 @@ void ChatWidget::updateContactTypingDisplay()
         }
         else
         {
-            item->setForeground(QColor("#ccc")); // Normal color
+            item->setForeground(QColor("palette(text)")); // Normal color
         }
 
         item->setText(displayText);
