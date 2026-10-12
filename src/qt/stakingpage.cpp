@@ -54,9 +54,6 @@ StakingPage::StakingPage(QWidget *parent) :
     labelStakingBalance = new QLabel(tr("Staking Balance: 0.00 INN"));
     statusLayout->addWidget(labelStakingBalance);
 
-    labelEstimatedTime = new QLabel(tr("Estimated Time to Stake: N/A"));
-    statusLayout->addWidget(labelEstimatedTime);
-
     labelPrivateModeStatus = new QLabel();
     labelPrivateModeStatus->setWordWrap(true);
     statusLayout->addWidget(labelPrivateModeStatus);
@@ -106,8 +103,8 @@ void StakingPage::setupTransparentPanel()
     QVBoxLayout *groupLayout = new QVBoxLayout(group);
 
     QLabel *infoLabel = new QLabel(tr(
-        "Transparent staking uses your regular (non-shielded) coins to stake. "
-        "This is the standard Proof-of-Stake mechanism. Your coins remain visible "
+        "Transparent staking uses your regular (non-shielded) coins. Since the DAG fork, "
+        "stake votes on finality instead of producing blocks. Your coins remain visible "
         "on the blockchain while staking."));
     infoLabel->setWordWrap(true);
     groupLayout->addWidget(infoLabel);

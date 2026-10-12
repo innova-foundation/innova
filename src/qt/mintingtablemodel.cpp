@@ -336,6 +336,8 @@ QVariant MintingTableModel::data(const QModelIndex &index, int role) const
                 unit = tr("days");
             }
 
+            if (nBestHeight >= FORK_HEIGHT_DAG)
+                return tr("Since the DAG fork, stake votes on finality instead of finding blocks.");
             QString str = QString(tr("You have %1 chance to find a POS block if you stake %2 %3 at current difficulty."));
             return str.arg(index.data().toString().toUtf8().constData()).arg(interval).arg(unit);
         }

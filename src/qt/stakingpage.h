@@ -49,7 +49,6 @@ private:
     QLabel *labelStakingMode;
     QLabel *labelStakingStatus;
     QLabel *labelStakingBalance;
-    QLabel *labelEstimatedTime;
     QLabel *labelPrivateModeStatus;
 
     QTabWidget *stakingTabs;

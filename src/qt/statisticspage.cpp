@@ -44,7 +44,7 @@ StatisticsPage::StatisticsPage(QWidget *parent) :
     dagLayout->addRow(tr("Finality"), dagFinalityBox);
     ui->gridLayout->addWidget(dagGroup, 2, 0, 1, 2);
 
-    setFixedSize(680, 560);
+    setMinimumSize(680, 560);
 
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
 }
@@ -105,18 +105,14 @@ void StatisticsPage::updateStatistics()
     QString stakemax = QString::number(nNetworkWeight);
     QString phase = "";
 
-    if (nHeight < 50000)
-  {
-      phase = "Tribus Proof of Work with Proof of Stake";
-  }
-  else if (nHeight > 50000)
-  {
-      phase = "Proof of Stake";
-  }
-  else if (nHeight > 2000000)
-  {
-      phase = "Tribus Proof of Work with Proof of Stake";
-  }
+    if (nHeight >= FORK_HEIGHT_DAGKNIGHT)
+        phase = tr("Tribus Proof of Work on DAGKNIGHT, stake votes on finality");
+    else if (nHeight >= FORK_HEIGHT_DAG)
+        phase = tr("Tribus Proof of Work on GHOSTDAG, stake votes on finality");
+    else if (nHeight < 50000)
+        phase = tr("Tribus Proof of Work with Proof of Stake");
+    else
+        phase = tr("Proof of Stake");
 
     // Derived from consensus, never a local copy of the emission ladder.
     // pindexBest->pprev is the argument ConnectBlock uses for the tip's reward.
