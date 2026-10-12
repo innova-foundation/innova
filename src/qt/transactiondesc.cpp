@@ -33,11 +33,29 @@ QString TransactionDesc::FormatTxStatus(const CWalletTx& wtx)
     }
 }
 
+// Wait briefly for the locks instead of freezing the window behind block processing.
 QString TransactionDesc::toHTML(CWallet *wallet, CWalletTx &wtx)
+{
+    for (int nTry = 0; nTry < 40; nTry++)
+    {
+        {
+            TRY_LOCK(cs_main, lockMain);
+            if (lockMain)
+            {
+                TRY_LOCK(wallet->cs_wallet, lockWallet);
+                if (lockWallet)
+                    return toHTMLLocked(wallet, wtx);
+            }
+        }
+        MilliSleep(50);
+    }
+    return tr("<html>Transaction details are temporarily unavailable while the node is busy. Please try again.</html>");
+}
+
+QString TransactionDesc::toHTMLLocked(CWallet *wallet, CWalletTx &wtx)
 {
     QString strHTML;
 
-    LOCK2(cs_main, wallet->cs_wallet);
     strHTML.reserve(4000);
     strHTML += "<html><font face='verdana, arial, helvetica, sans-serif'>";
 

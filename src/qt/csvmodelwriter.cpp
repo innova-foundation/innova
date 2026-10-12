@@ -1,12 +1,14 @@
 #include "csvmodelwriter.h"
 
 #include <QAbstractItemModel>
+#include <QApplication>
 #include <QFile>
+#include <QProgressDialog>
 #include <QTextStream>
 
 CSVModelWriter::CSVModelWriter(const QString &filename, QObject *parent) :
     QObject(parent),
-    filename(filename), model(0)
+    filename(filename), model(0), fCanceled(false)
 {
 }
 
@@ -66,9 +68,25 @@ bool CSVModelWriter::write()
     }
     writeNewline(out);
 
+    // Large wallets take a while: show progress and keep the window responsive.
+    QProgressDialog progress(tr("Exporting..."), tr("Cancel"), 0, numRows, QApplication::activeWindow());
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(500);
+
     // Data rows
     for(int j=0; j<numRows; ++j)
     {
+        if (j % 500 == 0)
+        {
+            progress.setValue(j);
+            if (progress.wasCanceled())
+            {
+                fCanceled = true;
+                file.close();
+                file.remove();
+                return false;
+            }
+        }
         for(int i=0; i<columns.size(); ++i)
         {
             if(i!=0)
@@ -81,6 +99,7 @@ bool CSVModelWriter::write()
         writeNewline(out);
     }
 
+    progress.setValue(numRows);
     file.close();
 
     return file.error() == QFile::NoError;

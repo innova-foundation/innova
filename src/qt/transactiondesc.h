@@ -16,6 +16,7 @@ class TransactionDesc: public QObject
 public:
     static QString toHTML(CWallet *wallet, CWalletTx &wtx);
 private:
+    static QString toHTMLLocked(CWallet *wallet, CWalletTx &wtx);
     TransactionDesc() {}
 
     static QString FormatTxStatus(const CWalletTx& wtx);

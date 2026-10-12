@@ -48,7 +48,7 @@ AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
     {
     case ForSending:
         connect(ui->tableView, SIGNAL(doubleClicked(QModelIndex)), this, SLOT(accept()));
-        ui->tableView->setToolTip(QString("Double click to select address"));
+        ui->tableView->setToolTip(tr("Double click to select address"));
         ui->tableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
         ui->tableView->setFocus();
         break;
@@ -115,14 +115,14 @@ AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
     {
         contextMenu->addAction(signMessageAction);
         if (mode == ForSending) {
-            ui->tableView->setToolTip(QString("Double click to select address"));
+            ui->tableView->setToolTip(tr("Double click to select address"));
         } else {
-            ui->tableView->setToolTip(QString("Double click to edit label"));
+            ui->tableView->setToolTip(tr("Double click to edit label"));
         }
 #ifdef USE_QRCODE
         // Show QR Code on double click when in receiving tab
         if (mode == ForEditing) {
-            ui->tableView->setToolTip(QString("Double click to edit label or show QR Code"));
+            ui->tableView->setToolTip(tr("Double click to edit label or show QR Code"));
             connect(ui->tableView, SIGNAL(doubleClicked(const QModelIndex&)), this, SLOT(onRowDoubleClicked(const QModelIndex&)));
         }
 #endif
@@ -421,7 +421,7 @@ void AddressBookPage::exportClicked()
     writer.addColumn("Label", AddressTableModel::Label, Qt::EditRole);
     writer.addColumn("Address", AddressTableModel::Address, Qt::EditRole);
 
-    if(!writer.write())
+    if(!writer.write() && !writer.canceled())
     {
         QMessageBox::critical(this, tr("Error exporting"), tr("Could not write to file %1.").arg(filename),
                               QMessageBox::Abort, QMessageBox::Abort);

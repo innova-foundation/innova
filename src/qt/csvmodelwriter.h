@@ -24,9 +24,11 @@ public:
         @returns true on success, false otherwise
     */
     bool write();
+    bool canceled() const { return fCanceled; }
 
 private:
     QString filename;
+    bool fCanceled;
     const QAbstractItemModel *model;
 
     struct Column
