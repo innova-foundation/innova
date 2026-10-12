@@ -4398,32 +4398,14 @@ void CDAGManager::CacheDAGKnightAnchorState(
     const uint256& hashAnchor,
     const CDAGKnightAnchorState& state) const
 {
-    if (mapDAGKnightAnchorCache.size() >=
-        (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
+    // Halve in one pass: a per-insert scan that evicts nothing is quadratic in the DAG.
+    if (mapDAGKnightAnchorCache.size() >= (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
     {
-        int nAnchorHeight = 0;
-        std::map<uint256, CBlockIndex*>::const_iterator ai =
-            mapBlockIndex.find(hashAnchor);
-        if (ai != mapBlockIndex.end() && ai->second)
-            nAnchorHeight = ai->second->nHeight;
-        const int nKeepHeight = nAnchorHeight - 2 * DAG_MERGE_DEPTH;
-        for (std::map<uint256, CDAGKnightAnchorState>::iterator it =
-                 mapDAGKnightAnchorCache.begin();
-             it != mapDAGKnightAnchorCache.end() &&
-             mapDAGKnightAnchorCache.size() >=
-                 (size_t)(DAGKNIGHT_ANCHOR_CACHE_MAX / 2); )
-        {
-            std::map<uint256, CBlockIndex*>::const_iterator mi =
-                mapBlockIndex.find(it->first);
-            if (mi == mapBlockIndex.end() || !mi->second ||
-                mi->second->nHeight < nKeepHeight)
-                it = mapDAGKnightAnchorCache.erase(it);
-            else
-                ++it;
-        }
-        while (mapDAGKnightAnchorCache.size() >=
-               (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
-            mapDAGKnightAnchorCache.erase(mapDAGKnightAnchorCache.begin());
+        std::map<uint256, CDAGKnightAnchorState>::iterator it =
+            mapDAGKnightAnchorCache.begin();
+        while (it != mapDAGKnightAnchorCache.end() &&
+               mapDAGKnightAnchorCache.size() >= (size_t)(DAGKNIGHT_ANCHOR_CACHE_MAX / 2))
+            it = mapDAGKnightAnchorCache.erase(it);
     }
     mapDAGKnightAnchorCache[hashAnchor] = state;
 }
@@ -4759,7 +4741,8 @@ int CDAGManager::GetOrderConfidence(const uint256& hashBlock) const
 bool CDAGManager::GetDAGKnightAnchorMetrics(
     const uint256& hashAnchor, uint256& hashSelectedParent,
     int& nInferredK, uint256& nScore,
-    std::vector<std::pair<uint256, bool> >& vOrderColors) const
+    std::vector<std::pair<uint256, bool> >& vOrderColors,
+    int nMaxAnchors) const
 {
     LOCK(cs_dag);
     vOrderColors.clear();
@@ -4772,6 +4755,8 @@ bool CDAGManager::GetDAGKnightAnchorMetrics(
     while (mapDAGData.count(hash) && setChain.insert(hash).second)
     {
         vChain.push_back(hash);
+        if (nMaxAnchors > 0 && (int)vChain.size() >= nMaxAnchors)
+            break;
         std::map<uint256, CDAGKnightAnchorState>::const_iterator sit =
             mapDAGKnightAnchorCache.find(hash);
         if (sit == mapDAGKnightAnchorCache.end() ||

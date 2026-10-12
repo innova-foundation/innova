@@ -27,6 +27,8 @@
 using namespace json_spirit;
 using namespace std;
 
+static const int ANCHOR_METRICS_WINDOW = 2 * DAG_MERGE_DEPTH;
+
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, json_spirit::Object& entry);
 extern enum Checkpoints::CPMode CheckpointsMode;
 extern void spj(const CScript& scriptPubKey, Object& out, bool fIncludeHex);
@@ -2639,9 +2641,11 @@ Value getdaginfo(const Array& params, bool fHelp)
                     parentCommitment.begin(), parentCommitment.end());
 
                 std::vector<std::pair<uint256, bool> > vOrderColors;
+                // Bounded: the full order walk is quadratic once anchors fall out of cache.
                 if (g_dagManager.GetDAGKnightAnchorMetrics(
                         pBestTip->GetBlockHash(), hashAnchorSelectedParent,
-                        nAnchorInferredK, nAnchorScore, vOrderColors))
+                        nAnchorInferredK, nAnchorScore, vOrderColors,
+                        ANCHOR_METRICS_WINDOW))
                 {
                     CHashWriter digest(SER_GETHASH, 0);
                     digest << std::string(
@@ -2670,6 +2674,7 @@ Value getdaginfo(const Array& params, bool fHelp)
                           hashAnchorSelectedParent.GetHex()));
     result.push_back(Pair("anchor_score", nAnchorScore.GetHex()));
     result.push_back(Pair("anchor_inferred_k", nAnchorInferredK));
+    result.push_back(Pair("anchor_order_window", ANCHOR_METRICS_WINDOW));
     result.push_back(Pair("anchor_order_count", nAnchorOrderCount));
     result.push_back(Pair("anchor_blue_count", nAnchorBlueCount));
     result.push_back(Pair("anchor_order_digest",

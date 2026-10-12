@@ -435,7 +435,8 @@ public:
     bool GetDAGKnightAnchorMetrics(
         const uint256& hashAnchor, uint256& hashSelectedParent,
         int& nInferredK, uint256& nScore,
-        std::vector<std::pair<uint256, bool> >& vOrderColors) const;
+        std::vector<std::pair<uint256, bool> >& vOrderColors,
+        int nMaxAnchors = 0) const;
 
     /** Write DAG links for a block to LevelDB. */
     bool WriteDAGLinks(CTxDB& txdb, const uint256& hash);
