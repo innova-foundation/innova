@@ -7,6 +7,8 @@
 #include "transactiontablemodel.h"
 #include "alert.h"
 #include "dag.h"
+
+#include <atomic>
 #include "finality.h"
 #include "main.h"
 #include "ui_interface.h"
@@ -107,12 +109,16 @@ quint64 ClientModel::getTotalBytesSent() const
 
 QDateTime ClientModel::getLastBlockDate() const
 {
+    // A busy cs_main must not fall through to the genesis date; keep the last tip read.
+    static std::atomic<int64_t> nLastTipTime(0);
     if (pindexBest)
     {
         TRY_LOCK(cs_main, lockMain);
         if (lockMain && pindexBest)
-            return QDateTime::fromSecsSinceEpoch(pindexBest->GetBlockTime());
+            nLastTipTime = pindexBest->GetBlockTime();
     }
+    if (nLastTipTime > 0)
+        return QDateTime::fromSecsSinceEpoch(nLastTipTime);
     if (!isTestNet())
         return QDateTime::fromSecsSinceEpoch(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
     else

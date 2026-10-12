@@ -1,6 +1,7 @@
 #include "idagpage.h"
 
 #include "clientmodel.h"
+#include "dag.h"
 
 #include <QAbstractItemView>
 #include <QFont>
@@ -181,7 +182,7 @@ void IDAGPage::refresh()
     setValue(entriesValue, QString::number(status.entryCount));
     setValue(algorithmValue, status.orderingAlgorithm);
 
-    QString inferredK = tr("N/A");
+    QString inferredK = tr("%1 (GHOSTDAG, fixed)").arg(GHOSTDAG_K);
     if (status.dagKnightActive)
         inferredK = status.inferredKError ? tr("Unavailable") : QString::number(status.inferredK);
     setValue(inferredKValue, inferredK);
