@@ -130,6 +130,11 @@ void EditAddressDialog::accept()
                 tr("New key generation failed."),
                 QMessageBox::Ok, QMessageBox::Ok);
             break;
+        case AddressTableModel::STEALTH_ADDRESS_FIXED:
+            QMessageBox::warning(this, windowTitle(),
+                tr("A stealth address cannot be edited. Add it as a new entry instead."),
+                QMessageBox::Ok, QMessageBox::Ok);
+            break;
 
         }
         return;

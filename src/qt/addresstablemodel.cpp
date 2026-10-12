@@ -326,8 +326,7 @@ bool AddressTableModel::setData(const QModelIndex &index, const QVariant &value,
             std::string sTemp = value.toString().toStdString();
             if (IsStealthAddress(sTemp))
             {
-                printf("TODO\n");
-                editStatus = INVALID_ADDRESS;
+                editStatus = STEALTH_ADDRESS_FIXED;
                 return false;
             }
             // Do nothing, if old address == new address
