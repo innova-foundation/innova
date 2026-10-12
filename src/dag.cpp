@@ -2686,8 +2686,10 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
 
     // Schema V3 orders only from the exact epoch-end block; force V3 primary-parent and
     // height/hash merge ordering so the migration base inherits no legacy colouring state.
+    // The epoch keeps only its own heights, so order from EPOCH_ORDER_MARGIN below its start.
     const std::vector<uint256> vOrder =
-        GetDAGLinearOrder(state.hashBoundaryBlock, 0, true);
+        GetDAGLinearOrder(state.hashBoundaryBlock,
+                          state.nHeightEnd - state.nHeightStart + 1 + EPOCH_ORDER_MARGIN, true);
     if (vOrder.empty())
     {
         strError = strprintf("epoch %d boundary produced an empty DAG order", nEpoch);

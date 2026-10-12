@@ -32,6 +32,7 @@ static const unsigned int DAG_PARENT_PAYLOAD_HEADER = 5;
 
 static const int GHOSTDAG_K = 18;               // anticone tolerance for blue coloring (pre-DAGKNIGHT)
 static const int DAG_MERGE_DEPTH = 64;          // merge parents within this depth of primary (~64s at 1s blocks)
+static const int EPOCH_ORDER_MARGIN = 32 * DAG_MERGE_DEPTH;
 static const int DAG_PRUNE_DEPTH = 100000;      // prune DAG data older than this (~28h at 1s blocks)
 
 // Max blocks in past(B) minus past(primary parent). Must satisfy 1 +
