@@ -465,13 +465,16 @@ jobs:
           # Bundle Qt and the Homebrew libraries both executables load.
           /opt/homebrew/opt/qt@5/bin/macdeployqt Innova.app \
             -executable=Innova.app/Contents/MacOS/innovad -always-overwrite
+          bash contrib/macdeploy/bundle-libs.sh Innova.app
           # Sign after the last edit to the bundle: a stale signature reads as "damaged".
           codesign --force --deep --sign - Innova.app
-          codesign --verify --deep --strict --verbose=2 Innova.app || echo "::warning::Innova.app signature does not verify"
-          if find Innova.app -type f \( -perm -u+x -o -name '*.dylib' \) -exec otool -L {} + 2>/dev/null \
-               | grep -E '^[[:space:]]+(/opt/homebrew|/usr/local|@rpath)/'; then
-            echo "::warning::Innova.app still links libraries outside the bundle"
-          fi
+          codesign --verify --deep --strict --verbose=2 Innova.app
+          smoke="$RUNNER_TEMP/smoke"; mkdir -p "$smoke"
+          Innova.app/Contents/MacOS/innovad -regtest -datadir="$smoke" -listen=0 -connect=0 \
+            -rpcport=29999 -port=29998 > "$smoke/out.txt" 2>&1 &
+          pid=$!; sleep 15
+          kill -0 "$pid" || { cat "$smoke/out.txt"; echo "bundled innovad does not start" >&2; exit 1; }
+          kill "$pid"
           mkdir -p dmg_contents
           cp -R Innova.app dmg_contents/
           ln -s /Applications dmg_contents/Applications
