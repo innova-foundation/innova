@@ -40,7 +40,8 @@ WalletModel::WalletModel(CWallet *wallet, OptionsModel *optionsModel, QObject *p
     cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedPrivateBalance(0), cachedPrivatePendingBalance(0), cachedPrivateCollateralBalance(0), cachedPrivateHeldBalance(0), cachedPrivateWatchOnlyBalance(0),
     cachedNumTransactions(0),
     cachedEncryptionStatus(Unencrypted),
-    cachedNumBlocks(0)
+    cachedNumBlocks(0),
+    nLastBalanceCheckMs(0)
 {
 
     fHaveWatchOnly = wallet->HaveWatchOnly();
@@ -153,6 +154,11 @@ void WalletModel::pollBalanceChanged()
 
     if(fForceBalanceCheck && nBestHeight != cachedNumBlocks)
     {
+        // A busy wallet changes every block at 1 s spacing; a full recompute walks every
+        // transaction, so do it at most every 5 s and keep the request pending meanwhile.
+        if (GetTimeMillis() - nLastBalanceCheckMs < 5000)
+            return;
+        nLastBalanceCheckMs = GetTimeMillis();
         int prevCachedBlocks = cachedNumBlocks;
         // Balance and number of transactions might have changed
         cachedNumBlocks = nBestHeight;

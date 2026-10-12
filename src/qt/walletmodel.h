@@ -221,6 +221,7 @@ private:
     EncryptionStatus cachedEncryptionStatus;
     int cachedNumBlocks;
     bool fForceBalanceCheck;
+    int64_t nLastBalanceCheckMs;
 
     QTimer *pollTimer;
 
