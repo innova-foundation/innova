@@ -5,6 +5,7 @@
 #ifndef BITCOIN_DB_H
 #define BITCOIN_DB_H
 
+#include <atomic>
 #include "main.h"
 
 #include <map>
@@ -46,6 +47,7 @@ private:
 public:
     mutable CCriticalSection cs_db;
     DbEnv dbenv;
+    std::atomic<int> nLazyCheckpoint; // > 0 while a bulk writer defers per-close checkpoints
     std::map<std::string, int> mapFileUseCount;
     std::map<std::string, Db*> mapDb;
 

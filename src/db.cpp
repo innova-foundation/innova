@@ -46,6 +46,7 @@ CDBEnv::CDBEnv() : dbenv(DB_CXX_NO_EXCEPTIONS)
 {
     fDbEnvInit = false;
     fMockDb = false;
+    nLazyCheckpoint = 0;
 }
 
 CDBEnv::~CDBEnv()
@@ -331,6 +332,8 @@ void CDB::Close()
         nMinutes = 2;
     if (IsChainFile(strFile) && IsInitialBlockDownload())
         nMinutes = 5;
+    if (nMinutes == 0 && bitdb.nLazyCheckpoint > 0)
+        nMinutes = 1;
 
     bitdb.dbenv.txn_checkpoint(nMinutes ? GetArg("-dblogsize", 100)*1024 : 0, nMinutes, 0);
 
