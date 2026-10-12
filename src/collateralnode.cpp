@@ -222,15 +222,41 @@ void ProcessCollateralnodeConnections(){
     }
 }
 
-void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
+// Signed announcements of listed nodes, replayed through the same checks after a restart.
+static std::map<COutPoint, std::vector<char> > mapSavedAnnouncements;
+static std::vector<std::pair<std::vector<char>, int64_t> > vReplayAnnouncements;
+static bool fAnnouncementsDirty = false;
+static const std::string CN_ANNOUNCE_FILE_TAG = "cnannounce1";
+static const size_t CN_ANNOUNCE_MAX_ENTRIES = 10000;
+static const size_t CN_ANNOUNCE_MAX_BYTES = 4096;
+static const size_t CN_ANNOUNCE_MAX_QUEUED = 1000;
+
+static void SaveCollateralnodeAnnouncement(const COutPoint& outpoint, const std::vector<char>& vRaw)
+{
+    if (vRaw.size() > CN_ANNOUNCE_MAX_BYTES)
+        return;
+    mapSavedAnnouncements[outpoint] = vRaw;
+    fAnnouncementsDirty = true;
+}
+
+// Announcements that arrive while catching up wait here instead of being dropped.
+static void QueueCollateralnodeAnnouncement(const std::vector<char>& vRaw)
+{
+    if (vRaw.size() > CN_ANNOUNCE_MAX_BYTES)
+        return;
+    LOCK(cs_collateralnodes);
+    if (vReplayAnnouncements.size() >= CN_ANNOUNCE_MAX_QUEUED)
+        return;
+    for (const std::pair<std::vector<char>, int64_t>& entry : vReplayAnnouncements)
+        if (entry.first == vRaw)
+            return;
+    vReplayAnnouncements.push_back(std::make_pair(vRaw, (int64_t)0));
+}
+
+static void ProcessCollateralnodeEntry(CNode* pfrom, CDataStream& vRecv, int64_t nSavedLastSeen)
 {
 
-    if (strCommand == "isee") { // CollaTeral Election Entry
-        // if (nBestHeight < (GetNumBlocksOfPeers() - 300)) return; // don't process these until near completion
-        bool fIsInitialDownload = IsInitialBlockDownload();
-        if(fIsInitialDownload) return;
-        printf("DEBUG-ISEE start peer=%s fDisconnect=%d\n", pfrom->addr.ToString().c_str(), pfrom->fDisconnect);
-
+        const std::vector<char> vRaw(vRecv.begin(), vRecv.end());
         CTxIn vin;
         CService addr;
         CPubKey pubkey;
@@ -256,13 +282,13 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 vRecv >> attestationKeyImage >> strPoolPayout;
             } catch (const std::exception&) {
                 if (fDebugCN) printf("isee - malformed attested registration\n");
-                Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
+                if (pfrom) Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
                 return;
             }
             if (attestationKeyImage == 0 ||
                 strPoolPayout.size() > MAX_POOL_PAYOUT_CHARS) {
                 if (fDebugCN) printf("isee - attested registration is not well formed\n");
-                Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
+                if (pfrom) Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
                 return;
             }
         }
@@ -298,7 +324,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(pubkeyScript.size() != 25) {
             if (fDebugCN) printf("isee - pubkey the wrong size\n");
-            Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey script wrong size");
+            if (pfrom) Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey script wrong size");
             return;
         }
 
@@ -307,14 +333,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(pubkeyScript2.size() != 25) {
             if (fDebugCN) printf("isee - pubkey2 the wrong size\n");
-            Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey2 script wrong size");
+            if (pfrom) Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey2 script wrong size");
             return;
         }
 
         std::string errorMessage = "";
         if(!colLateralSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
             if (fDebugCN) printf("isee - Got bad collateralnode address signature\n");
-            Misbehaving(pfrom->GetId(), 100, "collateralnode address signature invalid");
+            if (pfrom) Misbehaving(pfrom->GetId(), 100, "collateralnode address signature invalid");
             return;
         }
 
@@ -351,7 +377,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
                 if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(COLLATERALNODE_MIN_DSEE_SECONDS)){
-					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
+    					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
                     //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
 
                     if(mn.now < sigTime){ //take the newest entry
@@ -366,7 +392,9 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                         // The attestation tail travels with the update too: a peer that
                         // does not hold the entry yet cannot admit an attested node
                         // without it, and would have to iseg-pull to find it.
-                        RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
+                        SaveCollateralnodeAnnouncement(vin.prevout, vRaw);
+                        if (pfrom)
+                            RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
                     }
                 }
 
@@ -412,16 +440,18 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
             //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
             //    if (fDebugCN && fDebugNet) printf("isee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS));
-            //    Misbehaving(pfrom->GetId(), 20);
+            //    if (pfrom) Misbehaving(pfrom->GetId(), 20);
             //    return;
             //}
 
             // use this as a peer
-            addrman.Add(CAddress(addr), pfrom->addr, 2*60*60);
+            if (pfrom) addrman.Add(CAddress(addr), pfrom->addr, 2*60*60);
 
             // add our collateralnode
             CCollateralNode mn = candidate;
             mn.UpdateLastSeen(lastUpdated);
+            if (nSavedLastSeen > 0)
+                mn.lastTimeSeen = nSavedLastSeen;
             CBlockIndex* pindex = pindexBest;
 
             // if it matches our collateralnodeprivkey, then we've been remotely activated
@@ -433,7 +463,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
             // count is forwarded unchanged, so a peer on the current release still
             // does not re-relay a learned entry: only upgraded nodes carry the hop.
-            if(CollateralnodeRelayOnAccept(count, isLocal, RelayLearnedCollateralnodeEntries()))
+            if(pfrom && CollateralnodeRelayOnAccept(count, isLocal, RelayLearnedCollateralnodeEntries()))
                 RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
 
             // no need to look up the payment amounts right now, they aren't eligible for payment now anyway
@@ -452,6 +482,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 if (fDebugCN) printf("Registered new collateralnode %s (%i/%i)\n", addr.ToString().c_str(), count, current);
 
                 vecCollateralnodes.push_back(mn);
+                SaveCollateralnodeAnnouncement(vin.prevout, vRaw);
                 vecCollateralnodeScoresListHash = uint256();
                 vecCollateralnodeScoresList.clear();
                 mapCollateralnodeScoresCache.clear();
@@ -461,7 +492,17 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         } else {
             if (fDebugCN) printf("isee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
         }
-        printf("DEBUG-ISEE end peer=%s fDisconnect=%d\n", pfrom->addr.ToString().c_str(), pfrom->fDisconnect);
+}
+
+void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
+{
+
+    if (strCommand == "isee") { // CollaTeral Election Entry
+        if (IsInitialBlockDownload()) {
+            QueueCollateralnodeAnnouncement(std::vector<char>(vRecv.begin(), vRecv.end()));
+            return;
+        }
+        ProcessCollateralnodeEntry(pfrom, vRecv, 0);
     }
 
     else if (strCommand == "iseep") { //CollaTeral Election Entry Ping
@@ -2249,4 +2290,110 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
     printf("finished at height %d\n",nHeight);
     return fFound;
 
+}
+
+void DumpCollateralnodeAnnouncements()
+{
+    std::vector<std::pair<std::vector<char>, int64_t> > vEntries;
+    {
+        LOCK(cs_collateralnodes);
+        for (const CCollateralNode& mn : vecCollateralnodes)
+        {
+            std::map<COutPoint, std::vector<char> >::const_iterator it =
+                mapSavedAnnouncements.find(mn.vin.prevout);
+            if (it != mapSavedAnnouncements.end())
+                vEntries.push_back(std::make_pair(it->second, mn.lastTimeSeen));
+        }
+        fAnnouncementsDirty = false;
+    }
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << CN_ANNOUNCE_FILE_TAG << vEntries;
+    ss << Hash(ss.begin(), ss.end());
+    const std::string strData = ss.str();
+    boost::filesystem::path pathTmp = GetDataDir() / "cnannounce.dat.new";
+    FILE* file = fopen(pathTmp.string().c_str(), "wb");
+    if (!file)
+        return;
+    const bool fWritten = fwrite(strData.data(), 1, strData.size(), file) == strData.size();
+    FileCommit(file);
+    fclose(file);
+    if (fWritten)
+        RenameOver(pathTmp, GetDataDir() / "cnannounce.dat");
+}
+
+void LoadCollateralnodeAnnouncements()
+{
+    FILE* file = fopen((GetDataDir() / "cnannounce.dat").string().c_str(), "rb");
+    if (!file)
+        return;
+    std::vector<char> vData;
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), file)) > 0)
+        vData.insert(vData.end(), buf, buf + n);
+    fclose(file);
+    if (vData.size() < 32 || vData.size() > CN_ANNOUNCE_MAX_ENTRIES * (CN_ANNOUNCE_MAX_BYTES + 16))
+        return;
+    uint256 hashFile;
+    memcpy(hashFile.begin(), &vData[vData.size() - 32], 32);
+    if (Hash(vData.begin(), vData.end() - 32) != hashFile)
+    {
+        printf("cnannounce.dat checksum mismatch, ignoring it\n");
+        return;
+    }
+    try
+    {
+        CDataStream ss(&vData[0], &vData[0] + vData.size() - 32, SER_DISK, CLIENT_VERSION);
+        std::string strTag;
+        std::vector<std::pair<std::vector<char>, int64_t> > vEntries;
+        ss >> strTag;
+        if (strTag != CN_ANNOUNCE_FILE_TAG)
+            return;
+        ss >> vEntries;
+        if (vEntries.size() > CN_ANNOUNCE_MAX_ENTRIES)
+            return;
+        LOCK(cs_collateralnodes);
+        vReplayAnnouncements.swap(vEntries);
+    }
+    catch (const std::exception& e)
+    {
+        printf("cnannounce.dat unreadable: %s\n", e.what());
+        return;
+    }
+    printf("Loaded %u saved collateralnode announcements\n", (unsigned int)vReplayAnnouncements.size());
+}
+
+void ReplayCollateralnodeAnnouncements()
+{
+    if (IsInitialBlockDownload())
+        return;
+    std::vector<std::pair<std::vector<char>, int64_t> > vReplay;
+    {
+        LOCK(cs_collateralnodes);
+        vReplay.swap(vReplayAnnouncements);
+    }
+    if (vReplay.empty())
+        return;
+    for (const std::pair<std::vector<char>, int64_t>& entry : vReplay)
+    {
+        try
+        {
+            CDataStream ss(entry.first, SER_NETWORK, PROTOCOL_VERSION);
+            // cs_main first, as block validation takes it before cs_collateralnodes.
+            LOCK(cs_main);
+            ProcessCollateralnodeEntry(NULL, ss, entry.second);
+        }
+        catch (const std::exception& e)
+        {
+            printf("saved collateralnode announcement rejected: %s\n", e.what());
+        }
+    }
+    LOCK(cs_collateralnodes);
+    printf("Replayed %u saved collateralnode announcements, %u listed\n",
+           (unsigned int)vReplay.size(), (unsigned int)vecCollateralnodes.size());
+}
+
+bool CollateralnodeAnnouncementsDirty()
+{
+    return fAnnouncementsDirty;
 }

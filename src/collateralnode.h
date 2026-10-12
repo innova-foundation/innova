@@ -334,6 +334,10 @@ size_t CNWalkChain(const CBlockIndex* pindex, int nStopHeight,
 // True when no collateral FindCNPayment could find would pass; it then skips the chain walk.
 bool CNPayeeFailsEveryCandidate(const CScript& payee);
 bool FindCNPayment(CScript& payee, CBlockIndex* pindex=pindexBest);
+void DumpCollateralnodeAnnouncements();
+void LoadCollateralnodeAnnouncements();
+void ReplayCollateralnodeAnnouncements();
+bool CollateralnodeAnnouncementsDirty();
 
 // for storing the winning payments
 class CCollateralnodePaymentWinner

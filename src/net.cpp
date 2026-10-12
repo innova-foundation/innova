@@ -2094,6 +2094,7 @@ void DumpAddresses()
 void DumpData()
 {
     DumpAddresses();
+    DumpCollateralnodeAnnouncements();
 
     if (CNode::BannedSetIsDirty())
         printf("Banned set is dirty, writing banlist...\n");

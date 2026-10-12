@@ -1003,6 +1003,9 @@ void ThreadCheckCollaTeralPool(void* parg)
         c++;
 
         MilliSleep(1000);
+        ReplayCollateralnodeAnnouncements();
+        if (CollateralnodeAnnouncementsDirty())
+            DumpCollateralnodeAnnouncements();
         //printf("ThreadCheckCollaTeralPool::check timeout\n");
         //colLateralPool.CheckTimeout();
 

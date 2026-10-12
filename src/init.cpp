@@ -2990,6 +2990,7 @@ bool AppInit2()
 
     // Background workers start only after every DAG and epoch-state integrity/schema
     // guard above has passed.
+    LoadCollateralnodeAnnouncements();
     NewThread(ThreadCheckCollaTeralPool, NULL);
     NewThread(ThreadNullSend, NULL);
     // Closes a recorded IV5 scan gap once a seed exists. The unlock path must not: it runs
