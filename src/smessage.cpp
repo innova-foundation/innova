@@ -665,13 +665,13 @@ bool SecMsgDB::TxnBegin()
     return true;
 };
 
-bool SecMsgDB::TxnCommit()
+bool SecMsgDB::TxnCommit(bool fSync)
 {
     if (!activeBatch)
         return false;
 
     leveldb::WriteOptions writeOptions;
-    writeOptions.sync = true;
+    writeOptions.sync = fSync;
     leveldb::Status status = pdb->Write(writeOptions, activeBatch);
     delete activeBatch;
     activeBatch = NULL;
@@ -2544,7 +2544,8 @@ bool SecureMsgScanBlock(CBlock& block)
         ScanBlock(block, txdb, addrpkdb,
                   nTransactions, nInputs, nPubkeys, nDuplicates);
 
-        addrpkdb.TxnCommit();
+        // A rescan rebuilds this key cache; an fsync per block capped sync at ~5 blocks/s.
+        addrpkdb.TxnCommit(false);
     }
 
     if (fDebugSmsg)

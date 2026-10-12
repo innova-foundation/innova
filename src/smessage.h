@@ -353,7 +353,7 @@ public:
     bool ScanBatch(const CDataStream& key, std::string* value, bool* deleted) const;
 
     bool TxnBegin();
-    bool TxnCommit();
+    bool TxnCommit(bool fSync = true);
     bool TxnAbort();
 
     bool ReadPK(CKeyID& addr, CPubKey& pubkey);
