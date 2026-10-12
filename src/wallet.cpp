@@ -2606,6 +2606,19 @@ bool CWalletTx::WriteToDisk()
 // Scan the block chain (starting in pindexStart) for transactions
 // from or to us. If fUpdate is true, found transactions that already
 // exist in the wallet will be updated.
+// A connected block was validated already: match its stored header against the index (the
+// hash covers exactly these fields) and its merkle root, instead of rehashing Tribus.
+static bool ReadConnectedBlock(CBlock& block, const CBlockIndex* pindex)
+{
+    if (!block.ReadFromDisk(pindex->nFile, pindex->nBlockPos, true, false))
+        return false;
+    const CBlock header = pindex->GetBlockHeader();
+    return block.nVersion == header.nVersion && block.hashPrevBlock == header.hashPrevBlock &&
+           block.hashMerkleRoot == header.hashMerkleRoot && block.nTime == header.nTime &&
+           block.nBits == header.nBits && block.nNonce == header.nNonce &&
+           block.BuildMerkleTree() == block.hashMerkleRoot;
+}
+
 bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
                                                bool fUpdate, int& nFoundOut,
                                                std::string& strErrorOut)
@@ -2633,6 +2646,9 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
         double dProgressShow = 0;
         double dProgressShowPrev = 0;
         bool fLoggedLockedSeedGap = false;
+        int nSinceCheckpoint = 0;
+        int64_t nRescanStartMs = GetTimeMillis();
+        int nRescanStartHeight = pindex ? pindex->nHeight : 0;
 
         while (pindex && !fShutdown)
         {
@@ -2655,8 +2671,7 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
             }
 
             CBlock block;
-            if (!block.ReadFromDisk(pindex, true) ||
-                block.GetHash() != pindex->GetBlockHash())
+            if (!ReadConnectedBlock(block, pindex))
             {
                 strErrorOut = strprintf("wallet rescan could not read canonical block at height %d",
                                         pindex->nHeight);
@@ -2709,6 +2724,16 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
                         pindex->nHeight, strShieldedError.c_str());
                     return false;
                 }
+            }
+
+            // Persist progress so an interrupted rescan resumes here instead of from the start.
+            if (++nSinceCheckpoint >= 50000)
+            {
+                nSinceCheckpoint = 0;
+                SetBestChainChecked(CBlockLocator(pindex));
+                const int64_t nElapsedMs = std::max<int64_t>(1, GetTimeMillis() - nRescanStartMs);
+                printf("rescan: height %d (%.0f blocks/s)\n", pindex->nHeight,
+                       1000.0 * (pindex->nHeight - nRescanStartHeight) / nElapsedMs);
             }
 
             pindex = pindex->pnext;
