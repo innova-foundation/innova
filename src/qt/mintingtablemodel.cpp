@@ -70,7 +70,9 @@ public:
 #endif
         cachedWallet.clear();
         {
-            // Use TRY_LOCK to avoid blocking the GUI thread during IBD.
+            // cs_main before cs_wallet, as block processing takes them; TRY_LOCK keeps the GUI responsive.
+            TRY_LOCK(cs_main, lockMain);
+            if (!lockMain) return;
             TRY_LOCK(wallet->cs_wallet, lockWallet);
             if (!lockWallet) return;
             for(std::map<uint256, CWalletTx>::iterator it = wallet->mapWallet.begin(); it != wallet->mapWallet.end(); ++it)
