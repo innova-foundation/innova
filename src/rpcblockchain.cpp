@@ -357,6 +357,18 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             result.push_back(Pair("dagorder", dagData.nDAGOrder));
             if (!dagData.vDAGParents.empty())
                 result.push_back(Pair("selected_parent", dagData.vDAGParents[0].GetHex()));
+            // Transactions carried but not applied: a preceding sibling spent their inputs.
+            if (blockindex->IsInMainChain())
+            {
+                CTxDB txdbSkip("r");
+                std::set<uint256> setSkipped;
+                std::string strSkipError;
+                Array skipped;
+                if (txdbSkip.ReadDAGSkippedTxsStatus(block, setSkipped, strSkipError) == TXDB_READ_FOUND)
+                    for (const uint256& hashSkipped : setSkipped)
+                        skipped.push_back(hashSkipped.GetHex());
+                result.push_back(Pair("dagskippedtx", skipped));
+            }
             result.push_back(Pair("epoch", GetEpochForHeight(blockindex->nHeight)));
         }
     }
