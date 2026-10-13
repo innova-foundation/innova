@@ -12890,6 +12890,44 @@ ReorgFinalityVerdict BestChainSwitchVerdict(const CBlockIndex* pCandidate, int& 
                                      nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
 }
 
+// A connected block's skipped txs and its side siblings' txs were applied nowhere, so
+// they must not stay barred from the mempool once the race is decided. accept() refuses
+// any already applied or conflicting. Skips need siblings, so most blocks cost nothing.
+static void ReofferDAGUnappliedTxs(CTxDB& txdb, CBlockIndex* pindex,
+                                   const std::set<uint256>& siblings)
+{
+    if (siblings.empty() || !pindex || pindex->nHeight < FORK_HEIGHT_DAG ||
+        IsInitialBlockDownload())
+        return;
+    std::vector<CTransaction> vReoffer;
+    CBlock block;
+    std::set<uint256> setSkipped;
+    std::string strSkipError;
+    if (block.ReadFromDisk(pindex) &&
+        txdb.ReadDAGSkippedTxsStatus(block, setSkipped, strSkipError) == TXDB_READ_FOUND)
+        for (const CTransaction& tx : block.vtx)
+            if (setSkipped.count(tx.GetHash()))
+                vReoffer.push_back(tx);
+    for (const uint256& hashSibling : siblings)
+    {
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
+        CBlock sibBlock;
+        if (mi == mapBlockIndex.end() || mi->second->IsInMainChain() ||
+            !sibBlock.ReadFromDisk(mi->second))
+            continue;
+        for (const CTransaction& tx : sibBlock.vtx)
+            if (!tx.IsCoinBase() && !tx.IsCoinStake())
+                vReoffer.push_back(tx);
+    }
+    {
+        LOCK(mempool.cs);
+        for (const CTransaction& tx : vReoffer)
+            mempool.setDAGSeenTxids.erase(tx.GetHash());
+    }
+    for (CTransaction& tx : vReoffer)
+        tx.AcceptToMemoryPool(txdb);
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects,
@@ -13203,6 +13241,12 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (pindex->pprev)
             pindex->pprev->pnext = pindex;
 
+    {
+        LOCK(mempool.cs);
+        for (const CTransaction& tx : vResurrect)
+            mempool.setDAGSeenTxids.erase(tx.GetHash());
+    }
+
     // Resurrect memory transactions, re-validate shielded anchors
     for (CTransaction& tx : vResurrect)
     {
@@ -13233,6 +13277,11 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         mempool.removeConflicts(tx);
     }
 
+    if (!IsInitialBlockDownload())
+        for (CBlockIndex* pindex : vConnect)
+            if (pindex->nHeight >= FORK_HEIGHT_DAG)
+                ReofferDAGUnappliedTxs(txdb, pindex,
+                                       g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash()));
     CollateralNReorgBlock = true;
     printf("REORGANIZE: done\n");
 
@@ -13491,6 +13540,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
         std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
         for (const uint256& hashSibling : siblings)
             mempool.RemoveDAGConflicts(hashSibling);
+
+        ReofferDAGUnappliedTxs(txdb, pindexNew, siblings);
     }
 
     return true;
