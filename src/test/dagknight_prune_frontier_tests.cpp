@@ -119,6 +119,25 @@ struct Chain
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(a_prune_boundary_never_lands_in_the_ghostdag_era)
+{
+    Chain chain;
+    const int nDAG = FORK_HEIGHT_DAG;
+    const int nKnight = FORK_HEIGHT_DAGKNIGHT;
+    BOOST_REQUIRE(nKnight > nDAG);
+
+    // A GHOSTDAG-era vertex persists k = -1, so it can never seed a retained frontier.
+    BOOST_CHECK_EQUAL(CDAGManager::ClampPruneBoundary(nDAG + 1), nDAG);
+    BOOST_CHECK_EQUAL(CDAGManager::ClampPruneBoundary(nKnight), nDAG);
+    BOOST_CHECK_EQUAL(CDAGManager::ClampPruneBoundary(nKnight + 1), nKnight + 1);
+    BOOST_CHECK_EQUAL(CDAGManager::ClampPruneBoundary(nDAG), nDAG);
+    BOOST_CHECK_EQUAL(CDAGManager::ClampPruneBoundary(nDAG - 5), nDAG - 5);
+
+    // A boundary already persisted inside the era is lowered on load.
+    g_dagManager.SetPrunedBelowHeight(nKnight);
+    BOOST_CHECK_EQUAL(g_dagManager.GetPrunedBelowHeight(), nDAG);
+}
+
 BOOST_AUTO_TEST_CASE(a_pruned_selected_parent_seeds_the_anchor_from_the_retained_frontier)
 {
     Chain chain;

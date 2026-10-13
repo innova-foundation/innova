@@ -1417,6 +1417,8 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
     int nPruneBelow = 0;
     if (!txdb.ReadDAGPruneBoundary(nPruneBelow) || nPruneBelow < 0)
         nPruneBelow = 0;
+    // A boundary persisted inside the GHOSTDAG era is lowered, so its erased vertices are rebuilt.
+    nPruneBelow = ClampPruneBoundary(nPruneBelow);
     vRebuiltVertices.clear();
 
     for (std::map<uint256, CBlockDAGData>::const_iterator it = mapLoaded.begin();
@@ -1988,11 +1990,18 @@ void CDAGManager::RebuildDAGOrderIncremental(int nCleanHeight)
 // CDAGManager: DAG Pruning
 // ---------------------------------------------------------------------------
 
+int CDAGManager::ClampPruneBoundary(int nPruneBelow)
+{
+    if (nPruneBelow > FORK_HEIGHT_DAG && nPruneBelow <= FORK_HEIGHT_DAGKNIGHT)
+        return FORK_HEIGHT_DAG;
+    return nPruneBelow;
+}
+
 bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
 {
     LOCK(cs_dag);
 
-    int nPruneBelow = nHeight - DAG_PRUNE_DEPTH;
+    int nPruneBelow = ClampPruneBoundary(nHeight - DAG_PRUNE_DEPTH);
     if (nPruneBelow <= 0)
         return true; // nothing to prune
 
@@ -4137,7 +4146,7 @@ int CDAGManager::GetPrunedBelowHeight() const
 void CDAGManager::SetPrunedBelowHeight(int nHeight)
 {
     LOCK(cs_dag);
-    nPrunedBelowHeight = nHeight;
+    nPrunedBelowHeight = ClampPruneBoundary(nHeight);
 }
 
 

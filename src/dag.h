@@ -457,6 +457,10 @@ public:
     /** Prune DAG data below nHeight - DAG_PRUNE_DEPTH, preserving epoch boundaries. */
     bool PruneDAGData(CTxDB& txdb, int nHeight);
 
+    /** A GHOSTDAG-era vertex has no DAGKNIGHT k to seed a retained frontier, so a boundary in
+     *  (FORK_HEIGHT_DAG, FORK_HEIGHT_DAGKNIGHT] keeps every DAG-era vertex. */
+    static int ClampPruneBoundary(int nPruneBelow);
+
     /** Legacy V2 computation, only for epochs ending below FORK_HEIGHT_EPOCH_STATE_V2
      *  (reads node-local fBlue). NULL pAnchorTip uses the legacy best-tip derivation. */
     bool ComputeEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pAnchorTip = NULL);
