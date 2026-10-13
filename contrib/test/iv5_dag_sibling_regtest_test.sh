@@ -440,6 +440,57 @@ else
 fi
 
 # ============================================================
+header "1b. A transparent payment mined only in a losing sibling"
+# ============================================================
+
+# Side blocks are never connected: the payment must come back by itself and count
+# only once a canonical block carries it.
+ADDR0B="$(rpc 0 getnewaddress 2>/dev/null | tr -d '"[:space:]')"
+SPLIT_T="$(height 0)"
+partition_nodes || { fail "the nodes could not be partitioned for the transparent race"; exit 1; }
+unlock 1
+TXT="$(rpc 1 sendtoaddress "$ADDR0B" 5 2>&1 | tr -d '"[:space:]')"
+[ ${#TXT} -eq 64 ] || { fail "node1 could not send a transparent payment: $TXT"; exit 1; }
+mine_one 1 || { fail "node1 could not mine its isolated block"; exit 1; }
+SIDE_T="$(block_hash 1 $((SPLIT_T + 1)))"
+[ "$(block_contains_tx 1 "$SIDE_T" "$TXT")" = "yes" ] || { fail "node1's block does not carry the payment"; exit 1; }
+mine_to 0 $((SPLIT_T + 3)) || { fail "node0 could not outrun the isolated block"; exit 1; }
+connect_nodes
+wait_peers || { fail "the nodes did not re-peer after the transparent race"; exit 1; }
+wait_block_known 0 "$SIDE_T" || { fail "node0 never received the losing block"; exit 1; }
+wait_same_tip || { fail "the nodes did not converge after the transparent race"; exit 1; }
+if [ "$(block_hash 0 $((SPLIT_T + 1)))" != "$SIDE_T" ] && [ -z "$(confirmed_in_block 0 "$TXT")" ]; then
+    success "the losing block ${SIDE_T:0:16} is off-chain and its payment is not confirmed"
+else
+    fail "the losing block's payment counts as confirmed ('$(confirmed_in_block 0 "$TXT")')"
+fi
+if wait_mempool 1 "$TXT"; then
+    success "node1 took the payment back into its mempool without a resend"
+else
+    fail "the payment never returned to node1's mempool"
+fi
+mine_one 1 || { fail "node1 could not re-mine the payment"; exit 1; }
+wait_sync "$(height 1)" || { fail "nodes did not resync after the re-mine"; exit 1; }
+CONF_T="$(confirmed_in_block 0 "$TXT")"
+CONF_T_H="$(jget "$(rpc 0 getblock "$CONF_T" 2>/dev/null)" height)"
+if [ ${#CONF_T} -eq 64 ] && [ "$CONF_T" != "$SIDE_T" ] && is_int "$CONF_T_H" && \
+   [ "$(block_hash 0 "$CONF_T_H")" = "$CONF_T" ]; then
+    success "the payment confirmed in canonical block ${CONF_T:0:16} at $CONF_T_H"
+else
+    fail "the payment did not confirm in a canonical block ('$CONF_T')"
+fi
+SKIPF="$(python3 -c '
+import json, sys
+b = json.loads(sys.argv[1]); s = json.loads(sys.argv[2])
+print("ok" if b.get("dagskippedtx") == [] and "dagskippedtx" not in s else "bad")
+' "$(rpc 0 getblock "$CONF_T" 2>/dev/null)" "$(rpc 0 getblock "$SIDE_T" 2>/dev/null)" 2>/dev/null)"
+if [ "$SKIPF" = "ok" ]; then
+    success "getblock reports dagskippedtx on canonical blocks only"
+else
+    fail "getblock dagskippedtx is missing or misplaced"
+fi
+
+# ============================================================
 header "2. Shape A: a sibling block carrying the same IV5 payload"
 # ============================================================
 
