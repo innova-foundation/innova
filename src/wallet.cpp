@@ -2649,10 +2649,7 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
         int nSinceCheckpoint = 0;
         int64_t nRescanStartMs = GetTimeMillis();
         // Each wallet write would otherwise force a full checkpoint; take one at the end.
-        struct LazyCheckpoint {
-            LazyCheckpoint() { ++bitdb.nLazyCheckpoint; }
-            ~LazyCheckpoint() { --bitdb.nLazyCheckpoint; bitdb.dbenv.txn_checkpoint(0, 0, 0); }
-        } lazyCheckpoint;
+        CLazyCheckpoint lazyCheckpoint;
         int nRescanStartHeight = pindex ? pindex->nHeight : 0;
 
         while (pindex && !fShutdown)

@@ -97,6 +97,13 @@ public:
 
 extern CDBEnv bitdb;
 
+/** Defers the per-close checkpoint for a bulk writer and takes one at the end. */
+struct CLazyCheckpoint
+{
+    CLazyCheckpoint() { ++bitdb.nLazyCheckpoint; }
+    ~CLazyCheckpoint() { --bitdb.nLazyCheckpoint; bitdb.dbenv.txn_checkpoint(0, 0, 0); }
+};
+
 
 /** RAII class that provides access to a Berkeley database */
 class CDB

@@ -3231,6 +3231,7 @@ bool createNameIndexFile()
     }
 
     CTxDB txdb("r");
+    CLazyCheckpoint lazyCheckpoint;
 
     for (int nHeight = nStartHeight; nHeight <= nMaxHeight; ++nHeight)
     {
@@ -3266,6 +3267,62 @@ bool createNameIndexFile()
                      strCursorError.c_str());
 
     return true;
+}
+
+// Blocks after a committed cursor either had no name effects (only the cursor was deferred)
+// or were never applied, so replaying forward from it equals a full rebuild.
+bool CatchUpNameIndex(CBlockIndex* pindexTip, std::string& strError)
+{
+    strError.clear();
+    CNameIndexCursor cursor;
+    try
+    {
+        CNameDB dbName("r");
+        if (!dbName.ReadCursor(cursor))
+        {
+            strError = "name-index cursor is missing or unreadable";
+            return false;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        strError = strprintf("could not open/read name index: %s", e.what());
+        return false;
+    }
+
+    LOCK(cs_main);
+    if (!pindexTip || cursor.nSchema != NAMEINDEX_CURSOR_SCHEMA ||
+        cursor.nResetHeight != FORK_HEIGHT_IDNS_RESET ||
+        cursor.nHeight > pindexTip->nHeight ||
+        (cursor.nHeight < FORK_HEIGHT_IDNS_RESET && pindexTip->nHeight >= FORK_HEIGHT_IDNS_RESET))
+    {
+        strError = "name-index cursor cannot be caught up";
+        return false;
+    }
+    CBlockIndex* pindexCursor = FindBlockByHeight(cursor.nHeight);
+    if (!pindexCursor || pindexCursor->GetBlockHash() != cursor.hashBlock)
+    {
+        strError = "name-index cursor is not on the canonical chain";
+        return false;
+    }
+
+    printf("Name index cursor at %d, catching up to %d\n", cursor.nHeight, pindexTip->nHeight);
+    CTxDB txdb("r");
+    CLazyCheckpoint lazyCheckpoint;
+    for (int nHeight = cursor.nHeight + 1; nHeight <= pindexTip->nHeight; ++nHeight)
+    {
+        CBlockIndex* pindex = FindBlockByHeight(nHeight);
+        CBlock block;
+        if (!pindex || !block.ReadFromDisk(pindex, true) ||
+            block.GetHash() != pindex->GetBlockHash())
+        {
+            strError = strprintf("canonical block missing/corrupt at height %d", nHeight);
+            return false;
+        }
+        if (!ApplyNameIndexRebuildBlock(txdb, block, pindex, strError))
+            return false;
+    }
+    return CommitNameIndexTip(pindexTip, strError);
 }
 
 // Check that the last entry in name history matches the given tx pos

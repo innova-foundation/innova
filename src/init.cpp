@@ -2286,6 +2286,7 @@ bool AppInit2()
 
     extern bool createNameIndexFile();
     extern bool ValidateNameIndexTip(const CBlockIndex*, std::string&);
+    extern bool CatchUpNameIndex(CBlockIndex*, std::string&);
 
     {
         fs::path pathNamesDB = GetDataDir() / "innovanamesindex.dat";
@@ -2296,9 +2297,16 @@ bool AppInit2()
         if (!fNeedRebuild &&
             !ValidateNameIndexTip(pindexBest, strNameIndexError))
         {
-            fNeedRebuild = true;
-            printf("Name index recovery cursor is not current: %s. Rebuilding...\n",
-                   strNameIndexError.c_str());
+            std::string strCatchUpError;
+            if (!fBlockDataRepair && CatchUpNameIndex(pindexBest, strCatchUpError) &&
+                ValidateNameIndexTip(pindexBest, strCatchUpError))
+                printf("Name index caught up from its cursor (%s)\n", strNameIndexError.c_str());
+            else
+            {
+                fNeedRebuild = true;
+                printf("Name index recovery cursor is not current: %s (%s). Rebuilding...\n",
+                       strNameIndexError.c_str(), strCatchUpError.c_str());
+            }
         }
         else if (fNeedRebuild)
         {
