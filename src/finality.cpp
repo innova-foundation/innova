@@ -1851,9 +1851,13 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
 
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
                                            int nSettlementEpoch,
-                                           int64_t nNoteVoteMintTotal)
+                                           int64_t nNoteVoteMintTotal,
+                                           int64_t nWithheldCN)
 {
     int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch);
+    // Unpaid CN shares.
+    if (nWithheldCN > 0 && nBudget <= MAX_MONEY - nWithheldCN)
+        nBudget += nWithheldCN;
     if (nBudget <= 0)
         return 0;
 
@@ -1909,6 +1913,7 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
     // vote.nReward is the weight-derived entitlement, not the amount paid; a vote with
     // zero entitlement is not a payee, so dust stake cannot dilute the split.
     std::vector<CScript> vPayees;
+    std::vector<int64_t> vWeights;
     std::set<CScript> setPayees;
     for (const CFinalityVote* pvote : vTransparent)
     {
@@ -1928,12 +1933,34 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
         if (pvote->nReward == 0)
             continue;   // zero-entitlement voter: counted for finality, not a payee
         vPayees.push_back(scriptPayee);
+        vWeights.push_back(pvote->nVoteWeight);
     }
 
     if (nEpochBudget < 0 || !MoneyRange(nEpochBudget))
         return reject("settlement epoch budget out of range");
 
-    if (!vPayees.empty() && nEpochBudget > 0)
+    // Mergeset fork: pro-rata by stake.
+    const bool fProRata = !vTransparent.empty() &&
+                          IsMergesetActiveAtHeight(vTransparent.front()->nHeight);
+    if (fProRata && !vPayees.empty() && nEpochBudget > 0)
+    {
+        __int128 nTotalWeight = 0;
+        for (int64_t nWeight : vWeights)
+        {
+            if (nWeight <= 0 || !MoneyRange(nWeight))
+                return reject("settlement vote weight out of range");
+            nTotalWeight += nWeight;
+        }
+        for (size_t i = 0; i < vPayees.size(); i++)
+        {
+            const int64_t nShare = (int64_t)(((__int128)nEpochBudget * vWeights[i]) / nTotalWeight);
+            if (nShare <= 0)
+                continue;
+            vOutputsOut.push_back(CTxOut(nShare, vPayees[i]));
+            nTotalOut += nShare;
+        }
+    }
+    else if (!vPayees.empty() && nEpochBudget > 0)
     {
         const int64_t nPerVoter = nEpochBudget / (int64_t)vPayees.size();
         if (nPerVoter > 0)
@@ -4735,6 +4762,15 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         if (miFrom == mapBlockIndex.end() || miFrom->second == NULL)
             return localState("stake proof block is unavailable in the local block index");
         CBlockIndex* pFrom = miFrom->second;
+        // A merged tx's output dates from its accepting block.
+        uint256 hashAccepting;
+        if (IsMergesetConfigured() && txdb.ReadTxAccept(outpoint.hash, hashAccepting))
+        {
+            std::map<uint256, CBlockIndex*>::iterator miAccepting = mapBlockIndex.find(hashAccepting);
+            if (miAccepting == mapBlockIndex.end() || miAccepting->second == NULL)
+                return localState("stake proof accepting block is unavailable in the local block index");
+            pFrom = miAccepting->second;
+        }
         if (pFrom->nHeight > vote.nHeight)
             return reject("stake proof created after epoch boundary");
         if (pFrom->GetBlockTime() + nStakeMinAge > pEpochBlock->GetBlockTime())
@@ -9351,9 +9387,19 @@ bool ProduceFinalityVote()
         std::map<uint256, CBlockIndex*>::iterator miFrom = mapBlockIndex.find(blockFrom.GetHash());
         if (miFrom == mapBlockIndex.end() || miFrom->second == NULL)
             continue;
-        if (miFrom->second->nHeight > nEpochHeight)
+        // A merged tx's output dates from its accepting block.
+        const CBlockIndex* pFrom = miFrom->second;
+        uint256 hashAccepting;
+        if (IsMergesetConfigured() && txdb.ReadTxAccept(wtx->GetHash(), hashAccepting))
+        {
+            std::map<uint256, CBlockIndex*>::iterator miAccepting = mapBlockIndex.find(hashAccepting);
+            if (miAccepting == mapBlockIndex.end() || miAccepting->second == NULL)
+                continue;
+            pFrom = miAccepting->second;
+        }
+        if (pFrom->nHeight > nEpochHeight)
             continue;
-        if (blockFrom.GetBlockTime() + nStakeMinAge > pEpochBlock->GetBlockTime())
+        if (pFrom->GetBlockTime() + nStakeMinAge > pEpochBlock->GetBlockTime())
             continue;
 
         CFinalityVoteCoinGroup& group = mapGroups[keyID];

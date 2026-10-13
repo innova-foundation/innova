@@ -267,14 +267,18 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             int64_t nNoteVoteMintTotal = 0;
             bool fMintLocalFailure = false;
             std::string strMintError;
+            int64_t nWithheldCN = 0;
+            CTxDB txdbWithheld("r");
             if (GetPrivacyVNextNoteVoteMintTotal(blockindex->pprev, nSettlementEpoch,
                                                  nNoteVoteMintTotal, fMintLocalFailure,
                                                  strMintError) &&
+                GetMergesetWithheldCNForEpoch(txdbWithheld, blockindex->pprev, nSettlementEpoch,
+                                              nWithheldCN) &&
                 GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
                 BuildFinalitySettlementOutputs(vSettlementVotes,
                                                GetClampedFinalitySettlementBudget(
                                                    blockindex->pprev, nSettlementEpoch,
-                                                   nNoteVoteMintTotal),
+                                                   nNoteVoteMintTotal, nWithheldCN),
                                                vSettlementLeg, nFinalityReward))
             {
                 Object settleObj;
@@ -368,6 +372,22 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
                     for (const uint256& hashSkipped : setSkipped)
                         skipped.push_back(hashSkipped.GetHex());
                 result.push_back(Pair("dagskippedtx", skipped));
+
+                CMergesetAcceptRecord rec;
+                if (IsMergesetActiveAtHeight(blockindex->nHeight) &&
+                    txdbSkip.ReadMergesetAccept(blockindex->GetBlockHash(), rec))
+                {
+                    Array merged, accepted, mergeSkipped;
+                    for (const uint256& h : rec.vMergedBlocks)
+                        merged.push_back(h.GetHex());
+                    for (const std::pair<uint256, uint256>& a : rec.vAccepted)
+                        accepted.push_back(a.second.GetHex());
+                    for (const uint256& h : rec.vSkipped)
+                        mergeSkipped.push_back(h.GetHex());
+                    result.push_back(Pair("mergedblocks", merged));
+                    result.push_back(Pair("mergesetacceptedtx", accepted));
+                    result.push_back(Pair("mergesetskippedtx", mergeSkipped));
+                }
             }
             result.push_back(Pair("epoch", GetEpochForHeight(blockindex->nHeight)));
         }

@@ -200,6 +200,11 @@ inline std::string GetActivationLadderJSON()
       &PRIVACY_VNEXT_HEIGHT_UNSET, "PRIVACY_VNEXT_HEIGHT_UNSET",
       "FORK_HEIGHT_BOUNDARY_B", false, "-regtestiv5notevote", "activates_at",
       NULL, NULL },
+    { "FORK_HEIGHT_MERGESET", "GetForkHeightMergeset", "src/main.h",
+      &GetForkHeightMergeset, true,
+      &PRIVACY_VNEXT_HEIGHT_UNSET, "PRIVACY_VNEXT_HEIGHT_UNSET",
+      "FORK_HEIGHT_DAGKNIGHT", false, "-regtestmergeset", "activates_at",
+      NULL, NULL },
     { "FORK_HEIGHT_NULLIFIER_BINDING", "GetForkHeightNullifierBinding", "src/main.h",
       &GetForkHeightNullifierBinding, true, NULL, NULL, "FORK_HEIGHT_SHIELDED", true, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_KERNEL_PINNING", "GetForkHeightKernelPinning", "src/main.h",
@@ -248,6 +253,8 @@ inline std::string GetActivationLadderJSON()
       &IsIV5FeeNoteConfigured, true, "-regtestiv5feenote", "gate_predicate" },
     { "IsIV5NoteVoteConfigured", "src/main.h",
       &IsIV5NoteVoteConfigured, true, "-regtestiv5notevote", "gate_predicate" },
+    { "IsMergesetConfigured", "src/main.h",
+      &IsMergesetConfigured, true, "-regtestmergeset", "gate_predicate" },
     { "IsLegacyPrivacyPolicyDisabled", "src/main.h",
       &IsLegacyPrivacyPolicyDisabled, true, NULL, "gate_predicate" },
     { "IsShieldedVNextConsensusReady", "src/shielded.h",
@@ -341,6 +348,7 @@ inline std::string GetActivationLadderJSON()
     ss << "    \"nRegtestColdStakingHeight\": " << nRegtestColdStakingHeight << ",\n";
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
+    ss << "    \"nRegtestMergesetHeight\": " << nRegtestMergesetHeight << ",\n";
     ss << "    \"nRegtestMsTimestampHeight\": " << nRegtestMsTimestampHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";
     ss << "    \"fRegtestHoldPrivacyVNextLeafIndex\": " << ActivationJsonBool(fRegtestHoldPrivacyVNextLeafIndex) << ",\n";

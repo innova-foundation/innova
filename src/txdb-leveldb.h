@@ -7,6 +7,7 @@
 #define BITCOIN_LEVELDB_H
 
 #include "main.h"
+#include "muhash.h"
 #include "dag.h"
 #include "finality.h"
 #include "ringsig.h"
@@ -689,6 +690,17 @@ public:
     bool ReadDAGCleanHeight(int& nHeight);
     /** Exclusive lower bound of retained DAG vertices; records below it are absent by design. */
     bool WriteDAGPruneBoundary(int nHeight);
+    bool WriteMergesetAccept(const uint256& hashBlock, const CMergesetAcceptRecord& rec);
+    bool WriteUtxoMuHash(const MuHash3072& hash);
+    TxDBReadStatus ReadUtxoMuHash(MuHash3072& hash);
+    bool ReadMergesetAccept(const uint256& hashBlock, CMergesetAcceptRecord& rec);
+    bool EraseMergesetAccept(const uint256& hashBlock);
+    bool WriteDAGMergedBy(const uint256& hashMerged, const uint256& hashBlock);
+    bool ReadDAGMergedBy(const uint256& hashMerged, uint256& hashBlock);
+    bool EraseDAGMergedBy(const uint256& hashMerged);
+    bool WriteTxAccept(const uint256& hashTx, const uint256& hashBlock);
+    bool ReadTxAccept(const uint256& hashTx, uint256& hashBlock);
+    bool EraseTxAccept(const uint256& hashTx);
     bool ReadDAGPruneBoundary(int& nHeight);
 
     // Why a block index carries BLOCK_FAILED_VALID; written beside the flag, erased with it.

@@ -638,6 +638,15 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             }
         }
 
+        // Keep the primary parent selected and the mergeset bounded.
+        if (IsMergesetActiveAtHeight(nHeight))
+        {
+            std::string strMergesetError;
+            while (vDAGParentsForBlock.size() > 1 &&
+                   !g_dagManager.CheckMergesetParentSet(vDAGParentsForBlock, nHeight, strMergesetError))
+                vDAGParentsForBlock.pop_back();
+        }
+
         if (!vDAGParentsForBlock.empty())
         {
             CScript dagScript = BuildDAGParentScript(vDAGParentsForBlock);
@@ -771,9 +780,16 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                        strSettleError.c_str());
                 return NULL;
             }
+            int64_t nWithheldCN = 0;
+            CTxDB txdbWithheld("r");
+            if (!GetMergesetWithheldCNForEpoch(txdbWithheld, pindexPrev, nSettlementEpoch, nWithheldCN))
+            {
+                printf("CreateNewBlock: withheld CN records unreadable for epoch %d\n", nSettlementEpoch);
+                return NULL;
+            }
             const int64_t nSettlementBudget =
                 GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch,
-                                                   nNoteVoteMintTotal);
+                                                   nNoteVoteMintTotal, nWithheldCN);
             if (!GatherFinalitySettlementVotes(pindexPrev, nSettlementEpoch, vSettlementVotes, &strSettleError) ||
                 !BuildFinalitySettlementOutputs(vSettlementVotes, nSettlementBudget,
                                                 vFinalitySettlementOutputs,
@@ -828,6 +844,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                 }
                 if (found) {
                     if (fDebug && fDebugCN) printf("CreateNewBlock: Found a collateralnode to pay: %s\n",payee.ToString(true).c_str());
+                } else if (IsMergesetActiveAtHeight(pindexPrev->nHeight + 1)) {
+                    // No CN paid: its share is withheld for voters.
+                    printf("CreateNewBlock: no collateralnode to pay; CN share goes to stakers\n");
+                    hasPayment = false;
                 } else {
                     printf("CreateNewBlock: Failed to detect collateralnode to pay\n");
                     // pay the burn address if it can't detect
@@ -869,7 +889,107 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
         std::set<uint256> setDAGSiblingTxids;
         std::set<COutPoint> setDAGSiblingSpentOutpoints;
         std::set<uint256> setDAGSiblingSpentTags;
-        if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
+        // Mergeset fork: exclude what merged blocks apply.
+        CMergesetSimulation mergesetSim;
+        std::vector<std::pair<uint256, bool> > vTemplateMergeSet;
+        int64_t nEpochOwnTxRoom = std::numeric_limits<int64_t>::max();
+        size_t nMergesetPayoutBase = 0;
+        if (IsMergesetActiveAtHeight(nHeight) && pindexPrev->phashBlock)
+        {
+            if (pindexPrev != pindexBest)
+            {
+                printf("CreateNewBlock: mergeset templates build on the best tip only\n");
+                return NULL;
+            }
+            static const uint256 hashTemplate(0);
+            CBlockIndex indexTemplate;
+            indexTemplate.phashBlock = &hashTemplate;
+            indexTemplate.pprev = pindexPrev;
+            indexTemplate.nHeight = nHeight;
+            indexTemplate.nTime = pblock->nTime;
+            indexTemplate.nBits = pblock->nBits;
+            indexTemplate.BuildSkip();
+            std::vector<std::pair<uint256, bool> > vMergeSet;
+            std::string strMergesetError;
+            CTxDB txdbMergeset("r");
+            int64_t nEpochActiveBefore = 0;
+            if (!GetMergesetEpochActiveTxsBefore(txdbMergeset, pindexPrev, nHeight, nEpochActiveBefore))
+            {
+                printf("CreateNewBlock: parent mergeset record missing\n");
+                return NULL;
+            }
+            const int64_t nTxBudget = GetMergesetEpochTxCeiling(nHeight) - nEpochActiveBefore - 1;
+            if (!g_dagManager.GetDAGMergeSetForTemplate(vDAGParentsForBlock, &indexTemplate,
+                                                        vMergeSet, strMergesetError) ||
+                !SimulateMergesetAcceptance(txdbMergeset, &indexTemplate, vMergeSet, nTxBudget,
+                                            mergesetSim, strMergesetError))
+            {
+                printf("CreateNewBlock: mergeset simulation failed (%s); dropping merge parents\n",
+                       strMergesetError.c_str());
+                const CScript scriptOld = BuildDAGParentScript(vDAGParentsForBlock);
+                vDAGParentsForBlock.resize(1);
+                const CScript scriptNew = BuildDAGParentScript(vDAGParentsForBlock);
+                for (CTxOut& out : pblock->vtx[0].vout)
+                    if (out.scriptPubKey == scriptOld)
+                        out.scriptPubKey = scriptNew;
+                vMergeSet.clear();
+                mergesetSim = CMergesetSimulation();
+            }
+            setDAGSiblingTxids = mergesetSim.setTxids;
+            setDAGSiblingSpentOutpoints = mergesetSim.setSpent;
+            setDAGSiblingSpentTags = mergesetSim.setConflictTags;
+            vTemplateMergeSet = vMergeSet;
+            nEpochOwnTxRoom = std::max<int64_t>(0, nTxBudget - mergesetSim.nAccepted);
+
+            // Drop votes whose stake a merged tx spends.
+            std::vector<CFinalityVote> vVotesKept;
+            for (const CFinalityVote& vote : vFinalityVotesForBlock)
+            {
+                bool fSpent = false;
+                for (const COutPoint& proof : vote.vStakeProof)
+                    fSpent = fSpent || mergesetSim.setSpent.count(proof) > 0;
+                if (!fSpent)
+                    vVotesKept.push_back(vote);
+            }
+            vFinalityVotesForBlock.swap(vVotesKept);
+
+            // Placeholder outputs: values are fixed-width, so the size is final.
+            CMergesetReward estimate;
+            if (!ComputeMergesetReward(txdbMergeset, pindexPrev, nHeight,
+                                       GetProofOfWorkReward(nHeight, 0, pindexPrev, 0),
+                                       GetProofOfWorkReward(nHeight, 0, pindexPrev, 0), 0,
+                                       vMergeSet, mergesetSim.mapFeesByBlock,
+                                       mergesetSim.mapPayee, mergesetSim.mapBlockBytes,
+                                       estimate, strMergesetError))
+            {
+                printf("CreateNewBlock: mergeset reward failed: %s\n", strMergesetError.c_str());
+                return NULL;
+            }
+            uint256 hashUtxo;
+            if (!GetMergesetUtxoDigest(txdbMergeset, nHeight, hashUtxo))
+            {
+                printf("CreateNewBlock: UTXO hash record unreadable\n");
+                return NULL;
+            }
+            pblock->vtx[0].vout.push_back(
+                CTxOut(0, GetMergesetAcceptanceScript(GetMergesetAcceptanceHash(mergesetSim.rec, hashUtxo))));
+            nMergesetPayoutBase = pblock->vtx[0].vout.size();
+            for (size_t i = 0; i < estimate.vPayouts.size(); i++)
+                pblock->vtx[0].vout.push_back(CTxOut(0, estimate.vPayouts[i].first));
+            std::vector<unsigned char> vIPay(4);
+            vIPay[0] = 'I'; vIPay[1] = 'P'; vIPay[2] = 'A'; vIPay[3] = 'Y';
+            CScript scriptPayout = pblock->vtx[0].vout[0].scriptPubKey;
+            const std::string strMergesetPayee = GetArg("-mergesetpayee", "");
+            CBitcoinAddress addrMergesetPayee(strMergesetPayee);
+            if (!strMergesetPayee.empty() && addrMergesetPayee.IsValid())
+                scriptPayout = GetScriptForDestination(addrMergesetPayee.Get());
+            if (scriptPayout.size() > 0 && scriptPayout.size() <= 35)
+            {
+                vIPay.insert(vIPay.end(), scriptPayout.begin(), scriptPayout.end());
+                pblock->vtx[0].vout.push_back(CTxOut(0, CScript() << OP_RETURN << vIPay));
+            }
+        }
+        else if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
         {
             std::set<uint256> siblings;
             std::set<uint256> candidateParents(vDAGParentsForBlock.begin(), vDAGParentsForBlock.end());
@@ -936,6 +1056,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             if (!setDAGSiblingTxids.empty() && setDAGSiblingTxids.count(tx.GetHash()))
                 continue;
             if (TransactionSpendsAnyOutpoint(tx, setDAGSiblingSpentOutpoints))
+                continue;
+            // The validator skips these; their fees would invalidate the template.
+            if (MergesetOwnTxKeyConflict(tx, mergesetSim.setSpentKeyImages,
+                                         mergesetSim.setAttestedKeyImages))
                 continue;
             // A note already spent by a sibling makes this transaction inactive at
             // connect time; including it only wastes the space.
@@ -1125,6 +1249,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
         std::set<uint256> setBlockPrivacyVNextSpent;
         uint64_t nBlockSize = 1000;
         uint64_t nBlockTx = 0;
+        const bool fMassCap = IsMergesetActiveAtHeight(nHeight);
+        uint64_t nBlockMass = 0;
         int nBlockSigOps = 100;
         unsigned int nBlockNoteVotes = 0;
         unsigned int nPriorNoteVotes = 0;
@@ -1148,6 +1274,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             // Size limits
             unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
             if (nBlockSize + nTxSize >= nBlockMaxSize)
+                continue;
+            if ((int64_t)nBlockTx >= nEpochOwnTxRoom)
+                continue;
+            const uint64_t nTxMass = fMassCap ? GetTxMass(tx) : 0;
+            if (fMassCap && nBlockMass + nTxMass > MERGESET_MAX_BLOCK_MASS)
                 continue;
 
             // Legacy limits on sigOps:
@@ -1335,6 +1466,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             for (size_t i = 0; i < vTxPrivacyVNextSpent.size(); ++i)
                 setBlockPrivacyVNextSpent.insert(vTxPrivacyVNextSpent[i]);
             nBlockSize += nTxSize;
+            nBlockMass += nTxMass;
             ++nBlockTx;
             nBlockSigOps += nTxSigOps;
             //nFees += nTxFees;
@@ -1457,6 +1589,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
         // Post-fork the block's IV5 fees go to the pool, not the transparent coinbase;
         // nFees already includes them, so they are removed from the claim.
         const bool fIV5FeeNoteFork = IsIV5FeeNoteActiveAtHeight(nHeight);
+        nFees += mergesetSim.nFees;
+        nIV5FeeSum += mergesetSim.nIV5FeeSum;
         int64_t nAllowedFees = nFees;
         if (fIV5FeeNoteFork)
             nAllowedFees -= nIV5FeeSum;
@@ -1497,12 +1631,49 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
         // calls. The settlement this block owes is netted off the issuance
         // headroom before the subsidy is computed, exactly as ConnectBlock does.
         int64_t nSubsidy = GetProofOfWorkReward(nRewardHeight, 0, pindexPrev, nFinalitySettlementTotal);
+        CMergesetReward mergesetReward;
+        unsigned int nPenaltyBytes = ::GetSerializeSize(*pblock, SER_NETWORK, PROTOCOL_VERSION);
+        if (IsMergesetActiveAtHeight(nHeight) && !fProofOfStake)
+        {
+            std::set<CScript> setPayees;
+            for (const std::pair<uint256, bool>& merged : vTemplateMergeSet)
+            {
+                std::map<uint256, CScript>::const_iterator pi = mergesetSim.mapPayee.find(merged.first);
+                if (merged.second && pi != mergesetSim.mapPayee.end())
+                    setPayees.insert(pi->second);
+            }
+            const unsigned int nExempt = GetMergesetExemptBytes(pblock->vtx[0], setPayees);
+            nPenaltyBytes = nPenaltyBytes > nExempt ? nPenaltyBytes - nExempt : 0;
+            CTxDB txdbReward("r");
+            std::string strRewardError;
+            if (!ComputeMergesetReward(txdbReward, pindexPrev, nHeight, nSubsidy,
+                                       ApplyBlockSizePenaltyBytes(nSubsidy, nPenaltyBytes, pindexPrev),
+                                       nFinalitySettlementTotal, vTemplateMergeSet,
+                                       mergesetSim.mapFeesByBlock, mergesetSim.mapPayee,
+                                       mergesetSim.mapBlockBytes, mergesetReward, strRewardError) ||
+                nMergesetPayoutBase + mergesetReward.vPayouts.size() > pblock->vtx[0].vout.size())
+            {
+                printf("CreateNewBlock: mergeset reward failed: %s\n", strRewardError.c_str());
+                return NULL;
+            }
+            nAllowedFees -= mergesetReward.nBlueFees;
+            for (size_t i = 0; i < mergesetReward.vPayouts.size(); i++)
+            {
+                CTxOut& out = pblock->vtx[0].vout[nMergesetPayoutBase + i];
+                if (out.scriptPubKey != mergesetReward.vPayouts[i].first)
+                {
+                    printf("CreateNewBlock: mergeset payouts changed during the template\n");
+                    return NULL;
+                }
+                out.nValue = mergesetReward.vPayouts[i].second;
+            }
+        }
         int64_t blockValue = nSubsidy + nAllowedFees;
         int64_t nIssuance = nSubsidy;
         if (!fProofOfStake)
         {
-            blockValue = ApplyBlockSizePenalty(blockValue, *pblock, pindexPrev);
-            nIssuance = ApplyBlockSizePenalty(nIssuance, *pblock, pindexPrev);
+            blockValue = ApplyBlockSizePenaltyBytes(blockValue, nPenaltyBytes, pindexPrev);
+            nIssuance = ApplyBlockSizePenaltyBytes(nIssuance, nPenaltyBytes, pindexPrev);
         }
         if (nIssuance > blockValue)
             nIssuance = blockValue;
@@ -1511,13 +1682,24 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nAllowedFees);
             return NULL;
         }
+        const bool fMergesetReward = IsMergesetActiveAtHeight(nHeight) && !fProofOfStake;
         const CBlockSubsidySplit subsidySplit =
-            CBlockSubsidySplit::ForBlock(nHeight, nIssuance, blockValue - nIssuance,
-                                         CollateralnodeShare::Paid);
+            CBlockSubsidySplit::ForBlock(nHeight,
+                                         fMergesetReward ? mergesetReward.nOwnIssuance : nIssuance,
+                                         blockValue - nIssuance, CollateralnodeShare::Paid);
         // The finality reserve stays unminted here; it settles to the epoch's
         // voters at H_E + K. What this block may pay out is the rest.
         blockValue = subsidySplit.PaidToBlock();
         int64_t collateralnodePayment = subsidySplit.Collateralnode();
+        if (fMergesetReward)
+        {
+            // CN is 65% of the whole coinbase, rounded once.
+            blockValue += mergesetReward.nExtraCollateralnode;
+            collateralnodePayment = CBlockSubsidySplit::CollateralnodeShareOfBase(
+                FinalityCollateralnodePaymentBase(
+                    blockValue + mergesetReward.PayoutTotal() + nFinalitySettlementTotal,
+                    nFinalitySettlementTotal));
+        }
 
         //create collateralnode payment
         if(payments > 1){
@@ -1529,6 +1711,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             }
             pblock->vtx[0].vout[payments-1].nValue = collateralnodePayment;
             blockValue -= collateralnodePayment;
+        }
+        else if (fMergesetReward)
+        {
+            blockValue -= subsidySplit.Collateralnode() + mergesetReward.nExtraCollateralnode;
         }
 
         if (fDebug && GetBoolArg("-printpriority"))

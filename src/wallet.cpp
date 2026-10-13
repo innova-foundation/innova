@@ -14362,6 +14362,34 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
 
 // `setDAGSkippedTxs` is required: a DAG-skipped tx never connected, so its key images
 // spent nothing and its outputs have no tree position.
+// Coinbase, merged, own active txs; null if a merged tx is unreadable.
+static const std::vector<CTransaction>* GetAppliedTxs(const CBlock& block, const CBlockIndex* pindex,
+                                                      const std::set<uint256>& setDAGSkippedTxs,
+                                                      std::vector<CTransaction>& vStorage,
+                                                      bool& fFiltered)
+{
+    fFiltered = false;
+    if (!pindex || !IsMergesetActiveAtHeight(pindex->nHeight) || block.vtx.empty())
+        return &block.vtx;
+    CTxDB txdb("r");
+    CMergesetAcceptRecord rec;
+    if (!txdb.ReadMergesetAccept(pindex->GetBlockHash(), rec))
+        return NULL;
+    if (rec.vAccepted.empty())
+        return &block.vtx;
+    std::vector<CTransaction> vMerged;
+    if (!ReadMergesetAcceptedTxs(rec, vMerged))
+        return NULL;
+    vStorage.clear();
+    vStorage.push_back(block.vtx[0]);
+    vStorage.insert(vStorage.end(), vMerged.begin(), vMerged.end());
+    for (size_t i = 1; i < block.vtx.size(); ++i)
+        if (!setDAGSkippedTxs.count(block.vtx[i].GetHash()))
+            vStorage.push_back(block.vtx[i]);
+    fFiltered = true;
+    return &vStorage;
+}
+
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                                      const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
@@ -14395,11 +14423,23 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
             pindex->nHeight);
         return false;
     }
+    std::vector<CTransaction> vAppliedStorage;
+    bool fAppliedFiltered = false;
+    const std::vector<CTransaction>* pvApplied =
+        GetAppliedTxs(block, pindex, setDAGSkippedTxs, vAppliedStorage, fAppliedFiltered);
+    if (!pvApplied)
+    {
+        strErrorOut = "IV5 wallet scan: a merged tx's carrying block is unreadable";
+        return false;
+    }
+    const std::vector<CTransaction>& vApplied = *pvApplied;
+    const std::set<uint256> setNoSkips;
+    const std::set<uint256>& setAppliedSkips = fAppliedFiltered ? setNoSkips : setDAGSkippedTxs;
     bool fHasPayload = false;
-    for (unsigned int i = 0; !fHasPayload && i < block.vtx.size(); ++i)
-        fHasPayload = block.vtx[i].IsPrivacyVNext() &&
-                      block.vtx[i].privacyVNext.IsPresent() &&
-                      !setDAGSkippedTxs.count(block.vtx[i].GetHash());
+    for (unsigned int i = 0; !fHasPayload && i < vApplied.size(); ++i)
+        fHasPayload = vApplied[i].IsPrivacyVNext() &&
+                      vApplied[i].privacyVNext.IsPresent() &&
+                      !setAppliedSkips.count(vApplied[i].GetHash());
     if (!fHasPayload)
         return true;
 
@@ -14443,12 +14483,12 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
 
     std::vector<CPrivacyVNextWalletNote> vNewNotes;
     std::vector<size_t> vSpentIndices;
-    for (unsigned int i = 0; i < block.vtx.size(); ++i)
+    for (unsigned int i = 0; i < vApplied.size(); ++i)
     {
-        const CTransaction& tx = block.vtx[i];
+        const CTransaction& tx = vApplied[i];
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
             continue;
-        if (setDAGSkippedTxs.count(tx.GetHash()))
+        if (setAppliedSkips.count(tx.GetHash()))
             continue;
 
         // The index this payload's own self-pay outputs derive at. A payload whose
@@ -14968,18 +15008,29 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
                                           std::string& strErrorOut)
 {
     strErrorOut.clear();
-    (void)pindex;
-
+    
+    std::vector<CTransaction> vAppliedStorage;
+    bool fAppliedFiltered = false;
+    const std::vector<CTransaction>* pvApplied =
+        GetAppliedTxs(block, pindex, setDAGSkippedTxs, vAppliedStorage, fAppliedFiltered);
+    if (!pvApplied)
+    {
+        strErrorOut = "IV5 wallet scan: a merged tx's carrying block is unreadable";
+        return false;
+    }
+    const std::vector<CTransaction>& vApplied = *pvApplied;
+    const std::set<uint256> setNoSkips;
+    const std::set<uint256>& setAppliedSkips = fAppliedFiltered ? setNoSkips : setDAGSkippedTxs;
     LOCK(cs_shielded);
     // Before every early return: a walk compares this count, not the note set.
     ++nPrivacyVNextDisconnectCount;
     if (!vPrivacyVNextWatchNotes.empty())
     {
         std::set<uint256> setWatchTxs;
-        for (unsigned int i = 0; i < block.vtx.size(); ++i)
-            if (block.vtx[i].IsPrivacyVNext() && block.vtx[i].privacyVNext.IsPresent() &&
-                !setDAGSkippedTxs.count(block.vtx[i].GetHash()))
-                setWatchTxs.insert(block.vtx[i].GetHash());
+        for (unsigned int i = 0; i < vApplied.size(); ++i)
+            if (vApplied[i].IsPrivacyVNext() && vApplied[i].privacyVNext.IsPresent() &&
+                !setAppliedSkips.count(vApplied[i].GetHash()))
+                setWatchTxs.insert(vApplied[i].GetHash());
         if (!DisconnectPrivacyVNextWatchNotes(setWatchTxs, strErrorOut))
             return false;
     }
@@ -14988,14 +15039,14 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
 
     std::set<uint256> setBlockTxHashes;
     std::vector<std::vector<unsigned char> > vSpentKeyImages;
-    for (unsigned int i = 0; i < block.vtx.size(); ++i)
+    for (unsigned int i = 0; i < vApplied.size(); ++i)
     {
-        const CTransaction& tx = block.vtx[i];
+        const CTransaction& tx = vApplied[i];
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
             continue;
         // Mirrors the connect side: a skipped transaction created no note and spent
         // none, so undoing it would restore a note this block never consumed.
-        if (setDAGSkippedTxs.count(tx.GetHash()))
+        if (setAppliedSkips.count(tx.GetHash()))
             continue;
         setBlockTxHashes.insert(tx.GetHash());
 
@@ -16074,12 +16125,24 @@ bool CWallet::ApplyPrivacyVNextWatchBlock(const CBlock& block,
     const uint8_t nNetwork = PrivacyVNextNetworkId();
     std::vector<CPrivacyVNextWatchNote> vNew;
     bool fOk = true;
-    for (unsigned int t = 0; fOk && t < block.vtx.size(); ++t)
+    std::vector<CTransaction> vAppliedStorage;
+    bool fAppliedFiltered = false;
+    const std::vector<CTransaction>* pvApplied =
+        GetAppliedTxs(block, pindex, setDAGSkippedTxs, vAppliedStorage, fAppliedFiltered);
+    if (!pvApplied)
     {
-        const CTransaction& tx = block.vtx[t];
+        strErrorOut = "IV5 wallet scan: a merged tx's carrying block is unreadable";
+        return false;
+    }
+    const std::vector<CTransaction>& vApplied = *pvApplied;
+    const std::set<uint256> setNoSkips;
+    const std::set<uint256>& setAppliedSkips = fAppliedFiltered ? setNoSkips : setDAGSkippedTxs;
+    for (unsigned int t = 0; fOk && t < vApplied.size(); ++t)
+    {
+        const CTransaction& tx = vApplied[t];
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
             continue;
-        if (setDAGSkippedTxs.count(tx.GetHash()))
+        if (setAppliedSkips.count(tx.GetHash()))
             continue;
         const uint256 hashTx = tx.GetHash();
         for (size_t nStart = 0; fOk && nStart < vKeys.size();

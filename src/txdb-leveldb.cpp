@@ -1802,6 +1802,63 @@ bool CTxDB::ReadDAGCleanHeight(int& nHeight)
     return Read(string("dagcleanheight"), nHeight);
 }
 
+bool CTxDB::WriteUtxoMuHash(const MuHash3072& hash)
+{
+    return Write(string("utxomuhash"), hash);
+}
+
+TxDBReadStatus CTxDB::ReadUtxoMuHash(MuHash3072& hash)
+{
+    if (!Exists(string("utxomuhash")))
+        return TXDB_READ_NOT_FOUND;
+    return Read(string("utxomuhash"), hash) ? TXDB_READ_FOUND : TXDB_READ_ERROR;
+}
+
+bool CTxDB::WriteMergesetAccept(const uint256& hashBlock, const CMergesetAcceptRecord& rec)
+{
+    return Write(make_pair(string("dagaccept"), hashBlock), rec);
+}
+
+bool CTxDB::ReadMergesetAccept(const uint256& hashBlock, CMergesetAcceptRecord& rec)
+{
+    return Read(make_pair(string("dagaccept"), hashBlock), rec);
+}
+
+bool CTxDB::EraseMergesetAccept(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("dagaccept"), hashBlock));
+}
+
+bool CTxDB::WriteDAGMergedBy(const uint256& hashMerged, const uint256& hashBlock)
+{
+    return Write(make_pair(string("dagmerged"), hashMerged), hashBlock);
+}
+
+bool CTxDB::ReadDAGMergedBy(const uint256& hashMerged, uint256& hashBlock)
+{
+    return Read(make_pair(string("dagmerged"), hashMerged), hashBlock);
+}
+
+bool CTxDB::EraseDAGMergedBy(const uint256& hashMerged)
+{
+    return Erase(make_pair(string("dagmerged"), hashMerged));
+}
+
+bool CTxDB::WriteTxAccept(const uint256& hashTx, const uint256& hashBlock)
+{
+    return Write(make_pair(string("txaccept"), hashTx), hashBlock);
+}
+
+bool CTxDB::ReadTxAccept(const uint256& hashTx, uint256& hashBlock)
+{
+    return Read(make_pair(string("txaccept"), hashTx), hashBlock);
+}
+
+bool CTxDB::EraseTxAccept(const uint256& hashTx)
+{
+    return Erase(make_pair(string("txaccept"), hashTx));
+}
+
 bool CTxDB::WriteDAGPruneBoundary(int nHeight)
 {
     return Write(string("dagprunebelow"), nHeight);

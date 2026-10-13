@@ -431,6 +431,21 @@ public:
                                  int nAnchorHeight,
                                  std::string& strError) const;
 
+    /** Mergeset fork: primary parent selected, at most MERGESET_MAX_BLOCKS merged. */
+    bool CheckMergesetParentSet(const std::vector<uint256>& vParents,
+                                int nAnchorHeight, std::string& strError) const;
+
+    /** Blocks hashBlock merges, in acceptance order, with blue flags. */
+    bool GetDAGMergeSet(const uint256& hashBlock,
+                        std::vector<std::pair<uint256, bool> >& vMergeSet,
+                        std::string& strError) const;
+
+    /** The same mergeset for a block template that has no vertex yet. */
+    bool GetDAGMergeSetForTemplate(const std::vector<uint256>& vParents,
+                                   const CBlockIndex* pindexTemplate,
+                                   std::vector<std::pair<uint256, bool> >& vMergeSet,
+                                   std::string& strError) const;
+
     /** Return the complete anchor-derived order/color view used by tests,
      *  diagnostics and evidence generation. */
     bool GetDAGKnightAnchorMetrics(
@@ -482,7 +497,8 @@ public:
                          CEpochState& stateOut, CCurveTree& curveTreeOut,
                          std::string& strError,
                          const CEpochState* pPrevState = NULL,
-                         const CCurveTree* pPrevCurveTree = NULL) const;
+                         const CCurveTree* pPrevCurveTree = NULL,
+                         CTxDB* ptxdb = NULL) const;
 
     /** Legacy V2 cache writer. */
     bool WriteEpochState(CTxDB& txdb, int nEpoch);
@@ -691,6 +707,11 @@ private:
     bool BuildDAGKnightAnchorState(const uint256& hashAnchor,
                                    CDAGKnightAnchorState& stateOut,
                                    std::string& strError) const;
+    bool BuildDAGKnightAnchorStateFrom(const uint256& hashAnchor,
+                                       const CBlockDAGData& data,
+                                       const CBlockIndex* pindexAnchor,
+                                       CDAGKnightAnchorState& stateOut,
+                                       std::string& strError) const;
     void CacheDAGKnightAnchorState(
         const uint256& hashAnchor,
         const CDAGKnightAnchorState& state) const;

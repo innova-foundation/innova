@@ -80,6 +80,9 @@ static const size_t nPreForkCount = sizeof(vPreFork) / sizeof(vPreFork[0]);
 // height, so these vectors pin the ladder itself and are unaffected by the cap.
 int64_t Subsidy(int nHeight)
 {
+    // The ladder itself; from the mergeset fork mainnet follows the curve pinned below.
+    if (nHeight >= FORK_HEIGHT_DAG)
+        return GetPostDagLadderSubsidy(nHeight);
     return GetProofOfWorkReward(nHeight, 0, NULL, 0);
 }
 
@@ -432,6 +435,25 @@ BOOST_AUTO_TEST_CASE(finality_vote_reward_units_are_seconds_post_dag)
         GetFinalityVoteReward(nWeight, 300, FINALITY_VOTE_YEAR_REWARD * 2);
     const int64_t nSingle = GetFinalityVoteReward(nWeight, 300, FINALITY_VOTE_YEAR_REWARD);
     BOOST_CHECK(nDoubled - 2 * nSingle >= 0 && nDoubled - 2 * nSingle <= 1);
+}
+
+BOOST_AUTO_TEST_CASE(mergeset_era_curve_is_pinned)
+{
+    MainnetEmissionGuard guard;
+    const int F = FORK_HEIGHT_MERGESET;
+    BOOST_REQUIRE_EQUAL(F, 10703940);
+    // Continuous with the ladder at the fork, then the ramp, the halvings and the floor.
+    BOOST_CHECK_EQUAL(GetPostDagLadderSubsidy(F - 1), 1000000);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F, 0, NULL, 0), 1000000);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 / 2, 0, NULL, 0), 1000000 + (2662037 - 1000000) / 2);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800, 0, NULL, 0), 2662037);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 + 63072000 - 1, 0, NULL, 0), 2662037);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 + 63072000, 0, NULL, 0), 2662037 / 2);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 + 2 * 63072000, 0, NULL, 0), 810185);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 + 20 * 63072000, 0, NULL, 0), 810185);
+    // 2,300 and 700 INN a day at 1 s blocks.
+    BOOST_CHECK(2662037LL * 86400 / COIN == 2299);
+    BOOST_CHECK(810185LL * 86400 / COIN == 699);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -705,6 +705,8 @@ std::string HelpMessage()
         "  -regtestsupplycap=<n>  " + _("Regtest only: total-supply cap in satoshi (default MAX_MONEY)") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
+        "  -regtestmergeset=<n>     " + _("Regtest only: mergeset acceptance activation height (an epoch's first height)") + "\n" +
+        "  -mergesetpayee=<address> " + _("Address a merged copy of this node's blocks is paid to (default: the block's payout)") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
         "  -regtestiv5holdleafindex " + _("Regtest only: hold IV5 wallet leaf-index assignment, leaving received notes unspendable") + "\n" +
         "  -regtestholdoutboxack  " + _("Regtest only: leave the shielded-wallet recovery outbox pending, so a restart has to replay a transition already applied") + "\n" +
@@ -1421,6 +1423,27 @@ bool AppInit2()
         nRegtestIV5NoteVoteHeight = (int)nF;
         printf("IV5 note-vote fork height: %d (regtest only)\n",
                nRegtestIV5NoteVoteHeight);
+    }
+
+    if (mapArgs.count("-mergesetpayee") && !CBitcoinAddress(mapArgs["-mergesetpayee"]).IsValid())
+        return InitError(_("-mergesetpayee is not a valid address"));
+
+    if (mapArgs.count("-regtestmergeset"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestmergeset requires -regtest"));
+        const int64_t nF = GetArg("-regtestmergeset", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
+        if (nF < 0 || nF > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+            return InitError(_("-regtestmergeset is out of range"));
+        if (nF < (int64_t)FORK_HEIGHT_DAGKNIGHT ||
+            GetEpochBoundaryHeight(GetEpochForHeight((int)nF), (int)nF) != (int)nF)
+            return InitError(strprintf(
+                _("-regtestmergeset=%d must be an epoch's first height at or above DAGKNIGHT %d"),
+                (int)nF, FORK_HEIGHT_DAGKNIGHT));
+        nRegtestMergesetHeight = (int)nF;
+        fRegtestMergesetEmission = GetBoolArg("-regtestmergesetemission", false);
+        printf("Mergeset acceptance fork height: %d (regtest only)%s\n", nRegtestMergesetHeight,
+               fRegtestMergesetEmission ? ", mainnet emission curve" : "");
     }
 
     // Backstop for the whole ladder: Boundary B below A would run the privacy encodings A

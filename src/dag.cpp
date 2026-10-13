@@ -2648,7 +2648,8 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                   CCurveTree& curveTreeOut,
                                   std::string& strError,
                                   const CEpochState* pPrevState,
-                                  const CCurveTree* pPrevCurveTree) const
+                                  const CCurveTree* pPrevCurveTree,
+                                  CTxDB* ptxdb) const
 {
     LOCK(cs_dag);
 
@@ -2953,22 +2954,54 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                  it->ToString().substr(0, 20).c_str());
             return false;
         }
-        // One derivation of a block's active set, shared with ConnectBlock.
-        bool fSkipSetIncomplete = false;
-        const std::set<uint256> setDAGSkippedTxs =
-            GetDAGSkippedTxsForBlock(block, mi->second, &fSkipSetIncomplete);
-        if (fSkipSetIncomplete)
-        {
-            strError = strprintf("epoch %d: DAG sibling set of block %s is incomplete on this "
-                                 "node; resync required", nEpoch,
-                                 mi->first.ToString().substr(0, 20).c_str());
-            return false;
-        }
-        const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
-
         // A merge block is never connected, so none of its transaction effects may reach the epoch's
         // roots, pool, key images or id list.
         const bool fConnectedBlock = setCanonicalConnectedBlocks.count(*it) != 0;
+
+        // Mergeset fork: read connect-time records; merged txs first.
+        std::set<uint256> setDAGSkippedTxs;
+        std::vector<CTransaction> vMergesetTxs;
+        if (IsMergesetActiveAtHeight(mi->second->nHeight))
+        {
+            if (fConnectedBlock)
+            {
+                CTxDB txdbLocal("r");
+                CTxDB& txdbRecords = ptxdb ? *ptxdb : txdbLocal;
+                std::string strActiveSetError;
+                CMergesetAcceptRecord rec;
+                if (txdbRecords.ReadDAGSkippedTxsStatus(block, setDAGSkippedTxs,
+                                                        strActiveSetError) != TXDB_READ_FOUND ||
+                    !txdbRecords.ReadMergesetAccept(mi->first, rec))
+                {
+                    strError = strprintf("epoch %d: connect-time records of block %s are missing; "
+                                         "-reindex/resync required", nEpoch,
+                                         mi->first.ToString().substr(0, 20).c_str());
+                    return false;
+                }
+                if (!ReadMergesetAcceptedTxs(rec, vMergesetTxs))
+                {
+                    strError = strprintf("epoch %d: a merged tx's carrying block is unreadable",
+                                         nEpoch);
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            bool fSkipSetIncomplete = false;
+            setDAGSkippedTxs = GetDAGSkippedTxsForBlock(block, mi->second, &fSkipSetIncomplete);
+            if (fSkipSetIncomplete)
+            {
+                strError = strprintf("epoch %d: DAG sibling set of block %s is incomplete on this "
+                                     "node; resync required", nEpoch,
+                                     mi->first.ToString().substr(0, 20).c_str());
+                return false;
+            }
+        }
+        CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
+        if (!vMergesetTxs.empty())
+            activeBlock.vtx.insert(activeBlock.vtx.begin() + (activeBlock.vtx.empty() ? 0 : 1),
+                                   vMergesetTxs.begin(), vMergesetTxs.end());
 
         if (fBuildVNext)
         {
@@ -4405,6 +4438,81 @@ bool CDAGManager::CheckDAGKnightParentSet(
                                       nAnchorHeight, vCandidates, strError);
 }
 
+bool CDAGManager::CheckMergesetParentSet(
+    const std::vector<uint256>& vParents, int nAnchorHeight,
+    std::string& strError) const
+{
+    LOCK(cs_dag);
+    if (vParents.empty())
+    {
+        strError = "mergeset anchor has no primary parent";
+        return false;
+    }
+    if (GetDAGKnightSelectedParent(vParents) != vParents[0])
+    {
+        strError = "selected parent is not the primary parent";
+        return false;
+    }
+    std::vector<uint256> vCandidates;
+    if (!CollectDAGKnightCandidates(vParents, vParents[0], nAnchorHeight, vCandidates, strError))
+        return false;
+    if (vCandidates.size() > (size_t)MERGESET_MAX_BLOCKS)
+    {
+        strError = strprintf("mergeset has %u blocks, limit %d",
+                             (unsigned int)vCandidates.size(), MERGESET_MAX_BLOCKS);
+        return false;
+    }
+    return true;
+}
+
+bool CDAGManager::GetDAGMergeSet(
+    const uint256& hashBlock,
+    std::vector<std::pair<uint256, bool> >& vMergeSet,
+    std::string& strError) const
+{
+    LOCK(cs_dag);
+    vMergeSet.clear();
+    if (!EnsureDAGKnightAnchorState(hashBlock))
+    {
+        strError = "DAGKNIGHT anchor state unavailable";
+        return false;
+    }
+    const std::vector<std::pair<uint256, bool> >& vDelta =
+        mapDAGKnightAnchorCache[hashBlock].vOrderDelta;
+    if (vDelta.empty() || vDelta.back().first != hashBlock)
+    {
+        strError = "DAGKNIGHT order delta does not end at its anchor";
+        return false;
+    }
+    vMergeSet.assign(vDelta.begin(), vDelta.end() - 1);
+    return true;
+}
+
+bool CDAGManager::GetDAGMergeSetForTemplate(
+    const std::vector<uint256>& vParents, const CBlockIndex* pindexTemplate,
+    std::vector<std::pair<uint256, bool> >& vMergeSet, std::string& strError) const
+{
+    LOCK(cs_dag);
+    vMergeSet.clear();
+    if (vParents.empty() || !pindexTemplate || !EnsureDAGKnightAnchorState(vParents[0]))
+    {
+        strError = "template selected-parent state unavailable";
+        return false;
+    }
+    CBlockDAGData data;
+    data.vDAGParents = vParents;
+    CDAGKnightAnchorState state;
+    if (!BuildDAGKnightAnchorStateFrom(uint256(0), data, pindexTemplate, state, strError))
+        return false;
+    if (state.vOrderDelta.empty() || state.vOrderDelta.back().first != uint256(0))
+    {
+        strError = "template order delta does not end at its anchor";
+        return false;
+    }
+    vMergeSet.assign(state.vOrderDelta.begin(), state.vOrderDelta.end() - 1);
+    return true;
+}
+
 void CDAGManager::CacheDAGKnightAnchorState(
     const uint256& hashAnchor,
     const CDAGKnightAnchorState& state) const
@@ -4434,13 +4542,20 @@ bool CDAGManager::BuildDAGKnightAnchorState(
         strError = "DAGKNIGHT anchor is unavailable";
         return false;
     }
+    return BuildDAGKnightAnchorStateFrom(hashAnchor, dit->second, mi->second,
+                                         stateOut, strError);
+}
 
-    const CBlockDAGData& data = dit->second;
+bool CDAGManager::BuildDAGKnightAnchorStateFrom(
+    const uint256& hashAnchor, const CBlockDAGData& data,
+    const CBlockIndex* pindexAnchor, CDAGKnightAnchorState& stateOut,
+    std::string& strError) const
+{
     stateOut = CDAGKnightAnchorState();
     if (data.vDAGParents.empty())
     {
         stateOut.nInferredK = DAGKNIGHT_K_FLOOR;
-        stateOut.nScore = mi->second->GetBlockTrust();
+        stateOut.nScore = pindexAnchor->GetBlockTrust();
         stateOut.vPressureSamples.push_back(DAGKNIGHT_K_FLOOR);
         stateOut.vBlueWindow.push_back(hashAnchor);
         stateOut.vOrderDelta.push_back(std::make_pair(hashAnchor, true));
@@ -4516,7 +4631,7 @@ bool CDAGManager::BuildDAGKnightAnchorState(
     std::vector<uint256> vCandidates;
     if (!CollectDAGKnightCandidates(data.vDAGParents,
                                     stateOut.hashSelectedParent,
-                                    mi->second->nHeight,
+                                    pindexAnchor->nHeight,
                                     vCandidates, strError))
         return false;
     BlockProfileCount("dagk_candidates", (int64_t)vCandidates.size());
@@ -4554,6 +4669,10 @@ bool CDAGManager::BuildDAGKnightAnchorState(
     stateOut.nInferredK = std::max(
         DAGKNIGHT_K_FLOOR,
         std::min(DAGKNIGHT_K_CEILING, (nEMA + 128) / 256));
+    // Mergeset fork: blue status decides payouts, so k is fixed rather than miner-influenced.
+    const bool fKCluster = IsMergesetActiveAtHeight(pindexAnchor->nHeight);
+    if (fKCluster)
+        stateOut.nInferredK = GHOSTDAG_K;
 
     std::vector<std::pair<uint256, bool> > vColored;
     for (std::vector<uint256>::const_iterator cit = vCandidates.begin();
@@ -4568,7 +4687,21 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                 !IsDAGAncestorWithinMergeDepth(*cit, *bit))
                 ++nAnticone;
         }
-        const bool fBlue = nAnticone <= stateOut.nInferredK;
+        bool fBlue = nAnticone <= stateOut.nInferredK;
+        // k-cluster: no blue already in its anticone may end up with more than k blues there.
+        for (size_t i = 0; fBlue && fKCluster && i < stateOut.vBlueWindow.size(); ++i)
+        {
+            const uint256& hashBlue = stateOut.vBlueWindow[i];
+            if (IsDAGAncestorWithinMergeDepth(hashBlue, *cit) ||
+                IsDAGAncestorWithinMergeDepth(*cit, hashBlue))
+                continue;
+            int nBlueAnticone = 1;
+            for (size_t j = 0; j < stateOut.vBlueWindow.size(); ++j)
+                if (j != i && !IsDAGAncestorWithinMergeDepth(stateOut.vBlueWindow[j], hashBlue) &&
+                    !IsDAGAncestorWithinMergeDepth(hashBlue, stateOut.vBlueWindow[j]))
+                    ++nBlueAnticone;
+            fBlue = nBlueAnticone <= stateOut.nInferredK;
+        }
         vColored.push_back(std::make_pair(*cit, fBlue));
         if (fBlue)
         {
@@ -4604,10 +4737,10 @@ bool CDAGManager::BuildDAGKnightAnchorState(
     stateOut.vOrderDelta = vColored;
     stateOut.vOrderDelta.push_back(std::make_pair(hashAnchor, true));
     stateOut.vBlueWindow.push_back(hashAnchor);
-    stateOut.nScore = stateOut.nScore + mi->second->GetBlockTrust();
+    stateOut.nScore = stateOut.nScore + pindexAnchor->GetBlockTrust();
 
     const int nMinBlueHeight =
-        mi->second->nHeight - DAGKNIGHT_MAX_ANTICONE_WINDOW;
+        pindexAnchor->nHeight - DAGKNIGHT_MAX_ANTICONE_WINDOW;
     std::vector<uint256> vBoundedBlue;
     std::set<uint256> setBlue;
     for (std::vector<uint256>::const_iterator it =

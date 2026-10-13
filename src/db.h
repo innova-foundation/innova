@@ -97,7 +97,7 @@ public:
 
 extern CDBEnv bitdb;
 
-/** Defers the per-close checkpoint for a bulk writer and takes one at the end. */
+/** Defers per-close checkpoints for a bulk writer. */
 struct CLazyCheckpoint
 {
     CLazyCheckpoint() { ++bitdb.nLazyCheckpoint; }

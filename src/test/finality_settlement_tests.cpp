@@ -822,4 +822,36 @@ BOOST_AUTO_TEST_CASE(the_settlement_waits_for_the_note_vote_window)
     fTestNet = fSavedTestNet;
 }
 
+// From the mergeset fork the epoch budget is shared in proportion to stake.
+BOOST_AUTO_TEST_CASE(settlement_is_pro_rata_from_the_mergeset_fork)
+{
+    int nEpoch = PostDAGEpoch(1);
+    int nBoundary = GetEpochBoundaryHeight(nEpoch, GetForkHeightDAG());
+    const int nOldMergeset = ::nRegtestMergesetHeight;
+    ::nRegtestMergesetHeight = nBoundary;
+
+    Voter a = MakeVoter(nEpoch, nBoundary);
+    Voter b = MakeVoter(nEpoch, nBoundary, VOTE_WEIGHT * 3);
+    std::vector<CFinalityVote> vCounted;
+    vCounted.push_back(a.vote);
+    vCounted.push_back(b.vote);
+
+    std::vector<CTxOut> vSettlement;
+    int64_t nTotal = 0;
+    std::string strError;
+    const bool fBuilt = BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vSettlement,
+                                                       nTotal, &strError);
+    ::nRegtestMergesetHeight = nOldMergeset;
+    BOOST_REQUIRE_MESSAGE(fBuilt, strError);
+    BOOST_REQUIRE_EQUAL(vSettlement.size(), 2u);
+    for (const CTxOut& out : vSettlement)
+    {
+        if (out.scriptPubKey == PayeeScript(a.vote))
+            BOOST_CHECK_EQUAL(out.nValue, TEST_EPOCH_BUDGET / 4);
+        else
+            BOOST_CHECK_EQUAL(out.nValue, TEST_EPOCH_BUDGET * 3 / 4);
+    }
+    BOOST_CHECK(nTotal <= TEST_EPOCH_BUDGET);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

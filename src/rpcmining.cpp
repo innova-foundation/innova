@@ -996,15 +996,19 @@ Value getblocktemplate(const Array& params, bool fHelp)
         std::string strTmplSettleError;
         int64_t nTmplNoteVoteMint = 0;
         bool fTmplMintLocalFailure = false;
+        int64_t nTmplWithheldCN = 0;
+        CTxDB txdbWithheld("r");
         if (!GetPrivacyVNextNoteVoteMintTotal(pindexPrev, nTmplSettlementEpoch,
                                               nTmplNoteVoteMint, fTmplMintLocalFailure,
                                               strTmplSettleError) ||
+            !GetMergesetWithheldCNForEpoch(txdbWithheld, pindexPrev, nTmplSettlementEpoch,
+                                           nTmplWithheldCN) ||
             !GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
                                            vTmplSettlementVotes, &strTmplSettleError) ||
             !BuildFinalitySettlementOutputs(vTmplSettlementVotes,
                                             GetClampedFinalitySettlementBudget(
                                                 pindexPrev, nTmplSettlementEpoch,
-                                                nTmplNoteVoteMint),
+                                                nTmplNoteVoteMint, nTmplWithheldCN),
                                             vTmplSettlementLeg,
                                             nTmplFinalityReward, &strTmplSettleError))
             throw JSONRPCError(RPC_INTERNAL_ERROR,
@@ -1014,7 +1018,16 @@ Value getblocktemplate(const Array& params, bool fHelp)
     }
     int64_t nTmplCNBase = FinalityCollateralnodePaymentBase(pblock->vtx[0].GetValueOut(),
                                                            nTmplFinalityReward);
-    if(payee != CScript()){
+    if (IsMergesetActiveAtHeight(nTmplHeight)) {
+        // From the template it serves: its CN output, or none (option 3c).
+        const bool fHasCN = nCNPaymentIndex > 0 && nCNPaymentIndex < (int)pblock->vtx[0].vout.size();
+        CTxDestination destCN;
+        if (fHasCN)
+            ExtractDestination(pblock->vtx[0].vout[nCNPaymentIndex].scriptPubKey, destCN);
+        result.push_back(Pair("payee", fHasCN ? CBitcoinAddress(destCN).ToString() : std::string()));
+        result.push_back(Pair("payee_amount", fHasCN ? (int64_t)pblock->vtx[0].vout[nCNPaymentIndex].nValue
+                                                     : (int64_t)0));
+    } else if(payee != CScript()){
 		CTxDestination address1;
 		ExtractDestination(payee, address1);
 		CBitcoinAddress address2(address1);

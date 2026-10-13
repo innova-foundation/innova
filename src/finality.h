@@ -1236,7 +1236,8 @@ bool CheckFinalitySettlementOutputs(const CBlock& block,
  *  (already minted by note votes) is subtracted before the clamp; it is required. */
 int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
                                            int nSettlementEpoch,
-                                           int64_t nNoteVoteMintTotal);
+                                           int64_t nNoteVoteMintTotal,
+                                           int64_t nWithheldCN = 0);
 
 /** Structural check for the vote commitments a non-settlement block carries. Carrying a
  *  vote pays nothing, so this validates shape only (per-block cap, no duplicate

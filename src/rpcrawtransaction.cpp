@@ -168,6 +168,18 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry)
     if (hashBlock != 0)
     {
         entry.push_back(Pair("blockhash", hashBlock.GetHex()));
+        // Merged tx: includedin is the carrying block.
+        if (IsMergesetConfigured())
+        {
+            CTxDB txdbAccept("r");
+            uint256 hashAccepting;
+            CTxIndex txindex;
+            CBlock blockCarrying;
+            if (txdbAccept.ReadTxAccept(tx.GetHash(), hashAccepting) &&
+                txdbAccept.ReadTxIndex(tx.GetHash(), txindex) &&
+                blockCarrying.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))
+                entry.push_back(Pair("includedin", blockCarrying.GetHash().GetHex()));
+        }
         map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
         if (mi != mapBlockIndex.end() && (*mi).second)
         {

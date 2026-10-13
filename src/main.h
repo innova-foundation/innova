@@ -82,6 +82,9 @@ static const unsigned int ADAPTIVE_MEDIAN_WINDOW = 1000;          // 1000-block 
 // so the two must move together.
 static const unsigned int ADAPTIVE_LONG_MEDIAN_WINDOW = 50000;    // 50K-block long-term anchor (~14h at 1s)
 static const unsigned int ADAPTIVE_LONG_MEDIAN_CAP = 50;          // short-term median <= 50x long-term median
+// Mergeset fork: non-coinbase mass = bytes + MERGESET_OUTPUT_MASS per output, capped.
+static const unsigned int MERGESET_MAX_BLOCK_MASS = 1000000;
+static const unsigned int MERGESET_OUTPUT_MASS = 100;
 
 // Effective block size: pre-DAG uses legacy, post-DAG uses adaptive
 inline unsigned int GetMaxBlockSize(int nHeight)
@@ -222,6 +225,9 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
 
 /** Apply adaptive block size penalty to a reward amount. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
+int64_t ApplyBlockSizePenaltyBytes(int64_t nReward, unsigned int nBlockBytes, const CBlockIndex* pindexPrev);
+uint64_t GetTxMass(const CTransaction& tx);
+unsigned int GetMergesetExemptBytes(const CTransaction& coinbase, const std::set<CScript>& setPayees);
 bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes);
 /** Collect an IV5 transaction's payload key images as conflict
  *  tags, so DAG sibling-conflict resolution sees them alongside vin outpoints and
@@ -671,6 +677,33 @@ inline bool IsIV5NoteVoteActiveAtHeight(int nHeight)
     return IsIV5NoteVoteConfigured() && nHeight >= FORK_HEIGHT_IV5_NOTE_VOTE;
 }
 
+// Mergeset acceptance: mainnet at an epoch's first height; regtest via -regtestmergeset.
+extern int nRegtestMergesetHeight;
+extern bool fRegtestMergesetEmission;   // regtest: run the mainnet emission curve from the fork
+static const int MERGESET_MAX_BLOCKS = 64;
+static const int MERGESET_FINALITY_DEPTH = 86400;
+static const int MAINNET_MERGESET_HEIGHT = 10703940;
+
+inline int GetForkHeightMergeset()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest)
+        return nRegtestMergesetHeight;
+    return fTestNet ? PRIVACY_VNEXT_HEIGHT_UNSET : MAINNET_MERGESET_HEIGHT;
+}
+#define FORK_HEIGHT_MERGESET (GetForkHeightMergeset())
+
+inline bool IsMergesetConfigured()
+{
+    return FORK_HEIGHT_MERGESET != PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+
+inline bool IsMergesetActiveAtHeight(int nHeight)
+{
+    return IsMergesetConfigured() && nHeight >= FORK_HEIGHT_MERGESET;
+}
+
 inline bool IsIV5FeeNoteConfigured()
 {
     return FORK_HEIGHT_IV5_FEE_NOTE != PRIVACY_VNEXT_HEIGHT_UNSET;
@@ -891,6 +924,9 @@ static const int64_t POST_DAG_TARGET_SPACING = 1;
 // single 1s gap can never read below target; a window restores a clamp floor strictly
 // below target (POST_DAG_RETARGET_WINDOW/4).
 static const int POST_DAG_RETARGET_WINDOW = 60;
+static const int MERGESET_RETARGET_WINDOW = 300;
+static const int MERGESET_RETARGET_SMOOTHING = 900;
+static const int64_t MERGESET_MAX_FUTURE_DRIFT = 2 * 60;
 
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
@@ -1204,6 +1240,109 @@ bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bo
 /** Why an index was flagged BLOCK_FAILED_VALID, persisted beside the flag and erased with
  *  it. The failing block can differ from the flagged one: a reorg that fails at an ancestor
  *  flags the candidate tip. */
+/** What a block applied from its mergeset. */
+struct CMergesetAcceptRecord
+{
+    int nSchema;
+    std::vector<uint256> vMergedBlocks;                    // every block of its mergeset it took
+    std::vector<std::pair<uint256, uint256> > vAccepted;   // (carrying block, txid), applied
+    std::vector<uint256> vSkipped;                          // merged txids not applied
+    // Cumulative reward accounting since the fork.
+    int64_t nCumTarget;
+    int64_t nCumBase;
+    int64_t nCumPaid;
+    int64_t nEpochActiveTxs;   // active txs of this block's epoch through this block
+    int64_t nWithheldCN;       // CN share left to the finality voters (paid no collateral node)
+
+    CMergesetAcceptRecord()
+        : nSchema(4), nCumTarget(0), nCumBase(0), nCumPaid(0), nEpochActiveTxs(0), nWithheldCN(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(vMergedBlocks);
+        READWRITE(vAccepted);
+        READWRITE(vSkipped);
+        READWRITE(nCumTarget);
+        READWRITE(nCumBase);
+        READWRITE(nCumPaid);
+        READWRITE(nEpochActiveTxs);
+        READWRITE(nWithheldCN);
+    )
+};
+
+/** Unpaid CN shares withheld across a settlement's accrual blocks. */
+bool GetMergesetWithheldCNForEpoch(CTxDB& txdb, const CBlockIndex* pindexPrev, int nSettlementEpoch,
+                                   int64_t& nWithheld);
+
+/** Epoch active txs before nHeight. */
+bool GetMergesetEpochActiveTxsBefore(CTxDB& txdb, const CBlockIndex* pindexPrev, int nHeight,
+                                     int64_t& nCount);
+
+/** Hash of a block's acceptance outcome, committed in its coinbase as OP_RETURN "IACC" <hash>. */
+uint256 GetMergesetAcceptanceHash(const CMergesetAcceptRecord& rec, const uint256& hashUtxo);
+/** Digest of the transparent UTXO changes since the mergeset fork, as of the tip. */
+bool GetMergesetUtxoDigest(CTxDB& txdb, int nHeight, uint256& hashUtxo);
+CScript GetMergesetAcceptanceScript(const uint256& hash);
+
+/** Coinbase OP_RETURN "IPAY" <script> payee. */
+bool GetMergesetPayee(const CTransaction& coinbase, CScript& payee);
+
+/** What a block owes for its mergeset. */
+struct CMergesetReward
+{
+    int64_t nOwnIssuance;
+    int64_t nExtraCollateralnode;
+    int64_t nBlueFees;
+    std::vector<std::pair<CScript, int64_t> > vPayouts;
+    int64_t nCumTarget, nCumBase, nCumPaid;
+    CMergesetReward()
+        : nOwnIssuance(0), nExtraCollateralnode(0), nBlueFees(0),
+          nCumTarget(0), nCumBase(0), nCumPaid(0) {}
+    int64_t PayoutTotal() const
+    {
+        int64_t n = 0;
+        for (size_t i = 0; i < vPayouts.size(); i++)
+            n += vPayouts[i].second;
+        return n;
+    }
+};
+
+/** What a template's mergeset would apply, for the miner. */
+struct CMergesetSimulation
+{
+    CMergesetAcceptRecord rec;
+    std::set<uint256> setTxids;
+    std::set<COutPoint> setSpent;
+    std::set<uint256> setConflictTags;
+    int64_t nFees;
+    int64_t nIV5FeeSum;
+    std::map<uint256, int64_t> mapFeesByBlock;   // transparent fees each merged block carried
+    std::map<uint256, CScript> mapPayee;         // merged blocks that commit a payee
+    std::map<uint256, unsigned int> mapBlockBytes;
+    std::set<uint256> setSpentKeyImages;
+    std::set<uint256> setAttestedKeyImages;
+    int64_t nAccepted;
+    CMergesetSimulation() : nFees(0), nIV5FeeSum(0), nAccepted(0) {}
+};
+
+bool ComputeMergesetReward(CTxDB& txdb, const CBlockIndex* pindexPrev, int nHeight,
+                           int64_t nSubsidy, int64_t nIssuance, int64_t nCommitted,
+                           const std::vector<std::pair<uint256, bool> >& vMergeSet,
+                           const std::map<uint256, int64_t>& mapFeesByBlock,
+                           const std::map<uint256, CScript>& mapPayee,
+                           const std::map<uint256, unsigned int>& mapBlockBytes,
+                           CMergesetReward& reward, std::string& strError);
+
+bool SimulateMergesetAcceptance(CTxDB& txdb, CBlockIndex* pindexTemplate,
+                                const std::vector<std::pair<uint256, bool> >& vMergeSet,
+                                int64_t nTxBudget, CMergesetSimulation& sim, std::string& strError);
+bool ReadMergesetAcceptedTxs(const CMergesetAcceptRecord& rec, std::vector<CTransaction>& vTxs);
+bool MergesetOwnTxKeyConflict(const CTransaction& tx, const std::set<uint256>& setSpentKeyImages,
+                              const std::set<uint256>& setAttestedKeyImages);
+/** Epoch tx room for one block, one coinbase reserved per later height. */
+int64_t GetMergesetEpochTxCeiling(int nHeight);
+
 struct CBlockFailReason
 {
     uint256 hashFailedBlock;
@@ -1290,7 +1429,8 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 // nWindow == 1 reproduces the pre-DAG single-gap rule exactly.
 unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
-                                   bool fTighterDrift, const CBigNum& bnTargetLimit);
+                                   bool fTighterDrift, const CBigNum& bnTargetLimit,
+                                   int64_t nSmoothOverride = 0);
 // Issuance headroom under the supply cap, from pindexPrev->nMoneySupply only; INT64_MAX
 // below the fork. nCommitted comes off first, so the subsidy yields.
 int64_t GetRemainingIssuance(const CBlockIndex* pindexPrev, int64_t nCommitted);
@@ -1305,6 +1445,8 @@ int64_t GetBlockSubsidySchedule(int nHeight);
 // Subsidy before fees at or above FORK_HEIGHT_DAG.
 int64_t GetPostDagProofOfWorkSubsidy(int nHeight);
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
+int64_t GetMergesetEraSubsidy(int nHeight);
+int64_t GetPostDagLadderSubsidy(int nHeight);
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
@@ -2259,7 +2401,8 @@ public:
                        bool fValidatedCoinstake = false,
                        bool fAnonPrevalidated = false,
                        int nAnonCandidateHeight = -1,
-                       int64_t nPrevalidatedAnonValueIn = 0);
+                       int64_t nPrevalidatedAnonValueIn = 0,
+                       bool fForceSigs = false);
     bool CheckTransaction() const;
     bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge, int nEvalHeight) const;  // ppcoin: get transaction coin age; nEvalHeight = height of the carrying block

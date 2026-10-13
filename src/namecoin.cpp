@@ -3269,8 +3269,7 @@ bool createNameIndexFile()
     return true;
 }
 
-// Blocks after a committed cursor either had no name effects (only the cursor was deferred)
-// or were never applied, so replaying forward from it equals a full rebuild.
+// Blocks past the cursor had no name effects, so replay from it.
 bool CatchUpNameIndex(CBlockIndex* pindexTip, std::string& strError)
 {
     strError.clear();

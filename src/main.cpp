@@ -28,6 +28,12 @@
 #include "curvetree.h"
 #include "finality.h"
 #include "subsidy.h"
+#include "muhash.h"
+
+static void ApplyTxToUtxoMuHash(MuHash3072& hash, const CTransaction& tx,
+                                const std::vector<CTxOut>& vSpent, bool fConnect);
+static bool GetSpentOutputs(const CTransaction& tx, const MapPrevTx* pInputs, CTxDB* ptxdb,
+                            std::vector<CTxOut>& vSpent);
 
 #include <memory>
 #include "dag.h"
@@ -262,6 +268,8 @@ int nRegtestSupplyCapHeight = -1;       // -1: follow the DAG fork like every ot
 int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestMergesetHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+bool fRegtestMergesetEmission = false;
 int nRegtestIDNSResetHeight = 0;
 // Regtest millisecond-timestamp gate (-regtestmstimestamp). Defaults to the
 // POEM rung so the regtest ladder exercises the rule without an override.
@@ -1937,10 +1945,38 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize)
  *  Must be called with the block being validated and its parent index. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev)
 {
+    return ApplyBlockSizePenaltyBytes(nReward, ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION),
+                                      pindexPrev);
+}
+
+uint64_t GetTxMass(const CTransaction& tx)
+{
+    return ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION) +
+           (uint64_t)MERGESET_OUTPUT_MASS * tx.vout.size();
+}
+
+// Mergeset payout and IPAY outputs are not block size.
+unsigned int GetMergesetExemptBytes(const CTransaction& coinbase,
+                                    const std::set<CScript>& setPayees)
+{
+    unsigned int nBytes = 0;
+    for (const CTxOut& out : coinbase.vout)
+    {
+        CTransaction probe;
+        probe.vout.push_back(out);
+        CScript payee;
+        if (setPayees.count(out.scriptPubKey) || GetMergesetPayee(probe, payee))
+            nBytes += ::GetSerializeSize(out, SER_NETWORK, PROTOCOL_VERSION);
+    }
+    return nBytes;
+}
+
+int64_t ApplyBlockSizePenaltyBytes(int64_t nReward, unsigned int nBlockBytes,
+                                   const CBlockIndex* pindexPrev)
+{
     if (!pindexPrev || pindexPrev->nHeight + 1 < FORK_HEIGHT_DAG)
         return nReward;
 
-    unsigned int nBlockBytes = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
     // The adaptive limit is 2x median; the median is limit/2
     unsigned int nMedian = GetAdaptiveBlockSizeLimit(pindexPrev) / 2;
     if (nMedian < ADAPTIVE_BLOCK_FLOOR)
@@ -5026,8 +5062,20 @@ int CMerkleTx::GetDepthInMainChainINTERNAL(CBlockIndex* &pindexRet) const
     if (mi == mapBlockIndex.end())
         return 0;
     CBlockIndex* pindex = (*mi).second;
-    if (!pindex || !pindex->IsInMainChain())
+    if (!pindex)
         return 0;
+    CBlockIndex* pindexConfirming = pindex;
+    if (!pindex->IsInMainChain())
+    {
+        // Merged tx: confirmed by its accepting block.
+        uint256 hashAccepting;
+        if (!IsMergesetConfigured() || !CTxDB("r").ReadTxAccept(GetHash(), hashAccepting))
+            return 0;
+        map<uint256, CBlockIndex*>::iterator ai = mapBlockIndex.find(hashAccepting);
+        if (ai == mapBlockIndex.end() || !ai->second || !ai->second->IsInMainChain())
+            return 0;
+        pindexConfirming = ai->second;
+    }
 
     // Make sure the merkle branch connects to this block
     if (!fMerkleVerified)
@@ -5037,6 +5085,7 @@ int CMerkleTx::GetDepthInMainChainINTERNAL(CBlockIndex* &pindexRet) const
         fMerkleVerified = true;
     }
 
+    pindex = pindexConfirming;
     pindexRet = pindex;
     if (!pindexBest)
         return 0;
@@ -5138,6 +5187,10 @@ bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, b
             CBlock block;
             if (block.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))
                 hashBlock = block.GetHash();
+            // Merged tx: confirmed by its accepting block.
+            uint256 hashAccepting;
+            if (txdb.ReadTxAccept(hash, hashAccepting))
+                hashBlock = hashAccepting;
             return true;
         }
     }
@@ -6248,7 +6301,9 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
                                                           bool* pfIncomplete)
 {
     std::set<uint256> setDAGSkippedTxs;
-    if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || !pindex->phashBlock)
+    // Mergeset fork: no sibling skips.
+    if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || !pindex->phashBlock ||
+        IsMergesetActiveAtHeight(pindex->nHeight))
         return setDAGSkippedTxs;
 
     uint256 hashBlock = pindex->GetBlockHash();
@@ -6984,8 +7039,38 @@ static const PoWPostDagTier* GetPoWPostDagLadder(size_t& nCount, int64_t& nTail)
 // Post-DAG PoW subsidy, before fees, on every network. Rewards are divided by the
 // spacing ratio (PRE_DAG_TARGET_SPACING / GetTargetSpacingForHeight) and rung
 // boundaries stretched by the same ratio, preserving wall-clock issuance.
+// Mergeset era: 6-month ramp 864 -> 2,300 INN/day, halving every 2 years, 700/day floor.
+static const int64_t MERGESET_ERA_START = 1000000;        //   864 INN a day, the ladder at the fork
+static const int64_t MERGESET_ERA_PEAK = 2662037;         // 2,300 INN a day
+static const int64_t MERGESET_ERA_FLOOR = 810185;         //   700 INN a day
+static const int64_t MERGESET_ERA_RAMP_BLOCKS = 15724800;     // 182 days
+static const int64_t MERGESET_ERA_HALVING_BLOCKS = 63072000;  // 730 days
+
+int64_t GetMergesetEraSubsidy(int nHeight)
+{
+    const int64_t nDelta = (int64_t)nHeight - FORK_HEIGHT_MERGESET;
+    if (nDelta < 0)
+        return MERGESET_ERA_START;
+    if (nDelta < MERGESET_ERA_RAMP_BLOCKS)
+        return MERGESET_ERA_START +
+               (MERGESET_ERA_PEAK - MERGESET_ERA_START) * nDelta / MERGESET_ERA_RAMP_BLOCKS;
+    const int64_t nHalvings = (nDelta - MERGESET_ERA_RAMP_BLOCKS) / MERGESET_ERA_HALVING_BLOCKS;
+    const int64_t nSubsidy = nHalvings >= 62 ? 0 : (MERGESET_ERA_PEAK >> nHalvings);
+    return std::max(nSubsidy, MERGESET_ERA_FLOOR);
+}
+
 int64_t GetPostDagProofOfWorkSubsidy(int nHeight)
 {
+    if (((!fRegTest && !fTestNet) || (fRegTest && fRegtestMergesetEmission)) &&
+        IsMergesetActiveAtHeight(nHeight))
+        return GetMergesetEraSubsidy(nHeight);
+    return GetPostDagLadderSubsidy(nHeight);
+}
+
+// Post-DAG ladder, below the mergeset fork.
+int64_t GetPostDagLadderSubsidy(int nHeight)
+{
+
     const int64_t nPostSpacing = (int64_t)GetTargetSpacingForHeight(nHeight);
     size_t nCount = 0;
     int64_t nSubsidy = 0;
@@ -7244,7 +7329,8 @@ const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfSta
 
 unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
-                                   bool fTighterDrift, const CBigNum& bnTargetLimit)
+                                   bool fTighterDrift, const CBigNum& bnTargetLimit,
+                                   int64_t nSmoothOverride)
 {
     if (nWindow < 1) nWindow = 1;
     int64_t nTargetSpan = (int64_t)nEffectiveSpacing * nWindow;
@@ -7275,7 +7361,7 @@ unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
 
     CBigNum bnNew;
     bnNew.SetCompact(nPrevBits);
-    int64_t nSmoothTimespan = fTighterDrift ? 180 : nTargetTimespan;
+    int64_t nSmoothTimespan = nSmoothOverride > 0 ? nSmoothOverride : fTighterDrift ? 180 : nTargetTimespan;
     int64_t nInterval = nSmoothTimespan / nEffectiveSpacing;
     bnNew *= ((nInterval - 1) * nTargetSpan + nActualSpan + nActualSpan);
     bnNew /= ((nInterval + 1) * nTargetSpan);
@@ -7314,10 +7400,13 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
     // it only spans blocks at or after the DAG fork.
     int nWindow = 1;
     const CBlockIndex* pindexWindow = pindexPrevPrev;
+    // Mergeset fork: an epoch-long window measured median to median.
+    const bool fMedianSpan = IsMergesetActiveAtHeight(nNextHeight);
     if (nNextHeight >= FORK_HEIGHT_DAG)
     {
         int nAvailable = pindexPrev->nHeight - FORK_HEIGHT_DAG;
-        int nWant = std::min(POST_DAG_RETARGET_WINDOW, nAvailable);
+        int nWant = std::min(fMedianSpan ? MERGESET_RETARGET_WINDOW : POST_DAG_RETARGET_WINDOW,
+                             nAvailable);
         while (nWindow < nWant && pindexWindow->pprev)
         {
             const CBlockIndex* pindexStep = GetLastBlockIndex(pindexWindow->pprev, fProofOfStake);
@@ -7328,10 +7417,13 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
         }
     }
 
-    int64_t nActualSpan = pindexPrev->GetBlockTime() - pindexWindow->GetBlockTime();
+    int64_t nActualSpan = fMedianSpan
+        ? pindexPrev->GetMedianTimePast() - pindexWindow->GetMedianTimePast()
+        : pindexPrev->GetBlockTime() - pindexWindow->GetBlockTime();
 
     return ComputeRetargetedBits(pindexPrev->nBits, nActualSpan, nEffectiveSpacing,
-                                 nWindow, fTighterDrift, bnTargetLimit);
+                                 nWindow, fTighterDrift, bnTargetLimit,
+                                 fMedianSpan ? MERGESET_RETARGET_SMOOTHING : 0);
 }
 
 bool CheckProofOfWork(uint256 hash, unsigned int nBits)
@@ -8552,7 +8644,7 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
     const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig,
     bool fValidatedCoinstake, bool fAnonPrevalidated,
-    int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn)
+    int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn, bool fForceSigs)
 {
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
@@ -8650,7 +8742,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             // still computed and checked, and any change will be caught at the next checkpoint.
             // -fullreplayverify forces full ECDSA verification of all historic blocks (used by
             // -replayblocks to re-validate mainnet history end to end, not just to the checkpoint).
-            if (!(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
+            // Merged txs always verify signatures.
+            if (fForceSigs || !(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
             {
                 // Verify signature
                 bool fSigOk;
@@ -9209,6 +9302,11 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         return error("DisconnectBlock() : missing IV5 pool balance record; "
                      "-reindex/resync required");
 
+    const bool fUndoUtxoHash = pindex && IsMergesetActiveAtHeight(pindex->nHeight);
+    MuHash3072 utxoState;
+    if (fUndoUtxoHash && txdb.ReadUtxoMuHash(utxoState) != TXDB_READ_FOUND)
+        return error("DisconnectBlock() : UTXO hash record missing or unreadable");
+
     // Disconnect in reverse order
     for (int i = vtx.size()-1; i >= 0; i--)
     {
@@ -9284,8 +9382,72 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 }
             }
         }
+        if (fUndoUtxoHash)
+        {
+            std::vector<CTxOut> vSpentOuts;
+            if (!GetSpentOutputs(vtx[i], NULL, &txdb, vSpentOuts))
+                return error("DisconnectBlock() : UTXO hash inputs unreadable");
+            ApplyTxToUtxoMuHash(utxoState, vtx[i], vSpentOuts, false);
+        }
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
+    }
+
+    // Undo merged txs after the block's own, in reverse.
+    if (pindex && IsMergesetActiveAtHeight(pindex->nHeight))
+    {
+        const uint256 hashThis = pindex->GetBlockHash();
+        CMergesetAcceptRecord rec;
+        if (!txdb.ReadMergesetAccept(hashThis, rec))
+            return error("DisconnectBlock() : mergeset acceptance record missing "
+                         "(-reindex/resync required)");
+        std::vector<CTransaction> vMergedTxs;
+        if (!ReadMergesetAcceptedTxs(rec, vMergedTxs))
+            return error("DisconnectBlock() : a merged tx's carrying block is unreadable");
+        for (size_t i = rec.vAccepted.size(); i-- > 0; )
+        {
+            CTransaction txMerged = vMergedTxs[i];
+            if (txMerged.IsPrivacyVNext())
+            {
+                PrivacyVNextStateEffects effects;
+                std::string strUndoError;
+                int64_t nDelta = 0;
+                if (!ExtractPrivacyVNextPayloadEffects(static_cast<uint32_t>(txMerged.nVersion),
+                                                       txMerged.privacyVNext.vchPayload,
+                                                       effects).IsValid() ||
+                    !DisconnectPrivacyVNextAttestations(txdb, txMerged, effects, strUndoError) ||
+                    DisconnectPrivacyVNextSpentKeys(txdb, txMerged, effects, pindex->nHeight,
+                                                    strUndoError) != PRIVACY_VNEXT_UNDO_OK ||
+                    (fUndoPrivacyVNextPool &&
+                     (!GetPrivacyVNextPoolDelta(effects, nDelta, strUndoError) ||
+                      !ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool, -nDelta, strUndoError))))
+                {
+                    StartShutdown();
+                    return error("DisconnectBlock() : merged IV5 tx %s undo failed: %s "
+                                 "(-reindex/resync required)",
+                                 rec.vAccepted[i].second.ToString().substr(0, 20).c_str(),
+                                 strUndoError.c_str());
+                }
+            }
+            std::vector<CTxOut> vSpentOuts;
+            if (!GetSpentOutputs(txMerged, NULL, &txdb, vSpentOuts))
+                return error("DisconnectBlock() : UTXO hash inputs unreadable");
+            ApplyTxToUtxoMuHash(utxoState, txMerged, vSpentOuts, false);
+            if (!txMerged.DisconnectInputs(txdb) ||
+                !txdb.EraseTxAccept(rec.vAccepted[i].second))
+                return error("DisconnectBlock() : could not undo merged tx %s",
+                             rec.vAccepted[i].second.ToString().substr(0, 20).c_str());
+        }
+        for (const uint256& hashMerged : rec.vMergedBlocks)
+        {
+            uint256 hashMergedBy;
+            if (txdb.ReadDAGMergedBy(hashMerged, hashMergedBy) && hashMergedBy == hashThis &&
+                !txdb.EraseDAGMergedBy(hashMerged))
+                return error("DisconnectBlock() : could not erase merged-by record");
+        }
+        if (!txdb.WriteUtxoMuHash(utxoState))
+            return error("DisconnectBlock() : UTXO hash write failed");
+        // Kept for the wallet's post-commit disconnect.
     }
 
     if (fUndoPrivacyVNextPool &&
@@ -9832,6 +9994,717 @@ bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result)
     return result == CBlock::CONNECT_RESULT_INVALID;
 }
 
+namespace
+{
+enum MergedTxResult { MERGED_TX_ACCEPTED, MERGED_TX_SKIPPED, MERGED_TX_LOCAL_ERROR };
+
+struct CMergesetAcceptance
+{
+    CMergesetAcceptRecord rec;
+    std::vector<CTransaction> vAcceptedTx;
+    std::set<COutPoint> setSpent;
+    std::set<uint256> setTxids;
+    std::set<uint256> setConflictTags;      // IV5 key images and attestation tags taken
+    int64_t nValueIn, nValueOut, nFees, nBurned, nIV5FeeSum, nPool;
+    std::map<uint256, int64_t> mapFeesByBlock;
+    std::map<uint256, std::pair<uint256, int64_t> > mapTxFee;   // txid -> (carrying block, fee)
+    std::map<uint256, CScript> mapPayee;
+    std::map<uint256, unsigned int> mapBlockBytes;
+    std::set<uint256> setSpentKeyImages;     // raw key images spent and attested so far
+    std::set<uint256> setAttestedKeyImages;
+    bool fPoolLoaded;
+    unsigned int nSigOps;
+    uint64_t nExaminedBytes;
+    int64_t nTxBudget;                        // epoch active-tx room left for merged txs
+    MuHash3072 utxoDelta;
+    CMergesetAcceptance()
+        : nValueIn(0), nValueOut(0), nFees(0), nBurned(0), nIV5FeeSum(0), nPool(0),
+          fPoolLoaded(false), nSigOps(0), nExaminedBytes(0),
+          nTxBudget(std::numeric_limits<int64_t>::max()) {}
+};
+
+// Pre-checks every IV5 effects-stage rule; note votes are never merged.
+uint256 DigestToUint256(const PrivacyVNextDigest& digest)
+{
+    uint256 value;
+    memcpy(value.begin(), digest.data(), digest.size());
+    return value;
+}
+
+MergedTxResult CheckMergedPrivacyVNext(CTxDB& txdb, const CTransaction& tx, CBlockIndex* pindex,
+                                       CMergesetAcceptance& acc, int64_t& nAbsorbed,
+                                       int64_t& nReleased, int64_t& nDeclaredFee,
+                                       int64_t& nPoolAfter, std::vector<uint256>& vSpent,
+                                       std::vector<uint256>& vAttested)
+{
+    if (!IsBoundaryBActiveAtHeight(pindex->nHeight))
+        return MERGED_TX_SKIPPED;
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    if (validation.fLocalFailure)
+        return MERGED_TX_LOCAL_ERROR;
+    if (!validation.IsValid() || effects.HasVoteBoundary())
+        return MERGED_TX_SKIPPED;
+
+    std::string strError;
+    if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError) ||
+        !CheckPrivacyVNextUnshieldRetired(effects.nTransparentValueBalance, pindex->nHeight, strError))
+        return MERGED_TX_SKIPPED;
+
+    // A note spent in the mergeset cannot be attested, and vice versa.
+    vSpent.clear();
+    vAttested.clear();
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+        vSpent.push_back(DigestToUint256(effects.keyImages[i]));
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+        vAttested.push_back(DigestToUint256(effects.attestationKeyImages[i]));
+    const std::set<uint256> setOwnSpent(vSpent.begin(), vSpent.end());
+    for (const uint256& k : vSpent)
+        if (acc.setAttestedKeyImages.count(k))
+            return MERGED_TX_SKIPPED;
+    for (const uint256& k : vAttested)
+        if (acc.setSpentKeyImages.count(k) || setOwnSpent.count(k))
+            return MERGED_TX_SKIPPED;
+
+    bool fLocal = false, fUnavailable = false;
+    if (!ValidatePrivacyVNextFinalizedContext(txdb, pindex, pindex->nHeight, effects,
+                                              fLocal, fUnavailable, strError))
+        return (fLocal || fUnavailable) ? MERGED_TX_LOCAL_ERROR : MERGED_TX_SKIPPED;
+
+    int64_t nNoteVoteMint = 0;
+    if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased, fLocal, strError,
+                                        &nDeclaredFee, NULL, &nNoteVoteMint))
+        return fLocal ? MERGED_TX_LOCAL_ERROR : MERGED_TX_SKIPPED;
+    if (nNoteVoteMint != 0)
+        return MERGED_TX_SKIPPED;
+
+    if (!acc.fPoolLoaded)
+    {
+        const TxDBReadStatus poolStatus = txdb.ReadPrivacyVNextPoolValueStatus(acc.nPool);
+        if (poolStatus == TXDB_READ_ERROR ||
+            (poolStatus == TXDB_READ_NOT_FOUND && pindex->nHeight != FORK_HEIGHT_BOUNDARY_B))
+            return MERGED_TX_LOCAL_ERROR;
+        if (poolStatus == TXDB_READ_NOT_FOUND)
+            acc.nPool = 0;
+        acc.fPoolLoaded = true;
+    }
+    nPoolAfter = acc.nPool;
+    int64_t nPoolDelta = 0;
+    if (!GetPrivacyVNextPoolDelta(effects, nPoolDelta, strError) ||
+        !ApplyPrivacyVNextPoolDelta(nPoolAfter, nPoolDelta, strError))
+        return MERGED_TX_SKIPPED;
+
+    std::set<uint256> setTags;
+    AppendPrivacyVNextConflictTags(tx, setTags);
+    for (const uint256& tag : setTags)
+        if (acc.setConflictTags.count(tag))
+            return MERGED_TX_SKIPPED;
+    std::set<uint256> setNullifiersAfter, setAttestationsAfter;
+    switch (ConnectPrivacyVNextSpentKeys(txdb, tx, effects, pindex->nHeight, true,
+                                         setNullifiersAfter, strError))
+    {
+    case PRIVACY_VNEXT_SPEND_OK:
+        break;
+    case PRIVACY_VNEXT_SPEND_INVALID:
+        return MERGED_TX_SKIPPED;
+    default:
+        return MERGED_TX_LOCAL_ERROR;
+    }
+    if (!ConnectPrivacyVNextAttestations(txdb, tx, effects, pindex->nHeight, true,
+                                         setAttestationsAfter, fLocal, strError))
+        return fLocal ? MERGED_TX_LOCAL_ERROR : MERGED_TX_SKIPPED;
+    return MERGED_TX_ACCEPTED;
+}
+
+
+MergedTxResult MergedInputUsable(CTxDB& txdb, const COutPoint& prevout,
+                                 const std::map<uint256, CTxIndex>& mapQueued)
+{
+    CTxIndex txindex;
+    std::map<uint256, CTxIndex>::const_iterator mi = mapQueued.find(prevout.hash);
+    if (mi != mapQueued.end())
+        txindex = mi->second;
+    else
+    {
+        const TxDBReadStatus status = txdb.ReadTxIndexStatus(prevout.hash, txindex);
+        if (status == TXDB_READ_ERROR)
+            return MERGED_TX_LOCAL_ERROR;
+        if (status != TXDB_READ_FOUND)
+            return MERGED_TX_SKIPPED;
+    }
+    if (prevout.n >= txindex.vSpent.size() || !txindex.vSpent[prevout.n].IsNull())
+        return MERGED_TX_SKIPPED;
+    return MERGED_TX_ACCEPTED;
+}
+
+MergedTxResult AcceptMergedTx(CTxDB& txdb, CTransaction tx, const CDiskTxPos& posTx,
+                              CBlockIndex* pindex, unsigned int flags,
+                              std::map<uint256, CTxIndex>& mapQueuedChanges,
+                              CMergesetAcceptance& acc, const uint256& hashCarrying)
+{
+    // Legacy shielded, ANON and name txs are never merged.
+    if (tx.IsCoinBase() || tx.IsCoinStake() || (tx.IsShielded() && !tx.IsPrivacyVNext()) ||
+        tx.nVersion == ANON_TXN_VERSION || hooks->IsNameTx(tx.nVersion) ||
+        !tx.IsFinal(pindex->nHeight, pindex->pprev ? pindex->pprev->GetMedianTimePast() : 0))
+        return MERGED_TX_SKIPPED;
+
+    if ((int64_t)acc.vAcceptedTx.size() >= acc.nTxBudget)
+        return MERGED_TX_SKIPPED;
+    // The budget covers every examined tx.
+    const unsigned int nTxBytes = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    acc.nExaminedBytes += nTxBytes;
+    acc.nSigOps += tx.GetLegacySigOpCount();
+    if (acc.nExaminedBytes > MAX_BLOCK_SIZE || acc.nSigOps > MAX_BLOCK_SIGOPS)
+        return MERGED_TX_SKIPPED;
+    if (!tx.CheckTransaction())
+        return MERGED_TX_SKIPPED;
+
+    const uint256 hashTx = tx.GetHash();
+    if (acc.setTxids.count(hashTx) || mapQueuedChanges.count(hashTx))
+        return MERGED_TX_SKIPPED;
+    CTxIndex txindexOld;
+    const TxDBReadStatus status = txdb.ReadTxIndexStatus(hashTx, txindexOld);
+    if (status == TXDB_READ_ERROR)
+        return MERGED_TX_LOCAL_ERROR;
+    if (status == TXDB_READ_FOUND)
+        return MERGED_TX_SKIPPED;
+
+    for (const CTxIn& txin : tx.vin)
+    {
+        const MergedTxResult r = MergedInputUsable(txdb, txin.prevout, mapQueuedChanges);
+        if (r != MERGED_TX_ACCEPTED)
+            return r;
+    }
+
+    MapPrevTx mapInputs;
+    bool fInvalid = false;
+    if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
+        return fInvalid ? MERGED_TX_SKIPPED : MERGED_TX_LOCAL_ERROR;
+    acc.nSigOps += tx.GetP2SHSigOpCount(mapInputs);
+    if (acc.nSigOps > MAX_BLOCK_SIGOPS)
+        return MERGED_TX_SKIPPED;
+
+    int64_t nTxValueIn = 0, nTxValueOut = 0;
+    try
+    {
+        nTxValueIn = tx.GetValueIn(mapInputs);
+        nTxValueOut = tx.GetValueOut();
+    }
+    catch (const std::runtime_error&)
+    {
+        return MERGED_TX_SKIPPED;
+    }
+
+    int64_t nDeclaredFee = 0, nPoolAfter = acc.nPool;
+    std::vector<uint256> vSpentKeys, vAttestedKeys;
+    if (tx.IsPrivacyVNext())
+    {
+        int64_t nAbsorbed = 0, nReleased = 0;
+        const MergedTxResult r = CheckMergedPrivacyVNext(
+            txdb, tx, pindex, acc, nAbsorbed, nReleased, nDeclaredFee, nPoolAfter,
+            vSpentKeys, vAttestedKeys);
+        if (r != MERGED_TX_ACCEPTED)
+            return r;
+        if (nAbsorbed > std::numeric_limits<int64_t>::max() - nTxValueOut ||
+            nReleased > std::numeric_limits<int64_t>::max() - nTxValueIn)
+            return MERGED_TX_SKIPPED;
+        nTxValueOut += nAbsorbed;
+        nTxValueIn += nReleased;
+    }
+
+    // Undo log for the entries ConnectInputs rewrites.
+    std::vector<std::pair<uint256, std::pair<bool, CTxIndex> > > vUndo;
+    std::set<uint256> setSaved;
+    for (const CTxIn& txin : tx.vin)
+    {
+        if (!setSaved.insert(txin.prevout.hash).second)
+            continue;
+        std::map<uint256, CTxIndex>::const_iterator it = mapQueuedChanges.find(txin.prevout.hash);
+        vUndo.push_back(std::make_pair(txin.prevout.hash, it != mapQueuedChanges.end()
+                                           ? std::make_pair(true, it->second)
+                                           : std::make_pair(false, CTxIndex())));
+    }
+    // A merged tx failing ConnectInputs is skipped, never a local error.
+    if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posTx, pindex, true, false, flags,
+                          true, false, false, -1, 0, true))
+    {
+        for (size_t i = vUndo.size(); i-- > 0; )
+        {
+            if (vUndo[i].second.first)
+                mapQueuedChanges[vUndo[i].first] = vUndo[i].second.second;
+            else
+                mapQueuedChanges.erase(vUndo[i].first);
+        }
+        return fShutdown ? MERGED_TX_LOCAL_ERROR : MERGED_TX_SKIPPED;
+    }
+
+    mapQueuedChanges[hashTx] = CTxIndex(posTx, tx.vout.size());
+    if (tx.IsPrivacyVNext())
+    {
+        acc.nPool = nPoolAfter;
+        acc.nIV5FeeSum += nDeclaredFee;
+        AppendPrivacyVNextConflictTags(tx, acc.setConflictTags);
+        acc.setSpentKeyImages.insert(vSpentKeys.begin(), vSpentKeys.end());
+        acc.setAttestedKeyImages.insert(vAttestedKeys.begin(), vAttestedKeys.end());
+    }
+    std::vector<CTxOut> vSpentOuts;
+    if (GetSpentOutputs(tx, &mapInputs, NULL, vSpentOuts))
+        ApplyTxToUtxoMuHash(acc.utxoDelta, tx, vSpentOuts, true);
+    acc.vAcceptedTx.push_back(tx);
+    acc.setTxids.insert(hashTx);
+    for (const CTxIn& txin : tx.vin)
+        acc.setSpent.insert(txin.prevout);
+    for (const CTxOut& out : tx.vout)
+        if (out.scriptPubKey.IsUnspendable())
+            acc.nBurned += out.nValue;
+    acc.nValueIn += nTxValueIn;
+    acc.nValueOut += nTxValueOut;
+    acc.nFees += nTxValueIn - nTxValueOut;
+    acc.mapFeesByBlock[hashCarrying] += nTxValueIn - nTxValueOut - nDeclaredFee;
+    acc.mapTxFee[hashTx] = std::make_pair(hashCarrying, nTxValueIn - nTxValueOut - nDeclaredFee);
+    return MERGED_TX_ACCEPTED;
+}
+
+// Applies merged txs before the block's own; invalid ones are skipped.
+bool AcceptMergesetTxs(CTxDB& txdb, CBlockIndex* pindex,
+                       const std::vector<std::pair<uint256, bool> >& vMergeSet, unsigned int flags,
+                       std::map<uint256, CTxIndex>& mapQueuedChanges,
+                       CMergesetAcceptance& acc, std::string& strError)
+{
+    for (const std::pair<uint256, bool>& merged : vMergeSet)
+    {
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(merged.first);
+        if (mi == mapBlockIndex.end() || !mi->second)
+        {
+            strError = "merged block index missing";
+            return false;
+        }
+        CBlockIndex* pindexMerged = mi->second;
+
+        if (pindex->pprev && pindex->pprev->GetAncestor(pindexMerged->nHeight) == pindexMerged)
+            continue;
+
+        uint256 hashMergedBy;
+        if (txdb.ReadDAGMergedBy(merged.first, hashMergedBy))
+        {
+            std::map<uint256, CBlockIndex*>::iterator bi = mapBlockIndex.find(hashMergedBy);
+            if (bi != mapBlockIndex.end() && bi->second && pindex->pprev &&
+                pindex->pprev->GetAncestor(bi->second->nHeight) == bi->second)
+                continue;
+        }
+        acc.rec.vMergedBlocks.push_back(merged.first);
+
+        CBlock blockMerged;
+        if (!blockMerged.ReadFromDisk(pindexMerged))
+        {
+            strError = "merged block body unreadable";
+            return false;
+        }
+        CScript payee;
+        if (!blockMerged.vtx.empty() && GetMergesetPayee(blockMerged.vtx[0], payee))
+            acc.mapPayee[merged.first] = payee;
+        acc.mapBlockBytes[merged.first] =
+            ::GetSerializeSize(blockMerged, SER_NETWORK, PROTOCOL_VERSION);
+        unsigned int nTxPos = pindexMerged->nBlockPos +
+            ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION) -
+            (2 * GetSizeOfCompactSize(0)) + GetSizeOfCompactSize(blockMerged.vtx.size());
+        for (size_t i = 0; i < blockMerged.vtx.size(); i++)
+        {
+            const CTransaction& tx = blockMerged.vtx[i];
+            const CDiskTxPos posTx(pindexMerged->nFile, pindexMerged->nBlockPos, nTxPos);
+            nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+            if (i == 0)
+                continue;
+            const MergedTxResult r = AcceptMergedTx(txdb, tx, posTx, pindex, flags,
+                                                    mapQueuedChanges, acc, merged.first);
+            if (r == MERGED_TX_LOCAL_ERROR)
+            {
+                strError = strprintf("local failure validating merged tx %s",
+                                     tx.GetHash().ToString().substr(0, 20).c_str());
+                return false;
+            }
+            if (r == MERGED_TX_ACCEPTED)
+                acc.rec.vAccepted.push_back(std::make_pair(merged.first, tx.GetHash()));
+            else
+                acc.rec.vSkipped.push_back(tx.GetHash());
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool MergesetOwnTxKeyConflict(const CTransaction& tx, const std::set<uint256>& setSpentKeyImages,
+                              const std::set<uint256>& setAttestedKeyImages)
+{
+    if (!tx.IsPrivacyVNext() || (setSpentKeyImages.empty() && setAttestedKeyImages.empty()))
+        return false;
+    PrivacyVNextStateEffects effects;
+    if (!ExtractPrivacyVNextPayloadEffects(static_cast<uint32_t>(tx.nVersion),
+                                           tx.privacyVNext.vchPayload, effects).IsValid())
+        return false;
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+        if (setAttestedKeyImages.count(DigestToUint256(effects.keyImages[i])))
+            return true;
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+        if (setSpentKeyImages.count(DigestToUint256(effects.attestationKeyImages[i])))
+            return true;
+    return false;
+}
+
+namespace
+{
+// Own txs a merged tx applied or conflicts with; duplicates do not propagate.
+std::set<uint256> GetMergesetOwnSkips(const CBlock& block, const CMergesetAcceptance& acc)
+{
+    std::set<uint256> setSkipped, setPropagating;
+    const bool fRawKeys = !acc.setSpentKeyImages.empty() || !acc.setAttestedKeyImages.empty();
+    for (const CTransaction& tx : block.vtx)
+    {
+        if (tx.IsCoinBase())
+            continue;
+        const uint256 hashTx = tx.GetHash();
+        if (acc.setTxids.count(hashTx))
+        {
+            setSkipped.insert(hashTx);
+            continue;
+        }
+        bool fConflict = TransactionConflictsWithDAGSiblingSpends(tx, acc.setSpent, acc.setConflictTags);
+        for (const CTxIn& txin : tx.vin)
+            fConflict = fConflict || setPropagating.count(txin.prevout.hash) > 0;
+        if (!fConflict && fRawKeys)
+            fConflict = MergesetOwnTxKeyConflict(tx, acc.setSpentKeyImages, acc.setAttestedKeyImages);
+        if (fConflict)
+        {
+            setSkipped.insert(hashTx);
+            setPropagating.insert(hashTx);
+        }
+    }
+    return setSkipped;
+}
+} // namespace
+
+int64_t GetMergesetEpochTxCeiling(int nHeight)
+{
+    const int nEpochEnd = GetEpochBoundaryHeight(GetEpochForHeight(nHeight) + 1, nHeight) - 1;
+    return (int64_t)EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS - std::max(0, nEpochEnd - nHeight);
+}
+
+bool GetMergesetWithheldCNForEpoch(CTxDB& txdb, const CBlockIndex* pindexPrev, int nSettlementEpoch,
+                                   int64_t& nWithheld)
+{
+    nWithheld = 0;
+    int nBegin = 0, nEnd = 0;
+    if (!pindexPrev || !IsMergesetConfigured() || !GetFinalityAccrualRange(nSettlementEpoch, nBegin, nEnd))
+        return true;
+    const int nFirst = std::max(nBegin, FORK_HEIGHT_MERGESET);
+    if (nEnd - 1 < nFirst || pindexPrev->nHeight < nEnd - 1)
+        return true;
+    for (const CBlockIndex* p = pindexPrev->GetAncestor(nEnd - 1); p && p->nHeight >= nFirst; p = p->pprev)
+    {
+        CMergesetAcceptRecord rec;
+        if (!txdb.ReadMergesetAccept(p->GetBlockHash(), rec))
+            return false;
+        nWithheld += rec.nWithheldCN;
+    }
+    return true;
+}
+
+bool GetMergesetEpochActiveTxsBefore(CTxDB& txdb, const CBlockIndex* pindexPrev, int nHeight,
+                                     int64_t& nCount)
+{
+    nCount = 0;
+    if (!pindexPrev || !IsMergesetActiveAtHeight(pindexPrev->nHeight) ||
+        GetEpochForHeight(pindexPrev->nHeight) != GetEpochForHeight(nHeight))
+        return true;
+    CMergesetAcceptRecord rec;
+    if (!txdb.ReadMergesetAccept(pindexPrev->GetBlockHash(), rec))
+        return false;
+    nCount = rec.nEpochActiveTxs;
+    return true;
+}
+
+// Merged txs from their carrying blocks.
+bool ReadMergesetAcceptedTxs(const CMergesetAcceptRecord& rec, std::vector<CTransaction>& vTxs)
+{
+    vTxs.clear();
+    std::map<uint256, CBlock> mapCarrying;
+    for (const std::pair<uint256, uint256>& accepted : rec.vAccepted)
+    {
+        std::map<uint256, CBlock>::iterator ci = mapCarrying.find(accepted.first);
+        if (ci == mapCarrying.end())
+        {
+            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(accepted.first);
+            CBlock blockCarrying;
+            if (mi == mapBlockIndex.end() || !mi->second || !blockCarrying.ReadFromDisk(mi->second))
+                return false;
+            ci = mapCarrying.insert(std::make_pair(accepted.first, blockCarrying)).first;
+        }
+        bool fFound = false;
+        for (const CTransaction& tx : ci->second.vtx)
+        {
+            if (tx.GetHash() == accepted.second)
+            {
+                vTxs.push_back(tx);
+                fFound = true;
+                break;
+            }
+        }
+        if (!fFound)
+            return false;
+    }
+    return true;
+}
+
+bool SimulateMergesetAcceptance(CTxDB& txdb, CBlockIndex* pindexTemplate,
+                                const std::vector<std::pair<uint256, bool> >& vMergeSet,
+                                int64_t nTxBudget, CMergesetSimulation& sim, std::string& strError)
+{
+    std::map<uint256, CTxIndex> mapQueuedChanges;
+    CMergesetAcceptance acc;
+    acc.nTxBudget = nTxBudget;
+    const unsigned int flags = pindexTemplate->nHeight >= FORK_HEIGHT_TIGHTER_DRIFT
+        ? (MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)
+        : (unsigned int)SCRIPT_VERIFY_NONE;
+    if (!AcceptMergesetTxs(txdb, pindexTemplate, vMergeSet, flags, mapQueuedChanges, acc, strError))
+        return false;
+    sim.rec = acc.rec;
+    sim.setTxids = acc.setTxids;
+    sim.setSpent = acc.setSpent;
+    sim.setConflictTags = acc.setConflictTags;
+    sim.nFees = acc.nFees;
+    sim.nIV5FeeSum = acc.nIV5FeeSum;
+    sim.mapFeesByBlock = acc.mapFeesByBlock;
+    sim.mapPayee = acc.mapPayee;
+    sim.mapBlockBytes = acc.mapBlockBytes;
+    sim.setSpentKeyImages = acc.setSpentKeyImages;
+    sim.setAttestedKeyImages = acc.setAttestedKeyImages;
+    sim.nAccepted = acc.vAcceptedTx.size();
+    return true;
+}
+
+static const unsigned char MERGESET_PAYEE_TAG[4] = { 'I', 'P', 'A', 'Y' };
+static const unsigned char MERGESET_ACCEPT_TAG[4] = { 'I', 'A', 'C', 'C' };
+
+uint256 GetMergesetAcceptanceHash(const CMergesetAcceptRecord& rec, const uint256& hashUtxo)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/mergeset/acceptance/v1") << rec.vMergedBlocks << rec.vAccepted
+       << rec.vSkipped << hashUtxo;
+    return ss.GetHash();
+}
+
+bool GetMergesetUtxoDigest(CTxDB& txdb, int nHeight, uint256& hashUtxo)
+{
+    MuHash3072 hash;
+    const TxDBReadStatus nRead = txdb.ReadUtxoMuHash(hash);
+    if (nRead == TXDB_READ_ERROR || (nRead == TXDB_READ_NOT_FOUND && nHeight != GetForkHeightMergeset()))
+        return false;
+    hash.Finalize(hashUtxo);
+    return true;
+}
+
+// Inserts what a tx creates and removes what it spends; fConnect false undoes it.
+static void ApplyTxToUtxoMuHash(MuHash3072& hash, const CTransaction& tx,
+                                const std::vector<CTxOut>& vSpent, bool fConnect)
+{
+    for (size_t i = 0; i < tx.vout.size(); i++)
+    {
+        if (tx.vout[i].scriptPubKey.IsUnspendable())
+            continue;
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        ss << COutPoint(tx.GetHash(), i) << tx.vout[i];
+        std::vector<unsigned char> v(ss.begin(), ss.end());
+        fConnect ? hash.Insert(v) : hash.Remove(v);
+    }
+    for (size_t i = 0; i < vSpent.size() && i < tx.vin.size(); i++)
+    {
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        ss << tx.vin[i].prevout << vSpent[i];
+        std::vector<unsigned char> v(ss.begin(), ss.end());
+        fConnect ? hash.Remove(v) : hash.Insert(v);
+    }
+}
+
+static bool GetSpentOutputs(const CTransaction& tx, const MapPrevTx* pInputs, CTxDB* ptxdb,
+                            std::vector<CTxOut>& vSpent)
+{
+    vSpent.clear();
+    if (tx.IsCoinBase())
+        return true;
+    std::map<uint256, CTransaction> mapRead;
+    for (const CTxIn& txin : tx.vin)
+    {
+        const CTransaction* pPrev = NULL;
+        if (pInputs)
+        {
+            MapPrevTx::const_iterator mi = pInputs->find(txin.prevout.hash);
+            if (mi == pInputs->end())
+                return false;
+            pPrev = &mi->second.second;
+        }
+        else
+        {
+            std::map<uint256, CTransaction>::iterator mi = mapRead.find(txin.prevout.hash);
+            if (mi == mapRead.end())
+            {
+                CTransaction txPrev;
+                if (!ptxdb || !ptxdb->ReadDiskTx(txin.prevout.hash, txPrev))
+                    return false;
+                mi = mapRead.insert(std::make_pair(txin.prevout.hash, txPrev)).first;
+            }
+            pPrev = &mi->second;
+        }
+        if (txin.prevout.n >= pPrev->vout.size())
+            return false;
+        vSpent.push_back(pPrev->vout[txin.prevout.n]);
+    }
+    return true;
+}
+
+CScript GetMergesetAcceptanceScript(const uint256& hash)
+{
+    std::vector<unsigned char> vData(MERGESET_ACCEPT_TAG, MERGESET_ACCEPT_TAG + 4);
+    vData.insert(vData.end(), hash.begin(), hash.end());
+    return CScript() << OP_RETURN << vData;
+}
+static const int MERGESET_REWARD_WINDOW = 300;
+
+bool GetMergesetPayee(const CTransaction& coinbase, CScript& payee)
+{
+    for (const CTxOut& out : coinbase.vout)
+    {
+        CScript::const_iterator pc = out.scriptPubKey.begin();
+        opcodetype opcode;
+        std::vector<unsigned char> vData;
+        if (!out.scriptPubKey.GetOp(pc, opcode) || opcode != OP_RETURN ||
+            !out.scriptPubKey.GetOp(pc, opcode, vData) || pc != out.scriptPubKey.end() ||
+            vData.size() <= 4 || vData.size() > 4 + 35 ||
+            !std::equal(MERGESET_PAYEE_TAG, MERGESET_PAYEE_TAG + 4, vData.begin()))
+            continue;
+        const CScript script(vData.begin() + 4, vData.end());
+        txnouttype type;
+        std::vector<std::vector<unsigned char> > vSolutions;
+        if (!Solver(script, type, vSolutions) ||
+            (type != TX_PUBKEYHASH && type != TX_SCRIPTHASH && type != TX_PUBKEY))
+            return false;
+        payee = script;
+        return true;
+    }
+    return false;
+}
+
+static int64_t ScaleAmount(int64_t nValue, int64_t nNum, int64_t nDen)
+{
+    if (nValue <= 0 || nDen <= 0)
+        return 0;
+    return (int64_t)(((__int128)nValue * nNum) / nDen);
+}
+
+// Equal scaled reward per paid blue block: k = (window target + carry/4) / window base.
+bool ComputeMergesetReward(CTxDB& txdb, const CBlockIndex* pindexPrev, int nHeight,
+                           int64_t nSubsidy, int64_t nIssuance, int64_t nCommitted,
+                           const std::vector<std::pair<uint256, bool> >& vMergeSet,
+                           const std::map<uint256, int64_t>& mapFeesByBlock,
+                           const std::map<uint256, CScript>& mapPayee,
+                           const std::map<uint256, unsigned int>& mapBlockBytes,
+                           CMergesetReward& reward, std::string& strError)
+{
+    reward = CMergesetReward();
+    CMergesetAcceptRecord recPrev, recWindow;
+    if (pindexPrev && IsMergesetActiveAtHeight(pindexPrev->nHeight) &&
+        !txdb.ReadMergesetAccept(pindexPrev->GetBlockHash(), recPrev))
+    {
+        strError = "parent mergeset record missing";
+        return false;
+    }
+    const int nWindowHeight = pindexPrev ? pindexPrev->nHeight - MERGESET_REWARD_WINDOW : -1;
+    if (nWindowHeight >= 0 && IsMergesetActiveAtHeight(nWindowHeight))
+    {
+        const CBlockIndex* pindexWindow = pindexPrev->GetAncestor(nWindowHeight);
+        if (!pindexWindow || !txdb.ReadMergesetAccept(pindexWindow->GetBlockHash(), recWindow))
+        {
+            strError = "window mergeset record missing";
+            return false;
+        }
+    }
+    const int64_t nWindowTarget = recPrev.nCumTarget - recWindow.nCumTarget;
+    const int64_t nWindowBase = recPrev.nCumBase - recWindow.nCumBase;
+    const int64_t nCarry = recPrev.nCumTarget - recPrev.nCumPaid;
+    int64_t nNum = 1, nDen = 1;
+    if (nWindowBase > 0)
+    {
+        nNum = std::max<int64_t>(0, nWindowTarget + nCarry / 4);
+        nDen = nWindowBase;
+        if (nNum > nDen)
+            nNum = nDen;
+    }
+
+    const int64_t nReserve = std::min(GetFinalityReservePerBlock(nHeight), nIssuance);
+    const int64_t nOwnBase = nIssuance - nReserve;
+    // Unpenalized base keeps payouts independent of this block's size.
+    const int64_t nOwnFullBase =
+        std::max<int64_t>(0, nSubsidy - std::min(GetFinalityReservePerBlock(nHeight), nSubsidy));
+
+    struct PaidBlock { CScript payee; int64_t nBase; int64_t nReserve; int64_t nFees; };
+    std::vector<PaidBlock> vPaid;
+    int64_t nPaidBase = nOwnFullBase;
+    for (const std::pair<uint256, bool>& merged : vMergeSet)
+    {
+        std::map<uint256, CScript>::const_iterator pi = mapPayee.find(merged.first);
+        std::map<uint256, CBlockIndex*>::const_iterator bi = mapBlockIndex.find(merged.first);
+        std::map<uint256, unsigned int>::const_iterator si = mapBlockBytes.find(merged.first);
+        if (!merged.second || pi == mapPayee.end() || bi == mapBlockIndex.end() || !bi->second ||
+            si == mapBlockBytes.end() || !IsMergesetActiveAtHeight(bi->second->nHeight))
+            continue;
+        PaidBlock paid;
+        const int64_t nPenalized = ApplyBlockSizePenaltyBytes(nSubsidy, si->second, bi->second->pprev);
+        paid.nReserve = std::min(GetFinalityReservePerBlock(nHeight), nPenalized);
+        paid.nBase = nPenalized - paid.nReserve;
+        std::map<uint256, int64_t>::const_iterator fi = mapFeesByBlock.find(merged.first);
+        paid.nFees = (fi != mapFeesByBlock.end() && fi->second > 0) ? fi->second : 0;
+        paid.payee = pi->second;
+        vPaid.push_back(paid);
+        nPaidBase += paid.nBase;
+    }
+
+    // Hard budget: paid never exceeds target.
+    const int64_t nBudget = nOwnFullBase + std::max<int64_t>(0, nCarry);
+    if (nPaidBase > 0 && (__int128)nNum * nPaidBase > (__int128)nBudget * nDen)
+    {
+        nNum = nBudget;
+        nDen = nPaidBase;
+    }
+
+    const int64_t nOwnPaid = ScaleAmount(nOwnBase, nNum, nDen);
+    reward.nOwnIssuance = nReserve + nOwnPaid;
+    int64_t nRemaining = GetRemainingIssuance(pindexPrev, nCommitted);
+    nRemaining = nRemaining > reward.nOwnIssuance ? nRemaining - reward.nOwnIssuance : 0;
+
+    int64_t nCountedBase = nOwnFullBase, nPaid = nOwnPaid;
+    for (const PaidBlock& paid : vPaid)
+    {
+        const int64_t nScaled = ScaleAmount(paid.nBase, nNum, nDen);
+        if (nScaled > nRemaining)
+            continue;
+        const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+            nHeight, paid.nReserve + nScaled, paid.nFees, CollateralnodeShare::Paid);
+        if (split.Producer() > 0)
+            reward.vPayouts.push_back(std::make_pair(paid.payee, split.Producer()));
+        reward.nExtraCollateralnode += split.Collateralnode();
+        reward.nBlueFees += paid.nFees;
+        nRemaining -= nScaled;
+        nCountedBase += paid.nBase;
+        nPaid += nScaled;
+    }
+    reward.nCumTarget = recPrev.nCumTarget + nOwnFullBase;
+    reward.nCumBase = recPrev.nCumBase + nCountedBase;
+    reward.nCumPaid = recPrev.nCumPaid + nPaid;
+    return true;
+}
+
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                           bool fWriteNames, ConnectResult* pResult)
 {
@@ -9940,15 +10813,77 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     std::vector<CAmount> vFees (vtx.size(), 0);
 
+    // Mergeset fork: merged txs first, conflicting own txs skipped.
+    const bool fMergeset = IsMergesetActiveAtHeight(pindex->nHeight);
+    CMergesetAcceptance mergeset;
+    std::vector<std::pair<uint256, bool> > vMergeSet;
+    int64_t nEpochActiveBefore = 0;
+    bool fCNSharedToStakers = false;
+    MuHash3072 utxoState, utxoBlockDelta;
+    uint256 hashUtxoBefore;
+    if (IsMergesetActiveAtHeight(pindex->nHeight))
+    {
+        const TxDBReadStatus nUtxoRead = txdb.ReadUtxoMuHash(utxoState);
+        if (nUtxoRead == TXDB_READ_ERROR ||
+            (nUtxoRead == TXDB_READ_NOT_FOUND && pindex->nHeight != GetForkHeightMergeset()))
+            return TransientFailure(error("ConnectBlock() : UTXO hash record missing or unreadable"));
+        MuHash3072 utxoCopy = utxoState;
+        utxoCopy.Finalize(hashUtxoBefore);
+    }
+    if (fMergeset)
+    {
+        std::string strMergesetError;
+        if (!GetMergesetEpochActiveTxsBefore(txdb, pindex->pprev, pindex->nHeight, nEpochActiveBefore))
+            return TransientFailure(error("ConnectBlock() : parent mergeset record missing"));
+        mergeset.nTxBudget = GetMergesetEpochTxCeiling(pindex->nHeight) - nEpochActiveBefore - 1;
+        if (!g_dagManager.GetDAGMergeSet(pindex->GetBlockHash(), vMergeSet, strMergesetError) ||
+            !AcceptMergesetTxs(txdb, pindex, vMergeSet, flags, mapQueuedChanges, mergeset,
+                               strMergesetError))
+            return TransientFailure(error("ConnectBlock() : mergeset acceptance for %s: %s",
+                                          pindex->GetBlockHash().ToString().substr(0,20).c_str(),
+                                          strMergesetError.c_str()));
+        nValueIn += mergeset.nValueIn;
+        nValueOut += mergeset.nValueOut;
+        nFees += mergeset.nFees;
+        nAmountBurned += mergeset.nBurned;
+        nIV5FeeSum += mergeset.nIV5FeeSum;
+    }
+
     // IDAG: skipped transactions are a deterministic inactive subgraph.
     // Every consensus consumer below must use this same filtered block view.
     bool fSkipSetIncomplete = false;
-    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex, &fSkipSetIncomplete);
+    std::set<uint256> setDAGSkippedTxs = fMergeset
+        ? GetMergesetOwnSkips(*this, mergeset)
+        : GetDAGSkippedTxsForBlock(*this, pindex, &fSkipSetIncomplete);
     if (fSkipSetIncomplete)
         return TransientFailure(error("ConnectBlock() : DAG sibling set for %s is incomplete on this node "
                                       "(missing vertex or unreadable sibling)",
                                       pindex->GetBlockHash().ToString().substr(0,20).c_str()));
-    if (!setDAGSkippedTxs.empty())
+    if (fMergeset)
+    {
+        // The acceptance outcome is committed, so a node whose acceptance diverges fails here.
+        const CScript scriptAccept =
+            GetMergesetAcceptanceScript(GetMergesetAcceptanceHash(mergeset.rec, hashUtxoBefore));
+        int nCommitments = 0, nMatching = 0;
+        for (const CTxOut& out : vtx[0].vout)
+        {
+            if (out.scriptPubKey.size() == scriptAccept.size() &&
+                std::equal(scriptAccept.begin(), scriptAccept.begin() + 6, out.scriptPubKey.begin()))
+            {
+                ++nCommitments;
+                if (out.scriptPubKey == scriptAccept && out.nValue == 0)
+                    ++nMatching;
+            }
+        }
+        if (nCommitments != 1 || nMatching != 1)
+            return DoS(100, error("ConnectBlock() : mergeset acceptance commitment missing or wrong"));
+
+        mergeset.rec.nEpochActiveTxs = nEpochActiveBefore + (int64_t)mergeset.vAcceptedTx.size() +
+                                       (int64_t)(vtx.size() - setDAGSkippedTxs.size());
+        if (mergeset.rec.nEpochActiveTxs > GetMergesetEpochTxCeiling(pindex->nHeight))
+            return DoS(100, error("ConnectBlock() : epoch active transaction cap exceeded"));
+    }
+    if (!fMergeset && !setDAGSkippedTxs.empty())
     {
         for (const CTransaction& tx : vtx)
         {
@@ -10339,6 +11274,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
 
         mapQueuedChanges[hashTx] = CTxIndex(posThisTx, tx.vout.size());
+        if (fMergeset)
+        {
+            std::vector<CTxOut> vSpentOuts;
+            if (!GetSpentOutputs(tx, &mapInputs, NULL, vSpentOuts))
+                return TransientFailure(error("ConnectBlock() : UTXO hash inputs unreadable"));
+            ApplyTxToUtxoMuHash(utxoBlockDelta, tx, vSpentOuts, true);
+        }
 
         vPos.push_back(std::make_pair(tx.GetHash(), pos));
         // pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
@@ -10361,6 +11303,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     {
         if (!CheckFinalityStakeProofsNotSpentInBlock(activeBlock, vFinalityVotes))
             return DoS(100, error("ConnectBlock() : finality stake proof spent in including block"));
+        for (const CFinalityVote& vote : vFinalityVotes)
+            for (const COutPoint& proof : vote.vStakeProof)
+                if (mergeset.setSpent.count(proof))
+                    return DoS(100, error("ConnectBlock() : finality stake proof spent by a merged tx"));
         std::string strVoteCommitError;
         if (!CheckFinalityVoteCommitments(activeBlock, vFinalityVotes, &strVoteCommitError))
             return DoS(100, error("ConnectBlock() : finality vote commitments invalid: %s", strVoteCommitError.c_str()));
@@ -10417,9 +11363,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : IV5 note vote mint total invalid: %s",
                                       strSettleError.c_str()));
             }
+            int64_t nWithheldCN = 0;
+            if (!GetMergesetWithheldCNForEpoch(txdb, pindex->pprev, nSettlementEpoch, nWithheldCN))
+                return TransientFailure(error("ConnectBlock() : withheld CN records unreadable"));
             const int64_t nSettlementBudget =
                 GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch,
-                                                   nNoteVoteMintTotal);
+                                                   nNoteVoteMintTotal, nWithheldCN);
             if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
                                                 nFinalityRewardOut, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));
@@ -10520,10 +11469,38 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         // One subsidy, split at payment; the settlement is netted off the headroom first.
         int64_t nSubsidy = GetProofOfWorkReward(nRewardHeight, 0, pindex->pprev, nFinalityRewardOut);
 
+        CMergesetReward mergesetReward;
+        unsigned int nPenaltyBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
+        if (fMergeset)
+        {
+            std::set<CScript> setPayees;
+            for (const std::pair<uint256, bool>& merged : vMergeSet)
+            {
+                std::map<uint256, CScript>::const_iterator pi = mergeset.mapPayee.find(merged.first);
+                if (merged.second && pi != mergeset.mapPayee.end())
+                    setPayees.insert(pi->second);
+            }
+            const unsigned int nExempt = GetMergesetExemptBytes(vtx[0], setPayees);
+            nPenaltyBytes = nPenaltyBytes > nExempt ? nPenaltyBytes - nExempt : 0;
+
+            std::string strRewardError;
+            if (!ComputeMergesetReward(txdb, pindex->pprev, pindex->nHeight, nSubsidy,
+                                       ApplyBlockSizePenaltyBytes(nSubsidy, nPenaltyBytes, pindex->pprev),
+                                       nFinalityRewardOut, vMergeSet, mergeset.mapFeesByBlock,
+                                       mergeset.mapPayee, mergeset.mapBlockBytes, mergesetReward,
+                                       strRewardError))
+                return TransientFailure(error("ConnectBlock() : mergeset reward: %s",
+                                              strRewardError.c_str()));
+            nAllowedFees -= mergesetReward.nBlueFees;
+            mergeset.rec.nCumTarget = mergesetReward.nCumTarget;
+            mergeset.rec.nCumBase = mergesetReward.nCumBase;
+            mergeset.rec.nCumPaid = mergesetReward.nCumPaid;
+        }
+
         // Adaptive block size penalty (post-DAG): applied to the whole allowance and to the
         // issuance leg; truncation lands in the fee leg.
-        int64_t nBlockValue = ApplyBlockSizePenalty(nSubsidy + nAllowedFees, *this, pindex->pprev);
-        int64_t nIssuance = ApplyBlockSizePenalty(nSubsidy, *this, pindex->pprev);
+        int64_t nBlockValue = ApplyBlockSizePenaltyBytes(nSubsidy + nAllowedFees, nPenaltyBytes, pindex->pprev);
+        int64_t nIssuance = ApplyBlockSizePenaltyBytes(nSubsidy, nPenaltyBytes, pindex->pprev);
         if (nIssuance > nBlockValue)
             nIssuance = nBlockValue;
 
@@ -10531,14 +11508,42 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         // whichever collateralnode mode is asked for -- the mode only decides how
         // that number is divided, and this check is on the total.
         const CBlockSubsidySplit subsidySplit =
-            CBlockSubsidySplit::ForBlock(pindex->nHeight, nIssuance, nBlockValue - nIssuance,
-                                         CollateralnodeShare::Paid);
+            CBlockSubsidySplit::ForBlock(pindex->nHeight,
+                                         fMergeset ? mergesetReward.nOwnIssuance : nIssuance,
+                                         nBlockValue - nIssuance, CollateralnodeShare::Paid);
 
         // Check coinbase reward. The finality reserve is withheld, so the allowance is the
         // block's own paid shares plus the settlement leg.
         if (subsidySplit.PaidToBlock() > MAX_MONEY - nFinalityRewardOut)
             return DoS(50, error("ConnectBlock() : finality reward overflow"));
         int64_t nAllowedCoinbase = subsidySplit.PaidToBlock() + nFinalityRewardOut;
+        if (fMergeset)
+        {
+            nAllowedCoinbase += mergesetReward.nExtraCollateralnode + mergesetReward.PayoutTotal();
+            std::multiset<std::pair<CScript, int64_t> > setOutputs;
+            for (const CTxOut& out : vtx[0].vout)
+                setOutputs.insert(std::make_pair(out.scriptPubKey, out.nValue));
+            for (const std::pair<CScript, int64_t>& payout : mergesetReward.vPayouts)
+            {
+                std::multiset<std::pair<CScript, int64_t> >::iterator it = setOutputs.find(payout);
+                if (it == setOutputs.end())
+                    return DoS(100, error("ConnectBlock() : coinbase omits a merged block's payout"));
+                setOutputs.erase(it);
+            }
+
+            // The burn fallback is no longer a payment.
+            for (const CTxOut& out : vtx[0].vout)
+                if (out.nValue > 0 && out.scriptPubKey.empty())
+                    return DoS(100, error("ConnectBlock() : coinbase pays an empty script"));
+
+            // An unpaid CN share goes to finality voters.
+            const int64_t nCNShare = subsidySplit.Collateralnode() + mergesetReward.nExtraCollateralnode;
+            if (vtx[0].GetValueOut() <= nAllowedCoinbase - nCNShare)
+            {
+                mergeset.rec.nWithheldCN = nCNShare;
+                fCNSharedToStakers = true;
+            }
+        }
 
         if (vtx[0].GetValueOut() > nAllowedCoinbase)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
@@ -10551,7 +11556,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         if (pindex->nHeight >= FORK_HEIGHT_DAG)
         {
             int64_t nValueOutCeiling = 0;
-            if (!GetBlockValueOutCeiling(nValueIn, nAllowedCoinbase, nNoteVoteMintBlock,
+            if (!GetBlockValueOutCeiling(nValueIn,
+                                         nAllowedCoinbase - (fCNSharedToStakers ? mergeset.rec.nWithheldCN : 0),
+                                         nNoteVoteMintBlock,
                                          nValueOutCeiling))
                 return DoS(100, error("ConnectBlock() : block value conservation overflow"));
             if (nValueOut > nValueOutCeiling)
@@ -11131,7 +12138,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             } else {
                 if(fDebug) { printf("CheckBlock-POS() : Skipping collateralnode payment check - nHeight %d Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
             }
-        }else if(IsProofOfWork() && pindexBest != NULL){
+        }else if(IsProofOfWork() && pindexBest != NULL && !fCNSharedToStakers){
             if(pindexBest->GetBlockHash() == hashPrevBlock){
 
                 // make sure the ranks are updated
@@ -11309,8 +12316,18 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         unsigned int nBlockNoteVotes = 0;
         unsigned int nPriorNoteVotes = 0;
         bool fHavePriorNoteVotes = false;
-        for (const CTransaction& tx : activeBlock.vtx)
+        // Coinbase, merged, own: the epoch build's order.
+        std::vector<const CTransaction*> vEffectOrder;
+        for (size_t i = 0; i < activeBlock.vtx.size(); i++)
         {
+            vEffectOrder.push_back(&activeBlock.vtx[i]);
+            if (i == 0)
+                for (const CTransaction& tx : mergeset.vAcceptedTx)
+                    vEffectOrder.push_back(&tx);
+        }
+        for (const CTransaction* ptx : vEffectOrder)
+        {
+            const CTransaction& tx = *ptx;
             if (!tx.IsPrivacyVNext())
                 continue;
 
@@ -11770,7 +12787,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     if(GetBoolArg("-addrindex", false))
     {
         // Write Address Index
-        for (CTransaction& tx : vtx)
+        std::vector<CTransaction> vAddrIndexTxs(vtx.begin(), vtx.end());
+        vAddrIndexTxs.insert(vAddrIndexTxs.end(), mergeset.vAcceptedTx.begin(),
+                             mergeset.vAcceptedTx.end());
+        for (CTransaction& tx : vAddrIndexTxs)
         {
             uint256 hashTx = tx.GetHash();
             if (setDAGSkippedTxs.count(hashTx))
@@ -11828,6 +12848,20 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             return TransientFailure(error(
                 "ConnectBlock() : could not persist exact DAG active set: %s",
                 strActiveSetError.c_str()));
+    }
+    if (fMergeset)
+    {
+        const uint256 hashThis = pindex->GetBlockHash();
+        utxoState *= mergeset.utxoDelta;
+        utxoState *= utxoBlockDelta;
+        bool fMergesetWritten = txdb.WriteMergesetAccept(hashThis, mergeset.rec) &&
+                                txdb.WriteUtxoMuHash(utxoState);
+        for (const uint256& hashMerged : mergeset.rec.vMergedBlocks)
+            fMergesetWritten = fMergesetWritten && txdb.WriteDAGMergedBy(hashMerged, hashThis);
+        for (const std::pair<uint256, uint256>& accepted : mergeset.rec.vAccepted)
+            fMergesetWritten = fMergesetWritten && txdb.WriteTxAccept(accepted.second, hashThis);
+        if (!fMergesetWritten)
+            return TransientFailure(error("ConnectBlock() : could not persist mergeset acceptance"));
     }
 
     // Update block index on disk without changing it in memory.
@@ -12057,7 +13091,7 @@ static bool StageEpochStateRange(CTxDB& txdb, CBlockIndex* pTip,
         CCurveTree tree;
         if (!g_dagManager.BuildEpochState(nEpoch, nEpochEnd - nEpochStart + 1,
                                           pBoundary, state, tree, strError,
-                                          pPrevState, pPrevTree))
+                                          pPrevState, pPrevTree, &txdb))
             return false;
         if (!g_dagManager.WriteEpochState(txdb, state, tree))
         {
@@ -12067,6 +13101,37 @@ static bool StageEpochStateRange(CTxDB& txdb, CBlockIndex* pTip,
         mapStagedEpochStates[nEpoch] = state;
         mapStagedEpochTrees[nEpoch] = tree;
     }
+    return true;
+}
+
+// Builds one epoch at its boundary during a reorg.
+static bool StageEpochStateAtBoundary(CTxDB& txdb, CBlockIndex* pBoundary, int nEpoch,
+                                      std::map<int, CEpochState>& mapStagedEpochStates,
+                                      std::map<int, CCurveTree>& mapStagedEpochTrees,
+                                      std::string& strError)
+{
+    const int nEpochStart = GetEpochBoundaryHeight(nEpoch, pBoundary->nHeight);
+    const CEpochState* pPrevState = NULL;
+    const CCurveTree* pPrevTree = NULL;
+    std::map<int, CEpochState>::const_iterator itPrevState = mapStagedEpochStates.find(nEpoch - 1);
+    std::map<int, CCurveTree>::const_iterator itPrevTree = mapStagedEpochTrees.find(nEpoch - 1);
+    if (itPrevState != mapStagedEpochStates.end() && itPrevTree != mapStagedEpochTrees.end())
+    {
+        pPrevState = &itPrevState->second;
+        pPrevTree = &itPrevTree->second;
+    }
+    CEpochState state;
+    CCurveTree tree;
+    if (!g_dagManager.BuildEpochState(nEpoch, pBoundary->nHeight - nEpochStart + 1, pBoundary,
+                                      state, tree, strError, pPrevState, pPrevTree, &txdb))
+        return false;
+    if (!g_dagManager.WriteEpochState(txdb, state, tree))
+    {
+        strError = strprintf("state/tree write failed for epoch %d", nEpoch);
+        return false;
+    }
+    mapStagedEpochStates[nEpoch] = state;
+    mapStagedEpochTrees[nEpoch] = tree;
     return true;
 }
 
@@ -12439,6 +13504,37 @@ public:
                                                         true, strWalletError,
                                                         &entry.setDAGSkippedTxs))
                                 return FailClosed(entry, strWalletError.c_str());
+                        }
+
+                        CMergesetAcceptRecord rec;
+                        if (IsMergesetActiveAtHeight(entry.pindex->nHeight) &&
+                            txdb.ReadMergesetAccept(entry.pindex->GetBlockHash(), rec))
+                        {
+                            std::map<uint256, CBlock> mapCarrying;
+                            for (const std::pair<uint256, uint256>& accepted : rec.vAccepted)
+                            {
+                                std::map<uint256, CBlock>::iterator ci = mapCarrying.find(accepted.first);
+                                if (ci == mapCarrying.end())
+                                {
+                                    std::map<uint256, CBlockIndex*>::iterator mi =
+                                        mapBlockIndex.find(accepted.first);
+                                    CBlock blockCarrying;
+                                    if (mi == mapBlockIndex.end() ||
+                                        !blockCarrying.ReadFromDisk(mi->second))
+                                        return FailClosed(entry, "merged carrying block unreadable");
+                                    ci = mapCarrying.insert(std::make_pair(accepted.first, blockCarrying)).first;
+                                }
+                                for (const CTransaction& tx : ci->second.vtx)
+                                {
+                                    if (tx.GetHash() != accepted.second)
+                                        continue;
+                                    std::string strWalletError;
+                                    if (!SyncWithWalletsChecked(tx, &ci->second, true, true,
+                                                                strWalletError))
+                                        return FailClosed(entry, strWalletError.c_str());
+                                    break;
+                                }
+                            }
                         }
                     }
                     NoteMixRendezvousBlock(entry.block, entry.setDAGSkippedTxs, true);
@@ -12890,6 +13986,23 @@ ReorgFinalityVerdict BestChainSwitchVerdict(const CBlockIndex* pCandidate, int& 
                                      nFinalCurOut, nFinalLatchOut, nAsOfEpochOut);
 }
 
+// Accepted merged txs leave the mempool.
+static void RemoveMergesetAcceptedFromMempool(CTxDB& txdb, const CBlockIndex* pindex)
+{
+    if (!pindex || !IsMergesetActiveAtHeight(pindex->nHeight))
+        return;
+    CMergesetAcceptRecord rec;
+    std::vector<CTransaction> vMergedTxs;
+    if (!txdb.ReadMergesetAccept(pindex->GetBlockHash(), rec) ||
+        !ReadMergesetAcceptedTxs(rec, vMergedTxs))
+        return;
+    for (CTransaction& tx : vMergedTxs)
+    {
+        mempool.remove(tx);
+        mempool.removeConflicts(tx);
+    }
+}
+
 // A connected block's skipped txs and its side siblings' txs were applied nowhere, so
 // they must not stay barred from the mempool once the race is decided. accept() refuses
 // any already applied or conflicting. Skips need siblings, so most blocks cost nothing.
@@ -12978,6 +14091,13 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
             return error("Reorganize() : pfork->pprev is null");
     }
 
+    // Mergeset fork: no reorg deeper than the finality depth.
+    if (pindexBest && IsMergesetActiveAtHeight(pindexBest->nHeight) &&
+        pindexBest->nHeight - pfork->nHeight > MERGESET_FINALITY_DEPTH &&
+        !IsInitialBlockDownload() && !GetBoolArg("-allowdeepreorg", false))
+        return error("Reorganize() : rejected - fork at %d is deeper than the finality depth below %d (-allowdeepreorg)",
+                     pfork->nHeight, pindexBest->nHeight);
+
     // List of what to disconnect
     vector<CBlockIndex*> vDisconnect;
     for (CBlockIndex* pindex = pindexBest; pindex != pfork; pindex = pindex->pprev)
@@ -12998,6 +14118,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     std::map<int, CCurveTree> mapStagedEpochTrees;
     int nFirstStagedEpoch = -1;
     int nLastV2EpochToStage = -1;
+    int nLastV3PreStagedEpoch = -1;
+    int nLastV3CompleteEpoch = -1;
     const int nOldTipHeight = pindexBest ? pindexBest->nHeight : -1;
     const bool fV3EpochReorg =
         nOldTipHeight >= FORK_HEIGHT_EPOCH_STATE_V3 ||
@@ -13017,11 +14139,17 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!g_dagManager.EraseEpochStateSuffix(txdb, nFirstStagedEpoch))
             return error("Reorganize() : failed to erase stale epoch-state suffix from epoch %d",
                          nFirstStagedEpoch);
-        if (nFirstStagedEpoch <= nLastCompleteEpoch)
+        // Mergeset-era epochs are staged at their boundary below.
+        nLastV3PreStagedEpoch = nLastCompleteEpoch;
+        nLastV3CompleteEpoch = nLastCompleteEpoch;
+        if (IsMergesetConfigured())
+            nLastV3PreStagedEpoch = std::min(nLastCompleteEpoch,
+                                             GetEpochForHeight(FORK_HEIGHT_MERGESET) - 1);
+        if (nFirstStagedEpoch <= nLastV3PreStagedEpoch)
         {
             std::string strEpochError;
             if (!StageEpochStateRange(txdb, pindexNew, nFirstStagedEpoch,
-                                      nLastCompleteEpoch, mapStagedEpochStates,
+                                      nLastV3PreStagedEpoch, mapStagedEpochStates,
                                       mapStagedEpochTrees, strEpochError))
                 return error("Reorganize() : V3 epoch suffix build failed: %s",
                              strEpochError.c_str());
@@ -13054,6 +14182,13 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         // point should only happen with -reindex/-loadblock, or a misbehaving peer.
         BOOST_REVERSE_FOREACH(const CTransaction& tx, block.vtx)
             if (!(tx.IsCoinBase() || tx.IsCoinStake()) && pindex->nHeight > Checkpoints::GetTotalBlocksEstimate())
+                vResurrect.push_front(tx);
+        CMergesetAcceptRecord recMerged;
+        std::vector<CTransaction> vMergedTxs;
+        if (IsMergesetActiveAtHeight(pindex->nHeight) &&
+            txdb.ReadMergesetAccept(pindex->GetBlockHash(), recMerged) &&
+            ReadMergesetAcceptedTxs(recMerged, vMergedTxs))
+            BOOST_REVERSE_FOREACH(const CTransaction& tx, vMergedTxs)
                 vResurrect.push_front(tx);
     }
 
@@ -13116,6 +14251,21 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         // Queue memory transactions to delete
         for (const CTransaction& tx : block.vtx)
             vDelete.push_back(tx);
+
+        if (fV3EpochReorg && IsMergesetActiveAtHeight(pindex->nHeight))
+        {
+            const int nEpoch = GetEpochForHeight(pindex->nHeight);
+            const int nEpochEnd = GetEpochBoundaryHeight(nEpoch + 1, pindex->nHeight) - 1;
+            if (pindex->nHeight == nEpochEnd && nEpoch >= nFirstStagedEpoch &&
+                nEpoch > nLastV3PreStagedEpoch && nEpoch <= nLastV3CompleteEpoch)
+            {
+                std::string strEpochError;
+                if (!StageEpochStateAtBoundary(txdb, pindex, nEpoch, mapStagedEpochStates,
+                                               mapStagedEpochTrees, strEpochError))
+                    return error("Reorganize() : mergeset-era epoch %d build failed: %s",
+                                 nEpoch, strEpochError.c_str());
+            }
+        }
     }
 
     if (fV2EpochReorg)
@@ -13276,6 +14426,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         mempool.remove(tx);
         mempool.removeConflicts(tx);
     }
+    for (CBlockIndex* pindex : vConnect)
+        RemoveMergesetAcceptedFromMempool(txdb, pindex);
 
     if (!IsInitialBlockDownload())
         for (CBlockIndex* pindex : vConnect)
@@ -13533,6 +14685,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     // Delete redundant memory transactions
     for (CTransaction& tx : vtx)
         mempool.remove(tx);
+    RemoveMergesetAcceptedFromMempool(txdb, pindexNew);
 
     // Remove txs from DAG sibling blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
@@ -14774,7 +15927,13 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     }
 
     // Check timestamp
-    if (GetBlockTime() > FutureDrift(GetAdjustedTime()))
+    int64_t nMaxFuture = FutureDrift(GetAdjustedTime());
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(hashPrevBlock);
+        if (mi != mapBlockIndex.end() && mi->second && IsMergesetActiveAtHeight(mi->second->nHeight + 1))
+            nMaxFuture = GetAdjustedTime() + MERGESET_MAX_FUTURE_DRIFT;
+    }
+    if (GetBlockTime() > nMaxFuture)
         return error("CheckBlock() : block timestamp too far in the future");
 
     // First transaction must be coinbase, the rest must not be
@@ -14973,6 +16132,15 @@ bool CBlock::AcceptBlock()
             if (nBlockBytes > nAdaptiveLimit)
                 return DoS(50, error("AcceptBlock() : block size %u exceeds adaptive limit %u at height %d",
                                       nBlockBytes, nAdaptiveLimit, nHeight));
+            if (IsMergesetActiveAtHeight(nHeight))
+            {
+                uint64_t nMass = 0;
+                for (size_t i = 1; i < vtx.size(); i++)
+                    nMass += GetTxMass(vtx[i]);
+                if (nMass > MERGESET_MAX_BLOCK_MASS)
+                    return DoS(100, error("AcceptBlock() : block mass %u exceeds %u",
+                                          (unsigned int)nMass, MERGESET_MAX_BLOCK_MASS));
+            }
         }
     }
 
@@ -15165,6 +16333,12 @@ bool CBlock::AcceptBlock()
                     vDAGParents, nHeight, strDAGKnightError))
                 return DoS(100, error("AcceptBlock() : %s",
                                       strDAGKnightError.c_str()));
+        }
+        if (IsMergesetActiveAtHeight(nHeight))
+        {
+            std::string strMergesetError;
+            if (!g_dagManager.CheckMergesetParentSet(vDAGParents, nHeight, strMergesetError))
+                return DoS(100, error("AcceptBlock() : %s", strMergesetError.c_str()));
         }
     }
 
@@ -16780,6 +17954,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
             oldVersion = true;
+
+        if (pfrom->nVersion < MERGESET_PROTO_VERSION && IsMergesetActiveAtHeight(nBestHeight + 1))
+        {
+            printf("peer %s version %d predates the mergeset fork; disconnecting\n",
+                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
+            pfrom->MarkDisconnect("pre-mergeset-version");
+            return false;
+        }
 
         /*
         if (pfrom->nVersion < PROTO_VERSION)
