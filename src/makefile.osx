@@ -407,7 +407,7 @@ else
 all: innova-build
 endif
 
-innova-build: innovad
+innova-build: innovad innova-cli
 
 audit-test-dependencies:
 	../contrib/test/audit_build_dependencies.sh
@@ -723,11 +723,20 @@ $(PRIVACY_VNEXT_RUST_LIB): FORCE
 innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -framework CoreFoundation -framework IOKit
 
+CLI_OBJS = $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) obj/init-cli.o obj/innova-cli.o
+
+obj/init-cli.o: init.cpp
+	$(CXX) -c $(CXXFLAGS) -DINNOVA_CLI -o $@ $<
+
+innova-cli: $(CLI_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -framework CoreFoundation -framework IOKit
+
 test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -lboost_unit_test_framework -framework CoreFoundation -framework IOKit
 
 clean:
 	rm -f innovad
+	rm -f innova-cli
 	rm -f test_innova
 	rm -f $(FUZZ_DESERIALIZE_BIN)
 	rm -f obj/*.o

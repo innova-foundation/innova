@@ -238,7 +238,7 @@ else
 all: innova-build
 endif
 
-innova-build: innovad
+innova-build: innovad innova-cli
 
 #
 # LevelDB support
@@ -348,8 +348,17 @@ $(PRIVACY_VNEXT_RUST_LIB): FORCE
 innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
 
+CLI_OBJS = $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) obj/init-cli.o obj/innova-cli.o
+
+obj/init-cli.o: init.cpp
+	$(CXX) -c $(xCXXFLAGS) -DINNOVA_CLI -o $@ $<
+
+innova-cli: $(CLI_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
+	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
+
 clean:
 	-rm -f innovad
+	-rm -f innova-cli
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d

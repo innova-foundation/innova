@@ -2,6 +2,8 @@ Innova
 src/*.exe
 src/innova
 src/innovad
+src/innova-cli
+src/innova-cli.exe
 src/test_innova
 src/build.h
 src/leveldb/*.a

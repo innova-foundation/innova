@@ -80,6 +80,7 @@ Section "Innova" SecMain
   SetOverwrite on
   File "${PKGDIR}\Innova.exe"
   File "${PKGDIR}\innovad.exe"
+  File "${PKGDIR}\innova-cli.exe"
   File /oname=COPYING.txt "..\COPYING"
 
   nsExec::Exec 'netsh advfirewall firewall delete rule name="Innova"'
@@ -116,6 +117,7 @@ Section "Uninstall"
   nsExec::Exec 'netsh advfirewall firewall delete rule name="Innova"'
   Delete "$INSTDIR\Innova.exe"
   Delete "$INSTDIR\innovad.exe"
+  Delete "$INSTDIR\innova-cli.exe"
   Delete "$INSTDIR\COPYING.txt"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"

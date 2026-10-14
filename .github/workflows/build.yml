@@ -97,7 +97,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -105,8 +105,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -157,7 +157,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -165,8 +165,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -253,7 +253,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -261,8 +261,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -317,7 +317,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-debian12-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-debian12-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -325,8 +325,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-debian12-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -381,7 +381,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-debian13-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-debian13-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -389,8 +389,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian13-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-debian13-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-debian13-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -432,8 +432,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-aarch64
-          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
-          strip innova-${{ needs.get-version.outputs.version }}-linux-aarch64/innovad || true
+          cp src/innovad src/innova-cli innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
+          strip innova-${{ needs.get-version.outputs.version }}-linux-aarch64/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64/innova-cli || true
           cd innova-${{ needs.get-version.outputs.version }}-linux-aarch64
           sha256sum * > SHA256SUMS.txt
           cd ..
@@ -474,7 +474,7 @@ jobs:
         run: |
           cd src
           make STRICT_WARNINGS=1 -f makefile.osx clean
-          make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu) innovad test_innova
+          make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu) innovad innova-cli test_innova
 
       - name: Full macOS 38-translation-unit test aggregate
         run: |
@@ -490,7 +490,7 @@ jobs:
         run: |
           set -euo pipefail
           test -d Innova.app
-          strip src/innovad Innova.app/Contents/MacOS/Innova
+          strip src/innovad src/innova-cli Innova.app/Contents/MacOS/Innova
           cp src/innovad Innova.app/Contents/MacOS/innovad
           # Bundle Qt and the Homebrew libraries both executables load.
           /opt/homebrew/opt/qt@5/bin/macdeployqt Innova.app \
@@ -511,18 +511,18 @@ jobs:
           [ "$up" = 1 ] || { cat "$smoke/out.txt"; echo "bundled innovad does not start" >&2; exit 1; }
           cli="innova-${{ needs.get-version.outputs.version }}-macOS-arm64-cli"
           mkdir -p "$cli/bin"
-          cp src/innovad "$cli/bin/"
+          cp src/innovad src/innova-cli "$cli/bin/"
           bash contrib/macdeploy/bundle-libs.sh "$cli"
-          find "$cli" -type f \( -name '*.dylib' -o -path '*/bin/innovad' \) -exec codesign --force --sign - {} \;
+          find "$cli" -type f \( -name '*.dylib' -o -path '*/bin/innovad' -o -path '*/bin/innova-cli' \) -exec codesign --force --sign - {} \;
           clismoke="$RUNNER_TEMP/clismoke"; mkdir -p "$clismoke"
           printf "rpcuser=smoke\nrpcpassword=%s\nrpcport=29997\n" "$(openssl rand -hex 16)" > "$clismoke/innova.conf"
           cargs=(-regtest -datadir="$clismoke")
           "$cli/bin/innovad" "${cargs[@]}" -listen=0 -connect=0 -port=29996 > "$clismoke/out.txt" 2>&1 &
           up=0
-          for i in $(seq 1 90); do "$cli/bin/innovad" "${cargs[@]}" getblockcount > /dev/null 2>&1 && { up=1; break; }; sleep 2; done
-          "$cli/bin/innovad" "${cargs[@]}" stop > /dev/null 2>&1 || true
+          for i in $(seq 1 90); do "$cli/bin/innova-cli" "${cargs[@]}" getblockcount > /dev/null 2>&1 && { up=1; break; }; sleep 2; done
+          "$cli/bin/innova-cli" "${cargs[@]}" stop > /dev/null 2>&1 || true
           [ "$up" = 1 ] || { cat "$clismoke/out.txt"; echo "CLI innovad does not start" >&2; exit 1; }
-          (cd "$cli" && shasum -a 256 bin/innovad > SHA256SUMS.txt)
+          (cd "$cli" && shasum -a 256 bin/innovad bin/innova-cli > SHA256SUMS.txt)
           tar -czf "$cli.tar.gz" "$cli"
           mkdir -p dmg_contents
           cp -R Innova.app dmg_contents/
@@ -705,7 +705,7 @@ jobs:
           set -euo pipefail
           PKGDIR="innova-${{ needs.get-version.outputs.version }}-win64"
           mkdir -p "$PKGDIR"
-          cp src/innovad.exe "$PKGDIR/"
+          cp src/innovad.exe src/innova-cli.exe "$PKGDIR/"
           if [ -s release/Innova.exe ]; then
             cp release/Innova.exe "$PKGDIR/"
           elif [ -s Innova.exe ]; then
@@ -715,6 +715,7 @@ jobs:
             exit 1
           fi
           test -s "$PKGDIR/innovad.exe"
+          test -s "$PKGDIR/innova-cli.exe"
           test -s "$PKGDIR/Innova.exe"
           strip "$PKGDIR"/*.exe 2>/dev/null || true
           cd "$PKGDIR"
@@ -728,8 +729,8 @@ jobs:
           test -s innova-${{ needs.get-version.outputs.version }}-win64-setup.exe
           CLIDIR="innova-${{ needs.get-version.outputs.version }}-win64-cli"
           mkdir -p "$CLIDIR"
-          cp "$PKGDIR/innovad.exe" "$CLIDIR/"
-          (cd "$CLIDIR" && sha256sum innovad.exe > SHA256SUMS.txt)
+          cp "$PKGDIR/innovad.exe" "$PKGDIR/innova-cli.exe" "$CLIDIR/"
+          (cd "$CLIDIR" && sha256sum innovad.exe innova-cli.exe > SHA256SUMS.txt)
           "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64-cli.zip "$CLIDIR"/*
           test -s innova-${{ needs.get-version.outputs.version }}-win64-cli.zip
 
@@ -782,7 +783,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -790,8 +791,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -842,7 +843,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -850,8 +851,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -902,7 +903,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64
-          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
+          cp src/innovad src/innova-cli Innova innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
           strip innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/*
           cd innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64
           sha256sum * > SHA256SUMS.txt
@@ -910,8 +911,8 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
           mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli
-          cp innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli/
-          (cd innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli && sha256sum innovad > SHA256SUMS.txt)
+          cp innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/innovad innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/innova-cli innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli/
+          (cd innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli && sha256sum innovad innova-cli > SHA256SUMS.txt)
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli.tar.gz innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64-cli/
 
       - uses: actions/upload-artifact@v6
@@ -965,11 +966,12 @@ jobs:
           set -euo pipefail
           mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
           test -s src/innovad
+          test -s src/innova-cli
           test -s Innova
-          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
+          cp src/innovad src/innova-cli innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
           cp Innova innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
           cd innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
-          sha256sum innovad Innova > SHA256SUMS.txt
+          sha256sum innovad innova-cli Innova > SHA256SUMS.txt
           test -s SHA256SUMS.txt
           cd ..
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz \

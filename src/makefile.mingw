@@ -217,7 +217,7 @@ else
 all: innova-build
 endif
 
-innova-build: innovad.exe
+innova-build: innovad.exe innova-cli.exe
 
 #
 # LevelDB support
@@ -312,8 +312,17 @@ $(PRIVACY_VNEXT_RUST_LIB): FORCE
 innovad.exe: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LEVELDB_LIBS) $(LIBS)
 
+CLI_OBJS = $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) obj/init-cli.o obj/innova-cli.o
+
+obj/init-cli.o: init.cpp
+	$(CXX) -c $(xCXXFLAGS) -DINNOVA_CLI -o $@ $<
+
+innova-cli.exe: $(CLI_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
+	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LEVELDB_LIBS) $(LIBS)
+
 clean:
 	-del /Q innovad.exe
+	-del /Q innova-cli.exe
 	-del /Q obj\*.o
 	-del /Q obj\*.P
 	-del /Q obj\*.d

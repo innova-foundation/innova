@@ -531,6 +531,7 @@ bool AppInit(int argc, char* argv[])
     return fRet;
 }
 
+#ifndef INNOVA_CLI
 extern void noui_connect();
 int main(int argc, char* argv[])
 {
@@ -546,6 +547,7 @@ int main(int argc, char* argv[])
 
     return 1;
 }
+#endif
 #endif
 
 bool static InitError(const std::string &str)
