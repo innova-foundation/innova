@@ -118,6 +118,7 @@ private:
 
     int cachedNumBlocks;
     int cachedNumBlocksOfPeers;
+    mutable int cachedNumConnections = 0;
 
     int numBlocksAtStartup;
 

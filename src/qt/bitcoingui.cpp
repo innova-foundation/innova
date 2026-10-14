@@ -1041,6 +1041,9 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
               text = tr("%n day(s) ago","",secs/(60*60*24));
           }
 
+          // An hour-old tip is behind, whatever stuck peers report.
+          if (secs > 60*60)
+              nTotalBlocks = std::max(nTotalBlocks, count + (int)(secs / std::max(1, (int)GetTargetSpacingForHeight(count + 1))));
           if (IsInitialBlockDownload() || count < nTotalBlocks-30) // if we're in initial download or more than 30 blocks behind
           {
               int nRemainingBlocks = nTotalBlocks - count;

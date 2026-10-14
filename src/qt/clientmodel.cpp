@@ -77,10 +77,11 @@ ClientModel::~ClientModel()
 
 int ClientModel::getNumConnections() const
 {
+    // A busy peer list is not a lost connection.
     TRY_LOCK(cs_vNodes, lockNodes);
-    if (!lockNodes)
-        return 0;
-    return vNodes.size();
+    if (lockNodes)
+        cachedNumConnections = vNodes.size();
+    return cachedNumConnections;
 }
 
 int ClientModel::getNumBlocks() const
