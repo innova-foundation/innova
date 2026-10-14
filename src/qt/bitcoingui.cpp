@@ -39,6 +39,9 @@
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "wallet.h"
+#include "innovarpc.h"
+#include "json/json_spirit_value.h"
+#include "json/json_spirit_writer_template.h"
 #include "termsofuse.h"
 #include "proofofimage.h"
 #include "hyperfile.h"
@@ -622,6 +625,8 @@ void BitcoinGUI::createActions()
     openConfEditorAction->setStatusTip(tr("Open configuration file"));
     openMNConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open &Collateralnode Configuration File"), this);
     openMNConfEditorAction->setStatusTip(tr("Open Collateralnode configuration file"));
+    consolidateCoinsAction = new QAction(tr("&Consolidate Coins..."), this);
+    consolidateCoinsAction->setStatusTip(tr("Merge the wallet's smallest unspent outputs into one address"));
 
     connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
     connect(aboutAction, SIGNAL(triggered()), this, SLOT(aboutClicked()));
@@ -631,6 +636,7 @@ void BitcoinGUI::createActions()
     connect(toggleHideAction, SIGNAL(triggered()), this, SLOT(toggleHidden()));
     connect(encryptWalletAction, SIGNAL(triggered(bool)), this, SLOT(encryptWallet(bool)));
     connect(backupWalletAction, SIGNAL(triggered()), this, SLOT(backupWallet()));
+    connect(consolidateCoinsAction, SIGNAL(triggered()), this, SLOT(consolidateCoins()));
     connect(showPhraseAction, SIGNAL(triggered()), this, SLOT(showRecoveryPhrase()));
     connect(restorePhraseAction, SIGNAL(triggered()), this, SLOT(restoreRecoveryPhrase()));
     connect(iv5SeedAction, SIGNAL(triggered()), this, SLOT(showIv5Seed()));
@@ -693,6 +699,8 @@ void BitcoinGUI::createMenuBar()
   	tools->addSeparator();
   	tools->addAction(openConfEditorAction);
     tools->addAction(openMNConfEditorAction);
+    tools->addSeparator();
+    tools->addAction(consolidateCoinsAction);
     QMenu *help = appMenuBar->addMenu(tr("&Help"));
     help->addAction(openRPCConsoleAction);
     help->addSeparator();
@@ -1707,6 +1715,66 @@ void BitcoinGUI::backupWallet()
         } else {
             QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
         }
+    }
+}
+
+void BitcoinGUI::consolidateCoins()
+{
+    if(!walletModel || !walletModel->getWallet())
+        return;
+
+    CWallet *wallet = walletModel->getWallet();
+    static const int MAX_CONSOLIDATE_INPUTS = 200;
+    int nCount = 0;
+    {
+        LOCK2(cs_main, wallet->cs_wallet);
+        std::vector<COutput> vCoins;
+        wallet->AvailableCoins(vCoins, true);
+        nCount = std::min((int)vCoins.size(), MAX_CONSOLIDATE_INPUTS);
+    }
+
+    if(nCount < 2)
+    {
+        QMessageBox::information(this, tr("Consolidate Coins"),
+            tr("Not enough confirmed, spendable outputs to consolidate."));
+        return;
+    }
+
+    if(QMessageBox::question(this, tr("Consolidate Coins"),
+            tr("This merges up to %1 of the wallet's smallest unspent outputs into "
+               "one transaction, sent to one of the wallet's own addresses. Continue?").arg(nCount),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    json_spirit::Array params;
+    try
+    {
+        json_spirit::Value result = consolidate(params, false);
+        const json_spirit::Object& obj = result.get_obj();
+        QString txid, amount, fee;
+        for (json_spirit::Object::const_iterator it = obj.begin(); it != obj.end(); ++it)
+        {
+            if (it->name_ == "txid")
+                txid = QString::fromStdString(it->value_.get_str());
+            else if (it->name_ == "amount")
+                amount = QString::fromStdString(json_spirit::write_string(it->value_, false));
+            else if (it->name_ == "fee")
+                fee = QString::fromStdString(json_spirit::write_string(it->value_, false));
+        }
+        QMessageBox::information(this, tr("Consolidate Coins"),
+            tr("Consolidation transaction sent: %1\namount: %2, fee: %3").arg(txid, amount, fee));
+    }
+    catch (json_spirit::Object& objError)
+    {
+        QString msg = tr("the wallet refused the request without a reason");
+        for (json_spirit::Object::const_iterator it = objError.begin(); it != objError.end(); ++it)
+            if (it->name_ == "message" && it->value_.type() == json_spirit::str_type)
+                msg = QString::fromStdString(it->value_.get_str());
+        QMessageBox::warning(this, tr("Consolidate Coins"), msg);
+    }
+    catch (std::exception& e)
+    {
+        QMessageBox::warning(this, tr("Consolidate Coins"), QString::fromStdString(e.what()));
     }
 }
 

@@ -20,6 +20,7 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
 #include <sstream>
 #include <fstream>
 #include <sys/stat.h>
@@ -515,6 +516,133 @@ Value sendtoaddress(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     return wtx.GetHash().GetHex();
+}
+
+Value consolidate(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 3)
+        throw runtime_error(
+            "consolidate [maxinputs=200] [minvalue=0] [address]\n"
+            "Spends up to [maxinputs] of the wallet's smallest confirmed, mature,\n"
+            "transparent outputs worth at least [minvalue] into a single output at\n"
+            "[address], which must be one of the wallet's own addresses (default: a\n"
+            "new wallet address). Reduces the wallet's UTXO count; call again to\n"
+            "keep consolidating. Returns txid, inputs, amount and fee."
+            + HelpRequiringPassphrase());
+
+    EnsureWalletIsUnlocked();
+
+    int nMaxInputs = 200;
+    if (params.size() > 0)
+        nMaxInputs = params[0].get_int();
+    if (nMaxInputs < 2 || nMaxInputs > 2000)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "maxinputs must be 2..2000");
+
+    int64_t nMinValue = 0;
+    if (params.size() > 1)
+    {
+        // AmountFromValue refuses zero, but "no minimum" is this RPC's own default
+        double dMinValue = params[1].get_real();
+        if (dMinValue < 0.0)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "minvalue must be >= 0");
+        nMinValue = roundint64(dMinValue * COIN);
+    }
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    CScript scriptDest;
+    if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
+    {
+        CBitcoinAddress address(params[2].get_str());
+        if (!address.IsValid())
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Innova address");
+        if (IsMine(*pwalletMain, address.Get()) == MINE_NO)
+            throw JSONRPCError(RPC_WALLET_ERROR, "address is not one of this wallet's own addresses");
+        scriptDest.SetDestination(address.Get());
+    }
+    else
+    {
+        CPubKey newKey;
+        if (!pwalletMain->GetKeyFromPool(newKey, false))
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+        CKeyID keyID = newKey.GetID();
+        pwalletMain->SetAddressBookName(keyID, "");
+        scriptDest.SetDestination(keyID);
+    }
+
+    vector<COutput> vCoins;
+    pwalletMain->AvailableCoins(vCoins, true);
+
+    vCoins.erase(std::remove_if(vCoins.begin(), vCoins.end(), [nMinValue](const COutput& out) {
+        return out.tx->vout[out.i].nValue < nMinValue || out.tx->vout[out.i].IsAnonOutput();
+    }), vCoins.end());
+
+    std::sort(vCoins.begin(), vCoins.end(), [](const COutput& a, const COutput& b) {
+        return a.tx->vout[a.i].nValue < b.tx->vout[b.i].nValue;
+    });
+
+    if ((int)vCoins.size() > nMaxInputs)
+        vCoins.erase(vCoins.begin() + nMaxInputs, vCoins.end());
+
+    if (vCoins.size() < 2)
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "not enough confirmed outputs to consolidate");
+
+    int64_t nValueIn = 0;
+    BOOST_FOREACH(const COutput& out, vCoins)
+        nValueIn += out.tx->vout[out.i].nValue;
+
+    CWalletTx wtxNew;
+    wtxNew.BindWallet(pwalletMain);
+    wtxNew.fTimeReceivedIsTxTime = true;
+    wtxNew.nTime = GetAdjustedTime();
+    wtxNew.fFromMe = true;
+
+    BOOST_FOREACH(const COutput& out, vCoins)
+        wtxNew.vin.push_back(CTxIn(out.tx->GetHash(), out.i));
+
+    int64_t nFee = nTransactionFee;
+    for (int nTries = 0; nTries < 8; nTries++)
+    {
+        if (nValueIn <= nFee)
+            throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+                "fee exceeds the value of the selected outputs; raise minvalue or lower maxinputs");
+
+        wtxNew.vout.clear();
+        wtxNew.vout.push_back(CTxOut(nValueIn - nFee, scriptDest));
+
+        int nIn = 0;
+        BOOST_FOREACH(const COutput& out, vCoins)
+            if (!SignSignature(*pwalletMain, *out.tx, wtxNew, nIn++))
+                throw JSONRPCError(RPC_WALLET_ERROR, "failed to sign the consolidation transaction");
+
+        unsigned int nBytes = ::GetSerializeSize(*(CTransaction*)&wtxNew, SER_NETWORK, PROTOCOL_VERSION);
+        if (nBytes >= MAX_STANDARD_TX_SIZE)
+            throw JSONRPCError(RPC_WALLET_ERROR, "resulting transaction is too large; lower maxinputs");
+
+        int64_t nPayFee = nTransactionFee * (1 + (int64_t)nBytes / 1000);
+        int64_t nMinFee = wtxNew.GetMinFee(1, GMF_SEND, nBytes);
+        int64_t nNeeded = max(nPayFee, nMinFee);
+
+        if (nNeeded <= nFee)
+            break;
+        nFee = nNeeded;
+    }
+
+    {
+        CTxDB txdb("r");
+        wtxNew.AddSupportingTransactions(txdb);
+    }
+
+    CReserveKey reservekey(pwalletMain);
+    if (!pwalletMain->CommitTransaction(wtxNew, reservekey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "transaction created but not committed; see debug.log");
+
+    Object result;
+    result.push_back(Pair("txid", wtxNew.GetHash().GetHex()));
+    result.push_back(Pair("inputs", (int)wtxNew.vin.size()));
+    result.push_back(Pair("amount", ValueFromAmount(wtxNew.vout[0].nValue)));
+    result.push_back(Pair("fee", ValueFromAmount(nFee)));
+    return result;
 }
 
 Value mixprepare(const Array& params, bool fHelp)

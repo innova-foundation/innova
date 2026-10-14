@@ -174,6 +174,7 @@ private:
     QAction *openPeerAction;
     QAction *openConfEditorAction;
     QAction *openMNConfEditorAction;
+    QAction *consolidateCoinsAction;
 
     /** The modal dialog currently running its own event loop, if any. A queued
      *  application quit does not survive such a loop, so the shutdown poll
@@ -325,6 +326,8 @@ private slots:
     void encryptWallet(bool status);
     /** Backup the wallet */
     void backupWallet();
+    /** Merge the wallet's smallest unspent outputs into one address */
+    void consolidateCoins();
     /** Show this wallet's 24-word recovery phrase. */
     void showRecoveryPhrase();
     /** Rebuild a wallet's shielded identity from a phrase. */
