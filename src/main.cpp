@@ -244,6 +244,8 @@ CCriticalSection cs_main;
 CTxMemPool mempool;
 //unsigned int nTransactionsUpdated = 0;
 
+const uint256 CMerkleTx::ABANDON_HASH(1);
+
 map<uint256, CBlockIndex*> mapBlockIndex;
 set<pair<COutPoint, unsigned int> > setStakeSeen;
 

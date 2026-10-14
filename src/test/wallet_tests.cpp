@@ -940,4 +940,86 @@ BOOST_AUTO_TEST_CASE(a_mix_takes_a_note_worth_exactly_what_the_round_asks)
     }
 }
 
+// abandontransaction: a stuck, never-confirmed spend releases the coin it spent,
+// drops out of the balance, and the abandoned flag survives a wallet reload.
+BOOST_AUTO_TEST_CASE(abandontransaction_lifecycle)
+{
+    const std::string walletFile("wallet-abandon-test.dat");
+    CWallet wallet(walletFile);
+    bool fFirstRun;
+    BOOST_REQUIRE(wallet.LoadWallet(fFirstRun) == DB_LOAD_OK);
+
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_REQUIRE(wallet.AddKeyPubKey(key, key.GetPubKey()));
+    CScript scriptMine;
+    scriptMine.SetDestination(key.GetPubKey().GetID());
+
+    uint256 hashFund, hashStuck;
+    {
+        LOCK2(cs_main, wallet.cs_wallet);
+
+        CWalletTx wtxFund(&wallet);
+        wtxFund.vin.push_back(CTxIn(uint256(777), 0)); // not coinbase, not tracked, just non-empty
+        wtxFund.vout.push_back(CTxOut(100000, scriptMine));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxFund));
+        hashFund = wtxFund.GetHash();
+
+        // simulate the coin already having been spent by the tx under test
+        wallet.mapWallet[hashFund].MarkSpent(0);
+        wallet.mapWallet[hashFund].WriteToDisk();
+
+        CWalletTx wtxStuck(&wallet);
+        wtxStuck.vin.push_back(CTxIn(hashFund, 0));
+        wtxStuck.vout.push_back(CTxOut(90000, scriptMine));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxStuck));
+        hashStuck = wtxStuck.GetHash();
+
+        // not in a block, not in the mempool: eligible for abandon
+        BOOST_CHECK_EQUAL(wallet.mapWallet[hashStuck].GetDepthInMainChain(), -1);
+    }
+
+    // refused: not a wallet transaction
+    {
+        LOCK2(cs_main, wallet.cs_wallet);
+        BOOST_CHECK(!wallet.AbandonTransaction(uint256(12345)));
+    }
+
+    // refused while reachable in the mempool
+    {
+        LOCK(mempool.cs);
+        mempool.addUnchecked(hashStuck, wallet.mapWallet[hashStuck]);
+    }
+    {
+        LOCK2(cs_main, wallet.cs_wallet);
+        BOOST_CHECK(!wallet.AbandonTransaction(hashStuck));
+    }
+    {
+        LOCK(mempool.cs);
+        mempool.remove(wallet.mapWallet[hashStuck]);
+    }
+
+    // accepted once clear of the mempool
+    {
+        LOCK2(cs_main, wallet.cs_wallet);
+        BOOST_REQUIRE(wallet.AbandonTransaction(hashStuck));
+        BOOST_CHECK(wallet.mapWallet[hashStuck].isAbandoned());
+        BOOST_CHECK_EQUAL(wallet.mapWallet[hashStuck].GetAvailableCredit(), 0);
+        // the coin it spent is available again
+        BOOST_CHECK(!wallet.IsSpent(hashFund, 0));
+    }
+
+    // the abandoned flag survives a reload
+    {
+        CWallet reloaded(walletFile);
+        bool fFirstRunReload;
+        DBErrors reloadErr = reloaded.LoadWallet(fFirstRunReload);
+        BOOST_REQUIRE_MESSAGE(reloadErr == DB_LOAD_OK,
+                              "LoadWallet returned " << (int)reloadErr);
+        LOCK(reloaded.cs_wallet);
+        BOOST_REQUIRE(reloaded.mapWallet.count(hashStuck));
+        BOOST_CHECK(reloaded.mapWallet[hashStuck].isAbandoned());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

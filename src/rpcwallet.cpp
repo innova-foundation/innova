@@ -142,6 +142,8 @@ void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
 
     BOOST_FOREACH(const PAIRTYPE(string,string)& item, wtx.mapValue)
         entry.push_back(Pair(item.first, item.second));
+    if (wtx.isAbandoned())
+        entry.push_back(Pair("abandoned", true));
 }
 
 string AccountFromValue(const Value& value)
@@ -1958,6 +1960,36 @@ Value deletetransaction(const Array& params, bool fHelp)
 #endif
 
     return result;
+}
+
+Value abandontransaction(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "abandontransaction <txid>\n"
+            "Marks an in-wallet transaction as abandoned. The transaction must not be\n"
+            "in the main chain or the mempool, for example because its inputs were\n"
+            "already spent by a different, confirmed transaction. An abandoned\n"
+            "transaction is excluded from the balance, coin selection and rebroadcast,\n"
+            "and the coins it had spent become available again unless another wallet\n"
+            "transaction also spends them.");
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    uint256 hash;
+    hash.SetHex(params[0].get_str());
+
+    if (!pwalletMain->mapWallet.count(hash))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet transaction id");
+
+    if (!pwalletMain->AbandonTransaction(hash))
+        throw JSONRPCError(RPC_WALLET_ERROR, "transaction is in the chain or mempool");
+
+#ifdef QT_GUI
+    pwalletMain->UpdatedTransaction(hash);
+#endif
+
+    return Value::null;
 }
 
 static void MaybePushAddress(Object & entry, const CTxDestination &dest)

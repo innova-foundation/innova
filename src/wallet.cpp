@@ -1494,6 +1494,60 @@ bool CWallet::IsSpent(const uint256& hash, unsigned int n) const
     return false;
 }
 
+bool CWallet::AbandonTransaction(const uint256& hashTx)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(cs_wallet);
+
+    map<uint256, CWalletTx>::iterator it = mapWallet.find(hashTx);
+    if (it == mapWallet.end())
+        return false;
+    CWalletTx& wtx = it->second;
+
+    if (wtx.GetDepthInMainChain() > 0 || mempool.exists(hashTx))
+        return false;
+
+    wtx.setAbandoned();
+    wtx.MarkDirty();
+    if (!wtx.WriteToDisk())
+        return false;
+
+    // free coins this tx spent, unless another non-abandoned wallet tx also spends them
+    BOOST_FOREACH(const CTxIn& txin, wtx.vin)
+    {
+        map<uint256, CWalletTx>::iterator mi = mapWallet.find(txin.prevout.hash);
+        if (mi == mapWallet.end())
+            continue;
+        CWalletTx& prev = mi->second;
+        if (txin.prevout.n >= prev.vout.size() || !prev.IsSpent(txin.prevout.n))
+            continue;
+
+        bool fStillSpent = false;
+        for (map<uint256, CWalletTx>::iterator mj = mapWallet.begin(); !fStillSpent && mj != mapWallet.end(); ++mj)
+        {
+            if (mj->first == hashTx || mj->second.isAbandoned())
+                continue;
+            BOOST_FOREACH(const CTxIn& txin2, mj->second.vin)
+            {
+                if (txin2.prevout == txin.prevout)
+                {
+                    fStillSpent = true;
+                    break;
+                }
+            }
+        }
+
+        if (!fStillSpent)
+        {
+            prev.MarkUnspent(txin.prevout.n);
+            prev.WriteToDisk();
+        }
+    }
+
+    NotifyTransactionChanged(this, hashTx, CT_UPDATED);
+    return true;
+}
+
 void CWallet::ListLockedCoins(std::vector<COutPoint>& vOutpts)
 {
     AssertLockHeld(cs_wallet); // setLockedCoins
@@ -2807,6 +2861,8 @@ void CWallet::ReacceptWalletTransactions()
                 continue;
             if (wtx.IsCoinStake() && wtx.vout.size() > 1 && wtx.IsSpent(1))
                 continue;
+            if (wtx.isAbandoned())
+                continue;
 
             CTxIndex txindex;
             bool fUpdated = false;
@@ -2948,6 +3004,8 @@ void CWallet::ResendWalletTransactions(bool fForce)
         BOOST_FOREACH(PAIRTYPE(const uint256, CWalletTx)& item, mapWallet)
         {
             CWalletTx& wtx = item.second;
+            if (wtx.isAbandoned())
+                continue;
             // Don't rebroadcast until it's had plenty of time that
             // it should have gotten in already by now.
             if (fForce || nTimeBestReceived - (int64_t)wtx.nTimeReceived > 5 * 60)
@@ -3306,6 +3364,9 @@ void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const
             const CWalletTx* pcoin = &(*it).second;
 
             if (!pcoin->IsFinal())
+                continue;
+
+            if (pcoin->isAbandoned())
                 continue;
 
             if (fOnlyConfirmed && !pcoin->IsTrusted())

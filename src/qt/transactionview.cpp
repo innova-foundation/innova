@@ -11,6 +11,9 @@
 #include "editaddressdialog.h"
 #include "optionsmodel.h"
 #include "guiutil.h"
+#include "wallet.h"
+#include "main.h"
+#include "uint256.h"
 
 #include <QScrollBar>
 #include <QComboBox>
@@ -147,6 +150,7 @@ TransactionView::TransactionView(QWidget *parent) :
     QAction *copyTxIDAction = new QAction(tr("Copy transaction ID"), this);
     QAction *editLabelAction = new QAction(tr("Edit label"), this);
     QAction *showDetailsAction = new QAction(tr("Show transaction details"), this);
+    abandonAction = new QAction(tr("Abandon transaction"), this);
 
     contextMenu = new QMenu();
     contextMenu->addAction(copyAddressAction);
@@ -155,6 +159,7 @@ TransactionView::TransactionView(QWidget *parent) :
     contextMenu->addAction(copyTxIDAction);
     contextMenu->addAction(editLabelAction);
     contextMenu->addAction(showDetailsAction);
+    contextMenu->addAction(abandonAction);
 
     // Connect actions
     connect(dateWidget, SIGNAL(activated(int)), this, SLOT(chooseDate(int)));
@@ -171,6 +176,7 @@ TransactionView::TransactionView(QWidget *parent) :
     connect(copyTxIDAction, SIGNAL(triggered()), this, SLOT(copyTxID()));
     connect(editLabelAction, SIGNAL(triggered()), this, SLOT(editLabel()));
     connect(showDetailsAction, SIGNAL(triggered()), this, SLOT(showDetails()));
+    connect(abandonAction, SIGNAL(triggered()), this, SLOT(abandonTransaction()));
 }
 
 void TransactionView::setModel(WalletModel *model)
@@ -324,6 +330,20 @@ void TransactionView::contextualMenu(const QPoint &point)
     QModelIndex index = transactionView->indexAt(point);
     if(index.isValid())
     {
+        bool fCanAbandon = false;
+        if(model && model->getWallet())
+        {
+            uint256 hash;
+            hash.SetHex(index.data(TransactionTableModel::TxIDRole).toString().toStdString());
+            CWallet *wallet = model->getWallet();
+            LOCK2(cs_main, wallet->cs_wallet);
+            std::map<uint256, CWalletTx>::const_iterator it = wallet->mapWallet.find(hash);
+            if(it != wallet->mapWallet.end())
+                fCanAbandon = !it->second.isAbandoned() &&
+                              it->second.GetDepthInMainChain() <= 0 &&
+                              !mempool.exists(hash);
+        }
+        abandonAction->setEnabled(fCanAbandon);
         contextMenu->exec(QCursor::pos());
     }
 }
@@ -346,6 +366,28 @@ void TransactionView::copyAmount()
 void TransactionView::copyTxID()
 {
     GUIUtil::copyEntryData(transactionView, 0, TransactionTableModel::TxIDRole);
+}
+
+void TransactionView::abandonTransaction()
+{
+    if(!transactionView->selectionModel() || !model || !model->getWallet())
+        return;
+    QModelIndexList selection = transactionView->selectionModel()->selectedRows();
+    if(selection.isEmpty())
+        return;
+
+    uint256 hash;
+    hash.SetHex(selection.at(0).data(TransactionTableModel::TxIDRole).toString().toStdString());
+
+    CWallet *wallet = model->getWallet();
+    bool fOk;
+    {
+        LOCK2(cs_main, wallet->cs_wallet);
+        fOk = wallet->AbandonTransaction(hash);
+    }
+    if(!fOk)
+        QMessageBox::warning(this, tr("Abandon transaction"),
+            tr("This transaction is in the chain or mempool and cannot be abandoned."));
 }
 
 void TransactionView::editLabel()

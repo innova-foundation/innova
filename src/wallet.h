@@ -740,6 +740,10 @@ public:
     bool SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool IsSpent(const uint256& hash, unsigned int n) const;
 
+    // marks a wallet tx abandoned (not in chain, not in mempool); frees coins it spent
+    // unless another non-abandoned wallet tx also spends them
+    bool AbandonTransaction(const uint256& hashTx);
+
     bool IsLockedCoin(uint256 hash, unsigned int n) const;
     void LockCoin(COutPoint& output);
     void UnlockCoin(COutPoint& output);
@@ -1651,6 +1655,9 @@ public:
     {
         // Must wait until coinbase is safely deep enough in the chain before valuing it
         if ((IsCoinBase() || IsCoinStake()) && GetBlocksToMaturity() > 0)
+            return 0;
+
+        if (isAbandoned())
             return 0;
 
         if (fUseCache && fAvailableCreditCached)

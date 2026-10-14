@@ -12,6 +12,7 @@ class QComboBox;
 class QLineEdit;
 class QModelIndex;
 class QMenu;
+class QAction;
 class QLabel;
 class QFrame;
 class QDateTimeEdit;
@@ -52,6 +53,7 @@ private:
     QLineEdit *amountWidget;
 
     QMenu *contextMenu;
+    QAction *abandonAction;
 
     QFrame *dateRangeWidget;
     QDateTimeEdit *dateFrom;
@@ -68,6 +70,7 @@ private slots:
     void copyLabel();
     void copyAmount();
     void copyTxID();
+    void abandonTransaction();
 
 signals:
     void doubleClicked(const QModelIndex&);
