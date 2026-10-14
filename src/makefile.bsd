@@ -138,6 +138,7 @@ OBJS= \
     obj/crypter.o \
     obj/key.o \
     obj/hash.o \
+    obj/muhash.o \
     obj/base58.o \
     obj/db.o \
     obj/init.o \

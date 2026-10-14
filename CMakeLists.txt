@@ -658,6 +658,7 @@ set(INNOVA_CXX_SOURCES
     src/finality_note.cpp
     src/dag.cpp
     src/mstimestamp.cpp
+    src/muhash.cpp
     src/blockprofile.cpp
     src/qt/macdockiconhandler.mm
     src/qt/macnotificationhandler.mm
@@ -762,6 +763,7 @@ set(INNOVA_HEADERS
     src/finality_note.h
     src/dag.h
     src/mstimestamp.h
+    src/muhash.h
     src/blockprofile.h
     src/init.h
     src/bootstrap.h

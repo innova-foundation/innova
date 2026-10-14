@@ -333,6 +333,7 @@ OBJS= \
     obj/hdroot.o \
     obj/finality_schedule.o \
     obj/mstimestamp.o \
+    obj/muhash.o \
     obj/idnsdescriptor.o \
     obj/nullsend_v2008.o \
     obj/nullsend_driver.o \
@@ -425,6 +426,7 @@ OBJS= \
     obj/hdroot.o \
     obj/finality_schedule.o \
     obj/mstimestamp.o \
+    obj/muhash.o \
     obj/idnsdescriptor.o \
     obj/nullsend_v2008.o \
     obj/nullsend_driver.o \

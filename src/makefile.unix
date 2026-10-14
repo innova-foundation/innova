@@ -268,6 +268,7 @@ OBJS= \
     obj/finality_schedule.o \
     obj/dag.o \
     obj/mstimestamp.o \
+    obj/muhash.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
@@ -425,6 +426,7 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/settlement_headroom_clamp_tests.o \
     obj/test/block_spacing_floor_tests.o \
     obj/test/ms_timestamp_tests.o \
+    obj/test/muhash_tests.o \
     obj/test/ms_timestamp_index_tests.o \
     obj/test/failed_index_dag_vertex_tests.o \
     obj/test/finality_switch_gate_tests.o \
