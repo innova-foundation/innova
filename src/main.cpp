@@ -3782,9 +3782,8 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
          !IsShieldedVNextConsensusReady()))
         return error("CTxMemPool::accept() : privacy-vNext is inactive before Boundary B");
 
-    size_t nMaxMempoolSize = GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
-    if (GetTotalMemoryUsage() >= nMaxMempoolSize)
-        return error("CTxMemPool::accept() : mempool full (%" PRIu64" bytes)", (uint64_t)nMaxMempoolSize);
+    const size_t nMaxMempoolSize =
+        (size_t)std::max<int64_t>(0, GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE)) * 1000000;
 
     // No DoS score, as for the post-decode refusal below: a peer on an older build may
     // still relay one.
@@ -3947,6 +3946,18 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     if (!fTestNet && !IsStandardTx(tx, reason) && !isNameTx) //!IsStandardTx(tx, reason)
         return error("CTxMemPool::accept() : nonstandard transaction type");
 
+    // Votes, attestations, name ops and legacy privacy txs neither replace nor are replaced.
+    const bool fReplaceableClass =
+        !isNameTx && tx.nVersion != ANON_TXN_VERSION && !tx.IsShielded() &&
+        !IsPrivacyVNextFeeExemptShape(tx) && vPrivacyVNextAttestations.empty();
+    const bool fMayReplace =
+        fReplaceableClass &&
+        GetBoolArg("-mempoolreplacement", DEFAULT_MEMPOOL_REPLACEMENT);
+    std::set<uint256> setConflicts;
+    std::string strKeyConflict;
+    int64_t nAcceptedFee = -1;
+    unsigned int nAcceptedSize = 0;
+
     // Do we already have it?
     uint256 hash = tx.GetHash();
     {
@@ -3962,7 +3973,15 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         {
             std::map<uint256, CShieldedNullifierSpent>::const_iterator spentIt =
                 mapPrivacyVNextNullifier.find(*it);
-            if (spentIt != mapPrivacyVNextNullifier.end())
+            if (spentIt != mapPrivacyVNextNullifier.end() && fMayReplace)
+            {
+                setConflicts.insert(spentIt->second.txnHash);
+                if (strKeyConflict.empty())
+                    strKeyConflict = strprintf("IV5 spent key %s is reserved by %s: ",
+                                               it->ToString().substr(0,10).c_str(),
+                                               spentIt->second.txnHash.ToString().substr(0,10).c_str());
+            }
+            else if (spentIt != mapPrivacyVNextNullifier.end())
                 return error("CTxMemPool::accept() : IV5 spent key %s is reserved by %s",
                              it->ToString().substr(0,10).c_str(),
                              spentIt->second.txnHash.ToString().substr(0,10).c_str());
@@ -3993,30 +4012,16 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         return false;
 
     // Check for conflicts with in-memory transactions
-    CTransaction* ptxOld = NULL;
-    for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
-        COutPoint outpoint = tx.vin[i].prevout;
-        if (mapNextTx.count(outpoint))
+        LOCK(cs);
+        for (unsigned int i = 0; i < tx.vin.size(); i++)
         {
-            // Disable replacement feature for now
-            return false;
-
-            // Allow replacing with a newer version of the same transaction
-            if (i != 0)
+            std::map<COutPoint, CInPoint>::const_iterator it = mapNextTx.find(tx.vin[i].prevout);
+            if (it == mapNextTx.end())
+                continue;
+            if (!fMayReplace)
                 return false;
-            ptxOld = mapNextTx[outpoint].ptx;
-            if (ptxOld->IsFinal())
-                return false;
-            if (!tx.IsNewerThan(*ptxOld))
-                return false;
-            for (unsigned int i = 0; i < tx.vin.size(); i++)
-            {
-                COutPoint outpoint = tx.vin[i].prevout;
-                if (!mapNextTx.count(outpoint) || mapNextTx[outpoint].ptx != ptxOld)
-                    return false;
-            }
-            break;
+            setConflicts.insert(it->second.ptx->GetHash());
         }
     }
 
@@ -4385,6 +4390,27 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                              nFees, txMinFee);
             };
 
+            const int64_t nRollingMinRate = GetRollingMinFeeRate(nMaxMempoolSize);
+            if (!fFeeExempt && nRollingMinRate > 0 &&
+                MempoolFeeRate(nFees, nSize) < nRollingMinRate)
+                return error("CTxMemPool::accept() : mempool min fee not met %s, rate %" PRId64" < %" PRId64,
+                             hash.ToString().substr(0,10).c_str(),
+                             MempoolFeeRate(nFees, nSize), nRollingMinRate);
+
+            {
+                std::set<uint256> setReplaced, setEvicted;
+                int64_t nEvictedRate = 0;
+                std::string strPlanReason;
+                if (!PlanAdmission(tx, nFees, nSize, setConflicts, fMayReplace,
+                                   nMaxMempoolSize, setReplaced, setEvicted,
+                                   nEvictedRate, strPlanReason))
+                    return error("CTxMemPool::accept() : %s: %s%s",
+                                 hash.ToString().substr(0,10).c_str(),
+                                 strKeyConflict.c_str(), strPlanReason.c_str());
+            }
+            nAcceptedFee = nFees;
+            nAcceptedSize = nSize;
+
             // Continuously rate-limit free transactions
             // This mitigates 'penny-flooding' -- sending thousands of free transactions just to
             // be annoying or make others' transactions take longer to confirm.
@@ -4428,18 +4454,34 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     // Do not write to memory if read only mode.
     if(!fOnlyCheckWithoutAdding)
     {
+        std::set<uint256> setReplaced, setEvicted;
         // Store transaction in memory
         {
             LOCK(cs);
-            if (ptxOld) {
-                printf("CTxMemPool::accept() : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
-                remove(*ptxOld);
-            }
+            int64_t nEvictedRate = 0;
+            std::string strPlanReason;
+            if (!PlanAdmission(tx, nAcceptedFee, nAcceptedSize, setConflicts, fMayReplace,
+                               nMaxMempoolSize, setReplaced, setEvicted, nEvictedRate,
+                               strPlanReason))
+                return error("CTxMemPool::accept() : %s: %s%s",
+                             hash.ToString().substr(0,10).c_str(),
+                             strKeyConflict.c_str(), strPlanReason.c_str());
+            if (!setReplaced.empty())
+                printf("CTxMemPool::accept() : %s replaces %u transaction(s)\n",
+                       hash.ToString().substr(0,10).c_str(), (unsigned)setReplaced.size());
+            if (!setEvicted.empty())
+                printf("CTxMemPool::accept() : %s evicts %u transaction(s) below rate %" PRId64"\n",
+                       hash.ToString().substr(0,10).c_str(), (unsigned)setEvicted.size(),
+                       MempoolFeeRate(nAcceptedFee, nAcceptedSize));
+            RemoveSet(setReplaced);
+            RemoveSet(setEvicted);
+            if (!setEvicted.empty())
+                TrackEviction(nEvictedRate);
 
             if (tx.IsPrivacyVNext())
                 EvictPrivacyVNextAttestationsSpentBy(vPrivacyVNextKeyImages, hash);
 
-            addUnchecked(hash, tx);
+            addUnchecked(hash, tx, nAcceptedFee, fReplaceableClass);
 
             if (tx.IsPrivacyVNext())
             {
@@ -4484,10 +4526,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             hooks->AddToPendingNames(tx);
         }
 
-        ///// are we sure this is ok when loading transactions or restoring block txes
-        // If updated, erase old tx from wallet
-        if (ptxOld)
-            EraseFromWallets(ptxOld->GetHash());
+        for (std::set<uint256>::const_iterator it = setReplaced.begin();
+             it != setReplaced.end(); ++it)
+            EraseFromWallets(*it);
 
         printf("CTxMemPool::accept() : accepted %s (poolsz %" PRIszu")\n", hash.ToString().substr(0,10).c_str(), mapTx.size());
     }
@@ -4673,17 +4714,274 @@ void CTxMemPool::AddTransactionsUpdated(unsigned int n)
     nTransactionsUpdated += n;
 }
 
-bool CTxMemPool::addUnchecked(const uint256& hash, CTransaction &tx)
+bool CTxMemPool::addUnchecked(const uint256& hash, CTransaction &tx, int64_t nFee,
+                              bool fReplaceable)
 {
     // Add to memory pool without checking anything.  Don't call this directly,
     // call CTxMemPool::accept to properly check the transaction first.
     {
+        TrackRemoved(hash);
         mapTx[hash] = tx;
         for (unsigned int i = 0; i < tx.vin.size(); i++)
             mapNextTx[tx.vin[i].prevout] = CInPoint(&mapTx[hash], i);
+        TrackAdded(hash, tx, nFee, fReplaceable);
         nTransactionsUpdated++;
     }
     return true;
+}
+
+int64_t MempoolFeeRate(int64_t nFee, size_t nSize)
+{
+    if (nSize == 0)
+        return 0;
+    nFee = std::max<int64_t>(0, std::min<int64_t>(nFee, MAX_MONEY));
+    return nFee * 1000 / (int64_t)nSize;
+}
+
+int64_t MempoolIncrementalFee(size_t nSize)
+{
+    const int64_t nFee = MEMPOOL_INCREMENTAL_RELAY_FEE * (int64_t)nSize / 1000;
+    return (nFee == 0 && nSize > 0) ? 1 : nFee;
+}
+
+void CTxMemPool::TrackAdded(const uint256& hash, const CTransaction& tx, int64_t nFee,
+                            bool fReplaceable)
+{
+    CTxMemPoolFeeInfo info;
+    info.nFee = nFee;
+    info.nSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+    info.fReplaceable = fReplaceable && nFee >= 0;
+    mapTxFeeInfo[hash] = info;
+    nTotalTxSize += info.nSize;
+    if (info.fReplaceable)
+        setFeeRateIndex.insert(std::make_pair(MempoolFeeRate(nFee, info.nSize), hash));
+}
+
+void CTxMemPool::TrackRemoved(const uint256& hash)
+{
+    std::map<uint256, CTxMemPoolFeeInfo>::iterator it = mapTxFeeInfo.find(hash);
+    if (it == mapTxFeeInfo.end())
+        return;
+    nTotalTxSize -= std::min<size_t>(nTotalTxSize, it->second.nSize);
+    if (it->second.fReplaceable)
+        setFeeRateIndex.erase(std::make_pair(
+            MempoolFeeRate(it->second.nFee, it->second.nSize), hash));
+    mapTxFeeInfo.erase(it);
+}
+
+void CTxMemPool::CalculateDescendants(const uint256& hash,
+                                      std::set<uint256>& setDescendants) const
+{
+    LOCK(cs);
+    std::vector<uint256> vStack(1, hash);
+    while (!vStack.empty())
+    {
+        const uint256 hashCur = vStack.back();
+        vStack.pop_back();
+        std::map<uint256, CTransaction>::const_iterator txIt = mapTx.find(hashCur);
+        if (txIt == mapTx.end() || !setDescendants.insert(hashCur).second)
+            continue;
+        for (unsigned int i = 0; i < txIt->second.vout.size(); i++)
+        {
+            std::map<COutPoint, CInPoint>::const_iterator it =
+                mapNextTx.find(COutPoint(hashCur, i));
+            if (it != mapNextTx.end())
+                vStack.push_back(it->second.ptx->GetHash());
+        }
+    }
+}
+
+bool CTxMemPool::PlanAdmission(const CTransaction& tx, int64_t nFee, unsigned int nSize,
+                               const std::set<uint256>& setConflicts, bool fMayReplace,
+                               size_t nLimit, std::set<uint256>& setReplaced,
+                               std::set<uint256>& setEvicted, int64_t& nEvictedFeeRate,
+                               std::string& strReason) const
+{
+    LOCK(cs);
+    setReplaced.clear();
+    setEvicted.clear();
+    nEvictedFeeRate = 0;
+    const int64_t nFeeRate = MempoolFeeRate(nFee, nSize);
+
+    std::set<uint256> setParents;
+    for (const CTxIn& txin : tx.vin)
+        if (mapTx.count(txin.prevout.hash))
+            setParents.insert(txin.prevout.hash);
+
+    int64_t nFreed = 0;
+    if (!setConflicts.empty())
+    {
+        if (!fMayReplace)
+        {
+            strReason = "conflicts with a mempool transaction and may not replace it";
+            return false;
+        }
+        std::set<uint256> setConflictParents;
+        for (std::set<uint256>::const_iterator it = setConflicts.begin();
+             it != setConflicts.end(); ++it)
+        {
+            std::map<uint256, CTransaction>::const_iterator txIt = mapTx.find(*it);
+            std::map<uint256, CTxMemPoolFeeInfo>::const_iterator infoIt = mapTxFeeInfo.find(*it);
+            if (txIt == mapTx.end() || infoIt == mapTxFeeInfo.end() ||
+                !infoIt->second.fReplaceable)
+            {
+                strReason = strprintf("conflicting tx %s is not replaceable",
+                                      it->ToString().substr(0,10).c_str());
+                return false;
+            }
+            const int64_t nOldRate = MempoolFeeRate(infoIt->second.nFee, infoIt->second.nSize);
+            if (nFeeRate <= nOldRate)
+            {
+                strReason = strprintf("fee rate %" PRId64" does not exceed %" PRId64" of %s",
+                                      nFeeRate, nOldRate, it->ToString().substr(0,10).c_str());
+                return false;
+            }
+            for (const CTxIn& txin : txIt->second.vin)
+                if (mapTx.count(txin.prevout.hash))
+                    setConflictParents.insert(txin.prevout.hash);
+            CalculateDescendants(*it, setReplaced);
+            if (setReplaced.size() > MAX_REPLACEMENT_CANDIDATES)
+            {
+                strReason = strprintf("replaces more than %u transactions",
+                                      MAX_REPLACEMENT_CANDIDATES);
+                return false;
+            }
+        }
+
+        int64_t nReplacedFees = 0;
+        for (std::set<uint256>::const_iterator it = setReplaced.begin();
+             it != setReplaced.end(); ++it)
+        {
+            std::map<uint256, CTxMemPoolFeeInfo>::const_iterator infoIt = mapTxFeeInfo.find(*it);
+            if (infoIt == mapTxFeeInfo.end() || !infoIt->second.fReplaceable)
+            {
+                strReason = strprintf("descendant %s is not replaceable",
+                                      it->ToString().substr(0,10).c_str());
+                return false;
+            }
+            nReplacedFees = std::min<int64_t>(MAX_MONEY, nReplacedFees + infoIt->second.nFee);
+            nFreed += infoIt->second.nSize;
+        }
+
+        for (std::set<uint256>::const_iterator it = setParents.begin();
+             it != setParents.end(); ++it)
+        {
+            if (setReplaced.count(*it))
+            {
+                strReason = "spends an output of a transaction it replaces";
+                return false;
+            }
+            if (!setConflictParents.count(*it))
+            {
+                strReason = "adds an unconfirmed input the replaced transactions did not spend";
+                return false;
+            }
+        }
+
+        if (nFee < nReplacedFees + MempoolIncrementalFee(nSize))
+        {
+            strReason = strprintf("fee %" PRId64" does not cover replaced fees %" PRId64
+                                  " plus incremental %" PRId64,
+                                  nFee, nReplacedFees, MempoolIncrementalFee(nSize));
+            return false;
+        }
+    }
+
+    int64_t nAfter = (int64_t)nTotalTxSize - nFreed + (int64_t)nSize;
+    for (std::set<std::pair<int64_t, uint256> >::const_iterator it = setFeeRateIndex.begin();
+         it != setFeeRateIndex.end() && nAfter > (int64_t)nLimit; ++it)
+    {
+        if (it->first >= nFeeRate)
+            break;
+        if (setReplaced.count(it->second) || setEvicted.count(it->second))
+            continue;
+        std::set<uint256> setUnit;
+        CalculateDescendants(it->second, setUnit);
+        bool fEvictable = true;
+        int64_t nUnitFee = 0;
+        int64_t nUnitSize = 0;
+        for (std::set<uint256>::iterator u = setUnit.begin(); u != setUnit.end(); )
+        {
+            if (setReplaced.count(*u) || setEvicted.count(*u))
+            {
+                setUnit.erase(u++);
+                continue;
+            }
+            std::map<uint256, CTxMemPoolFeeInfo>::const_iterator infoIt = mapTxFeeInfo.find(*u);
+            if (setParents.count(*u) || infoIt == mapTxFeeInfo.end() ||
+                !infoIt->second.fReplaceable)
+            {
+                fEvictable = false;
+                break;
+            }
+            nUnitFee = std::min<int64_t>(MAX_MONEY, nUnitFee + infoIt->second.nFee);
+            nUnitSize += infoIt->second.nSize;
+            ++u;
+        }
+        if (!fEvictable || setUnit.empty())
+            continue;
+        const int64_t nUnitRate = std::max(it->first, MempoolFeeRate(nUnitFee, nUnitSize));
+        if (nUnitRate >= nFeeRate)
+            continue;
+        setEvicted.insert(setUnit.begin(), setUnit.end());
+        nAfter -= nUnitSize;
+        nEvictedFeeRate = std::max(nEvictedFeeRate, nUnitRate);
+    }
+    if (nAfter > (int64_t)nLimit)
+    {
+        setEvicted.clear();
+        nEvictedFeeRate = 0;
+        strReason = strprintf("mempool full (%" PRIu64" bytes) and nothing cheaper to evict",
+                              (uint64_t)nLimit);
+        return false;
+    }
+    return true;
+}
+
+void CTxMemPool::RemoveSet(const std::set<uint256>& setHashes)
+{
+    LOCK(cs);
+    for (std::set<uint256>::const_iterator it = setHashes.begin(); it != setHashes.end(); ++it)
+    {
+        std::map<uint256, CTransaction>::const_iterator txIt = mapTx.find(*it);
+        if (txIt == mapTx.end())
+            continue;
+        const CTransaction txCopy = txIt->second;
+        remove(txCopy);
+    }
+}
+
+void CTxMemPool::TrackEviction(int64_t nEvictedFeeRate)
+{
+    LOCK(cs);
+    const double dRate = (double)(nEvictedFeeRate + MEMPOOL_INCREMENTAL_RELAY_FEE);
+    if (dRate > dRollingMinFeeRate)
+        dRollingMinFeeRate = dRate;
+    nLastRollingFeeUpdate = GetTime();
+}
+
+int64_t CTxMemPool::GetRollingMinFeeRate(size_t nLimit)
+{
+    LOCK(cs);
+    if (dRollingMinFeeRate == 0)
+        return 0;
+    const int64_t nNow = GetTime();
+    if (nNow > nLastRollingFeeUpdate + 10)
+    {
+        double dHalfLife = MEMPOOL_ROLLING_FEE_HALFLIFE;
+        if (nTotalTxSize < nLimit / 4)
+            dHalfLife /= 4;
+        else if (nTotalTxSize < nLimit / 2)
+            dHalfLife /= 2;
+        dRollingMinFeeRate /= pow(2.0, (nNow - nLastRollingFeeUpdate) / dHalfLife);
+        nLastRollingFeeUpdate = nNow;
+        if (dRollingMinFeeRate < (double)MEMPOOL_INCREMENTAL_RELAY_FEE / 2)
+        {
+            dRollingMinFeeRate = 0;
+            return 0;
+        }
+    }
+    return std::max((int64_t)llround(dRollingMinFeeRate), MEMPOOL_INCREMENTAL_RELAY_FEE);
 }
 
 
@@ -4728,11 +5026,13 @@ size_t CTxMemPool::EvictPrivacyVNextAttestationsSpentBy(
     return nRemoved;
 }
 
-bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
+bool CTxMemPool::remove(const CTransaction &txIn, bool fRecursive)
 {
     // Remove transaction from memory pool
     {
         LOCK(cs);
+        // txIn may be the map entry erased below.
+        const CTransaction tx = txIn;
         uint256 hash = tx.GetHash();
         if (mapTx.count(hash))
         {
@@ -4747,6 +5047,7 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
             };
             for (const CTxIn& txin : tx.vin)
                 mapNextTx.erase(txin.prevout);
+            TrackRemoved(hash);
             mapTx.erase(hash);
 
             if (tx.nVersion == ANON_TXN_VERSION)
@@ -5015,6 +5316,7 @@ void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
                 mapPrivacyVNextTxAttestations.erase(attReverseIt);
             }
 
+            TrackRemoved(txHash);
             mapTx.erase(txHash);
             nRemoved++;
             ++nTransactionsUpdated;
@@ -5030,6 +5332,11 @@ void CTxMemPool::clear()
 {
     LOCK(cs);
     mapTx.clear();
+    mapTxFeeInfo.clear();
+    setFeeRateIndex.clear();
+    nTotalTxSize = 0;
+    dRollingMinFeeRate = 0;
+    nLastRollingFeeUpdate = GetTime();
     mapNextTx.clear();
     mapKeyImage.clear();
     mapShieldedNullifier.clear();

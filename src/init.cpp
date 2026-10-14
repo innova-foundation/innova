@@ -720,6 +720,7 @@ std::string HelpMessage()
         "  -maxorphanblocks=<n>   "   + strprintf(_("Keep at most <n> unconnectable blocks in memory (default: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS) + "\n" +
         "  -maxorphanmem=<n>      "   + strprintf(_("Keep the unconnectable block pool below <n> megabytes (default: %u, minimum: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS_MEM, MIN_MAX_ORPHAN_BLOCKS_MEM) + "\n" +
         "  -maxmempool=<n>        "   + strprintf(_("Keep the transaction memory pool below <n> megabytes (default: %u)"), DEFAULT_MAX_MEMPOOL_SIZE) + "\n" +
+        "  -mempoolreplacement    "   + strprintf(_("Let a higher fee rate transaction replace the mempool transactions it conflicts with (default: %u)"), DEFAULT_MEMPOOL_REPLACEMENT) + "\n" +
 
         "\n" + _("SSL options: (see the Bitcoin Wiki for SSL setup instructions)") + "\n" +
         "  -rpcssl                                  " + _("Use OpenSSL (https) for JSON-RPC connections") + "\n" +

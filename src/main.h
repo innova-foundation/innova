@@ -159,6 +159,11 @@ static const size_t MAX_ORPHAN_NEVER_FITS_RECORDS = 4096;
 static const int64_t ORPHAN_POOL_SWEEP_INTERVAL_SECONDS = 10;
 /** Default for -maxmempool, maximum mempool size in MB */
 static const unsigned int DEFAULT_MAX_MEMPOOL_SIZE = 300; // 300MB default
+static const bool DEFAULT_MEMPOOL_REPLACEMENT = true;
+/** Most transactions, descendants included, one replacement may remove */
+static const unsigned int MAX_REPLACEMENT_CANDIDATES = 100;
+/** Rolling minimum fee rate half-life, in seconds */
+static const int64_t MEMPOOL_ROLLING_FEE_HALFLIFE = 60 * 60 * 12;
 static const unsigned int MAX_INV_SZ = 50000;
 static const unsigned int INV_RATE_LIMIT_WINDOW = 60;    // Time window in seconds
 static const unsigned int INV_RATE_LIMIT_ITEMS = 2000;   // Max inv items per window (generous for sync)
@@ -168,6 +173,8 @@ static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
 static const CAmount MIN_TXOUT_AMOUNT = NAME_FEE;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
+/** Fee per 1000 bytes a replacement or eviction must add on top of what it displaces */
+static const int64_t MEMPOOL_INCREMENTAL_RELAY_FEE = MIN_RELAY_TX_FEE;
 static const int64_t MAX_MONEY = 18000000 * COIN; // 18,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
@@ -3588,13 +3595,35 @@ public:
     std::string GetRejectReason() const { return strRejectReason; }
 };
 
+struct CTxMemPoolFeeInfo
+{
+    int64_t nFee;
+    unsigned int nSize;
+    // Eligible to be replaced or evicted.
+    bool fReplaceable;
+};
+
+// Fee per 1000 bytes.
+int64_t MempoolFeeRate(int64_t nFee, size_t nSize);
+int64_t MempoolIncrementalFee(size_t nSize);
+
 class CTxMemPool
 {
 private:
     // CTransaction tx;
     unsigned int nTransactionsUpdated;
+    size_t nTotalTxSize;
+    double dRollingMinFeeRate;
+    int64_t nLastRollingFeeUpdate;
+    std::set<std::pair<int64_t, uint256> > setFeeRateIndex;
+    void TrackAdded(const uint256& hash, const CTransaction& tx, int64_t nFee, bool fReplaceable);
+    void TrackRemoved(const uint256& hash);
 public:
+    CTxMemPool() : nTransactionsUpdated(0), nTotalTxSize(0), dRollingMinFeeRate(0),
+                   nLastRollingFeeUpdate(0) {}
+
     mutable CCriticalSection cs;
+    std::map<uint256, CTxMemPoolFeeInfo> mapTxFeeInfo;
     std::map<uint256, CTransaction> mapTx;
     std::map<COutPoint, CInPoint> mapNextTx;
 
@@ -3624,9 +3653,21 @@ public:
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
-    bool addUnchecked(const uint256& hash, CTransaction &tx);
+    // A negative fee is unknown: the entry is never replaced or evicted.
+    bool addUnchecked(const uint256& hash, CTransaction &tx, int64_t nFee = -1,
+                      bool fReplaceable = false);
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);
+
+    void CalculateDescendants(const uint256& hash, std::set<uint256>& setDescendants) const;
+    // Replace and evict sets that admitting tx needs within nLimit bytes; read-only.
+    bool PlanAdmission(const CTransaction& tx, int64_t nFee, unsigned int nSize,
+                       const std::set<uint256>& setConflicts, bool fMayReplace, size_t nLimit,
+                       std::set<uint256>& setReplaced, std::set<uint256>& setEvicted,
+                       int64_t& nEvictedFeeRate, std::string& strReason) const;
+    void RemoveSet(const std::set<uint256>& setHashes);
+    void TrackEviction(int64_t nEvictedFeeRate);
+    int64_t GetRollingMinFeeRate(size_t nLimit);
 
     // DAG-aware mempool coordination
     std::set<uint256> setDAGSeenTxids;
@@ -3646,10 +3687,7 @@ public:
     size_t GetTotalMemoryUsage() const
     {
         LOCK(cs);
-        size_t usage = 0;
-        for (std::map<uint256, CTransaction>::const_iterator it = mapTx.begin(); it != mapTx.end(); ++it)
-            usage += ::GetSerializeSize(it->second, SER_NETWORK, PROTOCOL_VERSION);
-        return usage;
+        return nTotalTxSize;
     }
 
     bool exists(uint256 hash) const
