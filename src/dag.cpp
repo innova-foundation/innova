@@ -508,14 +508,14 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     for (const uint256& hashParent : vParents)
         setDAGTips.erase(hashParent);
 
-    // A flagged block keeps its vertex and stays a tip, but it is never selected or
-    // merged, so it does not count towards a flood: otherwise 65 rejected blocks would
-    // trigger this rebuild once a minute for the life of the datadir.
+    // Only tips that can still be merged count towards a flood: flagged blocks and stale
+    // side tips past the merge depth would otherwise rebuild the order every minute.
     int nLiveTips = 0;
     for (const uint256& hashTip : setDAGTips)
     {
         std::map<uint256, CBlockIndex*>::const_iterator miTip = mapBlockIndex.find(hashTip);
-        if (miTip != mapBlockIndex.end() && miTip->second && !miTip->second->IsInvalid())
+        if (miTip != mapBlockIndex.end() && miTip->second && !miTip->second->IsInvalid() &&
+            miTip->second->nHeight + DAG_MERGE_DEPTH >= nBestHeight)
             nLiveTips++;
     }
     static int64_t nLastRebuildTime = 0;

@@ -2999,6 +2999,44 @@ int64_t CWallet::GetBalance() const
     return nTotal;
 }
 
+static void AddCapped(int64_t& nTotal, int64_t nCredit)
+{
+    if (nCredit > 0 && nTotal > std::numeric_limits<int64_t>::max() - nCredit)
+        nTotal = std::numeric_limits<int64_t>::max();
+    else
+        nTotal += nCredit;
+}
+
+CWallet::Balances CWallet::GetBalances() const
+{
+    Balances b;
+    LOCK2(cs_main, cs_wallet);
+    for (map<uint256, CWalletTx>::const_iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+    {
+        const CWalletTx* pcoin = &(*it).second;
+        const bool fTrusted = pcoin->IsTrusted();
+        const int nDepth = pcoin->GetDepthInMainChain();
+        if (fTrusted)
+            AddCapped(b.nBalance, pcoin->GetAvailableCredit());
+        if (fTrusted && pcoin->nVersion == ANON_TXN_VERSION)
+            AddCapped(b.nAnon, pcoin->GetAvailableAnonCredit());
+        if (!pcoin->IsFinal() || (!fTrusted && nDepth == 0))
+            AddCapped(b.nUnconfirmed, pcoin->GetAvailableCredit());
+        if (!pcoin->IsCoinBase() && !pcoin->IsCoinStake())
+            continue;
+        const int nToMaturity = pcoin->GetBlocksToMaturity();
+        if (nToMaturity > 0 && nDepth > 0)
+        {
+            AddCapped(b.nImmature, pcoin->GetImmatureCredit());
+            if (pcoin->IsCoinStake())
+                b.nStake += pcoin->GetCredit(ISMINE_SPENDABLE);
+            else
+                b.nNewMint += pcoin->GetCredit(ISMINE_SPENDABLE);
+        }
+    }
+    return b;
+}
+
 int64_t CWallet::GetAnonBalance() const
 {
     int64_t nTotal = 0;

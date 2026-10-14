@@ -831,6 +831,9 @@ public:
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
     int64_t GetBalance() const;
+    struct Balances { int64_t nBalance = 0, nAnon = 0, nUnconfirmed = 0, nImmature = 0, nStake = 0, nNewMint = 0; };
+    // One wallet walk for every getinfo balance.
+    Balances GetBalances() const;
     int64_t GetAnonBalance() const;
     int64_t GetLockedBalance() const;
     int64_t GetUnlockedBalance() const;
