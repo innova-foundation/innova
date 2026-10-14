@@ -2876,7 +2876,7 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
                   !IsShieldedVNextConsensusReady())))
                 continue;
             uint256 hash = tx.GetHash();
-            if (!txdb.ContainsTx(hash))
+            if (!txdb.ContainsTx(hash) && mempool.exists(hash))
             {
                 if (fDebugNet || GetBoolArg("-debugtxrelay", false))
                     printf("TXRELAY wallet-local-prev tx=%s force=%d\n",
@@ -2899,7 +2899,8 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
               !IsShieldedVNextConsensusReady())))
             return;
         uint256 hash = GetHash();
-        if (!txdb.ContainsTx(hash))
+        // Only what our mempool accepts: a conflicted spend would get us banned.
+        if (!txdb.ContainsTx(hash) && mempool.exists(hash))
         {
             printf("Relaying wtx %s\n", hash.ToString().substr(0,10).c_str());
             if (fDebugNet || GetBoolArg("-debugtxrelay", false))

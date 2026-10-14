@@ -9039,14 +9039,14 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             CTxIndex& txindex = inputs[prevout.hash].first;
             CTransaction& txPrev = inputs[prevout.hash].second;
 
-            // Check for conflicts (double-spend)
-            // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
-            // for an attacker to attempt to split the network.
+            // Check for conflicts (double-spend); a stale relayed spend is not misbehaviour.
             if (!txindex.vSpent[prevout.n].IsNull())
             {
                 printf("WARNING: ConnectInputs() : %s double-spend attempt at %s\n",
                        GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str());
-                return DoS(100, error("ConnectInputs() : %s prev tx already used at %s", GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str()));
+                const std::string strErr = strprintf("ConnectInputs() : %s prev tx already used at %s",
+                    GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str());
+                return fBlock ? DoS(100, error("%s", strErr.c_str())) : error("%s", strErr.c_str());
             }
 
             {
@@ -18267,6 +18267,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
             oldVersion = true;
+
+        if (pfrom->nVersion < DAG_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
+        {
+            printf("peer %s version %d is not on the DAG chain; disconnecting\n",
+                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
+            pfrom->MarkDisconnect("pre-dag-version");
+            return false;
+        }
 
         if (pfrom->nVersion < MERGESET_PROTO_VERSION && IsMergesetActiveAtHeight(nBestHeight + 1))
         {

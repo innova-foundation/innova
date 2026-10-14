@@ -34,6 +34,9 @@ static const int DATABASE_VERSION = 21212;
 
 static const int PROTOCOL_VERSION = 50100;
 
+// peers below this are dropped once past the DAG fork
+static const int DAG_PROTO_VERSION = 50000;
+
 // peers below this are dropped once the mergeset fork is active
 static const int MERGESET_PROTO_VERSION = 50100;
 
