@@ -644,14 +644,12 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
             "X-Content-Type-Options: nosniff\r\n"
             "X-Frame-Options: DENY\r\n"
             "Content-Security-Policy: default-src 'none'\r\n"
-            "\r\n"
-            "%s",
+            "\r\n",
         nStatus,
         cStatus,
         rfc1123Time().c_str(),
         keepalive ? "keep-alive" : "close",
-        strMsg.size(),
-        strMsg.c_str());
+        strMsg.size()) + strMsg; // strprintf caps its output at 2 MB
 }
 
 int ReadHTTPStatus(std::basic_istream<char>& stream, int &proto)
