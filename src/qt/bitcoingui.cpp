@@ -5,6 +5,7 @@
  * The Bitcoin Developers 2011-2012
  */
 #include "bitcoingui.h"
+#include "finality.h"
 #include "smessage.h"
 #include "transactiontablemodel.h"
 #include "addressbookpage.h"
@@ -1821,7 +1822,14 @@ void BitcoinGUI::updateStakingIcon()
 
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_on").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
         if (nBestHeight >= FORK_HEIGHT_DAG)
-            labelStakingIcon->setToolTip(tr("Staking for finality.<br>Your weight is %1<br>Blocks come from mining; stake votes on finality.").arg(nWeight));
+        {
+            const int nEpoch = GetEpochForHeight(nBestHeight);
+            const int nVoted = GetFinalityVoteSchedule().VotedEpoch();
+            QString strVote = nVoted == nEpoch ? tr("Voted this epoch (%1).").arg(nEpoch)
+                            : nVoted >= 0 ? tr("Last vote: epoch %1 (now %2).").arg(nVoted).arg(nEpoch)
+                                          : tr("Waiting for the next epoch boundary to vote.");
+            labelStakingIcon->setToolTip(tr("Voting on finality.<br>%1<br>Your weight is %2").arg(strVote).arg(nWeight));
+        }
         else
             labelStakingIcon->setToolTip(tr("Staking.<br>Your weight is %1<br>Network weight is %2<br>Expected time to earn reward is %3").arg(nWeight).arg(nNetworkWeight).arg(text));
     }
@@ -1829,7 +1837,7 @@ void BitcoinGUI::updateStakingIcon()
     {
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_off").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
         if (pwalletMain && pwalletMain->IsLocked())
-            labelStakingIcon->setToolTip(tr("Not staking because wallet is locked"));
+            labelStakingIcon->setToolTip(tr("Wallet is locked. Unlock it for staking (Settings > Unlock Wallet) to vote and earn rewards."));
         else if (!fHasPeers)
             labelStakingIcon->setToolTip(tr("Not staking because wallet is offline"));
         else if (IsInitialBlockDownload())
