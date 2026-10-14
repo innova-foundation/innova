@@ -1,0 +1,34 @@
+Hard fork at block 10,703,940. Every node, pool, exchange and wallet must upgrade before that block; after it, v5.1 nodes drop older peers.
+
+- Side blocks count: transactions in merged side blocks are applied by the block that merges them, and blue side blocks' miners are paid. Pools add an `IPAY` payee commitment (`-mergesetpayee`) to be paid for side blocks.
+- New emission from the fork: a 6-month ramp from 864 to 2,300 INN a day, then halving every 2 years down to 700 INN a day, until the 18M cap.
+- Finality voting pays in proportion to stake. When no collateral node is paid, its share goes to stakers instead of being burned.
+- Each coinbase commits to the transactions it accepted and to a running UTXO hash (`IACC`).
+- GHOSTDAG uses a fixed k with a full k-cluster check; difficulty uses a 300-block median-time window and blocks may be at most 2 minutes ahead; blocks are capped by mass (bytes plus a per-output cost); reorgs deeper than 24 hours are refused (`-allowdeepreorg` to recover).
+- Mempool: fee-rate eviction and replace-by-fee (`-mempoolreplacement`); miners pick transactions by fee-weighted random draw so parallel blocks overlap less.
+- Optional header and coinbase sync ahead of block bodies (`-dagheaderssync`, off by default).
+- New `innova-cli` RPC client in every package; the `-cli` packages now ship `innovad` and `innova-cli`.
+- Windows installer (`win64-setup.exe`): Start menu and desktop shortcuts, firewall rule, uninstaller; wallets are never touched.
+- Nodes stay synced: a wallet no longer rebroadcasts a conflicted spend (which got it banned), stale spends no longer get peers banned, and pre-v5 peers are dropped.
+- Much lower CPU: stale side tips no longer trigger a full DAG reorder, and `getinfo` is several times faster for pools.
+- The status bar shows the real connection and sync state.
+- Wallets no longer rebuild the name index after a crash; full rebuilds are about 4x faster.
+- `getblock` lists `mergedblocks`, `mergesetacceptedtx` and `mergesetskippedtx`; `getrawtransaction` shows `includedin`.
+- Deterministic transaction signing (RFC 6979 nonces).
+- New `abandontransaction` and `consolidate` RPCs, with matching wallet actions.
+- Large wallets no longer freeze the GUI; large RPC replies no longer crash the node.
+- The staking tooltip shows vote status and how to unlock.
+- Assume-valid moved to block 8,300,000 for faster sync.
+- Peers are found via seed.innova-foundation.com; dead VPS seeds removed.
+- Finality hardening at block 10,703,940: a 120-block vote window, equivocating voters excluded from settlement, a stake quorum for HARD finality, and voters grouped by controlling key.
+- The wallet shows finality status labels, a finality reward transaction type, and a warning when finality stalls.
+- Several nodes can share one IP on different ports.
+- Tor v3 addresses (BIP155 addrv2).
+- A reachability index speeds up DAG ancestry checks.
+- Legacy network alerts and `sendalert` removed.
+- Warnings show as plain text; the RPC console warns about scam commands.
+- Finality evidence survives reorgs.
+- DAGKNIGHT determinism tests.
+- Nyx Messenger: conversation list, unread counts, send on Enter, messaging toggle in Options.
+- Nyx Messenger: emoji picker, clickable links with a confirm, link cards fetched by the sender over Tor and carried inside the encrypted message, sender-only card removal.
+- Nyx Messenger safety: recovery-phrase and key send guard, scam warning banner, message requests with accept/block, tracking-parameter stripping, lookalike-domain warnings.
