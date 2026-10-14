@@ -592,6 +592,7 @@ jobs:
             mingw-w64-ucrt-x86_64-libtiff
             mingw-w64-ucrt-x86_64-libwebp
             mingw-w64-ucrt-x86_64-protobuf
+            mingw-w64-ucrt-x86_64-nsis
             make
             git
 
@@ -722,6 +723,9 @@ jobs:
           cd ..
           "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64.zip "$PKGDIR"/*
           test -s innova-${{ needs.get-version.outputs.version }}-win64.zip
+          (cd share && makensis -V2 -DVERSION=${{ needs.get-version.outputs.version }} \
+            "-DPKGDIR=..\\$PKGDIR" "-DOUTFILE=..\\innova-${{ needs.get-version.outputs.version }}-win64-setup.exe" setup.nsi)
+          test -s innova-${{ needs.get-version.outputs.version }}-win64-setup.exe
           CLIDIR="innova-${{ needs.get-version.outputs.version }}-win64-cli"
           mkdir -p "$CLIDIR"
           cp "$PKGDIR/innovad.exe" "$CLIDIR/"
@@ -734,6 +738,7 @@ jobs:
           name: innova-win64
           path: |
             innova-${{ needs.get-version.outputs.version }}-win64.zip
+            innova-${{ needs.get-version.outputs.version }}-win64-setup.exe
             innova-${{ needs.get-version.outputs.version }}-win64-cli.zip
           if-no-files-found: error
 
@@ -1196,6 +1201,7 @@ jobs:
             "innova-${VERSION}-linux-aarch64-qt.tar.gz"
             "innova-${VERSION}-macOS-arm64.dmg"
             "innova-${VERSION}-win64.zip"
+            "innova-${VERSION}-win64-setup.exe"
             "innova-${VERSION}-ubuntu2204-x86_64-cli.tar.gz"
             "innova-${VERSION}-ubuntu2404-x86_64-cli.tar.gz"
             "innova-${VERSION}-ubuntu2604-x86_64-cli.tar.gz"

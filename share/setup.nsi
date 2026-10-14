@@ -1,163 +1,129 @@
-Name NovaCoin
+Unicode true
+!ifndef VERSION
+  !define VERSION 0.0.0.0
+!endif
+!ifndef PKGDIR
+  !define PKGDIR ..\release
+!endif
+!ifndef OUTFILE
+  !define OUTFILE innova-${VERSION}-win64-setup.exe
+!endif
 
-RequestExecutionLevel highest
+!define APP Innova
+!define COMPANY "Innova Foundation"
+!define URL https://innova-foundation.com
+!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Innova"
+
+Name "${APP} ${VERSION}"
+OutFile "${OUTFILE}"
+InstallDir "$PROGRAMFILES64\${APP}"
+InstallDirRegKey HKLM "Software\${APP}" Path
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
+ShowInstDetails show
+ShowUninstDetails show
+BrandingText "${APP} ${VERSION}"
 
-# General Symbol Definitions
-!define REGKEY "SOFTWARE\$(^Name)"
-!define VERSION 0.3.0
-!define COMPANY "NovaCoin project"
-!define URL http://www.novacoin.ru/
+VIProductVersion ${VERSION}
+VIAddVersionKey ProductName "${APP}"
+VIAddVersionKey ProductVersion "${VERSION}"
+VIAddVersionKey CompanyName "${COMPANY}"
+VIAddVersionKey FileVersion "${VERSION}"
+VIAddVersionKey FileDescription "${APP} wallet installer"
+VIAddVersionKey LegalCopyright "MIT License"
 
-# MUI Symbol Definitions
-!define MUI_ICON "../share/pixmaps/novacoin.ico"
-!define MUI_WELCOMEFINISHPAGE_BITMAP "../share/pixmaps/nsis-wizard.bmp"
-!define MUI_HEADERIMAGE
-!define MUI_HEADERIMAGE_RIGHT
-!define MUI_HEADERIMAGE_BITMAP "../share/pixmaps/nsis-header.bmp"
-!define MUI_FINISHPAGE_NOAUTOCLOSE
-!define MUI_STARTMENUPAGE_REGISTRY_ROOT HKLM
-!define MUI_STARTMENUPAGE_REGISTRY_KEY ${REGKEY}
-!define MUI_STARTMENUPAGE_REGISTRY_VALUENAME StartMenuGroup
-!define MUI_STARTMENUPAGE_DEFAULTFOLDER NovaCoin
-#!define MUI_FINISHPAGE_RUN $INSTDIR\novacoin-qt.exe
-!define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
-!define MUI_UNWELCOMEFINISHPAGE_BITMAP "../share/pixmaps/nsis-wizard.bmp"
-!define MUI_UNFINISHPAGE_NOAUTOCLOSE
+!define MUI_ICON "pixmaps\innova.ico"
+!define MUI_UNICON "pixmaps\innova.ico"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_TEXT "Start ${APP}"
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchUnelevated
 
-# Included files
-!include Sections.nsh
 !include MUI2.nsh
+!include x64.nsh
 
-# Variables
-Var StartMenuGroup
-
-# Installer pages
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "..\COPYING"
 !insertmacro MUI_PAGE_DIRECTORY
-!insertmacro MUI_PAGE_STARTMENU Application $StartMenuGroup
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
-
-# Installer languages
 !insertmacro MUI_LANGUAGE English
 
-# Installer attributes
-OutFile novacoin-0.3.0-win32-setup.exe
-InstallDir $PROGRAMFILES\NovaCoin
-CRCCheck on
-XPStyle on
-BrandingText " "
-ShowInstDetails show
-VIProductVersion 0.3.0.0
-VIAddVersionKey ProductName NovaCoin
-VIAddVersionKey ProductVersion "${VERSION}"
-VIAddVersionKey CompanyName "${COMPANY}"
-VIAddVersionKey CompanyWebsite "${URL}"
-VIAddVersionKey FileVersion "${VERSION}"
-VIAddVersionKey FileDescription ""
-VIAddVersionKey LegalCopyright ""
-InstallDirRegKey HKCU "${REGKEY}" Path
-ShowUninstDetails show
-
-# Installer sections
-Section -Main SEC0000
-    SetOutPath $INSTDIR
-    SetOverwrite on
-    #File ../release/novacoin-qt.exe
-    File /oname=license.txt ../COPYING
-    File /oname=readme.txt ../doc/README_windows.txt
-    SetOutPath $INSTDIR\daemon
-    File ../src/novacoind.exe
-    SetOutPath $INSTDIR\src
-    File /r /x *.exe /x *.o ../src\*.*
-    SetOutPath $INSTDIR
-    WriteRegStr HKCU "${REGKEY}\Components" Main 1
-
-    # Remove old wxwidgets-based-bitcoin executable and locales:
-    #Delete /REBOOTOK $INSTDIR\novacoin.exe
-    #RMDir /r /REBOOTOK $INSTDIR\locale
-SectionEnd
-
-Section -post SEC0001
-    WriteRegStr HKCU "${REGKEY}" Path $INSTDIR
-    SetOutPath $INSTDIR
-    WriteUninstaller $INSTDIR\uninstall.exe
-    !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
-    CreateDirectory $SMPROGRAMS\$StartMenuGroup
-    CreateShortcut "$SMPROGRAMS\$StartMenuGroup\Uninstall NovaCoin.lnk" $INSTDIR\uninstall.exe
-    !insertmacro MUI_STARTMENU_WRITE_END
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayName "$(^Name)"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayVersion "${VERSION}"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" Publisher "${COMPANY}"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" URLInfoAbout "${URL}"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayIcon $INSTDIR\uninstall.exe
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" UninstallString $INSTDIR\uninstall.exe
-    WriteRegDWORD HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" NoModify 1
-    WriteRegDWORD HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" NoRepair 1
-
-    # bitcoin: URI handling disabled for 0.6.0
-    #    WriteRegStr HKCR "bitcoin" "URL Protocol" ""
-    #    WriteRegStr HKCR "bitcoin" "" "URL:Bitcoin"
-    #    WriteRegStr HKCR "bitcoin\DefaultIcon" "" $INSTDIR\bitcoin-qt.exe
-    #    WriteRegStr HKCR "bitcoin\shell\open\command" "" '"$INSTDIR\bitcoin-qt.exe" "$$1"'
-SectionEnd
-
-# Macro for selecting uninstaller sections
-!macro SELECT_UNSECTION SECTION_NAME UNSECTION_ID
-    Push $R0
-    ReadRegStr $R0 HKCU "${REGKEY}\Components" "${SECTION_NAME}"
-    StrCmp $R0 1 0 next${UNSECTION_ID}
-    !insertmacro SelectSection "${UNSECTION_ID}"
-    GoTo done${UNSECTION_ID}
-next${UNSECTION_ID}:
-    !insertmacro UnselectSection "${UNSECTION_ID}"
-done${UNSECTION_ID}:
-    Pop $R0
+!macro RequireClosed EXE
+  nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${EXE}" /NH | find /I "${EXE}"'
+  Pop $0
+  ${If} $0 == 0
+    MessageBox MB_OK|MB_ICONEXCLAMATION "${EXE} is running. Close it and run setup again."
+    Abort
+  ${EndIf}
 !macroend
 
-# Uninstaller sections
-Section /o -un.Main UNSEC0000
-    #Delete /REBOOTOK $INSTDIR\novacoin-qt.exe
-    Delete /REBOOTOK $INSTDIR\license.txt
-    Delete /REBOOTOK $INSTDIR\readme.txt
-    RMDir /r /REBOOTOK $INSTDIR\daemon
-    RMDir /r /REBOOTOK $INSTDIR\src
-    DeleteRegValue HKCU "${REGKEY}\Components" Main
-SectionEnd
-
-Section -un.post UNSEC0001
-    DeleteRegKey HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)"
-    Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\Uninstall NovaCoin.lnk"
-    #Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\Bitcoin.lnk"
-    #Delete /REBOOTOK "$SMSTARTUP\Bitcoin.lnk"
-    Delete /REBOOTOK $INSTDIR\uninstall.exe
-    Delete /REBOOTOK $INSTDIR\debug.log
-    Delete /REBOOTOK $INSTDIR\db.log
-    DeleteRegValue HKCU "${REGKEY}" StartMenuGroup
-    DeleteRegValue HKCU "${REGKEY}" Path
-    DeleteRegKey /IfEmpty HKCU "${REGKEY}\Components"
-    DeleteRegKey /IfEmpty HKCU "${REGKEY}"
-    DeleteRegKey HKCR "novacoin"
-    RmDir /REBOOTOK $SMPROGRAMS\$StartMenuGroup
-    RmDir /REBOOTOK $INSTDIR
-    Push $R0
-    StrCpy $R0 $StartMenuGroup 1
-    StrCmp $R0 ">" no_smgroup
-no_smgroup:
-    Pop $R0
-SectionEnd
-
-# Installer functions
 Function .onInit
-    InitPluginsDir
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "${APP} requires 64-bit Windows."
+    Abort
+  ${EndIf}
+  SetRegView 64
+  !insertmacro RequireClosed Innova.exe
+  !insertmacro RequireClosed innovad.exe
 FunctionEnd
 
-# Uninstaller functions
-Function un.onInit
-    ReadRegStr $INSTDIR HKCU "${REGKEY}" Path
-    !insertmacro MUI_STARTMENU_GETFOLDER Application $StartMenuGroup
-    !insertmacro SELECT_UNSECTION Main ${UNSEC0000}
+# The installer runs elevated; start the wallet as the signed-in user.
+Function LaunchUnelevated
+  Exec '"$WINDIR\explorer.exe" "$INSTDIR\Innova.exe"'
 FunctionEnd
+
+Section "Innova" SecMain
+  SectionIn RO
+  SetOutPath "$INSTDIR"
+  SetOverwrite on
+  File "${PKGDIR}\Innova.exe"
+  File "${PKGDIR}\innovad.exe"
+  File /oname=COPYING.txt "..\COPYING"
+
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="Innova"'
+  nsExec::Exec 'netsh advfirewall firewall add rule name="Innova" dir=in action=allow program="$INSTDIR\Innova.exe" enable=yes profile=any'
+  nsExec::Exec 'netsh advfirewall firewall add rule name="Innova" dir=in action=allow program="$INSTDIR\innovad.exe" enable=yes profile=any'
+
+  SetShellVarContext all
+  CreateDirectory "$SMPROGRAMS\${APP}"
+  CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\Innova.exe"
+  CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\Innova.exe"
+
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  WriteRegStr HKLM "Software\${APP}" Path "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTKEY}" DisplayName "${APP}"
+  WriteRegStr HKLM "${UNINSTKEY}" DisplayVersion "${VERSION}"
+  WriteRegStr HKLM "${UNINSTKEY}" Publisher "${COMPANY}"
+  WriteRegStr HKLM "${UNINSTKEY}" URLInfoAbout "${URL}"
+  WriteRegStr HKLM "${UNINSTKEY}" DisplayIcon "$INSTDIR\Innova.exe"
+  WriteRegStr HKLM "${UNINSTKEY}" UninstallString '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKLM "${UNINSTKEY}" InstallLocation "$INSTDIR"
+  WriteRegDWORD HKLM "${UNINSTKEY}" NoModify 1
+  WriteRegDWORD HKLM "${UNINSTKEY}" NoRepair 1
+SectionEnd
+
+Function un.onInit
+  SetRegView 64
+  !insertmacro RequireClosed Innova.exe
+  !insertmacro RequireClosed innovad.exe
+FunctionEnd
+
+# Wallets and chain data in %APPDATA%\Innova are never touched.
+Section "Uninstall"
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="Innova"'
+  Delete "$INSTDIR\Innova.exe"
+  Delete "$INSTDIR\innovad.exe"
+  Delete "$INSTDIR\COPYING.txt"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir "$INSTDIR"
+  SetShellVarContext all
+  Delete "$SMPROGRAMS\${APP}\${APP}.lnk"
+  Delete "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk"
+  RMDir "$SMPROGRAMS\${APP}"
+  Delete "$DESKTOP\${APP}.lnk"
+  DeleteRegKey HKLM "${UNINSTKEY}"
+  DeleteRegKey HKLM "Software\${APP}"
+SectionEnd
