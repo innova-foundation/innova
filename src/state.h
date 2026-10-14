@@ -24,6 +24,7 @@ enum
 {
     NODE_NETWORK        = (1 << 0),
     SMSG_RELAY          = (1 << 4),
+    NODE_DAGHEADERS     = (1 << 7), // serves getdaghdrs
 };
 
 extern int nBloomFilterElements;

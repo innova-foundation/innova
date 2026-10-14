@@ -11,6 +11,7 @@
 #include "finality.h"
 #include "subsidy.h"
 #include "dag.h"
+#include "dagheaders.h"
 #include "blockprofile.h"
 #include "base58.h"
 #include "net.h"
@@ -2610,6 +2611,18 @@ Value getdaginfo(const Array& params, bool fHelp)
         result.push_back(Pair("ordering_algorithm", std::string("GHOSTDAG")));
 
     result.push_back(Pair("ghostdag_k", GHOSTDAG_K));
+
+    {
+        Object dagHeaders;
+        dagHeaders.push_back(Pair("sync", fDAGHeadersSync));
+        dagHeaders.push_back(Pair("serve", fDAGHeadersServe));
+        dagHeaders.push_back(Pair("held", (int)DAGHeaderSkeleton().Size()));
+        dagHeaders.push_back(Pair("window", (int)DAGHeaderSkeleton().MaxEntries()));
+        dagHeaders.push_back(Pair("top_height", DAGHeaderSkeleton().TopHeight()));
+        dagHeaders.push_back(Pair("assume_valid_from_headers",
+                                  DAGHeadersHaveAssumeValidAnchor(GetPrivacyVNextAssumeValidHash())));
+        result.push_back(Pair("dagheaders", dagHeaders));
+    }
 
     // Epoch and pruning info
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));

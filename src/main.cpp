@@ -37,6 +37,7 @@ static bool GetSpentOutputs(const CTransaction& tx, const MapPrevTx* pInputs, CT
 
 #include <memory>
 #include "dag.h"
+#include "dagheaders.h"
 #include "blockprofile.h"
 #include "privacy_vnext_ffi.h"
 #include "privacy_vnext_store.h"
@@ -3192,7 +3193,7 @@ bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
     // first blocks connect, and a cached miss would disable the gate for the whole run.
     std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(hashAssumeValid);
     if (mi == mapBlockIndex.end() || mi->second == NULL)
-        return false;
+        return DAGHeadersIsAssumeValidAncestor(hashAssumeValid, pindex);
     const CBlockIndex* pAssumeValid = mi->second;
     // Height first: GetAncestor above the tip would walk the whole chain to answer no.
     if (pindex->nHeight > pAssumeValid->nHeight)
@@ -3506,6 +3507,11 @@ static uint256 ResolvePrivacyVNextAssumeValid()
                    hashAssumeValid.ToString().substr(0, 16).c_str());
     }
     return hashAssumeValid;
+}
+
+uint256 GetPrivacyVNextAssumeValidHash()
+{
+    return ResolvePrivacyVNextAssumeValid();
 }
 
 // Whether an assume-valid hash is compiled in or configured at all.
@@ -19512,6 +19518,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         ProcessMessageFinality(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
 
+        ProcessDAGHeadersMessage(pfrom, strCommand, vRecv);
+
         // DAG tips exchange
         if (strCommand == "getdagtips")
         {
@@ -19757,6 +19765,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         return true;
 
     RequestBlockDataRepair(pto);
+    SendDAGHeadersRequest(pto);
 
     bool pingSend = false;
     if (pto->fPingQueued) {

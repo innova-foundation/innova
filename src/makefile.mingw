@@ -159,6 +159,7 @@ OBJS= \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
+    obj/dagheaders.o \
     obj/mstimestamp.o \
     obj/muhash.o \
     obj/blockprofile.o \

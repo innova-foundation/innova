@@ -505,6 +505,12 @@ public:
     CBlockIndex* pindexAncestryFrom;
     uint256 hashAncestryStop;
 
+    // getdaghdrs: open request time, exhausted flag, serve-rate bucket.
+    int64_t nDAGHeadersRequestMs;
+    bool fDAGHeadersExhausted;
+    int64_t nDAGHeadersServeTokens;
+    int64_t nDAGHeadersServeTimeMs;
+
     SecMsgNode smsgData;
 
     // Ping time measurement:
@@ -552,6 +558,10 @@ public:
         }
         nAskForScanFrom = 0;
         nAncestryFillNext = 0;
+        nDAGHeadersRequestMs = 0;
+        fDAGHeadersExhausted = false;
+        nDAGHeadersServeTokens = 0;
+        nDAGHeadersServeTimeMs = 0;
         nAncestryFillRequested = 0;
         pindexAncestryFrom = NULL;
         hashAncestryStop = 0;

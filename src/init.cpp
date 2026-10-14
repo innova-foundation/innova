@@ -30,6 +30,7 @@
 #include "dandelion.h"
 #include "finality.h"
 #include "dag.h"
+#include "dagheaders.h"
 #include "activationdump.h"
 #include "privacy_vnext_ffi.h"
 
@@ -622,6 +623,9 @@ std::string HelpMessage()
         "  -hybridspv             " + _("Run in hybrid SPV mode (optimized for constrained devices like Pi)") + "\n" +
         "  -maxheaders=<n>       " + _("Maximum block headers to keep in memory in SPV mode (default: 50000)") + "\n" +
         "  -spvutxocachesize=<n> " + _("Maximum SPV UTXO cache entries (default: 10000, Pi: 1000)") + "\n" +
+        "  -dagheaderssync        " + _("Fetch headers with their coinbase and DAG parents ahead of block bodies from peers that serve them (default: 0)") + "\n" +
+        "  -dagheadersserve       " + _("Serve headers with their coinbase and DAG parents to peers (default: 1)") + "\n" +
+        "  -dagheaderswindow=<n>  " + _("Maximum headers held ahead of block bodies by -dagheaderssync (default: 100000)") + "\n" +
         "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
         "  -mixingpoolsize=<n>   " + _("NullSend mixing pool size (2-16, default: 5)") + "\n" +
         "  -mixdir=<onion:port>   " + _("A NullSend v2008 announcement directory; may be given more than once. Seats fetch rounds from these and coordinators upload to them") + "\n" +
@@ -1849,6 +1853,14 @@ bool AppInit2()
     // SMSG_RELAY Node Enum
     if (fNoSmsg)
         nLocalServices &= ~(SMSG_RELAY);
+
+    // Off by default: a client run has not been soaked on the fleet yet.
+    fDAGHeadersSync = GetBoolArg("-dagheaderssync", false) && !fSPVMode;
+    fDAGHeadersServe = GetBoolArg("-dagheadersserve", true) && !fSPVMode;
+    InitDAGHeaders((size_t)std::max<int64_t>(MAX_DAGHEADERS_PER_MSG,
+        std::min<int64_t>(MAX_DAGHEADERS_WINDOW, GetArg("-dagheaderswindow", DEFAULT_DAGHEADERS_WINDOW))));
+    if (fDAGHeadersServe)
+        nLocalServices |= NODE_DAGHEADERS;
 
     // Anonymous Ring Signatures ~ I n n o v a - v3.0.0.0
     if (initialiseRingSigs() != 0)

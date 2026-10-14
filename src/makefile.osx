@@ -197,6 +197,7 @@ OBJS= \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
+    obj/dagheaders.o \
     obj/mstimestamp.o \
     obj/muhash.o \
     obj/blockprofile.o \
@@ -374,7 +375,8 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/note_vote_reward_tests.o \
     obj/test/assume_valid_gate_tests.o \
     obj/test/mergeset_accept_tests.o \
-    obj/test/mempool_rbf_tests.o
+    obj/test/mempool_rbf_tests.o \
+    obj/test/dagheaders_tests.o
 
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.

@@ -177,6 +177,7 @@ OBJS= \
     obj/finality.o \
     obj/finality_note.o \
     obj/dag.o \
+    obj/dagheaders.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \

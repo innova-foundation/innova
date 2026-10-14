@@ -341,6 +341,7 @@ OBJS= \
     obj/privacy_vnext_builder.o \
     obj/subsidy.o \
     obj/dag.o \
+    obj/dagheaders.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
@@ -434,6 +435,7 @@ OBJS= \
     obj/privacy_vnext_builder.o \
     obj/subsidy.o \
     obj/dag.o \
+    obj/dagheaders.o \
     obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \

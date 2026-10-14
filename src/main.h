@@ -1561,6 +1561,7 @@ bool IsPrivacyVNextAssumeValidAncestorOf(const uint256& hashAssumeValid,
 /** Whether this block is an ancestor of the configured assume-valid hash, and so may skip
  *  its payloads' proof verdicts. Ancestry, never height. */
 bool IsPrivacyVNextAssumeValidAncestor(const CBlockIndex* pindex);
+uint256 GetPrivacyVNextAssumeValidHash();
 /** Whether an assume-valid hash is configured on this network at all. */
 bool IsPrivacyVNextAssumeValidConfigured();
 
