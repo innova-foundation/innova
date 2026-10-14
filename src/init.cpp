@@ -715,6 +715,7 @@ std::string HelpMessage()
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
         "  -blockmaxsize=<n>      "   + _("Set maximum block size in bytes (default: 250000)") + "\n" +
         "  -blockprioritysize=<n> "   + _("Set maximum size of high-priority/low-fee transactions in bytes (default: 27000)") + "\n" +
+        "  -minerrandomselect     "   + _("Order mined transactions by fee-weighted random sampling (default: 1)") + "\n" +
         "  -maxorphantx=<n>       "   + strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS) + "\n" +
         "  -maxorphanblocks=<n>   "   + strprintf(_("Keep at most <n> unconnectable blocks in memory (default: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS) + "\n" +
         "  -maxorphanmem=<n>      "   + strprintf(_("Keep the unconnectable block pool below <n> megabytes (default: %u, minimum: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS_MEM, MIN_MAX_ORPHAN_BLOCKS_MEM) + "\n" +

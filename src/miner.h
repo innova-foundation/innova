@@ -13,6 +13,9 @@
 CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake=false, int64_t* pFees = 0,
                        int* pnCNPaymentOut = 0);
 
+/** Random sort key for tx selection; dUniform in (0,1). */
+double FeeWeightedSelectionKey(double dFeePerKb, double dUniform);
+
 /** Modify the extranonce in a block */
 void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& nExtraNonce);
 

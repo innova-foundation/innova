@@ -1,6 +1,10 @@
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <limits>
 #include <memory>
+#include <random>
+#include <set>
 
 #include "dag.h"
 #include "init.h"
@@ -419,6 +423,48 @@ BOOST_AUTO_TEST_CASE(template_parent_leaf_walk_matches_full_scan)
     for (CBlockIndex* p : vAdded)
         delete p;
     BOOST_CHECK(leavesMatch());
+}
+
+BOOST_AUTO_TEST_CASE(fee_weighted_selection_key)
+{
+    const double dMax = std::numeric_limits<double>::max();
+    BOOST_CHECK_EQUAL(FeeWeightedSelectionKey(0.0, 0.5), 0.0);
+    BOOST_CHECK_EQUAL(FeeWeightedSelectionKey(-7.0, 0.5), -7.0);
+    BOOST_CHECK_EQUAL(FeeWeightedSelectionKey(dMax, 0.5), dMax);
+    BOOST_CHECK(FeeWeightedSelectionKey(1e300, 1.0 - 1e-16) < dMax);
+    BOOST_CHECK(FeeWeightedSelectionKey(2.0, 0.3) > FeeWeightedSelectionKey(1.0, 0.3));
+
+    std::mt19937_64 rng(42);
+    std::uniform_real_distribution<double> uni(0.0, 1.0);
+    auto draw = [&]() { double u; do { u = uni(rng); } while (u <= 0.0); return u; };
+
+    int nHeavyFirst = 0, nTopFirst = 0;
+    const int nTrials = 20000;
+    for (int i = 0; i < nTrials; ++i)
+    {
+        if (FeeWeightedSelectionKey(3000.0, draw()) > FeeWeightedSelectionKey(1000.0, draw()))
+            ++nHeavyFirst;
+        if (FeeWeightedSelectionKey(100000.0, draw()) > FeeWeightedSelectionKey(1000.0, draw()))
+            ++nTopFirst;
+    }
+    BOOST_CHECK_CLOSE((double)nHeavyFirst / nTrials, 0.75, 3.0);
+    BOOST_CHECK((double)nTopFirst / nTrials > 0.98);
+
+    std::vector<std::pair<double, int> > a, b;
+    for (int i = 0; i < 100; ++i)
+    {
+        a.push_back(std::make_pair(FeeWeightedSelectionKey(1000.0, draw()), i));
+        b.push_back(std::make_pair(FeeWeightedSelectionKey(1000.0, draw()), i));
+    }
+    std::sort(a.rbegin(), a.rend());
+    std::sort(b.rbegin(), b.rend());
+    std::set<int> topA;
+    for (int i = 0; i < 20; ++i)
+        topA.insert(a[i].second);
+    int nOverlap = 0;
+    for (int i = 0; i < 20; ++i)
+        nOverlap += topA.count(b[i].second);
+    BOOST_CHECK(nOverlap < 12);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

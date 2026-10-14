@@ -14,6 +14,7 @@
 #include "subsidy.h"
 #include "namecoin.h"
 
+#include <cmath>
 #include <limits>
 #include <memory>
 
@@ -150,7 +151,7 @@ uint64_t nLastBlockSize = 0;
 int64_t nLastCoinStakeSearchInterval = 0;
 
 // We want to sort transactions by priority and fee, so:
-typedef boost::tuple<double, double, int64_t, CTransaction*> TxPriority;
+typedef boost::tuple<double, double, int64_t, CTransaction*, double> TxPriority;
 class TxPriorityCompare
 {
     bool byFee;
@@ -160,9 +161,9 @@ public:
     {
         if (byFee)
         {
-            if (a.get<1>() == b.get<1>())
+            if (a.get<4>() == b.get<4>())
                 return a.get<0>() < b.get<0>();
-            return a.get<1>() < b.get<1>();
+            return a.get<4>() < b.get<4>();
         }
         else
         {
@@ -172,6 +173,16 @@ public:
         }
     }
 };
+
+// Efraimidis-Spirakis key: ordering by it samples without replacement, weight = fee rate.
+double FeeWeightedSelectionKey(double dFeePerKb, double dUniform)
+{
+    if (!(dFeePerKb > 0) || dFeePerKb == std::numeric_limits<double>::max())
+        return dFeePerKb;
+    const double dCap = std::nextafter(std::numeric_limits<double>::max(), 0.0);
+    const double dKey = dFeePerKb / -std::log(dUniform);
+    return (dKey > 0 && dKey < dCap) ? dKey : dCap;
+}
 
 static CScript CoinbaseHeightScript(int nHeight)
 {
@@ -1034,6 +1045,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
 
         // This vector will be sorted into a priority queue:
         vector<TxPriority> vecPriority;
+        const bool fRandomSelect = GetBoolArg("-minerrandomselect", true);
+        auto SelectionKey = [fRandomSelect](double dFeePerKb) {
+            if (!fRandomSelect)
+                return dFeePerKb;
+            const uint64_t nRange = 1ULL << 53;
+            return FeeWeightedSelectionKey(dFeePerKb, (GetRand(nRange) + 0.5) / (double)nRange);
+        };
         vecPriority.reserve(mempool.mapTx.size());
         for (map<uint256, CTransaction>::iterator mi = mempool.mapTx.begin(); mi != mempool.mapTx.end(); ++mi)
         {
@@ -1238,7 +1256,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                 porphan->dFeePerKb = dFeePerKb;
             }
             else
-                vecPriority.push_back(TxPriority(dPriority, dFeePerKb, nFee, &(*mi).second));
+                vecPriority.push_back(TxPriority(dPriority, dFeePerKb, nFee, &(*mi).second,
+                                                 SelectionKey(dFeePerKb)));
         }
 
         // Collect transactions into block
@@ -1492,7 +1511,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                         porphan->setDependsOn.erase(hash);
                         if (porphan->setDependsOn.empty())
                         {
-                            vecPriority.push_back(TxPriority(porphan->dPriority, porphan->dFeePerKb, porphan->nFee, porphan->ptx));
+                            vecPriority.push_back(TxPriority(porphan->dPriority, porphan->dFeePerKb, porphan->nFee, porphan->ptx,
+                                                             SelectionKey(porphan->dFeePerKb)));
                             std::push_heap(vecPriority.begin(), vecPriority.end(), comparer);
                         }
                     }
