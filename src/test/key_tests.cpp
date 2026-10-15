@@ -145,4 +145,50 @@ BOOST_AUTO_TEST_CASE(key_test1)
     }
 }
 
+// RFC 6979 deterministic ECDSA nonces. Vectors derived with an independent
+// python-ecdsa-style RFC 6979 reference (HMAC-SHA256 DRBG over secp256k1),
+// whose DRBG was first confirmed against the published RFC 6979 A.2.5
+// P-256/SHA-256 vector.
+BOOST_AUTO_TEST_CASE(rfc6979_deterministic)
+{
+    vector<unsigned char> vchPriv = ParseHex("ebb2c082fd7727890a28ac82f6bdf97bad8de9f5d7c9028692de1a255cad3e0f");
+    CSecret secret(vchPriv.begin(), vchPriv.end());
+    CKey key;
+    BOOST_CHECK(key.SetSecret(secret, true));
+
+    // Raw 32-byte message hash, signed exactly as laid out in memory.
+    vector<unsigned char> rawhash = ParseHex("6ed697fbebf7ba9075a8d15a44db2747dedeeec57625970d75e238d48f851fd2");
+    uint256 hashMsg;
+    memcpy(&hashMsg, &rawhash[0], 32);
+
+    // 1. reproduces the RFC 6979 secp256k1+SHA256 (r,s) vector (low-S DER).
+    vector<unsigned char> sig1;
+    BOOST_CHECK(key.Sign(hashMsg, sig1));
+    BOOST_CHECK_EQUAL(HexStr(sig1),
+        "3045022100a94f137b2463098e36091ee1e1221c8411708583fde933bfc86ec9e51eff945f"
+        "022011e1c55e2fde67c31eb42d788ff84ce3eeafb6d9176d7271a5eb2e637b1eb487");
+
+    // 2. sign-twice is byte-identical, for both the DER and compact forms.
+    vector<unsigned char> sig2;
+    BOOST_CHECK(key.Sign(hashMsg, sig2));
+    BOOST_CHECK(sig1 == sig2);
+    vector<unsigned char> csig1, csig2;
+    BOOST_CHECK(key.SignCompact(hashMsg, csig1));
+    BOOST_CHECK(key.SignCompact(hashMsg, csig2));
+    BOOST_CHECK(csig1 == csig2);
+
+    // 3. the deterministic signature verifies.
+    BOOST_CHECK(key.GetPubKey().Verify(hashMsg, sig1));
+    CPubKey rec;
+    BOOST_CHECK(rec.RecoverCompact(hashMsg, csig1));
+    BOOST_CHECK(rec == key.GetPubKey());
+
+    // 4. an old-style arbitrary-nonce (non-RFC6979, high-S) signature still
+    // verifies: verification is nonce-agnostic, so pre-existing on-chain sigs hold.
+    vector<unsigned char> oldsig = ParseHex(
+        "3045022100d6ff7cc449455b7526a53e8af54930dcd02d71aa0e82a4e8cc24b3ac03589d55"
+        "02207ba40248297825a058649ee8043e64610a4155ec25b6e2c0ab3f83117788a958");
+    BOOST_CHECK(key.GetPubKey().Verify(hashMsg, oldsig));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -22,6 +22,11 @@
 #include "../privacy_vnext_store.h"
 #include "../txdb.h"
 
+#include <openssl/ecdsa.h>
+#include <openssl/bn.h>
+#include <openssl/obj_mac.h>
+#include "../openssl_compat.h"
+
 #ifndef WIN32
 #include <sys/socket.h>
 #include <unistd.h>
@@ -30,6 +35,38 @@
 extern bool fRegTest;
 
 namespace {
+
+// A second, distinct, still-valid ECDSA signature over the same digest: the high-S
+// malleation (s -> n - s). RFC 6979 makes re-signing reproduce the same bytes, so
+// this is how a case obtains an alternative valid signature.
+std::vector<unsigned char> MalleateHighS(const std::vector<unsigned char>& vchSig)
+{
+    std::vector<unsigned char> out;
+    const unsigned char* p = &vchSig[0];
+    ECDSA_SIG* sig = d2i_ECDSA_SIG(NULL, &p, vchSig.size());
+    if (sig == NULL)
+        return out;
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* order = BN_new();
+    EC_GROUP_get_order(group, order, ctx);
+    const BIGNUM *r = NULL, *s = NULL;
+    ECDSA_SIG_get0(sig, &r, &s);
+    BIGNUM* s_new = BN_new();
+    BN_sub(s_new, order, s);
+    ECDSA_SIG_set0(sig, BN_dup(r), s_new);
+    int nSize = i2d_ECDSA_SIG(sig, NULL);
+    if (nSize > 0) {
+        out.resize(nSize);
+        unsigned char* pos = &out[0];
+        i2d_ECDSA_SIG(sig, &pos);
+    }
+    BN_free(order);
+    BN_CTX_free(ctx);
+    EC_GROUP_free(group);
+    ECDSA_SIG_free(sig);
+    return out;
+}
 
 // One RSA key for the suite: generating a 2048-bit key per case buys nothing and
 // costs seconds.
@@ -1009,10 +1046,11 @@ BOOST_AUTO_TEST_CASE(a_prefix_is_frozen_once_and_every_seat_approves_the_same_on
     // That one fails verification before the once-per-seat check is reached. A second
     // valid approval of the same frozen prefix is the case the check exists for: it
     // would replace the approval the round already accepted.
-    std::vector<unsigned char> vchSig0Again;
-    BOOST_REQUIRE(vSeats[0].key.Sign(hashPrefix, vchSig0Again));
-    BOOST_REQUIRE_MESSAGE(vchSig0Again != vchSig0,
-                          "signing is deterministic; this case needs a second valid signature");
+    // RFC 6979 makes re-signing reproduce vchSig0, so the high-S malleation is the
+    // distinct, still-valid second approval this case needs.
+    std::vector<unsigned char> vchSig0Again = MalleateHighS(vchSig0);
+    BOOST_REQUIRE(!vchSig0Again.empty() && vchSig0Again != vchSig0);
+    BOOST_REQUIRE(vSeats[0].pubkey.Verify(hashPrefix, vchSig0Again));
     BOOST_CHECK_MESSAGE(!round.SubmitPrefixSignature(vSeats[0].pubkey, vchSig0Again, &strError),
                         "a second valid approval replaced the one the round accepted");
     BOOST_CHECK_MESSAGE(!round.PrefixAgreed(), "one approval of two agreed the prefix");

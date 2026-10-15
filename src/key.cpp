@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 #include <openssl/obj_mac.h>
 #include <openssl/bn.h>
+#include <openssl/hmac.h>
 #include "openssl_compat.h"
 
 #include "key.h"
@@ -652,9 +653,135 @@ bool CECKey::SetPubKey(const CPubKey &pubkey) {
     return o2i_ECPublicKey(&pkey, &pbegin, pubkey.size());
 }
 
+// HMAC-SHA256; out may alias data (data is consumed before out is written).
+static void rfc6979_hmac(const unsigned char key[32], const unsigned char *data, size_t datalen, unsigned char out[32])
+{
+    unsigned int outlen = 32;
+    HMAC(EVP_sha256(), key, 32, data, datalen, out, &outlen);
+}
+
+// Deterministic ECDSA per RFC 6979 (HMAC-SHA256 DRBG) over secp256k1, built on the
+// OpenSSL primitives already linked. Replaces OpenSSL's random-nonce ECDSA_do_sign so
+// a repeated or biased k can no longer leak the private key. Produces a low-S signature
+// that verifies unchanged; old random-nonce signatures still verify (verify is
+// nonce-agnostic). Returns a new ECDSA_SIG, or NULL on failure.
+static ECDSA_SIG *ECDSA_do_sign_rfc6979(const unsigned char *dgst, int dgstlen, EC_KEY *eckey)
+{
+    ECDSA_SIG *ret = NULL;
+    const BIGNUM *priv = EC_KEY_get0_private_key(eckey);
+    const EC_GROUP *group = EC_KEY_get0_group(eckey);
+    if (priv == NULL || group == NULL)
+        return NULL;
+
+    BN_CTX *ctx = BN_CTX_new();
+    if (ctx == NULL)
+        return NULL;
+    BN_CTX_start(ctx);
+    BIGNUM *order     = BN_CTX_get(ctx);
+    BIGNUM *halforder = BN_CTX_get(ctx);
+    BIGNUM *k         = BN_CTX_get(ctx);
+    BIGNUM *z         = BN_CTX_get(ctx);
+    BIGNUM *r         = BN_CTX_get(ctx);
+    BIGNUM *s         = BN_CTX_get(ctx);
+    BIGNUM *x         = BN_CTX_get(ctx);
+    BIGNUM *kinv      = BN_CTX_get(ctx);
+    BIGNUM *tmp       = BN_CTX_get(ctx);
+    EC_POINT *point   = EC_POINT_new(group);
+
+    unsigned char bx[32], bh[32], V[32], K[32], T[32], hin[97];
+
+    if (tmp != NULL && point != NULL && EC_GROUP_get_order(group, order, ctx)) {
+        BN_rshift1(halforder, order);
+        int qlen = BN_num_bits(order); // 256 for secp256k1
+
+        // int2octets(d): private key as 32-byte big-endian, left-zero-padded.
+        memset(bx, 0, 32);
+        BN_bn2bin(priv, bx + (32 - BN_num_bytes(priv)));
+
+        // z = bits2int(hash), truncated to qlen bits.
+        BN_bin2bn(dgst, dgstlen, z);
+        if (dgstlen * 8 > qlen)
+            BN_rshift(z, z, dgstlen * 8 - qlen);
+
+        // bits2octets(hash) = int2octets(bits2int(hash) mod n).
+        BN_nnmod(tmp, z, order, ctx);
+        memset(bh, 0, 32);
+        BN_bn2bin(tmp, bh + (32 - BN_num_bytes(tmp)));
+
+        // DRBG seed: V = 0x01*32, K = 0x00*32, then two update rounds.
+        memset(V, 0x01, 32);
+        memset(K, 0x00, 32);
+        memcpy(hin, V, 32); hin[32] = 0x00; memcpy(hin + 33, bx, 32); memcpy(hin + 65, bh, 32);
+        rfc6979_hmac(K, hin, 97, K);
+        rfc6979_hmac(K, V, 32, V);
+        memcpy(hin, V, 32); hin[32] = 0x01; memcpy(hin + 33, bx, 32); memcpy(hin + 65, bh, 32);
+        rfc6979_hmac(K, hin, 97, K);
+        rfc6979_hmac(K, V, 32, V);
+
+        for (int iter = 0; iter < 10000 && ret == NULL; iter++) {
+            // One HMAC block = 32 bytes = qlen, so T = HMAC_K(V).
+            rfc6979_hmac(K, V, 32, V);
+            memcpy(T, V, 32);
+            BN_bin2bn(T, 32, k);
+            if (32 * 8 > qlen)
+                BN_rshift(k, k, 32 * 8 - qlen);
+
+            if (!BN_is_zero(k) && BN_cmp(k, order) < 0 &&
+                EC_POINT_mul(group, point, k, NULL, NULL, ctx) &&
+                EC_POINT_get_affine_coordinates_GFp(group, point, x, NULL, ctx)) {
+                BN_nnmod(r, x, order, ctx);                 // r = (k*G).x mod n
+                if (!BN_is_zero(r) && BN_mod_inverse(kinv, k, order, ctx)) {
+                    BN_mod_mul(tmp, r, priv, order, ctx);   // r*d
+                    BN_mod_add(tmp, tmp, z, order, ctx);    // z + r*d
+                    BN_mod_mul(s, kinv, tmp, order, ctx);   // s = k^-1 (z + r*d) mod n
+                    if (!BN_is_zero(s)) {
+                        if (BN_cmp(s, halforder) > 0)       // enforce low S
+                            BN_sub(s, order, s);
+                        ECDSA_SIG *sig = ECDSA_SIG_new();
+                        if (sig != NULL) {
+                            BIGNUM *r_out = BN_dup(r);
+                            BIGNUM *s_out = BN_dup(s);
+                            if (r_out != NULL && s_out != NULL && ECDSA_SIG_set0(sig, r_out, s_out)) {
+                                ret = sig;
+                            } else {
+                                if (r_out) BN_free(r_out);
+                                if (s_out) BN_free(s_out);
+                                ECDSA_SIG_free(sig);
+                            }
+                        }
+                    }
+                }
+            }
+            if (ret == NULL) {
+                // Reseed and draw the next candidate k.
+                memcpy(hin, V, 32); hin[32] = 0x00;
+                rfc6979_hmac(K, hin, 33, K);
+                rfc6979_hmac(K, V, 32, V);
+            }
+        }
+    }
+
+    if (k) BN_clear(k);
+    if (kinv) BN_clear(kinv);
+    if (s) BN_clear(s);
+    if (z) BN_clear(z);
+    if (tmp) BN_clear(tmp);
+    OPENSSL_cleanse(bx, 32);
+    OPENSSL_cleanse(bh, 32);
+    OPENSSL_cleanse(V, 32);
+    OPENSSL_cleanse(K, 32);
+    OPENSSL_cleanse(T, 32);
+    OPENSSL_cleanse(hin, sizeof(hin));
+    if (point != NULL)
+        EC_POINT_free(point);
+    BN_CTX_end(ctx);
+    BN_CTX_free(ctx);
+    return ret;
+}
+
 bool CECKey::Sign(const uint256 &hash, std::vector<unsigned char>& vchSig) {
     vchSig.clear();
-    ECDSA_SIG *sig = ECDSA_do_sign((unsigned char*)&hash, sizeof(hash), pkey);
+    ECDSA_SIG *sig = ECDSA_do_sign_rfc6979((unsigned char*)&hash, sizeof(hash), pkey);
     if (sig == NULL)
         return false;
     BN_CTX *ctx = BN_CTX_new();
@@ -705,7 +832,7 @@ bool CECKey::SignCompact(const uint256 &hash, unsigned char *p64, int &rec) {
     const BIGNUM *s = NULL;
     const BIGNUM *r = NULL;
 #endif
-    ECDSA_SIG *sig = ECDSA_do_sign((unsigned char*)&hash, sizeof(hash), pkey);
+    ECDSA_SIG *sig = ECDSA_do_sign_rfc6979((unsigned char*)&hash, sizeof(hash), pkey);
     if (sig==NULL)
         return false;
     memset(p64, 0, 64);

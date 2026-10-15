@@ -315,10 +315,11 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
     const bool hadMaxSigCache = oldMaxSigCache != mapArgs.end();
     const std::string oldMaxSigCacheValue = hadMaxSigCache ? oldMaxSigCache->second : std::string();
     mapArgs["-maxsigcachesize"] = "10";
-    // Generate a new, different signature for vin[0] to trigger cache clear:
+    // Re-sign vin[0] and exercise the sig cache. RFC 6979 nonces are deterministic,
+    // so the signature is reproduced byte-for-byte.
     CScript oldSig = tx.vin[0].scriptSig;
     BOOST_CHECK(SignSignature(keystore, orphans[0], tx, 0));
-    BOOST_CHECK(tx.vin[0].scriptSig != oldSig);
+    BOOST_CHECK(tx.vin[0].scriptSig == oldSig);
     for (unsigned int j = 0; j < tx.vin.size(); j++)
         BOOST_CHECK(VerifySignature(orphans[j], tx, j, true, SIGHASH_ALL));
     if (hadMaxSigCache)

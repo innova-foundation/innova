@@ -796,20 +796,22 @@ namespace {
 const char* DAG011_REASON = "ConnectBlock() : DAG conflict in name transaction";
 
 // Spend one output of txFrom back to its own script, less a fee.
+// nExtraFee distinguishes an otherwise-identical spend of the same output: under
+// deterministic (RFC 6979) signing two such spends would collapse to one txid.
 bool BuildSpend(const CTransaction& txFrom, unsigned int nOut, int nVersion,
-                unsigned int nTime, CTransaction& txOut)
+                unsigned int nTime, CTransaction& txOut, int64_t nExtraFee = 0)
 {
     if (nOut >= txFrom.vout.size())
         return false;
     const int64_t nIn = txFrom.vout[nOut].nValue;
-    if (nIn <= CENT)
+    if (nIn <= CENT + nExtraFee)
         return false;
 
     CTransaction tx;
     tx.nVersion = nVersion;
     tx.nTime = nTime;
     tx.vin.push_back(CTxIn(txFrom.GetHash(), nOut));
-    tx.vout.push_back(CTxOut(nIn - CENT, txFrom.vout[nOut].scriptPubKey));
+    tx.vout.push_back(CTxOut(nIn - CENT - nExtraFee, txFrom.vout[nOut].scriptPubKey));
     if (!SignSignature(*pwalletMain, txFrom, tx, 0, SIGHASH_ALL))
         return false;
     txOut = tx;
@@ -847,7 +849,7 @@ int FindCommitmentOutput(const CBlock& block)
 // block older than a transaction it carries).
 bool BuildMergingCandidate(const CTransaction& txFrom, unsigned int nOut,
                            int nTxVersion, CBlock& blockOut,
-                           CTransaction& txExtraOut)
+                           CTransaction& txExtraOut, int64_t nExtraFee = 0)
 {
     std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
     if (pblock.get() == NULL)
@@ -869,7 +871,7 @@ bool BuildMergingCandidate(const CTransaction& txFrom, unsigned int nOut,
         return false;
     pblock->vtx[0].vout[nCommitOut].scriptPubKey = commitment;
 
-    if (!BuildSpend(txFrom, nOut, nTxVersion, pblock->nTime, txExtraOut))
+    if (!BuildSpend(txFrom, nOut, nTxVersion, pblock->nTime, txExtraOut, nExtraFee))
         return false;
     pblock->vtx.push_back(txExtraOut);
     blockOut = *pblock;
@@ -953,10 +955,13 @@ BOOST_AUTO_TEST_CASE(a_dag_skipped_name_transaction_invalidates_the_block)
     // version.
     CBlock blockPlain;
     CTransaction txPlain;
+    // The extra fee keeps this spend distinct from the sibling's (same output,
+    // deterministic signing) so the conflict is between two real transactions.
     BOOST_REQUIRE(BuildMergingCandidate(blockFunding.vtx[0], nFundOut, 1,
-                                        blockPlain, txPlain));
+                                        blockPlain, txPlain, CENT));
     BOOST_REQUIRE(!hooks->IsNameTx(txPlain.nVersion));
     BOOST_REQUIRE(txPlain.GetHash() != txName.GetHash());
+    BOOST_REQUIRE(txPlain.GetHash() != txSibling.GetHash());
     std::string strPlainLog;
     const bool fPlainAccepted = SealEditedAndProcess(&blockPlain, strPlainLog);
     BOOST_CHECK_MESSAGE(fPlainAccepted,
