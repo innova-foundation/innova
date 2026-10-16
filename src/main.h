@@ -648,7 +648,7 @@ inline int GetForkHeightIV5FeeNote()
 // Assume-valid: payloads in ancestors of this block skip proof verdicts; everything else
 // still runs. Keyed on ancestry, never height. Re-cut each release; empty off mainnet.
 static const char* const MAINNET_ASSUME_VALID_BLOCK =
-    "0x00000000523d02837bf00acee580aa7e4443b6da34929b8b2caa7116e10c353a";  // 7,750,000
+    "0x000003fe4c48a98736d2c96b835dbe5279eb5208106392447b55208f8936ed7e";  // 8,300,000
 
 // Regtest-only rehearsal height for the note-vote lane (-regtestiv5notevote).
 // init.cpp refuses a value below Boundary B.
