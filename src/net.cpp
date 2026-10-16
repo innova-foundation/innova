@@ -1972,18 +1972,7 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"seed.innova-foundation.com", "seed.innova-foundation.com"},
-    {"45.77.164.87", "45.77.164.87"},
-    {"165.22.181.170", "165.22.181.170"},
-    {"159.223.114.4", "159.223.114.4"},
-    {"165.22.187.43", "165.22.187.43"},
-    {"157.245.139.16", "157.245.139.16"},
-    {"167.71.19.57", "167.71.19.57"},
-    {"68.183.110.135", "68.183.110.135"},
-    {"165.227.206.77:14539", "165.227.206.77:14539"},
-    {"159.223.100.10:14539", "159.223.100.10:14539"},
-    {"159.223.104.144:14539", "159.223.104.144:14539"},
-    {"159.223.104.83:14539", "159.223.104.83:14539"}
+    {"seed.innova-foundation.com", "seed.innova-foundation.com"}
 };
 
 static const char *strDNSSeedTestnet[][2] = {
@@ -2074,7 +2063,7 @@ void ThreadDNSAddressSeed2(void* parg)
 
 unsigned int pnSeed[] =
 {
-    0x42ac0c50,
+    0xb5285081,  // 129.80.40.181 (seed.innova-foundation.com), DNS-fail fallback only
 };
 
 
