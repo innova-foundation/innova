@@ -37,7 +37,7 @@ using boost::placeholders::_5;
 WalletModel::WalletModel(CWallet *wallet, OptionsModel *optionsModel, QObject *parent) :
     QObject(parent), wallet(wallet), optionsModel(optionsModel), addressTableModel(0),
     transactionTableModel(0),
-    cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedPrivateBalance(0), cachedPrivatePendingBalance(0), cachedPrivateCollateralBalance(0), cachedPrivateHeldBalance(0), cachedPrivateWatchOnlyBalance(0),
+    cachedBalance(0), cachedSpendableBalance(0), cachedLockedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedWatchOnlyBalance(0), cachedWatchUnconfBalance(0), cachedWatchImmatureBalance(0), cachedPrivateBalance(0), cachedPrivatePendingBalance(0), cachedPrivateCollateralBalance(0), cachedPrivateHeldBalance(0), cachedPrivateWatchOnlyBalance(0),
     cachedNumTransactions(0),
     cachedEncryptionStatus(Unencrypted),
     cachedNumBlocks(0),
@@ -175,34 +175,36 @@ void WalletModel::pollBalanceChanged()
 
 void WalletModel::checkBalanceChanged()
 {
-    qint64 newBalance = getUnlockedBalance();
-    qint64 newLockedBalance = getLockedBalance();
-    qint64 newStake = getStakeAmount();
-    qint64 newUnconfirmedBalance = getUnconfirmedBalance();
-    qint64 newImmatureBalance = getImmatureBalance();
+    const CWallet::Balances bal = wallet->GetBalances(haveWatchOnly());
+    qint64 newBalance = bal.nUnlocked;
+    cachedSpendableBalance = bal.nBalance;
+    qint64 newLockedBalance = bal.nLocked;
+    qint64 newStake = bal.nStakeAmount;
+    qint64 newUnconfirmedBalance = bal.nUnconfirmed;
+    qint64 newImmatureBalance = bal.nImmature;
     qint64 newPrivateBalance = getPrivateBalance();
     qint64 newPrivatePendingBalance = getPrivatePendingBalance();
     qint64 newPrivateCollateralBalance = getPrivateCollateralBalance();
     qint64 newPrivateHeldBalance = getPrivateHeldBalance();
     qint64 newPrivateWatchOnlyBalance = getPrivateWatchOnlyBalance();
-    // Watch Only
-    qint64 newWatchOnlyBalance = 0;
-    qint64 newWatchUnconfBalance = 0;
-    qint64 newWatchImmatureBalance = 0;
-    if (haveWatchOnly())
-    {
-        newWatchOnlyBalance = getWatchBalance();
-        newWatchUnconfBalance = getWatchUnconfirmedBalance();
-        newWatchImmatureBalance = getWatchImmatureBalance();
-    }
+    qint64 newWatchOnlyBalance = bal.nWatch;
+    qint64 newWatchUnconfBalance = bal.nWatchUnconfirmed;
+    qint64 newWatchImmatureBalance = bal.nWatchImmature;
 
     if(cachedBalance != newBalance || cachedLockedBalance != newLockedBalance || cachedStake != newStake || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance || cachedPrivateBalance != newPrivateBalance
        || cachedPrivatePendingBalance != newPrivatePendingBalance
        || cachedPrivateCollateralBalance != newPrivateCollateralBalance
        || cachedPrivateHeldBalance != newPrivateHeldBalance
-       || cachedPrivateWatchOnlyBalance != newPrivateWatchOnlyBalance)
+       || cachedPrivateWatchOnlyBalance != newPrivateWatchOnlyBalance
+       || cachedWatchOnlyBalance != newWatchOnlyBalance
+       || cachedWatchUnconfBalance != newWatchUnconfBalance
+       || cachedWatchImmatureBalance != newWatchImmatureBalance)
     {
         cachedBalance = newBalance;
+        cachedLockedBalance = newLockedBalance;
+        cachedWatchOnlyBalance = newWatchOnlyBalance;
+        cachedWatchUnconfBalance = newWatchUnconfBalance;
+        cachedWatchImmatureBalance = newWatchImmatureBalance;
         cachedStake = newStake;
         cachedUnconfirmedBalance = newUnconfirmedBalance;
         cachedImmatureBalance = newImmatureBalance;

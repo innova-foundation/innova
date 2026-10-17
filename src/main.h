@@ -7,6 +7,7 @@
 #ifndef BITCOIN_MAIN_H
 #define BITCOIN_MAIN_H
 
+#include <atomic>
 #include "core.h"
 #include "v5activation.h"
 #include "bignum.h"
@@ -1000,6 +1001,9 @@ extern CBlockIndex* pindexBest;
 extern uint64_t nLastBlockTx;
 extern uint64_t nLastBlockSize;
 extern int64_t nLastCoinStakeSearchInterval;
+// Last stake weight from the staking thread; read by the GUI without locks.
+extern std::atomic<uint64_t> nLastStakeWeight;
+extern std::atomic<uint64_t> nLastStakeMinWeight;
 extern const std::string strMessageMagic;
 extern int64_t nTimeBestReceived;
 extern CCriticalSection cs_setpwalletRegistered;

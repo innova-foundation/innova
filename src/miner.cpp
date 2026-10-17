@@ -149,6 +149,8 @@ public:
 uint64_t nLastBlockTx = 0;
 uint64_t nLastBlockSize = 0;
 int64_t nLastCoinStakeSearchInterval = 0;
+std::atomic<uint64_t> nLastStakeWeight(0);
+std::atomic<uint64_t> nLastStakeMinWeight(0);
 
 // We want to sort transactions by priority and fee, so:
 typedef boost::tuple<double, double, int64_t, CTransaction*, double> TxPriority;
@@ -1988,6 +1990,7 @@ void StakeMiner(CWallet *pwallet)
     bool fTryToSync = true;
     int64_t nTimeLastStake = 0;
     int64_t nLastTallyPassMs = 0;
+    int64_t nLastWeightMs = 0;
 
     while (true)
     {
@@ -1997,6 +2000,9 @@ void StakeMiner(CWallet *pwallet)
         while (pwallet->IsLocked())
         {
             nLastCoinStakeSearchInterval = 0;
+            nLastStakeWeight = 0;
+            nLastStakeMinWeight = 0;
+            nLastWeightMs = 0;
             MilliSleep(2000);
             if (fShutdown)
                 return;
@@ -2065,6 +2071,16 @@ void StakeMiner(CWallet *pwallet)
                 printf("StakeMiner() chain stale, pausing for sync\n");
             MilliSleep(5000);
             continue;
+        }
+
+        if (GetTimeMillis() - nLastWeightMs >= 30000)
+        {
+            nLastWeightMs = GetTimeMillis();
+            uint64_t nMin = 0, nMax = 0, nW = 0;
+            if (!pwallet->GetStakeWeight(*pwallet, nMin, nMax, nW))
+                nMin = nW = 0;
+            nLastStakeWeight = nW;
+            nLastStakeMinWeight = nMin;
         }
 
         // IDAG: after the DAG fork, stakers no longer create blocks. The

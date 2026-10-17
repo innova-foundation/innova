@@ -95,7 +95,8 @@ void StatisticsPage::updateStatistics()
     double pPawrate2 = 0.000;
     pPawrate2 = (double)pPawrate;
 
-    pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
+    nWeight = nLastStakeWeight.load();
+    nMinWeight = nLastStakeMinWeight.load();
     uint64_t nNetworkWeight = GetPoSKernelPS();
     int64_t marketcap = innmarket.toDouble();
     int peers = this->model->getNumConnections();

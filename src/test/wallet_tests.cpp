@@ -1022,4 +1022,98 @@ BOOST_AUTO_TEST_CASE(abandontransaction_lifecycle)
     }
 }
 
+// GetBalances is the GUI's single walk; every field must equal its individual getter.
+BOOST_AUTO_TEST_CASE(getbalances_matches_individual_getters)
+{
+    const std::string walletFile("wallet-getbalances-test.dat");
+    CWallet wallet(walletFile);
+    bool fFirstRun;
+    BOOST_REQUIRE(wallet.LoadWallet(fFirstRun) == DB_LOAD_OK);
+
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_REQUIRE(wallet.AddKeyPubKey(key, key.GetPubKey()));
+    CScript scriptMine;
+    scriptMine.SetDestination(key.GetPubKey().GetID());
+    CKey watchKey;
+    watchKey.MakeNewKey(true);
+    CScript scriptWatch;
+    scriptWatch.SetDestination(watchKey.GetPubKey().GetID());
+    BOOST_REQUIRE(wallet.AddWatchOnly(scriptWatch));
+
+    std::vector<uint256> vMempool;
+    {
+        LOCK2(cs_main, wallet.cs_wallet);
+
+        CWalletTx wtxFund(&wallet);
+        wtxFund.vin.push_back(CTxIn(uint256(901), 0));
+        wtxFund.vout.push_back(CTxOut(100000, scriptMine));
+        wtxFund.vout.push_back(CTxOut(200000, scriptMine));
+        wtxFund.vout.push_back(CTxOut(300000, scriptWatch));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxFund));
+        const uint256 hashFund = wtxFund.GetHash();
+        COutPoint locked(hashFund, 1);
+        wallet.LockCoin(locked);
+
+        CWalletTx wtxSpend(&wallet);
+        wtxSpend.vin.push_back(CTxIn(hashFund, 0));
+        wtxSpend.vout.push_back(CTxOut(90000, scriptMine));
+        wtxSpend.vout.push_back(CTxOut(5000, scriptWatch));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxSpend));
+        vMempool.push_back(wtxSpend.GetHash());
+
+        CWalletTx wtxRecv(&wallet);
+        wtxRecv.vin.push_back(CTxIn(uint256(902), 1));
+        wtxRecv.vout.push_back(CTxOut(70000, scriptMine));
+        wtxRecv.vout.push_back(CTxOut(80000, scriptWatch));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxRecv));
+        vMempool.push_back(wtxRecv.GetHash());
+
+        CWalletTx wtxLockTime(&wallet);
+        wtxLockTime.vin.push_back(CTxIn(uint256(903), 0, CScript(), 0));
+        wtxLockTime.nLockTime = 2000000000;
+        wtxLockTime.vout.push_back(CTxOut(40000, scriptMine));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxLockTime));
+
+        CWalletTx wtxCoinbase(&wallet);
+        wtxCoinbase.vin.push_back(CTxIn());
+        wtxCoinbase.vout.push_back(CTxOut(50000, scriptMine));
+        BOOST_REQUIRE(wallet.AddToWallet(wtxCoinbase));
+    }
+    {
+        LOCK(mempool.cs);
+        for (const uint256& h : vMempool)
+            mempool.addUnchecked(h, wallet.mapWallet[h]);
+    }
+
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const CWallet::Balances b = wallet.GetBalances();
+        BOOST_CHECK_EQUAL(b.nBalance, wallet.GetBalance());
+        BOOST_CHECK_EQUAL(b.nAnon, wallet.GetAnonBalance());
+        BOOST_CHECK_EQUAL(b.nUnconfirmed, wallet.GetUnconfirmedBalance());
+        BOOST_CHECK_EQUAL(b.nImmature, wallet.GetImmatureBalance());
+        BOOST_CHECK_EQUAL(b.nStake, wallet.GetStake());
+        BOOST_CHECK_EQUAL(b.nNewMint, wallet.GetNewMint());
+        BOOST_CHECK_EQUAL(b.nUnlocked, wallet.GetUnlockedBalance());
+        BOOST_CHECK_EQUAL(b.nLocked, wallet.GetLockedBalance());
+        BOOST_CHECK_EQUAL(b.nStakeAmount, wallet.GetStakeAmount());
+        BOOST_CHECK_EQUAL(b.nWatch, wallet.GetWatchOnlyBalance());
+        BOOST_CHECK_EQUAL(b.nWatchUnconfirmed, wallet.GetUnconfirmedWatchOnlyBalance());
+        BOOST_CHECK_EQUAL(b.nWatchImmature, wallet.GetImmatureWatchOnlyBalance());
+        BOOST_CHECK(b.nUnconfirmed > 0);
+        BOOST_CHECK(b.nWatchUnconfirmed > 0);
+
+        const CWallet::Balances noWatch = wallet.GetBalances(false);
+        BOOST_CHECK_EQUAL(noWatch.nWatchUnconfirmed, 0);
+        BOOST_CHECK_EQUAL(noWatch.nUnconfirmed, b.nUnconfirmed);
+    }
+
+    {
+        LOCK(mempool.cs);
+        for (const uint256& h : vMempool)
+            mempool.remove(wallet.mapWallet[h]);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

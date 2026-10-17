@@ -92,6 +92,18 @@ public:
 
     // Privacy/Shielded operations
     /** Legacy (pre-2008) shielded pool balance. Retained for wallets holding legacy notes. */
+    // Last values from checkBalanceChanged; no wallet walk.
+    qint64 getCachedBalance() const { return cachedBalance; }
+    qint64 getCachedSpendableBalance() const { return cachedSpendableBalance; }
+    qint64 getCachedLockedBalance() const { return cachedLockedBalance; }
+    qint64 getCachedStake() const { return cachedStake; }
+    qint64 getCachedUnconfirmedBalance() const { return cachedUnconfirmedBalance; }
+    qint64 getCachedImmatureBalance() const { return cachedImmatureBalance; }
+    qint64 getCachedWatchBalance() const { return cachedWatchOnlyBalance; }
+    qint64 getCachedWatchUnconfirmedBalance() const { return cachedWatchUnconfBalance; }
+    qint64 getCachedWatchImmatureBalance() const { return cachedWatchImmatureBalance; }
+    qint64 getCachedPrivateBalance() const { return cachedPrivateBalance; }
+
     qint64 getShieldedBalance() const;
     /** Spendable balance held in the v2008 privacy pool. */
     qint64 getPrivateBalance() const;
@@ -201,6 +213,7 @@ private:
 
     // Cache some values to be able to detect changes
     qint64 cachedBalance;
+    qint64 cachedSpendableBalance;
     qint64 cachedLockedBalance;
     qint64 cachedStake;
     qint64 cachedUnconfirmedBalance;

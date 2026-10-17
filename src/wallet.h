@@ -835,9 +835,13 @@ public:
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
     int64_t GetBalance() const;
-    struct Balances { int64_t nBalance = 0, nAnon = 0, nUnconfirmed = 0, nImmature = 0, nStake = 0, nNewMint = 0; };
-    // One wallet walk for every getinfo balance.
-    Balances GetBalances() const;
+    struct Balances {
+        int64_t nBalance = 0, nAnon = 0, nUnconfirmed = 0, nImmature = 0, nStake = 0, nNewMint = 0;
+        int64_t nUnlocked = 0, nLocked = 0, nStakeAmount = 0;
+        int64_t nWatch = 0, nWatchUnconfirmed = 0, nWatchImmature = 0;
+    };
+    // One wallet walk for every getinfo and GUI balance; fields match the individual getters.
+    Balances GetBalances(bool fWatch = true) const;
     int64_t GetAnonBalance() const;
     int64_t GetLockedBalance() const;
     int64_t GetUnlockedBalance() const;
@@ -1653,6 +1657,10 @@ public:
 
     int64_t GetAvailableCredit(bool fUseCache=true) const
     {
+        // A cached zero is zero on every branch below; skip the depth lookup.
+        if (fUseCache && fAvailableCreditCached && nAvailableCreditCached == 0)
+            return 0;
+
         // Must wait until coinbase is safely deep enough in the chain before valuing it
         if ((IsCoinBase() || IsCoinStake()) && GetBlocksToMaturity() > 0)
             return 0;

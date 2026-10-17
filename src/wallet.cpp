@@ -9,6 +9,7 @@
 //   cs_spvutxos is always acquired last when needed.
 
 #include "txdb.h"
+#include <memory>
 #include "bip39.h"
 #include "hdroot.h"
 #include "wallet.h"
@@ -3065,7 +3066,7 @@ static void AddCapped(int64_t& nTotal, int64_t nCredit)
         nTotal += nCredit;
 }
 
-CWallet::Balances CWallet::GetBalances() const
+CWallet::Balances CWallet::GetBalances(bool fWatch) const
 {
     Balances b;
     LOCK2(cs_main, cs_wallet);
@@ -3080,12 +3081,27 @@ CWallet::Balances CWallet::GetBalances() const
             AddCapped(b.nAnon, pcoin->GetAvailableAnonCredit());
         if (!pcoin->IsFinal() || (!fTrusted && nDepth == 0))
             AddCapped(b.nUnconfirmed, pcoin->GetAvailableCredit());
+        if (fTrusted && nDepth > 0)
+        {
+            AddCapped(b.nUnlocked, pcoin->GetUnlockedCredit());
+            AddCapped(b.nLocked, pcoin->GetLockedCredit());
+            b.nStakeAmount += pcoin->GetAvailableCredit();
+        }
+        if (fWatch)
+        {
+            if (fTrusted)
+                AddCapped(b.nWatch, pcoin->GetAvailableWatchOnlyCredit());
+            if (!IsFinalTx(*pcoin) || (!fTrusted && nDepth == 0))
+                b.nWatchUnconfirmed += pcoin->GetAvailableWatchOnlyCredit();
+        }
         if (!pcoin->IsCoinBase() && !pcoin->IsCoinStake())
             continue;
         const int nToMaturity = pcoin->GetBlocksToMaturity();
         if (nToMaturity > 0 && nDepth > 0)
         {
             AddCapped(b.nImmature, pcoin->GetImmatureCredit());
+            if (fWatch)
+                b.nWatchImmature += pcoin->GetImmatureWatchOnlyCredit();
             if (pcoin->IsCoinStake())
                 b.nStake += pcoin->GetCredit(ISMINE_SPENDABLE);
             else
@@ -5497,13 +5513,17 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
 
     nMinWeight = nMaxWeight = nWeight = 0;
 
-    CTxDB txdb("r");
+    // Full-node selection already requires depth >= 1; only SPV coins need the index probe.
+    std::unique_ptr<CTxDB> ptxdb;
+    if (fHybridSPV)
+        ptxdb.reset(new CTxDB("r"));
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
     {
-        CTxIndex txindex;
+        if (ptxdb)
         {
+            CTxIndex txindex;
             LOCK2(cs_main, cs_wallet);
-            if (!txdb.ReadTxIndex(pcoin.first->GetHash(), txindex))
+            if (!ptxdb->ReadTxIndex(pcoin.first->GetHash(), txindex))
                 continue;
         }
 

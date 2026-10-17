@@ -1839,16 +1839,7 @@ void BitcoinGUI::updateWeight()
     if (!pwalletMain)
         return;
 
-    TRY_LOCK(cs_main, lockMain);
-    if (!lockMain)
-        return;
-
-    TRY_LOCK(pwalletMain->cs_wallet, lockWallet);
-    if (!lockWallet)
-        return;
-
-    uint64_t nMinWeight = 0, nMaxWeight = 0;
-    pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
+    nWeight = nLastStakeWeight.load();
 }
 
 void BitcoinGUI::updateStakingIcon()

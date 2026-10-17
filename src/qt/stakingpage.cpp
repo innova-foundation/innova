@@ -549,7 +549,7 @@ void StakingPage::updateBalances()
     {
     case 0: // Transparent
     {
-        int64_t nBalance = pwalletMain->GetBalance();
+        int64_t nBalance = model->getCachedSpendableBalance();
         labelStakingBalance->setText(tr("Staking Balance: %1")
             .arg(BitcoinUnits::formatWithUnit(unit, nBalance)));
         break;
@@ -557,7 +557,7 @@ void StakingPage::updateBalances()
     case 1: // NullStake
     {
         int64_t nShielded = pwalletMain->GetShieldedBalance();
-        int64_t nTransparent = pwalletMain->GetBalance();
+        int64_t nTransparent = model->getCachedSpendableBalance();
         labelStakingBalance->setText(tr("Shielded Balance: %1")
             .arg(BitcoinUnits::formatWithUnit(unit, nShielded)));
         labelShieldedBalance->setText(tr("Shielded Balance: %1")
