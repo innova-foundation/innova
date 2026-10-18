@@ -1619,6 +1619,15 @@ bool AppInit2()
     nSPVStartHeight = GetArg("-spvstartheight", 0);
     fHybridSPV = GetBoolArg("-hybridspv", false);
 
+#ifdef QT_GUI
+    // Desktop wallet: fewer peers, less block-relay CPU; 8 outbound keeps 8 inbound slots.
+    if (!mapArgs.count("-maxconnections"))
+    {
+        SoftSetArg("-maxconnections", "16");
+        SoftSetArg("-maxoutbound", "8");
+    }
+#endif
+
     if (fHybridSPV)
     {
         printf("Hybrid SPV mode enabled - headers + wallet blocks only\n");
