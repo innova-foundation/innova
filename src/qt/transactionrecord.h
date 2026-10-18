@@ -64,6 +64,7 @@ public:
     {
         Other,
         Generated,
+        FinalityReward,
         SendToAddress,
         SendToOther,
         RecvWithAddress,

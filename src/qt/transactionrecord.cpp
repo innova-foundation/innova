@@ -2,6 +2,7 @@
 
 #include "wallet.h"
 #include "base58.h"
+#include "finality.h"
 
 /* Return positive answer if transaction should be shown in list.
  */
@@ -32,6 +33,14 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
     std::map<std::string, std::string> mapValue = wtx.mapValue;
 
     char cbuf[256];
+
+    int nCoinbaseHeight = 0;
+    if (wtx.IsCoinBase())
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator bi = mapBlockIndex.find(wtx.hashBlock);
+        if (bi != mapBlockIndex.end() && bi->second)
+            nCoinbaseHeight = bi->second->nHeight;
+    }
 
     if (nNet > 0 || wtx.IsCoinBase() || wtx.IsCoinStake())
     {
@@ -73,6 +82,8 @@ QList<TransactionRecord> TransactionRecord::decomposeTransaction(const CWallet *
                 {
                     // Generated (proof-of-work)
                     sub.type = TransactionRecord::Generated;
+                    if (nOut > 0 && nCoinbaseHeight > 0 && IsFinalitySettlementHeight(nCoinbaseHeight))
+                        sub.type = TransactionRecord::FinalityReward;
                 }
                 if (wtx.IsCoinStake())
                 {
@@ -249,7 +260,7 @@ void TransactionRecord::updateStatus(const CWalletTx &wtx)
     }
 
     // For generated transactions, determine maturity
-    else if(type == TransactionRecord::Generated)
+    else if(type == TransactionRecord::Generated || type == TransactionRecord::FinalityReward)
     {
         if (wtx.GetBlocksToMaturity() > 0)
         {

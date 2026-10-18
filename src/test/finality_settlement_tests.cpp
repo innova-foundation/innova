@@ -855,3 +855,23 @@ BOOST_AUTO_TEST_CASE(settlement_is_pro_rata_from_the_mergeset_fork)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(finality_display_tests)
+
+BOOST_AUTO_TEST_CASE(finality_display_states)
+{
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(0, 100, 50), FINALITY_DISPLAY_UNCONFIRMED);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(10, 100, 0), FINALITY_DISPLAY_INACTIVE);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(50, 100, 50), FINALITY_DISPLAY_FINALIZED);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(51, 100, 50), FINALITY_DISPLAY_PENDING);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(51, 50 + FINALITY_STALL_DISPLAY_BLOCKS, 50), FINALITY_DISPLAY_PENDING);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(51, 51 + FINALITY_STALL_DISPLAY_BLOCKS, 50), FINALITY_DISPLAY_INACTIVE);
+    BOOST_CHECK_EQUAL(ClassifyFinalityDisplay(40, 5000, 50), FINALITY_DISPLAY_FINALIZED);
+    BOOST_CHECK_EQUAL(FinalityStalledBlocks(100, 150), 0);
+    BOOST_CHECK_EQUAL(FinalityStalledBlocks(1000, 100), 900);
+    BOOST_CHECK(IsFinalityActiveForDisplay(1000, 100));
+    BOOST_CHECK(!IsFinalityActiveForDisplay(1001, 100));
+    BOOST_CHECK(!IsFinalityActiveForDisplay(10, 0));
+}
+
+BOOST_AUTO_TEST_SUITE_END()

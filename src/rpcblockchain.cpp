@@ -2164,6 +2164,8 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("epoch", nCurrentEpoch));
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
     result.push_back(Pair("finalized_height", nFinalizedHeight));
+    result.push_back(Pair("finality_active", IsFinalityActiveForDisplay(nCurrentHeight, nFinalizedHeight)));
+    result.push_back(Pair("finality_stalled_blocks", FinalityStalledBlocks(nCurrentHeight, nFinalizedHeight)));
     result.push_back(Pair("finalized_hash", hashFinalized.GetHex()));
     result.push_back(Pair("finalized_epoch", GetEpochForHeight(nFinalizedHeight)));
     result.push_back(Pair("current_epoch_votes", nVoteCount));

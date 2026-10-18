@@ -250,6 +250,8 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("consecutive_hard_epochs", g_finalityTracker.GetConsecutiveHardEpochCount()));
     obj.push_back(Pair("finalized_epoch", GetEpochForHeight(g_finalityTracker.GetFinalizedHeight())));
     obj.push_back(Pair("finalized_hash", g_finalityTracker.GetFinalizedHash().GetHex()));
+    obj.push_back(Pair("finality_active", IsFinalityActiveForDisplay(nHeight, g_finalityTracker.GetFinalizedHeight())));
+    obj.push_back(Pair("finality_stalled_blocks", FinalityStalledBlocks(nHeight, g_finalityTracker.GetFinalizedHeight())));
     obj.push_back(Pair("finality_model", std::string("active-epoch-committed-weight")));
     obj.push_back(Pair("absolute_stake_floor", false));
     const bool fBoundaryBActive = IsBoundaryBActiveAtHeight(nHeight);

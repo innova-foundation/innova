@@ -437,6 +437,33 @@ inline bool IsFinalitySettlementHeight(int nHeight, int* pnEpochOut = NULL)
     return true;
 }
 
+// Client display only: finality counts as stalled once the finalized height lags the tip by this much.
+static const int FINALITY_STALL_DISPLAY_BLOCKS = 900;
+
+enum FinalityDisplayState { FINALITY_DISPLAY_UNCONFIRMED, FINALITY_DISPLAY_INACTIVE,
+                            FINALITY_DISPLAY_PENDING, FINALITY_DISPLAY_FINALIZED };
+
+inline int FinalityStalledBlocks(int nTip, int nFinalized)
+{
+    return (nTip > nFinalized) ? nTip - nFinalized : 0;
+}
+
+inline bool IsFinalityActiveForDisplay(int nTip, int nFinalized)
+{
+    return nFinalized > 0 && FinalityStalledBlocks(nTip, nFinalized) <= FINALITY_STALL_DISPLAY_BLOCKS;
+}
+
+inline FinalityDisplayState ClassifyFinalityDisplay(int nTxHeight, int nTip, int nFinalized)
+{
+    if (nTxHeight <= 0)
+        return FINALITY_DISPLAY_UNCONFIRMED;
+    if (nFinalized > 0 && nTxHeight <= nFinalized)
+        return FINALITY_DISPLAY_FINALIZED;
+    if (!IsFinalityActiveForDisplay(nTip, nFinalized))
+        return FINALITY_DISPLAY_INACTIVE;
+    return FINALITY_DISPLAY_PENDING;
+}
+
 /** Compute POEM entropy weight for a block hash.
  *  Returns a uint256 that is the approximate log2(2^256 - hash) with 32 sub-bits of precision.
  *  Lower hashes (harder blocks) yield higher entropy values.

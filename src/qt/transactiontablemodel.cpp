@@ -371,6 +371,8 @@ QString TransactionTableModel::formatTxType(const TransactionRecord *wtx) const
         return tr("Payment to yourself");
     case TransactionRecord::Generated:
         return tr("Mined or Staked");
+    case TransactionRecord::FinalityReward:
+        return tr("Finality reward");
     default:
         return QString();
     }
@@ -381,6 +383,7 @@ QVariant TransactionTableModel::txAddressDecoration(const TransactionRecord *wtx
     switch(wtx->type)
     {
     case TransactionRecord::Generated:
+    case TransactionRecord::FinalityReward:
         return QIcon(":/icons/tx_mined");
     case TransactionRecord::RecvWithAddress:
     case TransactionRecord::RecvFromOther:
@@ -403,6 +406,7 @@ QString TransactionTableModel::formatTxToAddress(const TransactionRecord *wtx, b
     case TransactionRecord::RecvWithAddress:
     case TransactionRecord::SendToAddress:
     case TransactionRecord::Generated:
+    case TransactionRecord::FinalityReward:
         return lookupAddress(wtx->address, tooltip);
     case TransactionRecord::SendToOther:
         return QString::fromStdString(wtx->address);
@@ -426,6 +430,7 @@ QVariant TransactionTableModel::addressColor(const TransactionRecord *wtx) const
     case TransactionRecord::RecvWithAddress:
     case TransactionRecord::SendToAddress:
     case TransactionRecord::Generated:
+    case TransactionRecord::FinalityReward:
         {
         QString label = walletModel->getAddressTableModel()->labelForAddress(QString::fromStdString(wtx->address));
         if(label.isEmpty())
@@ -488,16 +493,44 @@ QVariant TransactionTableModel::txStatusDecoration(const TransactionRecord *wtx)
     return QColor(0,0,0);
 }
 
+static FinalityDisplayState txFinalityState(const TransactionRecord *wtx)
+{
+    if (wtx->status.depth <= 0)
+        return FINALITY_DISPLAY_UNCONFIRMED;
+    int nTxHeight = wtx->status.cur_num_blocks - (int)wtx->status.depth + 1;
+    return ClassifyFinalityDisplay(nTxHeight, wtx->status.cur_num_blocks, g_finalityTracker.GetFinalizedHeight());
+}
+
 QString TransactionTableModel::formatTxFinality(const TransactionRecord *wtx) const
 {
-    // Finalized: height covered by g_finalityTracker; Pending: confirmed but not yet
-    // covered; unconfirmed: em-dash.
-    if (wtx->status.depth <= 0)
-        return QString::fromUtf8("\xE2\x80\x94");
-    int nTxHeight = wtx->status.cur_num_blocks - (int)wtx->status.depth + 1;
-    if (nTxHeight > 0 && g_finalityTracker.IsFinalized(nTxHeight))
+    switch (txFinalityState(wtx))
+    {
+    case FINALITY_DISPLAY_FINALIZED:
         return tr("Finalized");
-    return tr("Pending");
+    case FINALITY_DISPLAY_PENDING:
+        return tr("Pending finality");
+    case FINALITY_DISPLAY_INACTIVE:
+        if (g_finalityTracker.GetFinalizedHeight() <= 0)
+            return tr("Not active");
+        return tr("Confirmed (%1)").arg(wtx->status.depth);
+    default:
+        return QString::fromUtf8("\xE2\x80\x94");
+    }
+}
+
+QVariant TransactionTableModel::txFinalityColor(const TransactionRecord *wtx) const
+{
+    switch (txFinalityState(wtx))
+    {
+    case FINALITY_DISPLAY_FINALIZED:
+        return QColor(38, 166, 91);
+    case FINALITY_DISPLAY_PENDING:
+        return QColor(219, 152, 34);
+    case FINALITY_DISPLAY_INACTIVE:
+        return QVariant();
+    default:
+        return COLOR_UNCONFIRMED;
+    }
 }
 
 QString TransactionTableModel::formatTooltip(const TransactionRecord *rec) const
@@ -562,6 +595,8 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
         }
         break;
     case Qt::ToolTipRole:
+        if (index.column() == Finality && txFinalityState(rec) == FINALITY_DISPLAY_INACTIVE)
+            return tr("Finality needs at least %1 independent voters").arg(FINALITY_MIN_VOTERS);
         return formatTooltip(rec);
     case Qt::TextAlignmentRole:
         return column_alignments[index.column()];
@@ -580,14 +615,7 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
             return addressColor(rec);
         }
         if(index.column() == Finality)
-        {
-            if (rec->status.depth <= 0)
-                return COLOR_UNCONFIRMED;
-            int nH = rec->status.cur_num_blocks - (int)rec->status.depth + 1;
-            if (nH > 0 && g_finalityTracker.IsFinalized(nH))
-                return QColor(38, 166, 91);   // finalized: green
-            return QColor(219, 152, 34);      // pending: amber
-        }
+            return txFinalityColor(rec);
         break;
     case TypeRole:
         return rec->type;

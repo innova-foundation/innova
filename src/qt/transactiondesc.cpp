@@ -8,6 +8,7 @@
 #include "txdb.h"
 #include "ui_interface.h"
 #include "base58.h"
+#include "finality.h"
 
 QString TransactionDesc::FormatTxStatus(const CWalletTx& wtx)
 {
@@ -82,7 +83,16 @@ QString TransactionDesc::toHTMLLocked(CWallet *wallet, CWalletTx &wtx)
     //
     if (wtx.IsCoinBase() || wtx.IsCoinStake())
     {
-        strHTML += "<b>" + tr("Source") + ":</b> " + tr("Generated") + "<br>";
+        bool fFinalityReward = false;
+        if (wtx.IsCoinBase())
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator bi = mapBlockIndex.find(wtx.hashBlock);
+            if (bi != mapBlockIndex.end() && bi->second && IsFinalitySettlementHeight(bi->second->nHeight))
+                for (unsigned int i = 1; i < wtx.vout.size(); i++)
+                    if (wallet->IsMine(wtx.vout[i]))
+                        fFinalityReward = true;
+        }
+        strHTML += "<b>" + tr("Source") + ":</b> " + (fFinalityReward ? tr("Finality reward") : tr("Generated")) + "<br>";
     }
     else if (wtx.mapValue.count("from") && !wtx.mapValue["from"].empty())
     {

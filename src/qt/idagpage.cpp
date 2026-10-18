@@ -2,6 +2,7 @@
 
 #include "clientmodel.h"
 #include "dag.h"
+#include "finality.h"
 
 #include <QAbstractItemView>
 #include <QFont>
@@ -219,6 +220,10 @@ void IDAGPage::refresh()
         .arg(status.currentEpochVoters);
     if (status.finalityTier == "none" && status.currentEpochVotes == 0)
         finality = tr("none, no votes, finalized height %1").arg(status.finalizedHeight);
+    if (!IsFinalityActiveForDisplay(status.height, status.finalizedHeight))
+        finality += tr(" - stalled %1 blocks (needs %2 voters)")
+            .arg(FinalityStalledBlocks(status.height, status.finalizedHeight))
+            .arg(FINALITY_MIN_VOTERS);
     setValue(finalityValue, finality);
 
     setValue(epochValue, tr("%1 (%2-block interval)").arg(status.epoch).arg(status.epochInterval));
