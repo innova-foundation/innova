@@ -382,6 +382,7 @@ TEST_OBJS= \
     obj/test/dag_reachability_tests.o \
     obj/test/dag_privacy_interaction_tests.o \
     obj/test/finality_settlement_tests.o \
+    obj/test/finality_hardening_tests.o \
     obj/test/finality_vote_schedule_tests.o \
     obj/test/name_index_recovery_tests.o \
     obj/test/name_rental_tests.o \

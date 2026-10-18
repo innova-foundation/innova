@@ -20,6 +20,7 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <algorithm>
+#include <functional>
 #include <cstdlib>
 #include <cctype>
 #include <limits>
@@ -1785,9 +1786,207 @@ int GetFinalityVoteSetCloseOffset(int nBoundaryHeight)
         nBoundaryHeight > std::numeric_limits<int>::max() - FINALITY_NOTE_VOTE_INCLUSION_WINDOW
             ? std::numeric_limits<int>::max()
             : nBoundaryHeight + FINALITY_NOTE_VOTE_INCLUSION_WINDOW - 1;
+    const int nWindow = GetFinalityVoteInclusionWindow(nBoundaryHeight);
     if (IsIV5NoteVoteActiveAtHeight(nLastNoteHeight))
-        return std::max(FINALITY_VOTE_INCLUSION_WINDOW, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+        return std::max(nWindow, FINALITY_NOTE_VOTE_INCLUSION_WINDOW);
+    return nWindow;
+}
+
+bool IsFinalityHardeningActiveAtBoundary(int nBoundaryHeight)
+{
+    return IsMergesetActiveAtHeight(nBoundaryHeight);
+}
+
+bool IsFinalityHardeningActiveForEpoch(int nEpoch)
+{
+    if (nEpoch < 0 || !IsMergesetConfigured())
+        return false;
+    const int64_t nBoundary = GetEpochBoundaryHeight64(nEpoch);
+    if (nBoundary > std::numeric_limits<int>::max())
+        return true;
+    return IsFinalityHardeningActiveAtBoundary((int)nBoundary);
+}
+
+int GetFinalityVoteInclusionWindow(int nBoundaryHeight)
+{
+    if (IsFinalityHardeningActiveAtBoundary(nBoundaryHeight))
+        return FINALITY_VOTE_INCLUSION_WINDOW_HARDENED;
     return FINALITY_VOTE_INCLUSION_WINDOW;
+}
+
+int ApplyFinalityStakeQuorum(int nTier, int64_t nWinning, int64_t nReference)
+{
+    if (nTier < FINALITY_HARD || nReference <= 0)
+        return nTier;
+    if ((__int128)nWinning * FINALITY_QUORUM_DEN < (__int128)nReference * FINALITY_QUORUM_NUM)
+        return FINALITY_SOFT;
+    return nTier;
+}
+
+int CountFinalityVoterClusters(const std::vector<CFinalityVote>& vVotes,
+                               const std::map<uint256, std::vector<CKeyID> >& mapControlKeys,
+                               const uint256* pWinner, int* pnWinnersOut)
+{
+    if (pnWinnersOut)
+        *pnWinnersOut = 0;
+    std::vector<int> vParent(vVotes.size());
+    for (size_t i = 0; i < vParent.size(); i++)
+        vParent[i] = (int)i;
+    std::function<int(int)> find = [&](int x) -> int {
+        while (vParent[x] != x)
+        {
+            vParent[x] = vParent[vParent[x]];
+            x = vParent[x];
+        }
+        return x;
+    };
+    std::map<CKeyID, int> mapKeyOwner;
+    for (size_t i = 0; i < vVotes.size(); i++)
+    {
+        std::vector<CKeyID> vKeys;
+        if (!vVotes[i].IsPrivate())
+        {
+            CPubKey pubkey(vVotes[i].vchPubKey);
+            if (pubkey.IsValid())
+                vKeys.push_back(pubkey.GetID());
+        }
+        std::map<uint256, std::vector<CKeyID> >::const_iterator it =
+            mapControlKeys.find(vVotes[i].nullifier);
+        if (it != mapControlKeys.end())
+            vKeys.insert(vKeys.end(), it->second.begin(), it->second.end());
+        for (const CKeyID& key : vKeys)
+        {
+            std::map<CKeyID, int>::iterator itOwner = mapKeyOwner.find(key);
+            if (itOwner == mapKeyOwner.end())
+                mapKeyOwner[key] = (int)i;
+            else
+            {
+                const int a = find((int)i), b = find(itOwner->second);
+                if (a != b)
+                    vParent[std::max(a, b)] = std::min(a, b);
+            }
+        }
+    }
+    std::map<int, bool> mapClusterAllWinner;
+    for (size_t i = 0; i < vVotes.size(); i++)
+    {
+        const bool fWinner = pWinner && vVotes[i].hashBlock == *pWinner;
+        std::map<int, bool>::iterator it = mapClusterAllWinner.find(find((int)i));
+        if (it == mapClusterAllWinner.end())
+            mapClusterAllWinner[find((int)i)] = fWinner;
+        else
+            it->second = it->second && fWinner;
+    }
+    if (pnWinnersOut)
+        for (const std::pair<const int, bool>& p : mapClusterAllWinner)
+            if (p.second)
+                (*pnWinnersOut)++;
+    return (int)mapClusterAllWinner.size();
+}
+
+void FilterFinalitySettlementVotes(std::vector<CFinalityVote>& vVotes,
+                                   const std::set<CKeyID>& setExcluded)
+{
+    if (setExcluded.empty())
+        return;
+    std::vector<CFinalityVote> vKept;
+    vKept.reserve(vVotes.size());
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (!vote.IsPrivate())
+        {
+            CPubKey pubkey(vote.vchPubKey);
+            if (pubkey.IsValid() && setExcluded.count(pubkey.GetID()))
+                continue;
+        }
+        vKept.push_back(vote);
+    }
+    vVotes.swap(vKept);
+}
+
+bool CFinalityEquivocationEvidence::FromVotes(const CFinalityVote& a, const CFinalityVote& b)
+{
+    if (a.hashBlock == b.hashBlock)
+        return false;
+    const CFinalityVote& lo = a.hashBlock < b.hashBlock ? a : b;
+    const CFinalityVote& hi = a.hashBlock < b.hashBlock ? b : a;
+    nVersion = 1;
+    if (!voteA.FromLogical(lo) || !voteB.FromLogical(hi))
+        return false;
+    return IsValid();
+}
+
+bool CFinalityEquivocationEvidence::GetKeyID(CKeyID& keyIDOut) const
+{
+    CPubKey pubkey(voteA.vchPubKey);
+    if (!pubkey.IsValid())
+        return false;
+    keyIDOut = pubkey.GetID();
+    return true;
+}
+
+bool CFinalityEquivocationEvidence::IsValid(std::string* pstrError) const
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+    if (nVersion != 1)
+        return reject("equivocation evidence version");
+    CFinalityVote a, b;
+    if (!voteA.ToLogical(a) || !voteB.ToLogical(b))
+        return reject("equivocation evidence vote does not decode");
+    if (a.vchPubKey != b.vchPubKey || !CPubKey(a.vchPubKey).IsValid())
+        return reject("equivocation evidence keys differ");
+    if (a.nEpoch != b.nEpoch || a.nEpoch < 0)
+        return reject("equivocation evidence epochs differ");
+    if (!(a.hashBlock < b.hashBlock) || a.hashBlock == 0)
+        return reject("equivocation evidence blocks not distinct and ordered");
+    const int64_t nBoundary = GetEpochBoundaryHeight64(a.nEpoch);
+    if (a.nHeight != nBoundary || b.nHeight != nBoundary)
+        return reject("equivocation evidence does not name the epoch boundary");
+    CHashWriter expectedNullifier(SER_GETHASH, 0);
+    expectedNullifier << a.vchPubKey;
+    expectedNullifier << a.nEpoch;
+    const uint256 nf = expectedNullifier.GetHash();
+    if (a.nullifier != nf || b.nullifier != nf)
+        return reject("equivocation evidence nullifier mismatch");
+    if (!a.CheckSignature() || !b.CheckSignature())
+        return reject("equivocation evidence signature invalid");
+    return true;
+}
+
+bool CheckFinalityEquivocationEvidenceForBlock(
+    const std::vector<CFinalityEquivocationEvidence>& vEvidence, int nHeight,
+    std::string* pstrError)
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+    if (vEvidence.empty())
+        return true;
+    if (vEvidence.size() > (size_t)FINALITY_MAX_BLOCK_EQUIVOCATION_EVIDENCE)
+        return reject("too much equivocation evidence in block");
+    std::set<CKeyID> setKeys;
+    for (const CFinalityEquivocationEvidence& ev : vEvidence)
+    {
+        if (!ev.IsValid(pstrError))
+            return false;
+        CKeyID keyID;
+        if (!ev.GetKeyID(keyID) || !setKeys.insert(keyID).second)
+            return reject("duplicate equivocation evidence key in block");
+        const int nEpoch = ev.GetEpoch();
+        if (!IsFinalityHardeningActiveForEpoch(nEpoch))
+            return reject("equivocation evidence epoch predates the hardening fork");
+        const int64_t nBoundary = GetEpochBoundaryHeight64(nEpoch);
+        if (nHeight < nBoundary ||
+            nHeight >= nBoundary + GetFinalityVoteSetCloseOffset((int)nBoundary))
+            return reject("equivocation evidence outside its epoch vote-set window");
+    }
+    return true;
 }
 
 bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
@@ -1813,11 +2012,12 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
         return reject("settlement parent is not the top of the epoch vote-inclusion window");
 
     // Walk the settlement block's selected-parent chain down to the epoch boundary. Transparent
-    // votes connect only in the first FINALITY_VOTE_INCLUSION_WINDOW blocks.
+    // votes connect only in the first GetFinalityVoteInclusionWindow blocks.
+    const int nInclusionWindow = GetFinalityVoteInclusionWindow(nBoundary);
     std::vector<const CBlockIndex*> vWindow;
-    vWindow.reserve(FINALITY_VOTE_INCLUSION_WINDOW);
+    vWindow.reserve(nInclusionWindow);
     for (const CBlockIndex* p = pindexPrev; p && p->nHeight >= nBoundary; p = p->pprev)
-        if (p->nHeight < nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+        if (p->nHeight < nBoundary + nInclusionWindow)
             vWindow.push_back(p);
     if (vWindow.empty() || vWindow.back()->nHeight != nBoundary)
         return reject("settlement vote-inclusion window is incomplete");
@@ -1846,6 +2046,44 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
     }
 
     CollectFinalitySettlementVotes(vWindowBlockVotes, nEpoch, vVotesOut);
+
+    // Equivocation penalty: evidence for epoch e, carried in e's own vote-set window on
+    // this chain, removes the key from settlements e .. e + K.
+    if (IsFinalityHardeningActiveForEpoch(nEpoch))
+    {
+        std::set<CKeyID> setExcluded;
+        const int nFirstEpoch = std::max(0, nEpoch - FINALITY_EQUIVOCATION_EXCLUSION_EPOCHS);
+        const int nLowest = GetEpochBoundaryHeight(nFirstEpoch, pindexPrev->nHeight);
+        for (const CBlockIndex* p = pindexPrev; p && p->nHeight >= nLowest; p = p->pprev)
+        {
+            if (!IsMergesetActiveAtHeight(p->nHeight))
+                break;
+            const int nCarrierEpoch = GetEpochForHeight(p->nHeight);
+            if (!IsFinalityHardeningActiveForEpoch(nCarrierEpoch))
+                break;
+            const int nCarrierBoundary = GetEpochBoundaryHeight(nCarrierEpoch, p->nHeight);
+            if (p->nHeight >= nCarrierBoundary + GetFinalityVoteSetCloseOffset(nCarrierBoundary))
+                continue;
+            CBlock blockCarrier;
+            if (!blockCarrier.ReadFromDisk(p, true))
+            {
+                if (pfLocalFailure)
+                    *pfLocalFailure = true;
+                return reject("settlement evidence block not readable");
+            }
+            std::vector<CFinalityEquivocationEvidence> vEvidence;
+            if (!ExtractFinalityEquivocationEvidenceFromBlockForHeight(blockCarrier, p->nHeight,
+                                                                       vEvidence))
+                return reject("settlement evidence block carries undecodable evidence");
+            for (const CFinalityEquivocationEvidence& ev : vEvidence)
+            {
+                CKeyID keyID;
+                if (ev.GetEpoch() >= nFirstEpoch && ev.GetEpoch() <= nEpoch && ev.GetKeyID(keyID))
+                    setExcluded.insert(keyID);
+            }
+        }
+        FilterFinalitySettlementVotes(vVotesOut, setExcluded);
+    }
     return true;
 }
 
@@ -2129,6 +2367,49 @@ bool ExtractCanonicalFinalityVote(const CScript& scriptPubKey,
     } catch (const std::exception&) {
         return false;
     }
+}
+
+bool BuildFinalityEquivocationScript(const CFinalityEquivocationEvidence& ev, CScript& scriptOut)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << ev;
+    return BuildCanonicalTaggedFinalityScript(
+        FINALITY_EQUIVOCATION_TAG, std::vector<unsigned char>(ss.begin(), ss.end()), scriptOut);
+}
+
+bool ExtractFinalityEquivocationEvidenceFromBlockForHeight(
+    const CBlock& block, int nHeight, std::vector<CFinalityEquivocationEvidence>& vOut)
+{
+    vOut.clear();
+    if (block.vtx.empty() || !IsMergesetActiveAtHeight(nHeight))
+        return true;
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        if (!ScriptCarriesFinalityTag(out.scriptPubKey, FINALITY_EQUIVOCATION_TAG))
+            continue;
+        std::vector<unsigned char> vPayload;
+        if (!ExtractCanonicalTaggedOpReturnPayload(out.scriptPubKey, FINALITY_EQUIVOCATION_TAG,
+                                                   vPayload))
+        {
+            vOut.clear();
+            return false;
+        }
+        try {
+            CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
+            CFinalityEquivocationEvidence ev;
+            ss >> ev;
+            if (!ss.empty())
+            {
+                vOut.clear();
+                return false;
+            }
+            vOut.push_back(ev);
+        } catch (const std::exception&) {
+            vOut.clear();
+            return false;
+        }
+    }
+    return true;
 }
 
 bool BuildCanonicalFinalityTallyCertificateScript(
@@ -2702,7 +2983,9 @@ bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
     CFinalityTallyCertificate& certOut,
     std::string* pstrError,
-    size_t nOtherLegVoters)
+    size_t nOtherLegVoters,
+    int64_t nQuorumReference,
+    int nTransparentVoterUnits)
 {
     certOut = CFinalityTallyCertificate();
     const auto reject = [&](const std::string& strReason) -> bool {
@@ -2714,7 +2997,8 @@ bool BuildCanonicalTransparentFinalityCertificate(
         pstrError->clear();
     // The floor counts all of the epoch's voters, including a second (note) leg; the skeleton
     // is still a pure function of the transparent votes.
-    if (vVotes.size() + nOtherLegVoters < (size_t)FINALITY_MIN_VOTERS)
+    const size_t nUnits = nTransparentVoterUnits >= 0 ? (size_t)nTransparentVoterUnits : vVotes.size();
+    if (nUnits + nOtherLegVoters < (size_t)FINALITY_MIN_VOTERS)
         return reject("canonical transparent certificate has too few voters");
     // The winner and every transparent field come from these votes, so there has to be
     // at least one. An epoch with none takes the note-only skeleton instead.
@@ -2770,8 +3054,8 @@ bool BuildCanonicalTransparentFinalityCertificate(
             nWinningWeight = it->second;
         }
     }
-    const FinalityTier tier = FinalityDetermineTier(nActiveWeight,
-                                                     nWinningWeight);
+    const FinalityTier tier = (FinalityTier)ApplyFinalityStakeQuorum(
+        FinalityDetermineTier(nActiveWeight, nWinningWeight), nWinningWeight, nQuorumReference);
     if (hashWinner == 0 || tier == FINALITY_NONE)
         return reject("canonical transparent vote set has no finality decision");
 
@@ -3022,7 +3306,7 @@ bool OwnVoteNeedsRebroadcast(const CFinalityVote& vote, int nCurrentHeight, bool
     if (fConnected)
         return false;
     if (nCurrentHeight < vote.nHeight ||
-        nCurrentHeight >= vote.nHeight + FINALITY_VOTE_INCLUSION_WINDOW)
+        nCurrentHeight >= vote.nHeight + GetFinalityVoteInclusionWindow(vote.nHeight))
         return false;
     return nNowMs - nLastRelayMs >= FINALITY_VOTE_REBROADCAST_MS;
 }
@@ -4670,7 +4954,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
     {
         int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nContextHeight);
         if (nContextHeight < nBoundary ||
-            nContextHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            nContextHeight >= nBoundary + GetFinalityVoteInclusionWindow(nBoundary))
             return reject("finality vote outside epoch vote-inclusion window");
     }
 
@@ -5113,12 +5397,15 @@ bool CFinalityTracker::CheckTallyCertificate(
         }
         CFinalityTallyCertificate expected;
         std::string strCanonicalError;
+        const bool fHardened = IsFinalityHardeningActiveForEpoch(cert.nEpoch);
         // The note count counts toward the voter floor. It is bounded in IsValidBasic and pinned
         // to the connected counted set by the root check below.
         if (!fNoteOnly &&
             !BuildCanonicalTransparentFinalityCertificate(
                 vMatchedVotes, expected, &strCanonicalError,
-                fNoteCert ? (size_t)cert.nNoteVoteCount : 0))
+                fNoteCert ? (size_t)cert.nNoteVoteCount : 0,
+                fHardened ? GetFinalityQuorumReference(cert.nEpoch, false) : 0,
+                fHardened ? GetTransparentVoterUnits(cert.nEpoch, vMatchedVotes) : -1))
             return reject("canonical tally certificate cannot be rebuilt: " +
                           strCanonicalError);
         if (!fNoteCert)
@@ -5225,9 +5512,14 @@ bool CFinalityTracker::CheckTallyCertificate(
         GetNoteVoteCounts(vCounted, cert.hashBlock, nNoteVoters, nNoteWinners);
         // The strongest tier the counts support, as the transparent rebuild pins: a
         // weaker but threshold-valid tier is not a second valid representation.
-        if (cert.nTier != (int)FinalityDetermineTier(
-                (int64_t)nMatchedTransparentVoters + (int64_t)nNoteVoters,
-                (int64_t)nMatchedTransparentWinners + (int64_t)nNoteWinners))
+        if (IsFinalityHardeningActiveForEpoch(cert.nEpoch))
+            nMatchedTransparentVoters = GetTransparentVoterUnits(
+                cert.nEpoch, vMatchedVotes, &cert.hashBlock, &nMatchedTransparentWinners);
+        const int64_t nCountVoters = (int64_t)nMatchedTransparentVoters + (int64_t)nNoteVoters;
+        const int64_t nCountWinners = (int64_t)nMatchedTransparentWinners + (int64_t)nNoteWinners;
+        if (cert.nTier != ApplyFinalityStakeQuorum(
+                FinalityDetermineTier(nCountVoters, nCountWinners), nCountWinners,
+                GetFinalityQuorumReference(cert.nEpoch, true)))
             return reject("note tally certificate tier does not match the counted voters");
     }
     else
@@ -5714,6 +6006,13 @@ void CFinalityTracker::RecordConflictingNullifierVote(const CFinalityVote& vote)
         pHeld = &itHeld->second;
     if (!pHeld || pHeld->hashBlock == vote.hashBlock)
         return;
+    if (pHeld->IsCanonicalEnvelope() && vote.IsCanonicalEnvelope() &&
+        IsFinalityHardeningActiveForEpoch(vote.nEpoch))
+    {
+        CFinalityEquivocationEvidence ev;
+        if (ev.FromVotes(*pHeld, vote))
+            AddPendingEquivocationEvidence(ev);
+    }
     std::set<uint256>& setEpoch = mapEpochEquivocatedVoteNullifiers[pHeld->nEpoch];
     if (setEpoch.size() < (size_t)FINALITY_MAX_VOTES)
         setEpoch.insert(vote.nullifier);
@@ -5885,6 +6184,9 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
         return false;
 
     int nVoterCount = mapEpochVoters.count(nEpoch) ? (int)mapEpochVoters[nEpoch].size() : 0;
+    const bool fHardened = IsFinalityHardeningActiveForEpoch(nEpoch);
+    if (fHardened && mapEpochVotes.count(nEpoch))
+        nVoterCount = GetTransparentVoterUnits(nEpoch, mapEpochVotes[nEpoch]);
     if (nVoterCount < FINALITY_MIN_VOTERS)
     {
         nLastFinalityTier = FINALITY_NONE;
@@ -5930,6 +6232,9 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
         tier = FINALITY_SOFT;
     else if (nBestBlockWeight * 3 >= nEpochVoteWeight)       // >= 1/3
         tier = FINALITY_TENTATIVE;
+    if (fHardened)
+        tier = (FinalityTier)ApplyFinalityStakeQuorum(tier, nBestBlockWeight,
+                                                       GetFinalityQuorumReference(nEpoch, false));
 
     int nFinalHeight = mapBlockHeight.count(hashFinal) ? mapBlockHeight[hashFinal] : 0;
     return ApplyFinalityDecision(nEpoch, hashFinal, nFinalHeight, tier, nVoterCount,
@@ -5969,10 +6274,13 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
 
     std::map<int, std::set<CKeyID> >::const_iterator itV = mapEpochVoters.find(nEpoch);
     nVoterCountOut = (itV != mapEpochVoters.end()) ? (int)itV->second.size() : 0;
+    const bool fHardened = IsFinalityHardeningActiveForEpoch(nEpoch);
+    std::map<int, std::vector<CFinalityVote> >::const_iterator itVotes = mapEpochVotes.find(nEpoch);
+    if (fHardened && itVotes != mapEpochVotes.end())
+        nVoterCountOut = GetTransparentVoterUnits(nEpoch, itVotes->second);
     if (nVoterCountOut < FINALITY_MIN_VOTERS)
         return false;
 
-    std::map<int, std::vector<CFinalityVote> >::const_iterator itVotes = mapEpochVotes.find(nEpoch);
     if (itVotes == mapEpochVotes.end() || itVotes->second.empty())
         return false;
 
@@ -6006,6 +6314,9 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
         nTierOut = FINALITY_SOFT;
     else if (nBestBlockWeight * 3 >= nEpochVoteWeight)
         nTierOut = FINALITY_TENTATIVE;
+    if (fHardened)
+        nTierOut = ApplyFinalityStakeQuorum(nTierOut, nBestBlockWeight,
+                                            GetFinalityQuorumReference(nEpoch, false));
 
     nWinnerHeightOut = mapBlockHeightLocal.count(hashWinnerOut) ? mapBlockHeightLocal[hashWinnerOut] : 0;
     return nTierOut != FINALITY_NONE;
@@ -6299,7 +6610,8 @@ std::vector<CFinalityVote> CFinalityTracker::GetPendingVotesForBlock(int nBlockH
         if (nBlockHeight >= FORK_HEIGHT_VOTESET_ROOT)
         {
             int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nBlockHeight);
-            if (nBlockHeight < nBoundary || nBlockHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            if (nBlockHeight < nBoundary ||
+                nBlockHeight >= nBoundary + GetFinalityVoteInclusionWindow(nBoundary))
                 continue;
         }
         vVotes.push_back(vote);
@@ -6658,8 +6970,16 @@ bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock,
         }
     }
 
-    for (const CFinalityVote& vote : vVotes)
+    std::vector<std::vector<CKeyID> > vControlKeys(vVotes.size());
+    for (size_t i = 0; i < vVotes.size(); i++)
+        if (IsFinalityHardeningActiveForEpoch(vVotes[i].nEpoch) && !vVotes[i].IsPrivate() &&
+            !ResolveVoteControlKeys(vVotes[i], txdb, vControlKeys[i]))
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    for (size_t i = 0; i < vVotes.size(); i++)
     {
+        const CFinalityVote& vote = vVotes[i];
+        if (IsFinalityHardeningActiveForEpoch(vote.nEpoch) && !vote.IsPrivate())
+            SetVoteControlKeys(vote.nullifier, vControlKeys[i]);
         if (!AddVote(vote, false, true))
             return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
         if (!txdb.WriteFinalityVote(vote.nullifier, vote))
@@ -6723,6 +7043,7 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
         mapPendingVotes.erase(vote.nullifier);
         mapConnectedVotes.erase(vote.nullifier);
         mapVoteHashByNullifier.erase(vote.nullifier);
+        mapVoteControlKeys.erase(vote.nullifier);
         if (vote.IsPrivate())
         {
             if (mapEpochPrivateVoteCount.count(vote.nEpoch) && mapEpochPrivateVoteCount[vote.nEpoch] > 0)
@@ -7394,6 +7715,141 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
     return RecomputeFinalityStateFromEpoch(nEarliestEpoch);
 }
 
+bool CFinalityTracker::ResolveVoteControlKeys(const CFinalityVote& vote, CTxDB& txdb,
+                                              std::vector<CKeyID>& vKeysOut)
+{
+    vKeysOut.clear();
+    if (vote.IsPrivate())
+        return true;
+    std::set<CKeyID> setKeys;
+    for (const COutPoint& outpoint : vote.vStakeProof)
+    {
+        CTxIndex txindex;
+        if (txdb.ReadTxIndexStatus(outpoint.hash, txindex) != TXDB_READ_FOUND)
+            return false;
+        CTransaction txPrev;
+        if (!txPrev.ReadFromDisk(txindex.pos) || txPrev.GetHash() != outpoint.hash ||
+            outpoint.n >= txPrev.vout.size())
+            return false;
+        const CScript& script = txPrev.vout[outpoint.n].scriptPubKey;
+        CKeyID keyID;
+        if (IsPayToColdStaking(script))
+        {
+            CKeyID stakerKeyID;
+            if (!ExtractColdStakeKeys(script, stakerKeyID, keyID))
+                return false;
+        }
+        else if (!ExtractFinalityStakeKeyID(script, keyID))
+            return false;
+        setKeys.insert(keyID);
+    }
+    vKeysOut.assign(setKeys.begin(), setKeys.end());
+    return true;
+}
+
+void CFinalityTracker::SetVoteControlKeys(const uint256& nullifier, const std::vector<CKeyID>& vKeys)
+{
+    LOCK(cs_finality);
+    mapVoteControlKeys[nullifier] = vKeys;
+}
+
+int CFinalityTracker::GetTransparentVoterUnits(int nEpoch, const std::vector<CFinalityVote>& vVotes,
+                                               const uint256* pWinner, int* pnWinnersOut) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityVote> vEpoch;
+    vEpoch.reserve(vVotes.size());
+    for (const CFinalityVote& vote : vVotes)
+        if (vote.nEpoch == nEpoch && !vote.IsPrivate())
+            vEpoch.push_back(vote);
+    if (!IsFinalityHardeningActiveForEpoch(nEpoch))
+    {
+        if (pnWinnersOut)
+        {
+            *pnWinnersOut = 0;
+            for (const CFinalityVote& vote : vEpoch)
+                if (pWinner && vote.hashBlock == *pWinner)
+                    (*pnWinnersOut)++;
+        }
+        return (int)vEpoch.size();
+    }
+    return CountFinalityVoterClusters(vEpoch, mapVoteControlKeys, pWinner, pnWinnersOut);
+}
+
+int64_t CFinalityTracker::GetFinalityQuorumReference(int nEpoch, bool fCount) const
+{
+    LOCK(cs_finality);
+    if (!IsFinalityHardeningActiveForEpoch(nEpoch))
+        return 0;
+    int64_t nReference = 0;
+    for (int e = std::max(0, nEpoch - FINALITY_QUORUM_LOOKBACK_EPOCHS); e < nEpoch; e++)
+    {
+        int64_t nValue = 0;
+        if (fCount)
+        {
+            std::map<int, std::vector<CFinalityVote> >::const_iterator it = mapEpochVotes.find(e);
+            if (it != mapEpochVotes.end())
+                nValue = GetTransparentVoterUnits(e, it->second);
+            std::map<int, std::map<uint256, uint256> >::const_iterator itNote =
+                mapEpochCountedNoteVotes.find(e);
+            if (itNote != mapEpochCountedNoteVotes.end())
+                nValue += (int64_t)itNote->second.size();
+        }
+        else
+        {
+            std::map<int, int64_t>::const_iterator it = mapEpochVoteWeight.find(e);
+            if (it != mapEpochVoteWeight.end())
+                nValue = it->second;
+        }
+        nReference = std::max(nReference, nValue);
+    }
+    return nReference;
+}
+
+void CFinalityTracker::AddPendingEquivocationEvidence(const CFinalityEquivocationEvidence& ev)
+{
+    LOCK(cs_finality);
+    CKeyID keyID;
+    if (!ev.GetKeyID(keyID) || !IsFinalityHardeningActiveForEpoch(ev.GetEpoch()) || !ev.IsValid())
+        return;
+    const std::pair<int, CKeyID> key(ev.GetEpoch(), keyID);
+    if (setCarriedEquivocationEvidence.count(key) ||
+        mapPendingEquivocationEvidence.size() >= (size_t)FINALITY_MAX_VOTES)
+        return;
+    mapPendingEquivocationEvidence[key] = ev;
+}
+
+void CFinalityTracker::MarkEquivocationEvidenceCarried(
+    const std::vector<CFinalityEquivocationEvidence>& vEvidence)
+{
+    LOCK(cs_finality);
+    for (const CFinalityEquivocationEvidence& ev : vEvidence)
+    {
+        CKeyID keyID;
+        if (!ev.GetKeyID(keyID))
+            continue;
+        const std::pair<int, CKeyID> key(ev.GetEpoch(), keyID);
+        setCarriedEquivocationEvidence.insert(key);
+        mapPendingEquivocationEvidence.erase(key);
+    }
+}
+
+std::vector<CFinalityEquivocationEvidence>
+CFinalityTracker::GetPendingEquivocationEvidenceForBlock(int nBlockHeight) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityEquivocationEvidence> vOut;
+    for (const auto& pair : mapPendingEquivocationEvidence)
+    {
+        if (vOut.size() >= (size_t)FINALITY_MAX_BLOCK_EQUIVOCATION_EVIDENCE)
+            break;
+        std::vector<CFinalityEquivocationEvidence> vOne(1, pair.second);
+        if (CheckFinalityEquivocationEvidenceForBlock(vOne, nBlockHeight))
+            vOut.push_back(pair.second);
+    }
+    return vOut;
+}
+
 bool CFinalityTracker::LoadVotes(CTxDB& txdb)
 {
     std::map<uint256, CFinalityVote> mapVotes;
@@ -7401,9 +7857,19 @@ bool CFinalityTracker::LoadVotes(CTxDB& txdb)
         return false;
 
     for (const auto& pair : mapVotes)
+    {
         if (!AddVote(pair.second, false, true))
             return error("LoadFinalityVotes: FATAL persisted vote could not be restored -- "
                          "-reindex/resync required");
+        if (IsFinalityHardeningActiveForEpoch(pair.second.nEpoch) && !pair.second.IsPrivate())
+        {
+            std::vector<CKeyID> vKeys;
+            if (!ResolveVoteControlKeys(pair.second, txdb, vKeys))
+                return error("LoadFinalityVotes: FATAL stake proof of a persisted vote is "
+                             "unreadable -- -reindex/resync required");
+            SetVoteControlKeys(pair.first, vKeys);
+        }
+    }
 
     if (!RebuildFinalityState())
         return false;
@@ -7859,6 +8325,7 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapVoteHashByNullifier.clear();
         mapPendingVotes.clear();
         mapConnectedVotes.clear();
+        mapVoteControlKeys.clear();
         mapBlockConnectedVoteNullifiers.clear();
         mapNoteVotesByHash.clear();
         mapBlockConnectedNoteVotes.clear();
@@ -8362,7 +8829,8 @@ bool BuildNoteTallyCertificate(int nEpoch,
                                const std::vector<CFinalityVote>& vConnectedTransparent,
                                const std::vector<CNoteFinalityVote>& vCounted,
                                CFinalityTallyCertificate& certOut,
-                               std::string* pstrError)
+                               std::string* pstrError,
+                               const CFinalityTracker* pTracker)
 {
     auto fail = [&](const std::string& strReason) -> bool {
         if (pstrError)
@@ -8386,8 +8854,11 @@ bool BuildNoteTallyCertificate(int nEpoch,
     for (size_t i = 0; i < vCounted.size(); i++)
         if (vCounted[i].nEpoch == nEpoch)
             nNoteVoters++;
-    if (!BuildCanonicalTransparentFinalityCertificate(vConnectedTransparent, skeleton,
-                                                      &strError, nNoteVoters))
+    const bool fHardened = pTracker && IsFinalityHardeningActiveForEpoch(nEpoch);
+    if (!BuildCanonicalTransparentFinalityCertificate(
+            vConnectedTransparent, skeleton, &strError, nNoteVoters,
+            fHardened ? pTracker->GetFinalityQuorumReference(nEpoch, false) : 0,
+            fHardened ? pTracker->GetTransparentVoterUnits(nEpoch, vConnectedTransparent) : -1))
     {
         // Only an epoch with NO transparent vote falls through to the note-only skeleton.
         if (!vConnectedTransparent.empty())
@@ -8420,9 +8891,13 @@ bool BuildNoteTallyCertificate(int nEpoch,
         if (vConnectedTransparent[i].hashBlock == hashWinner)
             nTransparentWinners++;
     }
-    const FinalityTier tier = FinalityDetermineTier(
-        (int64_t)nTransparentVoters + (int64_t)nNoteVoterCount,
-        (int64_t)nTransparentWinners + (int64_t)nNoteWinners);
+    if (fHardened)
+        nTransparentVoters = pTracker->GetTransparentVoterUnits(
+            nEpoch, vConnectedTransparent, &hashWinner, &nTransparentWinners);
+    const int64_t nCountWinners = (int64_t)nTransparentWinners + (int64_t)nNoteWinners;
+    const FinalityTier tier = (FinalityTier)ApplyFinalityStakeQuorum(
+        FinalityDetermineTier((int64_t)nTransparentVoters + (int64_t)nNoteVoterCount, nCountWinners),
+        nCountWinners, fHardened ? pTracker->GetFinalityQuorumReference(nEpoch, true) : 0);
     if (tier == FINALITY_NONE)
         return fail("no tier");
     // Consensus takes a note-only certificate only at an exclusive share.
@@ -8452,11 +8927,15 @@ std::vector<CFinalityTallyCertificate> BuildConnectedTallyCertificates(
         return vOut;
     const std::vector<CFinalityVote> vConnected = tracker.GetConnectedEpochVotes(nEpoch);
     CFinalityTallyCertificate cert;
-    if (BuildCanonicalTransparentFinalityCertificate(vConnected, cert, pstrTransparentError))
+    const bool fHardened = IsFinalityHardeningActiveForEpoch(nEpoch);
+    if (BuildCanonicalTransparentFinalityCertificate(
+            vConnected, cert, pstrTransparentError, 0,
+            fHardened ? tracker.GetFinalityQuorumReference(nEpoch, false) : 0,
+            fHardened ? tracker.GetTransparentVoterUnits(nEpoch, vConnected) : -1))
         vOut.push_back(cert);
     if (IsIV5NoteVoteActiveAtHeight(nTipHeight + 1) &&
         BuildNoteTallyCertificate(nEpoch, vConnected, tracker.GetCountedEpochNoteVotes(nEpoch),
-                                  cert, pstrNoteError))
+                                  cert, pstrNoteError, &tracker))
         vOut.push_back(cert);
     return vOut;
 }

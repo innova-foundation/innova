@@ -11229,6 +11229,21 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             strFinalityCapacityError.c_str()));
     if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CFinalityEquivocationEvidence> vEquivocationEvidence;
+    if (!ExtractFinalityEquivocationEvidenceFromBlockForHeight(
+            activeBlock, pindex->nHeight, vEquivocationEvidence))
+        return DoS(100, error("ConnectBlock() : invalid equivocation evidence envelope"));
+    if (!vEquivocationEvidence.empty())
+    {
+        std::string strEvidenceError;
+        if (IsProofOfStake())
+            return DoS(100, error("ConnectBlock() : equivocation evidence in a proof-of-stake block"));
+        if (!CheckFinalityEquivocationEvidenceForBlock(vEquivocationEvidence, pindex->nHeight,
+                                                       &strEvidenceError))
+            return DoS(100, error("ConnectBlock() : equivocation evidence invalid: %s",
+                                  strEvidenceError.c_str()));
+        g_finalityTracker.MarkEquivocationEvidenceCarried(vEquivocationEvidence);
+    }
     std::vector<CNoteFinalityVote> vNoteFinalityVotes;
     FinalityEnvelopeDecodeResult noteVoteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
     if (!ExtractNoteFinalityVotesFromBlockForHeight(

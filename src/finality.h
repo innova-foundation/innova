@@ -51,6 +51,18 @@ static const int FINALITY_VOTE_INCLUSION_WINDOW = 24;
 // Note-vote lane window: ~12 dandelion hops at ~10s each (a ~9.4 KB vote) at 1s blocks.
 static const int FINALITY_NOTE_VOTE_INCLUSION_WINDOW = 120;
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
+// Mergeset-fork finality hardening, keyed on the epoch boundary height.
+static const int FINALITY_VOTE_INCLUSION_WINDOW_HARDENED = 120;
+static const int FINALITY_EQUIVOCATION_EXCLUSION_EPOCHS = 10;  // evidence epoch plus the next 10
+static const int FINALITY_QUORUM_LOOKBACK_EPOCHS = 10;
+static const int FINALITY_QUORUM_NUM = 1;                      // HARD needs winning >= 1/2 of reference
+static const int FINALITY_QUORUM_DEN = 2;
+static const int FINALITY_MAX_BLOCK_EQUIVOCATION_EVIDENCE = 4;
+/** Hardening applies to the epoch opening at nBoundaryHeight. */
+bool IsFinalityHardeningActiveAtBoundary(int nBoundaryHeight);
+bool IsFinalityHardeningActiveForEpoch(int nEpoch);
+/** Transparent vote-inclusion window of the epoch opening at nBoundaryHeight. */
+int GetFinalityVoteInclusionWindow(int nBoundaryHeight);
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
 // Relay policy: pending tally certificates held per epoch.
 static const unsigned int FINALITY_PENDING_CERTS_PER_EPOCH = 8;
@@ -188,6 +200,7 @@ static const unsigned char FINALITY_TALLY_SHARE_TAG[4] = { 0x49, 0x46, 0x54, 0x5
 // decoders and are never reinterpreted as the canonical schema.
 static const unsigned char FINALITY_CANONICAL_VOTE_TAG[4] = { 0x49, 0x46, 0x43, 0x56 }; // "IFCV"
 static const unsigned char FINALITY_CANONICAL_TALLY_CERT_TAG[4] = { 0x49, 0x46, 0x43, 0x43 }; // "IFCC"
+static const unsigned char FINALITY_EQUIVOCATION_TAG[4] = { 0x49, 0x46, 0x45, 0x51 }; // "IFEQ"
 // F2 note-vote carrier: one coinbase OP_RETURN output over a single push, bounded by
 // MAX_SCRIPT_SIZE. Never the coinbase IV5 payload, whose value rule stays closed.
 static const char FINALITY_CANONICAL_VOTE_COMMAND[] = "fvotea";
@@ -326,7 +339,7 @@ inline int64_t GetFinalityVoteRate(int nHeight)
 inline int GetFinalityVoteProducerWindow(int nHeight)
 {
     if (nHeight >= GetForkHeightDAG())
-        return (FINALITY_VOTE_INCLUSION_WINDOW * 3) / 4;
+        return (GetFinalityVoteInclusionWindow(nHeight) * 3) / 4;
     return FINALITY_VOTE_WINDOW;
 }
 
@@ -664,6 +677,50 @@ public:
     bool FromLogical(const CFinalityVote& vote);
     bool ToLogical(CFinalityVote& voteOut) const;
 };
+
+/** Two signed canonical transparent votes by one key naming different blocks at the same
+ *  epoch boundary. Self-proving: valid without any chain state. */
+class CFinalityEquivocationEvidence
+{
+public:
+    uint32_t nVersion;
+    CCanonicalFinalityVoteEnvelope voteA;   // voteA.hashBlock < voteB.hashBlock
+    CCanonicalFinalityVoteEnvelope voteB;
+
+    CFinalityEquivocationEvidence() : nVersion(1) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nVersion);
+        READWRITE(voteA);
+        READWRITE(voteB);
+    )
+
+    /** Order the pair canonically; false if they are not an equivocation. */
+    bool FromVotes(const CFinalityVote& a, const CFinalityVote& b);
+    bool IsValid(std::string* pstrError = NULL) const;
+    int GetEpoch() const { return voteA.nEpoch; }
+    bool GetKeyID(CKeyID& keyIDOut) const;
+};
+bool BuildFinalityEquivocationScript(const CFinalityEquivocationEvidence& ev, CScript& scriptOut);
+/** Pre-fork carriers are plain data (NO_MATCH). Post-fork every IFEQ output must decode. */
+bool ExtractFinalityEquivocationEvidenceFromBlockForHeight(
+    const CBlock& block, int nHeight, std::vector<CFinalityEquivocationEvidence>& vOut);
+/** Block-level rule for carried evidence at nHeight: count, validity, own-window, no repeat key. */
+bool CheckFinalityEquivocationEvidenceForBlock(
+    const std::vector<CFinalityEquivocationEvidence>& vEvidence, int nHeight,
+    std::string* pstrError = NULL);
+/** Settlement exclusion: drop votes whose key is in setExcluded. */
+void FilterFinalitySettlementVotes(std::vector<CFinalityVote>& vVotes,
+                                   const std::set<CKeyID>& setExcluded);
+/** HARD is downgraded to SOFT when the winning amount is below
+ *  FINALITY_QUORUM_NUM/DEN of nReference. nReference <= 0 disables the rule. */
+int ApplyFinalityStakeQuorum(int nTier, int64_t nWinning, int64_t nReference);
+/** Voter clusters: votes sharing the voting key or any stake-proof controlling key are
+ *  one voter. pnWinnersOut counts clusters all of whose votes name *pWinner. */
+int CountFinalityVoterClusters(const std::vector<CFinalityVote>& vVotes,
+                               const std::map<uint256, std::vector<CKeyID> >& mapControlKeys,
+                               const uint256* pWinner = NULL, int* pnWinnersOut = NULL);
 
 /** Per-voter aggregate-share message used to assemble a hidden tally. */
 class CFinalityTallyShare
@@ -1114,7 +1171,9 @@ bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
     CFinalityTallyCertificate& certOut,
     std::string* pstrError = NULL,
-    size_t nOtherLegVoters = 0);
+    size_t nOtherLegVoters = 0,
+    int64_t nQuorumReference = 0,
+    int nTransparentVoterUnits = -1);
 /** Skeleton for an epoch with no transparent vote. The winner is the counted note
  *  votes' most-named block (hash tie-break); transparent fields are left empty as
  *  CheckTallyCertificate requires. nTier is left NONE for the caller. */
@@ -1125,11 +1184,13 @@ bool BuildNoteOnlyFinalitySkeleton(
     std::string* pstrError = NULL);
 /** The epoch's v4 note certificate: transparent skeleton, counted note set's root and
  *  count, and the strongest supported tier. No committee or signer-set. */
+class CFinalityTracker;
 bool BuildNoteTallyCertificate(int nEpoch,
                                const std::vector<CFinalityVote>& vConnectedTransparent,
                                const std::vector<CNoteFinalityVote>& vCounted,
                                CFinalityTallyCertificate& certOut,
-                               std::string* pstrError = NULL);
+                               std::string* pstrError = NULL,
+                               const CFinalityTracker* pTracker = NULL);
 class CFinalityTracker;
 /** Every certificate a node builds for nEpoch from the tracker's connected transparent
  *  votes and counted note votes: the canonical transparent certificate, and the note
@@ -1354,6 +1415,20 @@ public:
 
     /** Return pending votes miners may include in the next PoW block. */
     std::vector<CFinalityVote> GetPendingVotesForBlock(int nBlockHeight, unsigned int nMaxVotes = FINALITY_MAX_BLOCK_VOTES) const;
+    /** Equivocation evidence a miner may carry in a block at nBlockHeight. */
+    std::vector<CFinalityEquivocationEvidence> GetPendingEquivocationEvidenceForBlock(int nBlockHeight) const;
+    void AddPendingEquivocationEvidence(const CFinalityEquivocationEvidence& ev);
+    void MarkEquivocationEvidenceCarried(const std::vector<CFinalityEquivocationEvidence>& vEvidence);
+    /** Stake-proof controlling keys of a connected vote (P2CS owner, else the stake key). */
+    static bool ResolveVoteControlKeys(const CFinalityVote& vote, CTxDB& txdb,
+                                       std::vector<CKeyID>& vKeysOut);
+    void SetVoteControlKeys(const uint256& nullifier, const std::vector<CKeyID>& vKeys);
+    /** Transparent voter units of a vote set: clusters once hardened, else votes. */
+    int GetTransparentVoterUnits(int nEpoch, const std::vector<CFinalityVote>& vVotes,
+                                 const uint256* pWinner = NULL, int* pnWinnersOut = NULL) const;
+    /** Stake-quorum reference for nEpoch: max of the prior FINALITY_QUORUM_LOOKBACK_EPOCHS
+     *  epochs' connected transparent weight (or voter units, fCount). 0 before the fork. */
+    int64_t GetFinalityQuorumReference(int nEpoch, bool fCount) const;
     /** Enforce the Boundary-A epoch-wide vote bound required by the canonical
      *  certificate's exact nullifier list. */
     bool CheckCanonicalVoteSetCapacity(
@@ -1578,6 +1653,9 @@ private:
     // Transparent nullifiers seen with a conflicting block. Observability only.
     std::map<int, std::set<uint256>> mapEpochEquivocatedVoteNullifiers;
     void RecordConflictingNullifierVote(const CFinalityVote& vote);
+    std::map<uint256, std::vector<CKeyID> > mapVoteControlKeys;   // nullifier -> controlling keys
+    std::map<std::pair<int, CKeyID>, CFinalityEquivocationEvidence> mapPendingEquivocationEvidence;
+    std::set<std::pair<int, CKeyID> > setCarriedEquivocationEvidence;
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;

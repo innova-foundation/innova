@@ -1549,6 +1549,19 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                 nBlockSize += nVoteCommitSize + 64;
             }
 
+            for (const CFinalityEquivocationEvidence& ev :
+                 g_finalityTracker.GetPendingEquivocationEvidenceForBlock(nHeight))
+            {
+                CScript evScript;
+                if (!BuildFinalityEquivocationScript(ev, evScript))
+                    continue;
+                unsigned int nEvSize = ::GetSerializeSize(evScript, SER_NETWORK, PROTOCOL_VERSION);
+                if (nBlockSize + nEvSize + 64 >= nBlockMaxSize)
+                    break;
+                pblock->vtx[0].vout.push_back(CTxOut(0, evScript));
+                nBlockSize += nEvSize + 64;
+            }
+
             // Epoch settlement leg (space already reserved above).
             for (const CTxOut& settleOut : vFinalitySettlementOutputs)
             {

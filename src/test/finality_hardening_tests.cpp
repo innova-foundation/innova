@@ -1,0 +1,353 @@
+// Copyright (c) 2026 The Innova developers
+// Distributed under the MIT/X11 software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+// Mergeset-fork finality hardening: inclusion window, equivocation evidence and
+// settlement exclusion, stake quorum, voter clusters. Each rule on both sides of the fork.
+
+#include <boost/test/unit_test.hpp>
+
+#include "../main.h"
+#include "../finality.h"
+#include "../key.h"
+
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct MergesetAt
+{
+    int nSaved;
+    explicit MergesetAt(int nHeight) : nSaved(::nRegtestMergesetHeight) { ::nRegtestMergesetHeight = nHeight; }
+    ~MergesetAt() { ::nRegtestMergesetHeight = nSaved; }
+};
+
+int Epoch(int nOffset) { return GetEpochForHeight(GetForkHeightDAG()) + nOffset; }
+int Boundary(int nEpoch) { return GetEpochBoundaryHeight(nEpoch, GetForkHeightDAG()); }
+
+CFinalityVote SignedVote(const CKey& keyIn, int nEpoch, const uint256& hashBlock,
+                         int nHeight, int64_t nWeight = 1000 * COIN)
+{
+    CKey key = keyIn;
+    CFinalityVote vote;
+    vote.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    vote.nEpoch = nEpoch;
+    vote.hashBlock = hashBlock;
+    vote.nHeight = nHeight;
+    vote.nTime = 1700000000;
+    vote.nVoteWeight = nWeight;
+    vote.nReward = 0;
+    const CPubKey pubkey = key.GetPubKey();
+    vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+    CHashWriter nf(SER_GETHASH, 0);
+    nf << vote.vchPubKey;
+    nf << nEpoch;
+    vote.nullifier = nf.GetHash();
+    vote.MarkCanonicalEnvelope();
+    BOOST_REQUIRE(vote.Sign(key));
+    return vote;
+}
+
+CKey NewKey()
+{
+    CKey key;
+    key.MakeNewKey(true);
+    return key;
+}
+
+CKeyID KeyIDOf(const CFinalityVote& vote) { return CPubKey(vote.vchPubKey).GetID(); }
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(finality_hardening_tests)
+
+BOOST_AUTO_TEST_CASE(inclusion_window_widens_only_from_the_fork)
+{
+    const int nEpoch = Epoch(4);
+    const int nBoundary = Boundary(nEpoch);
+    {
+        MergesetAt unset(PRIVACY_VNEXT_HEIGHT_UNSET);
+        BOOST_CHECK_EQUAL(GetFinalityVoteInclusionWindow(nBoundary), FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_CHECK(!IsFinalityHardeningActiveForEpoch(nEpoch));
+    }
+    {
+        MergesetAt fork(nBoundary);
+        BOOST_CHECK_EQUAL(GetFinalityVoteInclusionWindow(nBoundary), FINALITY_VOTE_INCLUSION_WINDOW_HARDENED);
+        BOOST_CHECK_EQUAL(GetFinalityVoteInclusionWindow(Boundary(nEpoch - 1)), FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_CHECK(IsFinalityHardeningActiveForEpoch(nEpoch));
+        BOOST_CHECK(!IsFinalityHardeningActiveForEpoch(nEpoch - 1));
+        // Settlement and certificate floor follow the window, and stay inside the epoch.
+        const int nClose = GetFinalityVoteSetCloseOffset(nBoundary);
+        BOOST_CHECK_GE(nClose, FINALITY_VOTE_INCLUSION_WINDOW_HARDENED);
+        BOOST_CHECK_LT(nClose, GetEpochInterval(nBoundary));
+        BOOST_CHECK_EQUAL(GetFinalitySettlementHeight(nEpoch, nBoundary), nBoundary + nClose);
+        // A fork inside an epoch leaves that epoch on the old rules.
+        MergesetAt mid(nBoundary + 1);
+        BOOST_CHECK_EQUAL(GetFinalityVoteInclusionWindow(nBoundary), FINALITY_VOTE_INCLUSION_WINDOW);
+        BOOST_CHECK(!IsFinalityHardeningActiveForEpoch(nEpoch));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(stake_quorum_downgrades_only_hard)
+{
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_HARD, 49, 100), FINALITY_SOFT);
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_HARD, 50, 100), FINALITY_HARD);
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_HARD, 1, 0), FINALITY_HARD);
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_SOFT, 1, 100), FINALITY_SOFT);
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_TENTATIVE, 1, 100), FINALITY_TENTATIVE);
+    BOOST_CHECK_EQUAL(ApplyFinalityStakeQuorum(FINALITY_HARD, MAX_MONEY / 2, MAX_MONEY), FINALITY_HARD);
+}
+
+BOOST_AUTO_TEST_CASE(voter_clusters_merge_on_shared_controlling_key)
+{
+    const int nEpoch = Epoch(3);
+    const uint256 hashA(1), hashB(2);
+    CKey a = NewKey(), b = NewKey(), c = NewKey(), owner = NewKey();
+    std::vector<CFinalityVote> votes;
+    votes.push_back(SignedVote(a, nEpoch, hashA, Boundary(nEpoch)));
+    votes.push_back(SignedVote(b, nEpoch, hashB, Boundary(nEpoch)));
+    votes.push_back(SignedVote(c, nEpoch, hashA, Boundary(nEpoch)));
+
+    std::map<uint256, std::vector<CKeyID> > noKeys;
+    int nWinners = -1;
+    BOOST_CHECK_EQUAL(CountFinalityVoterClusters(votes, noKeys, &hashA, &nWinners), 3);
+    BOOST_CHECK_EQUAL(nWinners, 2);
+
+    std::map<uint256, std::vector<CKeyID> > keys;
+    keys[votes[0].nullifier].push_back(owner.GetPubKey().GetID());
+    keys[votes[1].nullifier].push_back(owner.GetPubKey().GetID());
+    BOOST_CHECK_EQUAL(CountFinalityVoterClusters(votes, keys, &hashA, &nWinners), 2);
+    // The a+b cluster split its vote, so only c counts as a winner.
+    BOOST_CHECK_EQUAL(nWinners, 1);
+
+    // Transitive: c linked to b's own key joins the same cluster.
+    keys[votes[2].nullifier].push_back(KeyIDOf(votes[1]));
+    BOOST_CHECK_EQUAL(CountFinalityVoterClusters(votes, keys), 1);
+}
+
+BOOST_AUTO_TEST_CASE(split_stake_is_one_voter_after_the_fork)
+{
+    const int nEpoch = Epoch(5);
+    const int nBoundary = Boundary(nEpoch);
+    const uint256 hashA(11);
+    CKey a = NewKey(), b = NewKey(), owner = NewKey();
+    const CFinalityVote va = SignedVote(a, nEpoch, hashA, nBoundary);
+    const CFinalityVote vb = SignedVote(b, nEpoch, hashA, nBoundary);
+    std::vector<CKeyID> vOwner(1, owner.GetPubKey().GetID());
+
+    for (int fFork = 0; fFork < 2; fFork++)
+    {
+        MergesetAt fork(fFork ? nBoundary : PRIVACY_VNEXT_HEIGHT_UNSET);
+        CFinalityTracker tracker;
+        tracker.SetVoteControlKeys(va.nullifier, vOwner);
+        tracker.SetVoteControlKeys(vb.nullifier, vOwner);
+        BOOST_REQUIRE(tracker.AddVote(va, false, true));
+        BOOST_REQUIRE(tracker.AddVote(vb, false, true));
+        std::vector<CFinalityVote> votes;
+        votes.push_back(va);
+        votes.push_back(vb);
+        BOOST_CHECK_EQUAL(tracker.GetTransparentVoterUnits(nEpoch, votes), fFork ? 1 : 2);
+
+        int nTier = 0, nHeight = 0, nVoters = 0;
+        uint256 hashWinner;
+        CFinalityTallyCertificate noCert;
+        const bool fTier = tracker.ComputeDeterministicEpochTier(nEpoch, false, noCert, nTier,
+                                                                 hashWinner, nHeight, nVoters);
+        BOOST_CHECK_EQUAL(fTier, !fFork);
+        if (!fFork)
+            BOOST_CHECK_EQUAL(nTier, FINALITY_HARD);
+
+        // The canonical certificate floor counts the same units.
+        CFinalityTallyCertificate cert;
+        std::string strError;
+        const bool fCert = BuildCanonicalTransparentFinalityCertificate(
+            votes, cert, &strError, 0, 0,
+            tracker.GetTransparentVoterUnits(nEpoch, votes));
+        BOOST_CHECK_EQUAL(fCert, !fFork);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(hard_needs_quorum_of_trailing_turnout_after_the_fork)
+{
+    const int nEpoch = Epoch(20);
+    const int nBoundary = Boundary(nEpoch);
+    const uint256 hashA(21), hashPrev(22);
+
+    for (int nCase = 0; nCase < 3; nCase++)
+    {
+        // 0: pre-fork; 1: post-fork with a heavy prior epoch; 2: heavy epoch outside lookback.
+        MergesetAt fork(nCase == 0 ? PRIVACY_VNEXT_HEIGHT_UNSET : Boundary(nEpoch - 15));
+        const int nHeavyEpoch = nCase == 2 ? nEpoch - FINALITY_QUORUM_LOOKBACK_EPOCHS - 1 : nEpoch - 1;
+        CFinalityTracker tracker;
+        BOOST_REQUIRE(tracker.AddVote(SignedVote(NewKey(), nHeavyEpoch, hashPrev,
+                                                 Boundary(nHeavyEpoch), 5000 * COIN), false, true));
+        BOOST_REQUIRE(tracker.AddVote(SignedVote(NewKey(), nHeavyEpoch, hashPrev,
+                                                 Boundary(nHeavyEpoch), 5000 * COIN), false, true));
+        std::vector<CFinalityVote> votes;
+        votes.push_back(SignedVote(NewKey(), nEpoch, hashA, nBoundary, 2000 * COIN));
+        votes.push_back(SignedVote(NewKey(), nEpoch, hashA, nBoundary, 2000 * COIN));
+        for (const CFinalityVote& v : votes)
+            BOOST_REQUIRE(tracker.AddVote(v, false, true));
+
+        const int64_t nRef = tracker.GetFinalityQuorumReference(nEpoch, false);
+        BOOST_CHECK_EQUAL(nRef, nCase == 1 ? 10000 * COIN : 0);
+
+        int nTier = 0, nHeight = 0, nVoters = 0;
+        uint256 hashWinner;
+        CFinalityTallyCertificate noCert;
+        BOOST_REQUIRE(tracker.ComputeDeterministicEpochTier(nEpoch, false, noCert, nTier,
+                                                            hashWinner, nHeight, nVoters));
+        BOOST_CHECK_EQUAL(nTier, nCase == 1 ? FINALITY_SOFT : FINALITY_HARD);
+
+        CFinalityTallyCertificate cert;
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(BuildCanonicalTransparentFinalityCertificate(
+                                  votes, cert, &strError, 0, nRef,
+                                  tracker.GetTransparentVoterUnits(nEpoch, votes)), strError);
+        BOOST_CHECK_EQUAL(cert.nTier, nCase == 1 ? FINALITY_SOFT : FINALITY_HARD);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(equivocation_evidence_is_self_proving)
+{
+    const int nEpoch = Epoch(6);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(nBoundary);
+    CKey key = NewKey(), other = NewKey();
+    const CFinalityVote v1 = SignedVote(key, nEpoch, uint256(31), nBoundary);
+    const CFinalityVote v2 = SignedVote(key, nEpoch, uint256(32), nBoundary);
+
+    CFinalityEquivocationEvidence ev;
+    BOOST_REQUIRE(ev.FromVotes(v2, v1));
+    BOOST_CHECK(ev.voteA.hashBlock < ev.voteB.hashBlock);
+    CKeyID keyID;
+    BOOST_REQUIRE(ev.GetKeyID(keyID));
+    BOOST_CHECK(keyID == key.GetPubKey().GetID());
+
+    CFinalityEquivocationEvidence same;
+    BOOST_CHECK(!same.FromVotes(v1, v1));
+    CFinalityEquivocationEvidence twoKeys;
+    BOOST_CHECK(!twoKeys.FromVotes(v1, SignedVote(other, nEpoch, uint256(32), nBoundary)));
+    CFinalityEquivocationEvidence offBoundary;
+    BOOST_CHECK(!offBoundary.FromVotes(v1, SignedVote(key, nEpoch, uint256(32), nBoundary + 1)));
+
+    CFinalityEquivocationEvidence badSig = ev;
+    badSig.voteB.nTime++;
+    BOOST_CHECK(!badSig.IsValid());
+
+    // Script round trip through a coinbase.
+    CScript script;
+    BOOST_REQUIRE(BuildFinalityEquivocationScript(ev, script));
+    CBlock block;
+    CTransaction coinbase;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.SetNull();
+    coinbase.vout.push_back(CTxOut(0, script));
+    block.vtx.push_back(coinbase);
+    std::vector<CFinalityEquivocationEvidence> vOut;
+    BOOST_REQUIRE(ExtractFinalityEquivocationEvidenceFromBlockForHeight(block, nBoundary + 1, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 1u);
+    BOOST_CHECK(vOut[0].IsValid());
+    // Pre-fork the carrier is plain data.
+    BOOST_REQUIRE(ExtractFinalityEquivocationEvidenceFromBlockForHeight(block, nBoundary - 1, vOut));
+    BOOST_CHECK(vOut.empty());
+    // Post-fork a malformed carrier invalidates the block.
+    CScript junk;
+    std::vector<unsigned char> vch(FINALITY_EQUIVOCATION_TAG, FINALITY_EQUIVOCATION_TAG + 4);
+    vch.push_back(0x01);
+    junk << OP_RETURN << vch;
+    block.vtx[0].vout.push_back(CTxOut(0, junk));
+    BOOST_CHECK(!ExtractFinalityEquivocationEvidenceFromBlockForHeight(block, nBoundary + 1, vOut));
+}
+
+BOOST_AUTO_TEST_CASE(equivocation_evidence_block_rule)
+{
+    const int nEpoch = Epoch(7);
+    const int nBoundary = Boundary(nEpoch);
+    CKey key = NewKey();
+    CFinalityEquivocationEvidence ev;
+    {
+        MergesetAt fork(nBoundary);
+        BOOST_REQUIRE(ev.FromVotes(SignedVote(key, nEpoch, uint256(41), nBoundary),
+                                   SignedVote(key, nEpoch, uint256(42), nBoundary)));
+        std::vector<CFinalityEquivocationEvidence> v(1, ev);
+        std::string strError;
+        BOOST_CHECK_MESSAGE(CheckFinalityEquivocationEvidenceForBlock(v, nBoundary, &strError), strError);
+        const int nClose = GetFinalityVoteSetCloseOffset(nBoundary);
+        BOOST_CHECK(CheckFinalityEquivocationEvidenceForBlock(v, nBoundary + nClose - 1));
+        BOOST_CHECK(!CheckFinalityEquivocationEvidenceForBlock(v, nBoundary + nClose));
+        BOOST_CHECK(!CheckFinalityEquivocationEvidenceForBlock(v, nBoundary - 1));
+        v.push_back(ev);
+        BOOST_CHECK(!CheckFinalityEquivocationEvidenceForBlock(v, nBoundary));
+    }
+    {
+        // Evidence about an epoch that predates the fork is never valid.
+        MergesetAt fork(nBoundary + 1);
+        std::vector<CFinalityEquivocationEvidence> v(1, ev);
+        BOOST_CHECK(!CheckFinalityEquivocationEvidenceForBlock(v, nBoundary + 2));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(excluded_equivocator_forfeits_its_settlement_share)
+{
+    const int nEpoch = Epoch(8);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(nBoundary);
+    CFinalityVote honest = SignedVote(NewKey(), nEpoch, uint256(51), nBoundary);
+    CFinalityVote cheat = SignedVote(NewKey(), nEpoch, uint256(51), nBoundary);
+    honest.nReward = cheat.nReward = 1;
+    std::vector<CFinalityVote> votes;
+    votes.push_back(honest);
+    votes.push_back(cheat);
+    std::set<CKeyID> setExcluded;
+    setExcluded.insert(KeyIDOf(cheat));
+    FilterFinalitySettlementVotes(votes, setExcluded);
+    BOOST_REQUIRE_EQUAL(votes.size(), 1u);
+    BOOST_CHECK(votes[0].nullifier == honest.nullifier);
+
+    std::vector<CTxOut> vOut;
+    int64_t nTotal = 0;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(BuildFinalitySettlementOutputs(votes, 10 * COIN, vOut, nTotal, &strError), strError);
+    BOOST_REQUIRE_EQUAL(vOut.size(), 1u);
+    BOOST_CHECK(vOut[0].scriptPubKey == GetScriptForDestination(KeyIDOf(honest)));
+    BOOST_CHECK_EQUAL(nTotal, 10 * COIN);
+
+    // An empty exclusion set changes nothing.
+    std::vector<CFinalityVote> both;
+    both.push_back(honest);
+    both.push_back(cheat);
+    FilterFinalitySettlementVotes(both, std::set<CKeyID>());
+    BOOST_CHECK_EQUAL(both.size(), 2u);
+}
+
+BOOST_AUTO_TEST_CASE(conflicting_relay_vote_becomes_pending_evidence)
+{
+    const int nEpoch = Epoch(9);
+    const int nBoundary = Boundary(nEpoch);
+    CKey key = NewKey();
+    const CFinalityVote v1 = SignedVote(key, nEpoch, uint256(61), nBoundary);
+    const CFinalityVote v2 = SignedVote(key, nEpoch, uint256(62), nBoundary);
+    for (int fFork = 0; fFork < 2; fFork++)
+    {
+        MergesetAt fork(fFork ? nBoundary : PRIVACY_VNEXT_HEIGHT_UNSET);
+        CFinalityTracker tracker;
+        BOOST_REQUIRE(tracker.AddVote(v1, false, true));
+        BOOST_CHECK(!tracker.AddVote(v2, false, false));
+        std::vector<CFinalityEquivocationEvidence> vEv =
+            tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 3);
+        BOOST_CHECK_EQUAL(vEv.size(), fFork ? 1u : 0u);
+        if (fFork)
+        {
+            BOOST_CHECK(tracker.GetPendingEquivocationEvidenceForBlock(
+                nBoundary + GetFinalityVoteSetCloseOffset(nBoundary)).empty());
+            tracker.MarkEquivocationEvidenceCarried(vEv);
+            BOOST_CHECK(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 3).empty());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_SUITE_END()
