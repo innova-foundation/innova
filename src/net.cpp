@@ -522,6 +522,23 @@ uint64_t CNode::nMaxOutboundTotalBytesSentInCycle = 0;
 uint64_t CNode::nMaxOutboundTimeframe = 60*60*24; //1 day
 uint64_t CNode::nMaxOutboundCycleStartTime = 0;
 
+bool IsBadPort(uint16_t port)
+{
+    switch (port) {
+    case 1: case 7: case 9: case 11: case 13: case 15: case 17: case 19: case 20: case 21:
+    case 22: case 23: case 25: case 37: case 42: case 43: case 53: case 69: case 77: case 79:
+    case 87: case 95: case 101: case 102: case 103: case 104: case 109: case 110: case 111:
+    case 113: case 115: case 117: case 119: case 123: case 135: case 137: case 139: case 143:
+    case 161: case 179: case 389: case 427: case 465: case 512: case 513: case 514: case 515:
+    case 526: case 530: case 531: case 532: case 540: case 548: case 554: case 556: case 563:
+    case 587: case 601: case 636: case 989: case 990: case 993: case 995: case 1719: case 1720:
+    case 1723: case 2049: case 3659: case 4045: case 5060: case 5061: case 6000: case 6566:
+    case 6665: case 6666: case 6667: case 6668: case 6669: case 6697: case 10080:
+        return true;
+    }
+    return false;
+}
+
 CNode* FindNode(const CNetAddr& ip)
 {
     {
@@ -2330,8 +2347,8 @@ void ThreadOpenConnections2(void* parg)
             if (nANow - addr.nLastTry < 600 && nTries < 30)
                 continue;
 
-            // do not allow non-default ports, unless after 50 invalid addresses selected already
-            if (addr.GetPort() != GetDefaultPort() && nTries < 50)
+            // deprioritise well-known service ports
+            if (IsBadPort(addr.GetPort()) && nTries < 50)
                 continue;
 
             addrConnect = addr;
@@ -2458,7 +2475,7 @@ bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOu
         return false;
     if (!strDest) {
         if (IsLocal(addrConnect) ||
-            FindNode((CNetAddr) addrConnect) || CNode::IsBanned(addrConnect) ||
+            FindNode((CService) addrConnect) || CNode::IsBanned(addrConnect) ||
             FindNode(addrConnect.ToStringIPPort()))
             return false;
     } else if (FindNode(strDest))
@@ -2487,7 +2504,7 @@ bool OpenNetworkConnectionSimple(const CAddress& addrConnect, const char *strDes
         return false;
     if (!strDest) {
         if (IsLocal(addrConnect) ||
-            FindNode((CNetAddr) addrConnect) || CNode::IsBanned(addrConnect) ||
+            FindNode((CService) addrConnect) || CNode::IsBanned(addrConnect) ||
             FindNode(addrConnect.ToStringIPPort()))
             return false;
     } else if (FindNode(strDest))

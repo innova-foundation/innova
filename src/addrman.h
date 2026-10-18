@@ -178,7 +178,7 @@ private:
     std::map<int, CAddrInfo> mapInfo;
 
     // find an nId based on its network address
-    std::map<CNetAddr, int> mapAddr;
+    std::map<CService, int> mapAddr;
 
     // randomly-ordered vector of all nIds
     std::vector<int> vRandom;
@@ -198,7 +198,7 @@ private:
 protected:
 
     // Find an entry.
-    CAddrInfo* Find(const CNetAddr& addr, int *pnId = NULL);
+    CAddrInfo* Find(const CService& addr, int *pnId = NULL);
 
     // find an entry, creating it if necessary.
     // nTime and nServices of found node is updated, if necessary.
@@ -269,7 +269,8 @@ public:
         // changes to the ADDRMAN_ parameters without breaking the on-disk structure.
         {
             LOCK(cs);
-            unsigned char nVersion = 0;
+            // v1: entries keyed by IP:port; v0 files load unchanged
+            unsigned char nVersion = 1;
             READWRITE(nVersion);
             READWRITE(nKey);
             READWRITE(nNew);

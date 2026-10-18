@@ -77,9 +77,9 @@ double CAddrInfo::GetChance(int64_t nNow) const
     return fChance;
 }
 
-CAddrInfo* CAddrMan::Find(const CNetAddr& addr, int *pnId)
+CAddrInfo* CAddrMan::Find(const CService& addr, int *pnId)
 {
-    std::map<CNetAddr, int>::iterator it = mapAddr.find(addr);
+    std::map<CService, int>::iterator it = mapAddr.find(addr);
     if (it == mapAddr.end())
         return NULL;
     if (pnId)

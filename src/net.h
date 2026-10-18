@@ -59,6 +59,7 @@ bool OpenNetworkConnectionSimple(const CAddress& addrConnect, const char *strDes
 bool RecvLine(SOCKET hSocket, std::string& strLine);
 bool GetMyExternalIP(CNetAddr& ipRet);
 void AddressCurrentlyConnected(const CService& addr);
+bool IsBadPort(uint16_t port);
 CNode* FindNode(const CNetAddr& ip);
 CNode* FindNode(const CSubNet& subNet);
 CNode* FindNode(const std::string& addrName);
