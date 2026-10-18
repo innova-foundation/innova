@@ -7747,6 +7747,25 @@ bool CFinalityTracker::ResolveVoteControlKeys(const CFinalityVote& vote, CTxDB& 
     return true;
 }
 
+bool CFinalityTracker::ResolveMissingVoteControlKeys(
+    const std::map<uint256, CFinalityVote>& mapVotes, CTxDB& txdb)
+{
+    LOCK(cs_finality);
+    std::map<uint256, std::vector<CKeyID> > mapNew;
+    for (const auto& pair : mapVotes)
+    {
+        const CFinalityVote& vote = pair.second;
+        if (!IsFinalityHardeningActiveForEpoch(vote.nEpoch) || vote.IsPrivate() ||
+            mapVoteControlKeys.count(vote.nullifier))
+            continue;
+        if (!ResolveVoteControlKeys(vote, txdb, mapNew[vote.nullifier]))
+            return false;
+    }
+    for (const auto& pair : mapNew)
+        mapVoteControlKeys[pair.first] = pair.second;
+    return true;
+}
+
 void CFinalityTracker::SetVoteControlKeys(const uint256& nullifier, const std::vector<CKeyID>& vKeys)
 {
     LOCK(cs_finality);
@@ -8285,6 +8304,9 @@ bool CFinalityTracker::ReloadConnectedFinalityFromDB()
     // Merge only after every persisted record has been tied back to its exact
     // active carrier.  A failed integrity check leaves no additional tracker
     // state synthesized from corrupt disk records.
+    if (!ResolveMissingVoteControlKeys(mapVotes, txdb))
+        return error("ReloadConnectedFinalityFromDB: stake proof of a persisted vote is "
+                     "unreadable; -reindex/resync required");
     for (const auto& pair : mapVotes)
     {
         if (mapVoteHashByNullifier.count(pair.second.nullifier))

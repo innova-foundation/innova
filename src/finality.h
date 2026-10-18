@@ -1422,6 +1422,8 @@ public:
     /** Stake-proof controlling keys of a connected vote (P2CS owner, else the stake key). */
     static bool ResolveVoteControlKeys(const CFinalityVote& vote, CTxDB& txdb,
                                        std::vector<CKeyID>& vKeysOut);
+    bool ResolveMissingVoteControlKeys(const std::map<uint256, CFinalityVote>& mapVotes,
+                                       CTxDB& txdb);
     void SetVoteControlKeys(const uint256& nullifier, const std::vector<CKeyID>& vKeys);
     /** Transparent voter units of a vote set: clusters once hardened, else votes. */
     int GetTransparentVoterUnits(int nEpoch, const std::vector<CFinalityVote>& vVotes,

@@ -10,6 +10,7 @@
 #include "../main.h"
 #include "../finality.h"
 #include "../key.h"
+#include "../txdb.h"
 
 #include <map>
 #include <set>
@@ -29,7 +30,8 @@ int Epoch(int nOffset) { return GetEpochForHeight(GetForkHeightDAG()) + nOffset;
 int Boundary(int nEpoch) { return GetEpochBoundaryHeight(nEpoch, GetForkHeightDAG()); }
 
 CFinalityVote SignedVote(const CKey& keyIn, int nEpoch, const uint256& hashBlock,
-                         int nHeight, int64_t nWeight = 1000 * COIN)
+                         int nHeight, int64_t nWeight = 1000 * COIN,
+                         const COutPoint* pStake = NULL)
 {
     CKey key = keyIn;
     CFinalityVote vote;
@@ -46,6 +48,8 @@ CFinalityVote SignedVote(const CKey& keyIn, int nEpoch, const uint256& hashBlock
     nf << vote.vchPubKey;
     nf << nEpoch;
     vote.nullifier = nf.GetHash();
+    if (pStake)
+        vote.vStakeProof.push_back(*pStake);
     vote.MarkCanonicalEnvelope();
     BOOST_REQUIRE(vote.Sign(key));
     return vote;
@@ -168,6 +172,78 @@ BOOST_AUTO_TEST_CASE(split_stake_is_one_voter_after_the_fork)
             tracker.GetTransparentVoterUnits(nEpoch, votes));
         BOOST_CHECK_EQUAL(fCert, !fFork);
     }
+}
+
+BOOST_AUTO_TEST_CASE(abort_restore_keeps_voter_clusters)
+{
+    const int nEpoch = Epoch(6);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(nBoundary);
+    const uint256 hashA(31);
+    CKey a = NewKey(), b = NewKey(), owner = NewKey();
+    const CKeyID ownerID = owner.GetPubKey().GetID();
+
+    CTransaction txFund;
+    txFund.nTime = 1700000000;
+    txFund.vin.resize(1);
+    txFund.vin[0].prevout = COutPoint(uint256(0xC1u), 0);
+    txFund.vout.push_back(CTxOut(1000 * COIN, GetScriptForColdStaking(a.GetPubKey().GetID(), ownerID)));
+    txFund.vout.push_back(CTxOut(1000 * COIN, GetScriptForColdStaking(b.GetPubKey().GetID(), ownerID)));
+    CBlock block;
+    block.nTime = 1700000000;
+    block.vtx.push_back(txFund);
+    block.hashMerkleRoot = block.BuildMerkleTree();
+    unsigned int nFile = 0, nBlockPos = 0;
+    BOOST_REQUIRE(block.WriteToDisk(nFile, nBlockPos));
+    const unsigned int nTxPos = nBlockPos + ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION) -
+                                (2 * GetSizeOfCompactSize(0)) + GetSizeOfCompactSize(block.vtx.size());
+    const uint256 hashFund = txFund.GetHash();
+    CTxDB txdb("r+");
+    BOOST_REQUIRE(txdb.UpdateTxIndex(hashFund, CTxIndex(CDiskTxPos(nFile, nBlockPos, nTxPos), 2)));
+
+    const COutPoint stakeA(hashFund, 0), stakeB(hashFund, 1);
+    const CFinalityVote va = SignedVote(a, nEpoch, hashA, nBoundary, 1000 * COIN, &stakeA);
+    const CFinalityVote vb = SignedVote(b, nEpoch, hashA, nBoundary, 1000 * COIN, &stakeB);
+    std::map<uint256, CFinalityVote> mapVotes;
+    mapVotes[va.nullifier] = va;
+    mapVotes[vb.nullifier] = vb;
+    std::vector<CFinalityVote> votes;
+    votes.push_back(va);
+    votes.push_back(vb);
+
+    std::vector<CKeyID> vKeys;
+    BOOST_REQUIRE(CFinalityTracker::ResolveVoteControlKeys(va, txdb, vKeys));
+    BOOST_REQUIRE_EQUAL(vKeys.size(), 1u);
+    BOOST_CHECK(vKeys[0] == ownerID);
+
+    CFinalityTracker reference;
+    for (const CFinalityVote& v : votes)
+    {
+        BOOST_REQUIRE(CFinalityTracker::ResolveVoteControlKeys(v, txdb, vKeys));
+        reference.SetVoteControlKeys(v.nullifier, vKeys);
+        BOOST_REQUIRE(reference.AddVote(v, false, true));
+    }
+    BOOST_CHECK_EQUAL(reference.GetTransparentVoterUnits(nEpoch, votes), 1);
+
+    CFinalityTracker aborted;
+    BOOST_REQUIRE(aborted.ResolveMissingVoteControlKeys(mapVotes, txdb));
+    for (const CFinalityVote& v : votes)
+        BOOST_REQUIRE(aborted.AddVote(v, false, true));
+    BOOST_REQUIRE(aborted.RestoreCommittedStateAfterAbort());
+    BOOST_CHECK_EQUAL(aborted.GetTransparentVoterUnits(nEpoch, votes), 2);
+    BOOST_REQUIRE(aborted.ResolveMissingVoteControlKeys(mapVotes, txdb));
+    for (const CFinalityVote& v : votes)
+        BOOST_REQUIRE(aborted.AddVote(v, false, true));
+    BOOST_CHECK_EQUAL(aborted.GetTransparentVoterUnits(nEpoch, votes),
+                      reference.GetTransparentVoterUnits(nEpoch, votes));
+
+    CFinalityVote vMissing = SignedVote(NewKey(), nEpoch, hashA, nBoundary, 1000 * COIN, &stakeA);
+    vMissing.vStakeProof[0] = COutPoint(uint256(0xC2u), 0);
+    std::map<uint256, CFinalityVote> mapMissing;
+    mapMissing[vMissing.nullifier] = vMissing;
+    BOOST_CHECK(!aborted.ResolveMissingVoteControlKeys(mapMissing, txdb));
+
+    BOOST_REQUIRE(txdb.EraseTxIndex(txFund));
 }
 
 BOOST_AUTO_TEST_CASE(hard_needs_quorum_of_trailing_turnout_after_the_fork)
