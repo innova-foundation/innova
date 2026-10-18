@@ -61,6 +61,10 @@ namespace boost {
 #ifndef WIN32
 #include <errno.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#else
+extern "C" LONG WINAPI BCryptGenRandom(void*, unsigned char*, ULONG, ULONG);
 #endif
 
 using namespace std;
@@ -133,11 +137,6 @@ public:
             ppmutexOpenSSL[i] = new CCriticalSection();
         CRYPTO_set_locking_callback(locking_callback);
 
-#ifdef WIN32
-        // Seed OpenSSL PRNG with current contents of the screen
-        RAND_screen();
-#endif
-
         // Seed OpenSSL PRNG with performance counter
         RandAddSeed();
     }
@@ -161,12 +160,44 @@ instance_of_cinit;
 
 
 
+// Best effort: on failure the pool is left as is.
+static bool GetOSRandom(unsigned char* buf, size_t n)
+{
+#ifdef WIN32
+    return BCryptGenRandom(NULL, buf, (ULONG)n, 0x00000002 /* BCRYPT_USE_SYSTEM_PREFERRED_RNG */) == 0;
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0)
+        return false;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, buf + got, n - got);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            break;
+        got += r;
+    }
+    close(fd);
+    return got == n;
+#endif
+}
+
+void RandAddSeedOS()
+{
+    unsigned char buf[32];
+    if (GetOSRandom(buf, sizeof(buf)))
+        RAND_add(buf, sizeof(buf), sizeof(buf));
+    OPENSSL_cleanse(buf, sizeof(buf));
+}
+
 void RandAddSeed()
 {
     // Seed with CPU performance counter
     int64_t nCounter = GetPerformanceCounter();
     RAND_add(&nCounter, sizeof(nCounter), 1.5);
     memset(&nCounter, 0, sizeof(nCounter));
+    RandAddSeedOS();
 }
 
 void RandAddSeedPerfmon()

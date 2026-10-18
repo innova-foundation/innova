@@ -1880,6 +1880,9 @@ bool AppInit2()
 
     // ********************************************************* Step 5: verify database integrity
 
+    RAND_poll();
+    RandAddSeedOS();
+
     uiInterface.InitMessage(_("Verifying database integrity..."));
 
     if (!bitdb.Open(GetDataDir()))

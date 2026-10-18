@@ -341,6 +341,7 @@ void ShrinkDebugFile();
 int GetRandInt(int nMax);
 uint32_t GetRandUInt32();
 void GetRandBytes(unsigned char* buf, int num);
+void RandAddSeedOS();
 uint64_t GetRand(uint64_t nMax);
 uint256 GetRandHash();
 
