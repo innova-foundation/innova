@@ -736,22 +736,129 @@ bool ProbeSocks5Proxy(const CService& addrProxy, int nTimeout, bool& fSocks5Out,
 void CNetAddr::Init()
 {
     memset(ip, 0, 16);
+    fTorV3 = false;
+    memset(torv3, 0, sizeof(torv3));
 }
 
 void CNetAddr::SetIP(const CNetAddr& ipIn)
 {
     memcpy(ip, ipIn.ip, sizeof(ip));
+    fTorV3 = ipIn.fTorV3;
+    memcpy(torv3, ipIn.torv3, sizeof(torv3));
+}
+
+// FIPS 202 SHA3-256, used only for the Tor v3 onion checksum.
+static void Keccakf1600(uint64_t st[25])
+{
+    static const uint64_t RC[24] = {
+        0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
+        0x000000000000808bULL, 0x0000000080000001ULL, 0x8000000080008081ULL, 0x8000000000008009ULL,
+        0x000000000000008aULL, 0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+        0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL, 0x8000000000008003ULL,
+        0x8000000000008002ULL, 0x8000000000000080ULL, 0x000000000000800aULL, 0x800000008000000aULL,
+        0x8000000080008081ULL, 0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL};
+    static const int R[24] = {1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44};
+    static const int P[24] = {10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1};
+    for (int round = 0; round < 24; round++) {
+        uint64_t bc[5];
+        for (int i = 0; i < 5; i++)
+            bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
+        for (int i = 0; i < 5; i++) {
+            uint64_t t = bc[(i + 4) % 5] ^ ((bc[(i + 1) % 5] << 1) | (bc[(i + 1) % 5] >> 63));
+            for (int j = 0; j < 25; j += 5)
+                st[j + i] ^= t;
+        }
+        uint64_t t = st[1];
+        for (int i = 0; i < 24; i++) {
+            int j = P[i];
+            uint64_t tmp = st[j];
+            st[j] = (t << R[i]) | (t >> (64 - R[i]));
+            t = tmp;
+        }
+        for (int j = 0; j < 25; j += 5) {
+            for (int i = 0; i < 5; i++)
+                bc[i] = st[j + i];
+            for (int i = 0; i < 5; i++)
+                st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
+        }
+        st[0] ^= RC[round];
+    }
+}
+
+void SHA3_256(const unsigned char* data, size_t len, unsigned char out[32])
+{
+    const size_t rate = 136;
+    uint64_t st[25] = {};
+    unsigned char block[136];
+    while (true) {
+        size_t n = len < rate ? len : rate;
+        memset(block, 0, rate);
+        if (n) memcpy(block, data, n);
+        bool fLast = n < rate;
+        if (fLast) {
+            block[n] ^= 0x06;
+            block[rate - 1] ^= 0x80;
+        }
+        for (size_t i = 0; i < rate / 8; i++) {
+            uint64_t w = 0;
+            for (int b = 0; b < 8; b++)
+                w |= (uint64_t)block[8 * i + b] << (8 * b);
+            st[i] ^= w;
+        }
+        Keccakf1600(st);
+        data += n;
+        len -= n;
+        if (fLast) break;
+    }
+    for (int i = 0; i < 32; i++)
+        out[i] = (unsigned char)(st[i / 8] >> (8 * (i % 8)));
+}
+
+static void TorV3Checksum(const unsigned char* pubkey, unsigned char out[2])
+{
+    static const char prefix[] = ".onion checksum";
+    unsigned char buf[sizeof(prefix) - 1 + 32 + 1];
+    memcpy(buf, prefix, sizeof(prefix) - 1);
+    memcpy(buf + sizeof(prefix) - 1, pubkey, 32);
+    buf[sizeof(buf) - 1] = 3;
+    unsigned char h[32];
+    SHA3_256(buf, sizeof(buf), h);
+    out[0] = h[0];
+    out[1] = h[1];
 }
 
 static const unsigned char pchOnionCat[] = {0xFD,0x87,0xD8,0x7E,0xEB,0x43};
 static const unsigned char pchGarliCat[] = {0xFD,0x60,0xDB,0x4D,0xDD,0xB5};
 
-bool CNetAddr::SetSpecial(const std::string &strName)
+static void SetTorV3Internal(unsigned char* ip, unsigned char* torv3, const unsigned char* pubkey)
 {
+    memcpy(ip, pchOnionCat, sizeof(pchOnionCat));
+    memcpy(ip + sizeof(pchOnionCat), pubkey, 16 - sizeof(pchOnionCat));
+    memcpy(torv3, pubkey, 32);
+}
+
+bool CNetAddr::SetSpecial(const std::string &strNameIn)
+{
+    std::string strName = boost::algorithm::to_lower_copy(strNameIn);
+    if (strName.size() == 56 + 6 && strName.substr(56) == ".onion") {
+        bool fInvalid = false;
+        std::vector<unsigned char> v = DecodeBase32(strName.substr(0, 56).c_str(), &fInvalid);
+        if (fInvalid || v.size() != 35 || v[34] != 3)
+            return false;
+        unsigned char chk[2];
+        TorV3Checksum(&v[0], chk);
+        if (chk[0] != v[32] || chk[1] != v[33])
+            return false;
+        Init();
+        SetTorV3Internal(ip, torv3, &v[0]);
+        fTorV3 = true;
+        return true;
+    }
     if (strName.size()>6 && strName.substr(strName.size() - 6, 6) == ".onion") {
         std::vector<unsigned char> vchAddr = DecodeBase32(strName.substr(0, strName.size() - 6).c_str());
         if (vchAddr.size() != 16-sizeof(pchOnionCat))
             return false;
+        Init();
         memcpy(ip, pchOnionCat, sizeof(pchOnionCat));
         for (unsigned int i=0; i<16-sizeof(pchOnionCat); i++)
             ip[i + sizeof(pchOnionCat)] = vchAddr[i];
@@ -761,6 +868,7 @@ bool CNetAddr::SetSpecial(const std::string &strName)
         std::vector<unsigned char> vchAddr = DecodeBase32(strName.substr(0, strName.size() - 11).c_str());
         if (vchAddr.size() != 16-sizeof(pchGarliCat))
             return false;
+        Init();
         memcpy(ip, pchOnionCat, sizeof(pchGarliCat));
         for (unsigned int i=0; i<16-sizeof(pchGarliCat); i++)
             ip[i + sizeof(pchGarliCat)] = vchAddr[i];
@@ -776,12 +884,14 @@ CNetAddr::CNetAddr()
 
 CNetAddr::CNetAddr(const struct in_addr& ipv4Addr)
 {
+    Init();
     memcpy(ip,    pchIPv4, 12);
     memcpy(ip+12, &ipv4Addr, 4);
 }
 
 CNetAddr::CNetAddr(const struct in6_addr& ipv6Addr)
 {
+    Init();
     memcpy(ip, &ipv6Addr, 16);
 }
 
@@ -962,6 +1072,13 @@ enum Network CNetAddr::GetNetwork() const
 
 std::string CNetAddr::ToStringIP() const
 {
+    if (fTorV3) {
+        unsigned char v[35];
+        memcpy(v, torv3, 32);
+        TorV3Checksum(torv3, v + 32);
+        v[34] = 3;
+        return EncodeBase32(v, 35) + ".onion";
+    }
     if (IsTor())
         return EncodeBase32(&ip[6], 10) + ".onion";
     if (IsI2P())
@@ -991,17 +1108,74 @@ std::string CNetAddr::ToString() const
 
 bool operator==(const CNetAddr& a, const CNetAddr& b)
 {
-    return (memcmp(a.ip, b.ip, 16) == 0);
+    return memcmp(a.ip, b.ip, 16) == 0 && a.fTorV3 == b.fTorV3 &&
+           (!a.fTorV3 || memcmp(a.torv3, b.torv3, 32) == 0);
 }
 
 bool operator!=(const CNetAddr& a, const CNetAddr& b)
 {
-    return (memcmp(a.ip, b.ip, 16) != 0);
+    return !(a == b);
 }
 
 bool operator<(const CNetAddr& a, const CNetAddr& b)
 {
-    return (memcmp(a.ip, b.ip, 16) < 0);
+    int c = memcmp(a.ip, b.ip, 16);
+    if (c != 0) return c < 0;
+    if (a.fTorV3 != b.fTorV3) return !a.fTorV3;
+    return a.fTorV3 && memcmp(a.torv3, b.torv3, 32) < 0;
+}
+
+void CNetAddr::GetBIP155(unsigned char& netId, std::vector<unsigned char>& vch) const
+{
+    if (fTorV3) {
+        netId = BIP155_TORV3;
+        vch.assign(torv3, torv3 + 32);
+    } else if (IsIPv4()) {
+        netId = BIP155_IPV4;
+        vch.assign(ip + 12, ip + 16);
+    } else if (IsTor()) {
+        netId = BIP155_TORV2;
+        vch.assign(ip + 6, ip + 16);
+    } else {
+        netId = BIP155_IPV6;
+        vch.assign(ip, ip + 16);
+    }
+}
+
+// False only on a size mismatch for a known id; unknown or unsupported ids leave an invalid address.
+bool CNetAddr::SetBIP155(unsigned char netId, const std::vector<unsigned char>& vch)
+{
+    Init();
+    switch (netId) {
+    case BIP155_IPV4:
+        if (vch.size() != 4) return false;
+        memcpy(ip, pchIPv4, 12);
+        memcpy(ip + 12, &vch[0], 4);
+        return true;
+    case BIP155_IPV6:
+        if (vch.size() != 16) return false;
+        // embedded IPv4 and OnionCat/GarliCat forms must use their own ids
+        if (memcmp(&vch[0], pchIPv4, 12) == 0 || memcmp(&vch[0], pchOnionCat, sizeof(pchOnionCat)) == 0 ||
+            memcmp(&vch[0], pchGarliCat, sizeof(pchGarliCat)) == 0)
+            return true;
+        memcpy(ip, &vch[0], 16);
+        return true;
+    case BIP155_TORV2:
+        if (vch.size() != 10) return false;
+        memcpy(ip, pchOnionCat, sizeof(pchOnionCat));
+        memcpy(ip + 6, &vch[0], 10);
+        return true;
+    case BIP155_TORV3:
+        if (vch.size() != 32) return false;
+        SetTorV3Internal(ip, torv3, &vch[0]);
+        fTorV3 = true;
+        return true;
+    case BIP155_I2P:
+        return vch.size() == 32;
+    case BIP155_CJDNS:
+        return vch.size() == 16;
+    }
+    return true;
 }
 
 bool CNetAddr::GetInAddr(struct in_addr* pipv4Addr) const
@@ -1095,7 +1269,7 @@ std::vector<unsigned char> CNetAddr::GetGroup() const
 
 uint64_t CNetAddr::GetHash() const
 {
-    uint256 hash = Hash(&ip[0], &ip[16]);
+    uint256 hash = fTorV3 ? Hash(&torv3[0], &torv3[32]) : Hash(&ip[0], &ip[16]);
     uint64_t nRet;
     memcpy(&nRet, &hash, sizeof(nRet));
     return nRet;
@@ -1318,6 +1492,8 @@ std::vector<unsigned char> CService::GetKey() const
      memcpy(&vKey[0], ip, 16);
      vKey[16] = port / 0x100;
      vKey[17] = port & 0x0FF;
+     if (fTorV3)
+         vKey.insert(vKey.end(), torv3, torv3 + 32);
      return vKey;
 }
 

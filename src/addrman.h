@@ -269,9 +269,10 @@ public:
         // changes to the ADDRMAN_ parameters without breaking the on-disk structure.
         {
             LOCK(cs);
-            // v1: entries keyed by IP:port; v0 files load unchanged
-            unsigned char nVersion = 1;
+            // v1: entries keyed by IP:port; v2: entries in BIP155 form. Older files load unchanged.
+            unsigned char nVersion = 2;
             READWRITE(nVersion);
+            const int nEntryVersion = nVersion >= 2 ? (nVersion | ADDRV2_FORMAT) : nVersion;
             READWRITE(nKey);
             READWRITE(nNew);
             READWRITE(nTried);
@@ -290,7 +291,7 @@ public:
                     CAddrInfo &info = (*it).second;
                     if (info.nRefCount)
                     {
-                        READWRITE(info);
+                        nSerSize += ::SerReadWrite(s, info, nType, nEntryVersion, ser_action);
                         nIds++;
                     }
                 }
@@ -301,7 +302,7 @@ public:
                     CAddrInfo &info = (*it).second;
                     if (info.fInTried)
                     {
-                        READWRITE(info);
+                        nSerSize += ::SerReadWrite(s, info, nType, nEntryVersion, ser_action);
                         nIds++;
                     }
                 }
@@ -328,7 +329,7 @@ public:
                 for (int n = 0; n < am->nNew; n++)
                 {
                     CAddrInfo &info = am->mapInfo[n];
-                    READWRITE(info);
+                    nSerSize += ::SerReadWrite(s, info, nType, nEntryVersion, ser_action);
                     am->mapAddr[info] = n;
                     info.nRandomPos = vRandom.size();
                     am->vRandom.push_back(n);
@@ -343,7 +344,7 @@ public:
                 for (int n = 0; n < am->nTried; n++)
                 {
                     CAddrInfo info;
-                    READWRITE(info);
+                    nSerSize += ::SerReadWrite(s, info, nType, nEntryVersion, ser_action);
                     std::vector<int> &vTried = am->vvTried[info.GetTriedBucket(am->nKey)];
                     if (vTried.size() < ADDRMAN_TRIED_BUCKET_SIZE)
                     {

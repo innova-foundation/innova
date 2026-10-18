@@ -72,6 +72,29 @@ class CMessageHeader
         unsigned int nChecksum;
 };
 
+/** A uint64_t serialized as a CompactSize. */
+class CCompactSizeRef
+{
+    uint64_t& n;
+public:
+    explicit CCompactSizeRef(uint64_t& nIn) : n(nIn) {}
+    unsigned int GetSerializeSize(int, int) const { return GetSizeOfCompactSize(n); }
+    template<typename Stream> void Serialize(Stream& s, int, int) const { WriteCompactSize(s, n); }
+    // no MAX_SIZE cap: service bits may use the full 64-bit range
+    template<typename Stream> void Unserialize(Stream& s, int, int)
+    {
+        unsigned char ch;
+        s.read((char*)&ch, 1);
+        unsigned int nBytes = ch < 253 ? 0 : ch == 253 ? 2 : ch == 254 ? 4 : 8;
+        n = ch < 253 ? ch : 0;
+        for (unsigned int i = 0; i < nBytes; i++) {
+            unsigned char b;
+            s.read((char*)&b, 1);
+            n |= (uint64_t)b << (8 * i);
+        }
+    }
+};
+
 /** A CService with information about it as peer */
 class CAddress : public CService
 {
@@ -81,18 +104,27 @@ class CAddress : public CService
 
         void Init();
 
+        // ADDRV2_FORMAT: nServices as CompactSize, address as BIP155.
         IMPLEMENT_SERIALIZE
             (
              CAddress* pthis = const_cast<CAddress*>(this);
              CService* pip = (CService*)pthis;
+             const int nAddrV2 = nVersion & ADDRV2_FORMAT;
+             const int nBaseVersion = nVersion & ~ADDRV2_FORMAT;
              if (fRead)
                  pthis->Init();
-             if (nType & SER_DISK)
-                 READWRITE(nVersion);
+             if (nType & SER_DISK) {
+                 int nDiskVersion = nBaseVersion;
+                 READWRITE(nDiskVersion);
+             }
              if ((nType & SER_DISK) ||
-                 (nVersion >= CADDR_TIME_VERSION && !(nType & SER_GETHASH)))
+                 (nBaseVersion >= CADDR_TIME_VERSION && !(nType & SER_GETHASH)))
                  READWRITE(nTime);
-             READWRITE(nServices);
+             if (nAddrV2) {
+                 READWRITE(REF(CCompactSizeRef(pthis->nServices)));
+             } else {
+                 READWRITE(nServices);
+             }
              READWRITE(*pip);
             )
 
@@ -107,6 +139,19 @@ class CAddress : public CService
 
         // memory only
         int64_t nLastTry;
+};
+
+/** Serializes a vector of addresses in BIP155 (addrv2) form. */
+struct CAddrV2Vector
+{
+    std::vector<CAddress>& v;
+    explicit CAddrV2Vector(std::vector<CAddress>& vIn) : v(vIn) {}
+    unsigned int GetSerializeSize(int nType, int nVersion) const
+    { return ::GetSerializeSize(v, nType, nVersion | ADDRV2_FORMAT); }
+    template<typename Stream> void Serialize(Stream& s, int nType, int nVersion) const
+    { ::Serialize(s, v, nType, nVersion | ADDRV2_FORMAT); }
+    template<typename Stream> void Unserialize(Stream& s, int nType, int nVersion)
+    { ::Unserialize(s, v, nType, nVersion | ADDRV2_FORMAT); }
 };
 
 /** inv message data */

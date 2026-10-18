@@ -18,6 +18,22 @@ extern bool fNameLookup;
 #undef SetPort
 #endif
 
+/** Stream version flag selecting BIP155 (addrv2) address encoding. */
+static const int ADDRV2_FORMAT = 0x20000000;
+
+/** BIP155 network ids. */
+enum BIP155Network : unsigned char
+{
+    BIP155_IPV4 = 1,
+    BIP155_IPV6 = 2,
+    BIP155_TORV2 = 3,
+    BIP155_TORV3 = 4,
+    BIP155_I2P = 5,
+    BIP155_CJDNS = 6,
+};
+static const size_t MAX_ADDRV2_SIZE = 512;
+static const size_t TORV3_PUBKEY_SIZE = 32;
+
 enum Network
 {
     NET_UNROUTABLE,
@@ -34,6 +50,9 @@ class CNetAddr
 {
     protected:
         unsigned char ip[16]; // in network byte order
+        // Tor v3: ip holds the OnionCat prefix + first 10 pubkey bytes (for grouping)
+        bool fTorV3;
+        unsigned char torv3[32];
 
     public:
         CNetAddr();
@@ -42,7 +61,7 @@ class CNetAddr
         explicit CNetAddr(const std::string &strIp, bool fAllowLookup = false);
         void Init();
         void SetIP(const CNetAddr& ip);
-        bool SetSpecial(const std::string &strName); // for Tor and I2P addresses
+        bool SetSpecial(const std::string &strName); // for Tor (v2, v3) and I2P addresses
         bool IsIPv4() const;    // IPv4 mapped address (::FFFF:0:0/96, 0.0.0.0/0)
         bool IsIPv6() const;    // IPv6 address (not mapped IPv4, not Tor/I2P)
         bool IsRFC1918() const; // IPv4 private networks (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12)
@@ -56,6 +75,8 @@ class CNetAddr
         bool IsRFC6052() const; // IPv6 well-known prefix (64:FF9B::/96)
         bool IsRFC6145() const; // IPv6 IPv4-translated address (::FFFF:0:0:0/96)
         bool IsTor() const;
+        bool IsTorV3() const { return fTorV3; }
+        bool IsAddrV1Compatible() const { return !fTorV3; }
         bool IsI2P() const;
         bool IsLocal() const;
         bool IsRoutable() const;
@@ -78,10 +99,50 @@ class CNetAddr
         friend bool operator!=(const CNetAddr& a, const CNetAddr& b);
         friend bool operator<(const CNetAddr& a, const CNetAddr& b);
 
-        IMPLEMENT_SERIALIZE
-            (
-             READWRITE(FLATDATA(ip));
-            )
+        void GetBIP155(unsigned char& netId, std::vector<unsigned char>& vch) const;
+        bool SetBIP155(unsigned char netId, const std::vector<unsigned char>& vch);
+
+        unsigned int GetSerializeSize(int nType, int nVersion) const
+        {
+            if (!(nVersion & ADDRV2_FORMAT))
+                return 16;
+            unsigned char id; std::vector<unsigned char> v;
+            GetBIP155(id, v);
+            return 1 + GetSizeOfCompactSize(v.size()) + v.size();
+        }
+        template<typename Stream>
+        void Serialize(Stream& s, int nType, int nVersion) const
+        {
+            if (!(nVersion & ADDRV2_FORMAT)) {
+                s.write((const char*)ip, 16);
+                return;
+            }
+            unsigned char id; std::vector<unsigned char> v;
+            GetBIP155(id, v);
+            s.write((const char*)&id, 1);
+            WriteCompactSize(s, v.size());
+            if (!v.empty())
+                s.write((const char*)&v[0], v.size());
+        }
+        template<typename Stream>
+        void Unserialize(Stream& s, int nType, int nVersion)
+        {
+            Init();
+            if (!(nVersion & ADDRV2_FORMAT)) {
+                s.read((char*)ip, 16);
+                return;
+            }
+            unsigned char id = 0;
+            s.read((char*)&id, 1);
+            uint64_t n = ReadCompactSize(s);
+            if (n > MAX_ADDRV2_SIZE)
+                throw std::ios_base::failure("addrv2 address too long");
+            std::vector<unsigned char> v(n);
+            if (n)
+                s.read((char*)&v[0], n);
+            if (!SetBIP155(id, v))
+                throw std::ios_base::failure("addrv2 address size mismatch");
+        }
         friend class CSubNet;
 };
 
@@ -157,13 +218,15 @@ class CService : public CNetAddr
         IMPLEMENT_SERIALIZE
             (
              CService* pthis = const_cast<CService*>(this);
-             READWRITE(FLATDATA(ip));
+             READWRITE(*(CNetAddr*)pthis);
              unsigned short portN = htons(port);
              READWRITE(portN);
              if (fRead)
                  pthis->port = ntohs(portN);
             )
 };
+
+void SHA3_256(const unsigned char* data, size_t len, unsigned char out[32]);
 
 typedef std::pair<CService, int> proxyType;
 

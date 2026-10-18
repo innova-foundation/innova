@@ -320,6 +320,7 @@ TEST_OBJS= \
     obj/test/Checkpoints_tests.o \
     obj/test/DoS_tests.o \
     obj/test/addrman_port_tests.o \
+    obj/test/addrv2_tests.o \
     obj/test/script_P2SH_tests.o \
     obj/test/script_tests.o \
     obj/test/transaction_tests.o \

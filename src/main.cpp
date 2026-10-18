@@ -18360,6 +18360,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (GetBoolArg("-synctime", true))
             AddTimeData(pfrom->addr, nTime);
 
+        // BIP155: sent before verack; peers that do not know it ignore it
+        pfrom->PushMessage("sendaddrv2");
+
         // Change version
         pfrom->PushMessage("verack");
         pfrom->ssSend.SetVersion(min(pfrom->nVersion, PROTOCOL_VERSION));
@@ -18476,10 +18479,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     }
 
 
-    else if (strCommand == "addr")
+    else if (strCommand == "sendaddrv2")
+    {
+        pfrom->fWantsAddrV2 = true;
+    }
+
+
+    else if (strCommand == "addr" || strCommand == "addrv2")
     {
         vector<CAddress> vAddr;
-        vRecv >> vAddr;
+        if (strCommand == "addrv2") {
+            CAddrV2Vector wrap(vAddr);
+            vRecv >> wrap;
+        } else {
+            vRecv >> vAddr;
+        }
 
         // Don't want addr from older versions unless seeding
         if (pfrom->nVersion < CADDR_TIME_VERSION && addrman.size() > 1000)
@@ -19566,7 +19580,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
     // Update the last seen time for this node's address
     if (pfrom->fNetworkNode)
-        if (strCommand == "version" || strCommand == "addr" || strCommand == "inv" || strCommand == "getdata" || strCommand == "ping")
+        if (strCommand == "version" || strCommand == "addr" || strCommand == "addrv2" || strCommand == "inv" || strCommand == "getdata" || strCommand == "ping")
             AddressCurrentlyConnected(pfrom->addr);
 
 
@@ -19980,8 +19994,12 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         {
             vector<CAddress> vAddr;
             vAddr.reserve(pto->vAddrToSend.size());
+            const bool fV2 = pto->fWantsAddrV2;
             for (const CAddress& addr : pto->vAddrToSend)
             {
+                // a v1 addr message cannot carry a Tor v3 address
+                if (!fV2 && !addr.IsAddrV1Compatible())
+                    continue;
                 // returns true if wasn't already contained in the set
                 if (pto->setAddrKnown.insert(addr).second)
                 {
@@ -19989,14 +20007,17 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     // receiver rejects addr messages larger than 1000
                     if (vAddr.size() >= 1000)
                     {
-                        pto->PushMessage("addr", vAddr);
+                        if (fV2) pto->PushMessage("addrv2", CAddrV2Vector(vAddr));
+                        else pto->PushMessage("addr", vAddr);
                         vAddr.clear();
                     }
                 }
             }
             pto->vAddrToSend.clear();
-            if (!vAddr.empty())
-                pto->PushMessage("addr", vAddr);
+            if (!vAddr.empty()) {
+                if (fV2) pto->PushMessage("addrv2", CAddrV2Vector(vAddr));
+                else pto->PushMessage("addr", vAddr);
+            }
         }
 
         //

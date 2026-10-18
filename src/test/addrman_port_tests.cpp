@@ -27,7 +27,7 @@ BOOST_AUTO_TEST_CASE(peers_dat_roundtrip_keeps_ports)
     am.Add(CAddress(CService("8.8.8.8", 15540)), src);
     CDataStream ss(SER_DISK, CLIENT_VERSION);
     ss << am;
-    BOOST_CHECK_EQUAL((int)(unsigned char)ss[0], 1);
+    BOOST_CHECK_EQUAL((int)(unsigned char)ss[0], 2);
     CAddrMan am2;
     ss >> am2;
     BOOST_CHECK_EQUAL(am2.size(), 2);
