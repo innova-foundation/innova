@@ -1868,6 +1868,8 @@ bool AppInit2()
     // Off by default: a client run has not been soaked on the fleet yet.
     fDAGHeadersSync = GetBoolArg("-dagheaderssync", false) && !fSPVMode;
     fDAGHeadersServe = GetBoolArg("-dagheadersserve", true) && !fSPVMode;
+    fDAGReachabilityIndex = GetBoolArg("-dagreachindex", true);
+    fDAGReachabilityCheck = GetBoolArg("-dagreachcheck", false);
     InitDAGHeaders((size_t)std::max<int64_t>(MAX_DAGHEADERS_PER_MSG,
         std::min<int64_t>(MAX_DAGHEADERS_WINDOW, GetArg("-dagheaderswindow", DEFAULT_DAGHEADERS_WINDOW))));
     if (fDAGHeadersServe)

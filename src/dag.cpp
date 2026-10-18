@@ -16,6 +16,9 @@
 CDAGManager g_dagManager;
 
 bool fDAGKnightUnoptimizedOrdering = false;
+bool fDAGReachabilityIndex = true;
+bool fDAGReachabilityCheck = false;
+uint64_t nDAGReachabilityMismatches = 0;
 
 uint256 CEpochState::GetDigest() const
 {
@@ -460,6 +463,10 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
 
     uint256 hash = pindex->GetBlockHash();
 
+    if (mapDAGData.count(hash))
+        reachIndex.MarkDirty();
+    else
+        reachIndex.AddVertex(hash, vParents);
     CBlockDAGData& data = mapDAGData[hash];
     data.vDAGParents = vParents;
     data.fBlue = true; // default, recolored by ColorBlock/ColorBlockDAGKnight
@@ -1113,6 +1120,8 @@ int CDAGManager::AnticoneSize(const uint256& hashBlock, const std::set<uint256>&
     {
         if (hashBlue == hashBlock || pastX.count(hashBlue))
             continue;
+        if (ReachabilityRulesOut(hashBlock, hashBlue, DAG_MERGE_DEPTH * 2))
+            continue;
 
         // Check if hashBlue has hashBlock in its past (i.e., X is ancestor of hashBlue)
         // Use bounded BFS from hashBlue back through parents
@@ -1350,6 +1359,7 @@ void CDAGManager::RemoveBlockDAGData(const uint256& hashBlock)
     // Remove from tips and data
     setDAGTips.erase(hashBlock);
     mapDAGData.erase(it);
+    reachIndex.NoteRemoved(hashBlock);
     InvalidateBlueSetCacheForBlock(hashBlock);
 }
 
@@ -1404,6 +1414,7 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
     LOCK(cs_dag);
 
     mapDAGData.clear();
+    reachIndex.MarkDirty();
     setDAGTips.clear();
     mapPendingChildrenByParent.clear();
 
@@ -1527,6 +1538,7 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
     if (nRebuilt > 0)
         printf("LoadDAGLinks: rebuilt %d DAG vertices from disk\n", nRebuilt);
     mapDAGData.swap(mapLoaded);
+    reachIndex.MarkDirty();
 
     RebuildPendingChildIndex();
 
@@ -2073,6 +2085,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
                 }
             }
             mapDAGData.erase(dit);
+            reachIndex.NoteRemoved(hash);
         }
         mapPendingChildrenByParent.erase(hash);
         setDAGTips.erase(hash);
@@ -4239,6 +4252,25 @@ bool CDAGManager::IsDAGAncestor(const uint256& hashAncestor,
         !ai->second || !di->second ||
         ai->second->nHeight >= di->second->nHeight)
         return false;
+    if (ReachabilityRulesOut(hashAncestor, hashDescendant, nMaxDepth))
+        return false;
+    return IsDAGAncestorWalk(hashAncestor, hashDescendant, nMaxDepth);
+}
+
+bool CDAGManager::IsDAGAncestorWalk(const uint256& hashAncestor,
+                                    const uint256& hashDescendant,
+                                    int nMaxDepth) const
+{
+    if (hashAncestor == hashDescendant)
+        return true;
+    std::map<uint256, CBlockIndex*>::const_iterator ai =
+        mapBlockIndex.find(hashAncestor);
+    std::map<uint256, CBlockIndex*>::const_iterator di =
+        mapBlockIndex.find(hashDescendant);
+    if (ai == mapBlockIndex.end() || di == mapBlockIndex.end() ||
+        !ai->second || !di->second ||
+        ai->second->nHeight >= di->second->nHeight)
+        return false;
 
     const int nDescendantHeight = di->second->nHeight;
     std::queue<uint256> queue;
@@ -4344,6 +4376,8 @@ bool CDAGManager::IsDAGAncestorWithinMergeDepth(const uint256& hashAncestor,
     if (ai == mapBlockIndex.end() || di == mapBlockIndex.end() ||
         !ai->second || !di->second ||
         ai->second->nHeight >= di->second->nHeight)
+        return false;
+    if (ReachabilityRulesOut(hashAncestor, hashDescendant, DAG_MERGE_DEPTH))
         return false;
 
     return GetBoundedPast(hashDescendant, di->second->nHeight,
@@ -4807,6 +4841,65 @@ int CDAGManager::InferLocalK(const uint256& hashBlock) const
     std::map<uint256, CDAGKnightAnchorState>::const_iterator it =
         mapDAGKnightAnchorCache.find(hashBlock);
     return it == mapDAGKnightAnchorCache.end() ? 0 : it->second.nInferredK;
+}
+
+bool CDAGManager::ReachabilityRulesOut(const uint256& hashAncestor,
+                                       const uint256& hashDescendant,
+                                       int nCheckDepth) const
+{
+    if (!fDAGReachabilityIndex)
+        return false;
+    if (reachIndex.IsDirty())
+    {
+        std::vector<std::pair<uint256, const std::vector<uint256>*> > vVertices;
+        vVertices.reserve(mapDAGData.size());
+        for (std::map<uint256, CBlockDAGData>::const_iterator it = mapDAGData.begin();
+             it != mapDAGData.end(); ++it)
+            vVertices.push_back(std::make_pair(it->first, &it->second.vDAGParents));
+        reachIndex.Rebuild(vVertices);
+        BlockProfileCount("dag_reach_rebuild", 1);
+    }
+    if (!reachIndex.IsUsable() || reachIndex.IsReachable(hashAncestor, hashDescendant))
+        return false;
+    if (fDAGReachabilityCheck && IsDAGAncestorWalk(hashAncestor, hashDescendant, nCheckDepth))
+    {
+        ++nDAGReachabilityMismatches;
+        printf("ERROR: DAG reachability index ruled out %s -> %s but the walk reaches it\n",
+               hashAncestor.ToString().substr(0, 20).c_str(),
+               hashDescendant.ToString().substr(0, 20).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool CDAGManager::TestIsDAGAncestor(const uint256& hashAncestor, const uint256& hashDescendant,
+                                    int nMaxDepth, bool fUseIndex) const
+{
+    LOCK(cs_dag);
+    const bool fOld = fDAGReachabilityIndex;
+    fDAGReachabilityIndex = fUseIndex;
+    const bool fResult = IsDAGAncestor(hashAncestor, hashDescendant, nMaxDepth);
+    fDAGReachabilityIndex = fOld;
+    return fResult;
+}
+
+bool CDAGManager::TestIsDAGAncestorWithinMergeDepth(const uint256& hashAncestor,
+                                                    const uint256& hashDescendant,
+                                                    bool fUseIndex) const
+{
+    LOCK(cs_dag);
+    const bool fOld = fDAGReachabilityIndex;
+    fDAGReachabilityIndex = fUseIndex;
+    const bool fResult = IsDAGAncestorWithinMergeDepth(hashAncestor, hashDescendant);
+    fDAGReachabilityIndex = fOld;
+    return fResult;
+}
+
+bool CDAGManager::TestReachable(const uint256& hashAncestor, const uint256& hashDescendant) const
+{
+    LOCK(cs_dag);
+    ReachabilityRulesOut(hashAncestor, hashDescendant, 0);
+    return reachIndex.IsUsable() && reachIndex.IsReachable(hashAncestor, hashDescendant);
 }
 
 int CDAGManager::CompareBlockOrder(const uint256& hashA, const uint256& hashB,

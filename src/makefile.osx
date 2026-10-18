@@ -197,6 +197,7 @@ OBJS= \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
+    obj/dagreach.o \
     obj/dagheaders.o \
     obj/mstimestamp.o \
     obj/muhash.o \
@@ -296,6 +297,7 @@ TEST_OBJS= \
     obj/test/epoch_state_determinism_tests.o \
     obj/test/reorg_finality_anchor_tests.o \
     obj/test/dagknight_anchor_cache_tests.o \
+    obj/test/dag_reachability_tests.o \
     obj/test/dag_privacy_interaction_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/finality_vote_schedule_tests.o \

@@ -10,6 +10,7 @@
 #include "sync.h"
 #include "script.h"
 #include "curvetree.h"
+#include "dagreach.h"
 
 #include <vector>
 #include <map>
@@ -632,6 +633,14 @@ public:
      *  (uncommitted or transient failure); a retained index keeps its vertex. */
     void RemoveBlockDAGData(const uint256& hashBlock);
 
+    /** Test hooks: bounded ancestor queries with the reachability fast path on or off,
+     *  and the raw index answer. */
+    bool TestIsDAGAncestor(const uint256& hashAncestor, const uint256& hashDescendant,
+                           int nMaxDepth, bool fUseIndex) const;
+    bool TestIsDAGAncestorWithinMergeDepth(const uint256& hashAncestor,
+                                           const uint256& hashDescendant, bool fUseIndex) const;
+    bool TestReachable(const uint256& hashAncestor, const uint256& hashDescendant) const;
+
 private:
     struct CDAGKnightAnchorState
     {
@@ -669,6 +678,14 @@ private:
     mutable std::map<uint256, std::set<uint256> > mapDAGKnightPastCache;
     // Holds a past set too large to retain, for the caller that asked for it.
     mutable std::set<uint256> setDAGKnightPastScratch;
+
+    // Reachability index, rebuilt from mapDAGData when dirty. Only its negatives are used.
+    mutable CDAGReachability reachIndex;
+    /** True when the index proves hashAncestor is not in hashDescendant's past. */
+    bool ReachabilityRulesOut(const uint256& hashAncestor, const uint256& hashDescendant,
+                              int nCheckDepth) const;
+    bool IsDAGAncestorWalk(const uint256& hashAncestor, const uint256& hashDescendant,
+                           int nMaxDepth) const;
 
     /** Internal: get blue set with caching */
     std::set<uint256> GetBlueSetCached(const uint256& hashBlock) const;
@@ -732,6 +749,11 @@ extern CDAGManager g_dagManager;
 // Anchor-cache differential test: when set, any DAG change drops every cached anchor
 // state. Both paths must produce identical colouring, ordering, score and k.
 extern bool fDAGKnightUnoptimizedOrdering;
+
+// Reachability index fast path (-dagreachindex) and its walk cross-check (-dagreachcheck).
+extern bool fDAGReachabilityIndex;
+extern bool fDAGReachabilityCheck;
+extern uint64_t nDAGReachabilityMismatches;
 
 
 #endif // INN_DAG_H

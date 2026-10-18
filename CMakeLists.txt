@@ -657,6 +657,7 @@ set(INNOVA_CXX_SOURCES
     src/subsidy.cpp
     src/finality_note.cpp
     src/dag.cpp
+    src/dagreach.cpp
     src/dagheaders.cpp
     src/mstimestamp.cpp
     src/muhash.cpp
@@ -763,6 +764,7 @@ set(INNOVA_HEADERS
     src/subsidy.h
     src/finality_note.h
     src/dag.h
+    src/dagreach.h
     src/dagheaders.h
     src/mstimestamp.h
     src/muhash.h
