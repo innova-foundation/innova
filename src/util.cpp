@@ -166,7 +166,7 @@ static bool GetOSRandom(unsigned char* buf, size_t n)
 #ifdef WIN32
     return BCryptGenRandom(NULL, buf, (ULONG)n, 0x00000002 /* BCRYPT_USE_SYSTEM_PREFERRED_RNG */) == 0;
 #else
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return false;
     size_t got = 0;
@@ -1235,7 +1235,7 @@ static std::string GenerateRandomString(unsigned int len) {
         len = 24;
     }
     std::vector<unsigned char> vchRandBytes(len);
-    RAND_bytes(&vchRandBytes[0], len);
+    GetRandBytes(&vchRandBytes[0], len);
 
     std::vector<unsigned char> vchRandString;
     static const unsigned char alphanum[] =
@@ -1254,7 +1254,7 @@ static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
 {
     if (nMax <= nMin) return nMin;
     unsigned char randBytes[4];
-    RAND_bytes(randBytes, sizeof(randBytes));
+    GetRandBytes(randBytes, sizeof(randBytes));
     unsigned int randVal = (randBytes[0] << 24) | (randBytes[1] << 16) |
                            (randBytes[2] << 8) | randBytes[3];
     unsigned int range = nMax - nMin;
@@ -1696,11 +1696,11 @@ void seed_insecure_rand(bool fDeterministic)
     } else {
         uint32_t tmp;
         do{
-            RAND_bytes((unsigned char*)&tmp,4);
+            GetRandBytes((unsigned char*)&tmp, 4);
         }while(tmp==0 || tmp==0x9068ffffU);
         insecure_rand_Rz=tmp;
         do{
-            RAND_bytes((unsigned char*)&tmp,4);
+            GetRandBytes((unsigned char*)&tmp, 4);
         }while(tmp==0 || tmp==0x464fffffU);
         insecure_rand_Rw=tmp;
     }

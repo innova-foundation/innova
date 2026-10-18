@@ -1684,13 +1684,15 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
     RandAddSeedPerfmon();
 
     vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
-    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
+    if (RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE) != 1)
+        return error("EncryptWallet : RAND_bytes failed for master key");
 
     CMasterKey kMasterKey(nDerivationMethodIndex);
 
     RandAddSeedPerfmon();
     kMasterKey.vchSalt.resize(WALLET_CRYPTO_SALT_SIZE);
-    RAND_bytes(&kMasterKey.vchSalt[0], WALLET_CRYPTO_SALT_SIZE);
+    if (RAND_bytes(&kMasterKey.vchSalt[0], WALLET_CRYPTO_SALT_SIZE) != 1)
+        return error("EncryptWallet : RAND_bytes failed for salt");
 
     CCrypter crypter;
     int64_t nStartTime = GetTimeMillis();
@@ -5554,6 +5556,18 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
     return true;
 }
 
+static bool RandNoteSeeds(CShieldedNote& note)
+{
+    unsigned char rnd[64];
+    bool ok = RAND_bytes(rnd, sizeof(rnd)) == 1;
+    if (ok) {
+        memcpy(note.rho.begin(), rnd, 32);
+        memcpy(note.rcm.begin(), rnd + 32, 32);
+    }
+    OPENSSL_cleanse(rnd, sizeof(rnd));
+    return ok;
+}
+
 bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int64_t nSearchInterval, int64_t nFees, CTransaction& txNew, CKey& key)
 {
     CBlockIndex* pindexPrev = pindexBest;
@@ -6089,12 +6103,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             CShieldedNote returnNote;
                             returnNote.addr = zAddr;
                             returnNote.nValue = wnote.note.nValue;
-                            unsigned char rnd[32];
-                            RAND_bytes(rnd, 32);
-                            memcpy(returnNote.rho.begin(), rnd, 32);
-                            RAND_bytes(rnd, 32);
-                            memcpy(returnNote.rcm.begin(), rnd, 32);
-                            OPENSSL_cleanse(rnd, 32);
+                            if (!RandNoteSeeds(returnNote))
+                                return error("CreateCoinStake : RAND_bytes failed");
                             returnNote.GenerateBlindingFactor();
 
                             CPedersenCommitment returnCv;
@@ -6118,12 +6128,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             CShieldedNote rewardNote;
                             rewardNote.addr = zAddr;
                             rewardNote.nValue = nReward;
-                            unsigned char rnd[32];
-                            RAND_bytes(rnd, 32);
-                            memcpy(rewardNote.rho.begin(), rnd, 32);
-                            RAND_bytes(rnd, 32);
-                            memcpy(rewardNote.rcm.begin(), rnd, 32);
-                            OPENSSL_cleanse(rnd, 32);
+                            if (!RandNoteSeeds(rewardNote))
+                                return error("CreateCoinStake : RAND_bytes failed");
                             rewardNote.GenerateBlindingFactor();
 
                             CPedersenCommitment rewardCv;
@@ -6487,12 +6493,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 CShieldedNote returnNote;
                                 returnNote.addr = ownerZAddr;
                                 returnNote.nValue = wnote.note.nValue;
-                                unsigned char rnd[32];
-                                RAND_bytes(rnd, 32);
-                                memcpy(returnNote.rho.begin(), rnd, 32);
-                                RAND_bytes(rnd, 32);
-                                memcpy(returnNote.rcm.begin(), rnd, 32);
-                                OPENSSL_cleanse(rnd, 32);
+                                if (!RandNoteSeeds(returnNote))
+                                    return error("CreateCoinStake : RAND_bytes failed");
                                 returnNote.GenerateBlindingFactor();
 
                                 CPedersenCommitment returnCv;
@@ -6516,12 +6518,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 CShieldedNote rewardNote;
                                 rewardNote.addr = ownerZAddr;
                                 rewardNote.nValue = nReward;
-                                unsigned char rnd[32];
-                                RAND_bytes(rnd, 32);
-                                memcpy(rewardNote.rho.begin(), rnd, 32);
-                                RAND_bytes(rnd, 32);
-                                memcpy(rewardNote.rcm.begin(), rnd, 32);
-                                OPENSSL_cleanse(rnd, 32);
+                                if (!RandNoteSeeds(rewardNote))
+                                    return error("CreateCoinStake : RAND_bytes failed");
                                 rewardNote.GenerateBlindingFactor();
 
                                 CPedersenCommitment rewardCv;
