@@ -62,6 +62,7 @@ Notes:
 #include "xxhash/xxhash.h"
 #include "xxhash/xxhash.c"
 #include "nyxembed.h"
+#include "nyxsafety.h"
 
 
 namespace fs = boost::filesystem;
@@ -2272,6 +2273,69 @@ void SecureMsgCollectEmbedRemovals(std::vector<std::pair<std::string, std::strin
     }
 }
 
+void SecureMsgCollectSentTo(std::set<std::string>& out)
+{
+    out.clear();
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cr+"))
+        return;
+    std::string sPrefix("nm");
+    unsigned char chKey[18];
+    SecMsgStored smsgStored;
+    leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+    while (db.NextSmesg(it, sPrefix, chKey, smsgStored))
+        out.insert(smsgStored.sAddrTo);
+    delete it;
+}
+
+void SecureMsgCollectAddressBook(std::set<std::string>& out)
+{
+    out.clear();
+    if (!pwalletMain)
+        return;
+    LOCK(pwalletMain->cs_wallet);
+    for (const auto& pair : pwalletMain->mapAddressBook)
+        out.insert(CBitcoinAddress(pair.first).ToString());
+}
+
+int SecureMsgSenderState(const std::string& from, const std::set<std::string>& sentTo,
+                         const std::set<std::string>& book)
+{
+    return NyxClassifySender(from, sentTo.count(from) != 0, book.count(from) != 0,
+                             NyxIsAccepted(from), NyxIsBlocked(from));
+}
+
+int SecureMsgDiscardFrom(const std::string& addr)
+{
+    int n = 0;
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cr+"))
+        return 0;
+    std::vector<std::vector<unsigned char> > vErase;
+    std::string sPrefix("im");
+    unsigned char chKey[18];
+    SecMsgStored smsgStored;
+    leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+    while (db.NextSmesg(it, sPrefix, chKey, smsgStored))
+    {
+        unsigned char* pHeader = NULL;
+        unsigned char* pPayload = NULL;
+        uint32_t nPayload = 0;
+        MessageData msg;
+        if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+            && SecureMsgDecrypt(false, smsgStored.sAddrTo, pHeader, pPayload, nPayload, msg) == 0
+            && msg.sFromAddress == addr)
+            vErase.push_back(std::vector<unsigned char>(chKey, chKey + 18));
+    }
+    delete it;
+    for (size_t i = 0; i < vErase.size(); i++)
+        if (db.EraseSmesg(&vErase[i][0]))
+            n++;
+    return n;
+}
+
 int SecureMsgRemoveEmbed(const std::string& id, std::string& sError)
 {
     if (!NyxIsHexId(id))
@@ -3130,6 +3194,15 @@ int SecureMsgScanMessage(unsigned char *pHeader, unsigned char *pPayload, uint32
             };
         }
     };
+
+    if (fOwnMessage && NyxHasBlocked())
+    {
+        // An anon-enabled match decrypts only the header; the sender needs a full decrypt.
+        MessageData full;
+        if (SecureMsgDecrypt(false, addressTo, pHeader, pPayload, nPayload, full) == 0
+            && NyxIsBlocked(full.sFromAddress))
+            return 0;
+    }
 
     if (fOwnMessage)
     {

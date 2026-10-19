@@ -10,6 +10,7 @@
 #include "net.h"
 #include "dandelion.h"
 #include "nyxembed.h"
+#include "nyxsafety.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -23,7 +24,9 @@ struct NyxRemovalCache
 {
     bool fLoaded;
     std::vector<std::pair<std::string, std::string> > v;
-    NyxRemovalCache() : fLoaded(false) {}
+    bool fSentLoaded;
+    std::set<std::string> sentTo, book;
+    NyxRemovalCache() : fLoaded(false), fSentLoaded(false) {}
 };
 
 // Visible text plus any embed or control record carried after the NUL.
@@ -59,6 +62,65 @@ void NyxPushMessageText(json_spirit::Object& o, const MessageData& msg, NyxRemov
         c.push_back(json_spirit::Pair("id", id));
         o.push_back(json_spirit::Pair("control", c));
     }
+}
+
+// Call before taking cs_smsgDB: the address book needs cs_wallet.
+void NyxPrepareInboxSafety(NyxRemovalCache& cache)
+{
+    SecureMsgCollectSentTo(cache.sentTo);
+    SecureMsgCollectAddressBook(cache.book);
+    cache.fSentLoaded = true;
+}
+
+// Request gating and scam flag for a received message.
+void NyxPushInboxSafety(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache)
+{
+    if (!cache.fSentLoaded)
+        return;
+    std::string text, ext;
+    NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+    o.push_back(json_spirit::Pair("request", SecureMsgSenderState(msg.sFromAddress, cache.sentTo, cache.book) != NYX_SENDER_KNOWN));
+    o.push_back(json_spirit::Pair("scam_warning", NyxLooksLikeScam(text)));
+}
+
+bool NyxParseForce(const json_spirit::Value& v)
+{
+    if (v.type() == json_spirit::bool_type)
+        return v.get_bool();
+    if (v.type() == json_spirit::int_type)
+        return v.get_int() != 0;
+    if (v.type() == json_spirit::str_type)
+    {
+        const std::string s = v.get_str();
+        return s == "true" || s == "1" || s == "force";
+    }
+    return false;
+}
+
+// Refuses text that looks like a recovery phrase or key unless fForce.
+json_spirit::Object NyxGuardedSend(std::string from, std::string to, std::string msg, bool fForce)
+{
+    json_spirit::Object result;
+    NyxSecretKind k = NyxDetectSecret(msg);
+    if (k != NYX_SECRET_NONE && !fForce)
+    {
+        result.push_back(json_spirit::Pair("result", "Send refused."));
+        result.push_back(json_spirit::Pair("error", std::string("Message looks like a ") + NyxSecretKindName(k)
+                                           + ". Pass force=true to send anyway."));
+        result.push_back(json_spirit::Pair("warning", NYX_SECRET_WARNING));
+        return result;
+    }
+    std::string sError;
+    if (SecureMsgSend(from, to, msg, sError) != 0)
+    {
+        result.push_back(json_spirit::Pair("result", "Send failed."));
+        result.push_back(json_spirit::Pair("error", sError));
+    }
+    else
+        result.push_back(json_spirit::Pair("result", from == "anon" ? "Sent anonymously." : "Sent."));
+    if (k != NYX_SECRET_NONE)
+        result.push_back(json_spirit::Pair("warning", NYX_SECRET_WARNING));
+    return result;
 }
 
 static void EnsureNyxEnabled()
@@ -105,29 +167,18 @@ static bool HexToKey(const std::string& hex, unsigned char* chKey)
 
 static Value nyx_send(const Array& params)
 {
-    if (params.size() != 4)
+    if (params.size() < 4 || params.size() > 5)
         throw runtime_error(
-            "nyx send <addrFrom> <addrTo> <message>\n"
-            "Send an encrypted message.");
+            "nyx send <addrFrom> <addrTo> <message> [force]\n"
+            "Send an encrypted message. Text that looks like a recovery phrase or private key\n"
+            "is refused unless force is true.");
 
     EnsureNyxEnabled();
 
-    std::string addrFrom = params[1].get_str();
-    std::string addrTo   = params[2].get_str();
-    std::string msg      = params[3].get_str();
-
-    Object result;
-    std::string sError;
-    if (SecureMsgSend(addrFrom, addrTo, msg, sError) != 0)
-    {
-        result.push_back(Pair("result", "Send failed."));
-        result.push_back(Pair("error", sError));
-    }
-    else
-    {
-        result.push_back(Pair("result", "Sent."));
+    Object result = NyxGuardedSend(params[1].get_str(), params[2].get_str(), params[3].get_str(),
+                                   params.size() > 4 && NyxParseForce(params[4]));
+    if (find_value(result, "result").get_str() == "Sent.")
         result.push_back(Pair("protocol", "nyx"));
-    }
     return result;
 }
 
@@ -146,6 +197,8 @@ static Value nyx_sendembed(const Array& params)
     std::string msg      = params[3].get_str();
 
     NyxEmbed e;
+    if (NyxDetectSecret(msg) != NYX_SECRET_NONE)
+        throw runtime_error(std::string("Send refused. ") + NYX_SECRET_WARNING);
     e.url = NyxFirstHttpsUrl(msg);
     if (e.url.empty())
         throw runtime_error("Message has no https URL.");
@@ -198,29 +251,34 @@ static Value nyx_removeembed(const Array& params)
 
 static Value nyx_sendanon(const Array& params)
 {
-    if (params.size() != 3)
+    if (params.size() < 3 || params.size() > 4)
         throw runtime_error(
-            "nyx sendanon <addrTo> <message>\n"
-            "Send an anonymous encrypted message.");
+            "nyx sendanon <addrTo> <message> [force]\n"
+            "Send an anonymous encrypted message. Secret-looking text needs force.");
 
     EnsureNyxEnabled();
 
-    std::string addrFrom = "anon";
-    std::string addrTo   = params[1].get_str();
-    std::string msg      = params[2].get_str();
-
-    Object result;
-    std::string sError;
-    if (SecureMsgSend(addrFrom, addrTo, msg, sError) != 0)
-    {
-        result.push_back(Pair("result", "Send failed."));
-        result.push_back(Pair("error", sError));
-    }
-    else
-    {
-        result.push_back(Pair("result", "Sent anonymously."));
+    Object result = NyxGuardedSend("anon", params[1].get_str(), params[2].get_str(),
+                                   params.size() > 3 && NyxParseForce(params[3]));
+    if (find_value(result, "result").get_str() == "Sent anonymously.")
         result.push_back(Pair("protocol", "nyx"));
-    }
+    return result;
+}
+
+static Value nyx_contact(const Array& params, const std::string& op)
+{
+    if (params.size() != 2)
+        throw runtime_error("nyx " + op + " <address>\n"
+            "accept: show this sender's links and previews. block: discard its messages now and later.\n"
+            "unblock: stop discarding.");
+    std::string addr = params[1].get_str();
+    if (!NyxIsValidContactAddress(addr) || addr == "anon")
+        throw runtime_error("Invalid address.");
+    Object result;
+    bool ok = op == "accept" ? NyxAccept(addr) : op == "block" ? NyxBlock(addr) : NyxUnblock(addr);
+    result.push_back(Pair("result", ok ? "OK." : "Could not save nyxcontacts.dat."));
+    if (op == "block")
+        result.push_back(Pair("discarded", fSecMsgEnabled ? SecureMsgDiscardFrom(addr) : 0));
     return result;
 }
 
@@ -229,6 +287,7 @@ static Value nyx_inbox(const Array& params)
     NyxRemovalCache nyxRemovals;
     EnsureNyxEnabled();
     EnsureWalletUnlocked();
+    NyxPrepareInboxSafety(nyxRemovals);
 
     std::string mode = "unread";
     if (params.size() > 1)
@@ -307,6 +366,7 @@ static Value nyx_inbox(const Array& params)
                 objM.push_back(Pair("from", msg.sFromAddress));
                 objM.push_back(Pair("to", smsgStored.sAddrTo));
                 NyxPushMessageText(objM, msg, nyxRemovals);
+                NyxPushInboxSafety(objM, msg, nyxRemovals);
                 objM.push_back(Pair("unread", (smsgStored.status & SMSG_MASK_UNREAD) ? true : false));
                 messages.push_back(objM);
                 nShown++;
@@ -409,6 +469,7 @@ static Value nyx_read(const Array& params)
     if (!HexToKey(params[1].get_str(), chKey))
         throw runtime_error("Invalid message ID (expected 36 hex chars).");
 
+    NyxPrepareInboxSafety(nyxRemovals);
     LOCK(cs_smsgDB);
     SecMsgDB db;
     if (!db.Open("cr+"))
@@ -445,6 +506,8 @@ static Value nyx_read(const Array& params)
     result.push_back(Pair("from", msg.sFromAddress));
     result.push_back(Pair("to", smsgStored.sAddrTo));
     NyxPushMessageText(result, msg, nyxRemovals);
+    if (!smsgStored.sAddrTo.empty() && smsgStored.sAddrOutbox.empty())
+        NyxPushInboxSafety(result, msg, nyxRemovals);
     return result;
 }
 
@@ -667,8 +730,10 @@ Value nyx(const Array& params, bool fHelp)
             "nyx <subcommand> [params...]\n"
             "\nNyx Messaging Protocol — encrypted decentralized messaging.\n"
             "\nSubcommands:\n"
-            "  send <from> <to> <message>  Send an encrypted message\n"
-            "  sendanon <to> <message>     Send an anonymous encrypted message\n"
+            "  send <from> <to> <message> [force]\n"
+            "                              Send an encrypted message (secret-looking text needs force)\n"
+            "  sendanon <to> <message> [force]\n"
+            "                              Send an anonymous encrypted message\n"
             "  sendembed <from> <to> <message> <title> [description] [site]\n"
             "                              Send with a link preview card (fields supplied by the caller)\n"
             "  removeembed <embedid>       Remove a preview card you sent, for everyone\n"
@@ -682,6 +747,8 @@ Value nyx(const Array& params, bool fHelp)
             "  disable                     Disable Nyx messaging\n"
             "  status                      Show Nyx subsystem status\n"
             "  peers                       List peers with messaging support\n"
+            "  accept|block|unblock <address>\n"
+            "                              Accept a message request, or block/unblock a sender\n"
         );
 
     std::string subcmd = params[0].get_str();
@@ -691,6 +758,8 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "sendembed")   return nyx_sendembed(params);
     if (subcmd == "removeembed") return nyx_removeembed(params);
     if (subcmd == "inbox")       return nyx_inbox(params);
+    if (subcmd == "accept" || subcmd == "block" || subcmd == "unblock")
+        return nyx_contact(params, subcmd);
     if (subcmd == "outbox")      return nyx_outbox(params);
     if (subcmd == "read")        return nyx_read(params);
     if (subcmd == "delete")      return nyx_delete(params);

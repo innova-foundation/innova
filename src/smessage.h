@@ -6,6 +6,7 @@
 
 #include <leveldb/db.h>
 #include <leveldb/write_batch.h>
+#include <set>
 
 #include "net.h"
 #include "db.h"
@@ -448,6 +449,15 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 std::string SecureMsgPlaintext(const MessageData& msg);
 /** Embed removals stored in the inbox and outbox, as (verified sender, embed id). */
 void SecureMsgCollectEmbedRemovals(std::vector<std::pair<std::string, std::string> >& out);
+/** Recipients of every outbox message. */
+void SecureMsgCollectSentTo(std::set<std::string>& out);
+/** Address book entries as address strings. Takes cs_wallet; call without cs_smsgDB held. */
+void SecureMsgCollectAddressBook(std::set<std::string>& out);
+/** NyxSenderState for an incoming sender: blocked, known (sent to, address book, accepted) or request. */
+int SecureMsgSenderState(const std::string& from, const std::set<std::string>& sentTo,
+                         const std::set<std::string>& book);
+/** Erase inbox messages from addr; returns the count. */
+int SecureMsgDiscardFrom(const std::string& addr);
 /** Send a removal for an embed this wallet sent, to that message's recipient. */
 int SecureMsgRemoveEmbed(const std::string& id, std::string& sError);
 

@@ -15,8 +15,14 @@ struct NyxRemovalCache
 {
     bool fLoaded;
     std::vector<std::pair<std::string, std::string> > v;
-    NyxRemovalCache() : fLoaded(false) {}
+    bool fSentLoaded;
+    std::set<std::string> sentTo, book;
+    NyxRemovalCache() : fLoaded(false), fSentLoaded(false) {}
 };
+void NyxPrepareInboxSafety(NyxRemovalCache& cache);
+void NyxPushInboxSafety(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache);
+bool NyxParseForce(const json_spirit::Value& v);
+json_spirit::Object NyxGuardedSend(std::string from, std::string to, std::string msg, bool fForce);
 void NyxPushMessageText(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache);
 
 using namespace json_spirit;
@@ -532,59 +538,33 @@ Value smsggetpubkey(const Array& params, bool fHelp)
 
 Value smsgsend(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() != 3)
+    if (fHelp || params.size() < 3 || params.size() > 4)
         throw runtime_error(
-            "smsgsend <addrFrom> <addrTo> <message>\n"
-            "Send an encrypted message from addrFrom to addrTo.");
+            "smsgsend <addrFrom> <addrTo> <message> [force]\n"
+            "Send an encrypted message from addrFrom to addrTo.\n"
+            "Text that looks like a recovery phrase or private key is refused unless force is true.");
 
     if (!fSecMsgEnabled)
         throw runtime_error("Secure messaging is disabled. "
                             "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
-    std::string addrFrom  = params[0].get_str();
-    std::string addrTo    = params[1].get_str();
-    std::string msg       = params[2].get_str();
-
-
-    Object result;
-
-    std::string sError;
-    if (SecureMsgSend(addrFrom, addrTo, msg, sError) != 0)
-    {
-        result.push_back(Pair("result", "Send failed."));
-        result.push_back(Pair("error", sError));
-    } else
-        result.push_back(Pair("result", "Sent."));
-
-    return result;
+    return NyxGuardedSend(params[0].get_str(), params[1].get_str(), params[2].get_str(),
+                          params.size() > 3 && NyxParseForce(params[3]));
 }
 
 Value smsgsendanon(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() != 2)
+    if (fHelp || params.size() < 2 || params.size() > 3)
         throw runtime_error(
-            "smsgsendanon <addrTo> <message>\n"
-            "Send an anonymous encrypted message to addrTo.");
+            "smsgsendanon <addrTo> <message> [force]\n"
+            "Send an anonymous encrypted message to addrTo. Secret-looking text needs force.");
 
     if (!fSecMsgEnabled)
         throw runtime_error("Secure messaging is disabled. "
                             "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
-    std::string addrFrom  = "anon";
-    std::string addrTo    = params[0].get_str();
-    std::string msg       = params[1].get_str();
-
-
-    Object result;
-    std::string sError;
-    if (SecureMsgSend(addrFrom, addrTo, msg, sError) != 0)
-    {
-        result.push_back(Pair("result", "Send failed."));
-        result.push_back(Pair("error", sError));
-    } else
-        result.push_back(Pair("result", "Sent."));
-
-    return result;
+    return NyxGuardedSend("anon", params[0].get_str(), params[1].get_str(),
+                          params.size() > 2 && NyxParseForce(params[2]));
 }
 
 Value smsginbox(const Array& params, bool fHelp)
@@ -602,6 +582,7 @@ Value smsginbox(const Array& params, bool fHelp)
 
     if (pwalletMain->IsLocked())
         throw runtime_error("Wallet is locked.");
+    NyxPrepareInboxSafety(nyxRemovals);
 
     std::string mode = "unread";
     if (params.size() > 0)
@@ -675,6 +656,7 @@ Value smsginbox(const Array& params, bool fHelp)
                     objM.push_back(Pair("from", msg.sFromAddress));
                     objM.push_back(Pair("to", smsgStored.sAddrTo));
                     NyxPushMessageText(objM, msg, nyxRemovals);
+                    NyxPushInboxSafety(objM, msg, nyxRemovals);
 
                     result.push_back(Pair("message", objM));
                 } else
