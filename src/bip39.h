@@ -33,6 +33,9 @@ bool BIP39MnemonicToSeed(const std::string& strMnemonic,
                          std::vector<unsigned char>& vSeedOut,
                          std::string& strErrorOut);
 
+/** Whether a lowercase word is in the English wordlist. */
+bool BIP39IsWord(const std::string& strWord);
+
 /** Normalised word split: lowercased, whitespace collapsed. Exposed for tests. */
 std::vector<std::string> BIP39SplitWords(const std::string& strMnemonic);
 

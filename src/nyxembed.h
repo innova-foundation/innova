@@ -64,6 +64,10 @@ std::string NyxFirstHttpsUrl(const std::string& text);
 /** HTML-escape everything and wrap http/https URLs in anchors; newlines become <br>. */
 std::string NyxLinkify(const std::string& text);
 std::string NyxHtmlEscape(const std::string& s);
+/** HTML-escape with newlines as <br>, no anchors. */
+std::string NyxEscapeText(const std::string& text);
+/** Next linkable http(s) URL at or after pos; returns its start or npos and sets len. */
+size_t NyxNextUrl(const std::string& text, size_t pos, size_t& len);
 
 /** Host name a preview may be fetched from: no IP literals, local or onion names, or ports. */
 bool NyxIsFetchableHost(const std::string& host, bool fAllowOnion);

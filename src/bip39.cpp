@@ -34,6 +34,11 @@ bool Fail(std::string& strErrorOut, const std::string& strError)
 
 } // namespace
 
+bool BIP39IsWord(const std::string& strWord)
+{
+    return WordIndex().count(strWord) != 0;
+}
+
 std::vector<std::string> BIP39SplitWords(const std::string& strMnemonic)
 {
     std::string strLower;

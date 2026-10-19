@@ -362,6 +362,16 @@ static std::string EscapeWithBreaks(const std::string& s)
     return o;
 }
 
+std::string NyxEscapeText(const std::string& text)
+{
+    return EscapeWithBreaks(text);
+}
+
+size_t NyxNextUrl(const std::string& text, size_t pos, size_t& len)
+{
+    return NextUrl(text, pos, len);
+}
+
 std::string NyxLinkify(const std::string& text)
 {
     std::string out;
