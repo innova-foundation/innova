@@ -87,6 +87,7 @@ public:
 
 protected:
     void changeEvent(QEvent *e);
+    void resizeEvent(QResizeEvent *e);
     void closeEvent(QCloseEvent *event);
     void dragEnterEvent(QDragEnterEvent *event);
     void dropEvent(QDropEvent *event);
@@ -126,6 +127,8 @@ private:
     QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
+    QAction *mainIconAction;
+    void fitSidebar();
     QToolBar *mainToolbar;
     QToolBar *secondaryToolbar;
     QProgressBar *progressBar;

@@ -59,6 +59,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QMainWindow>
+#include <QResizeEvent>
 #include <QMenuBar>
 #include <QMenu>
 #include <QIcon>
@@ -154,6 +155,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     lockWalletAction(0),
     aboutQtAction(0),
     blockingDialog(0),
+    mainToolbar(0),
+    mainIconAction(0),
     trayIcon(0),
     notificator(0),
     rpcConsole(0),
@@ -726,7 +729,7 @@ void BitcoinGUI::createToolBars()
     removeToolBar(mainToolbar);
     addToolBar(Qt::LeftToolBarArea, mainToolbar);
     mainToolbar->show();
-    mainToolbar->addWidget(mainIcon);
+    mainIconAction = mainToolbar->addWidget(mainIcon);
 
     mainToolbar->addAction(overviewAction);
   mainToolbar->addAction(sendCoinsAction);
@@ -736,6 +739,7 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(receiveCoinsAction);
   mainToolbar->addAction(historyAction);
   mainToolbar->addAction(addressBookAction);
+  mainToolbar->addAction(messageAction);
   mainToolbar->addAction(stakingAction);        // Staking page
   mainToolbar->addAction(mintingAction);         // Staking Inputs
   mainToolbar->addAction(collateralnodeManagerAction);
@@ -745,7 +749,6 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(manageNamesAction);
   mainToolbar->addAction(hyperfileAction);
   mainToolbar->addAction(proofOfImageAction);
-  mainToolbar->addAction(messageAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -1149,6 +1152,29 @@ void BitcoinGUI::error(const QString &title, const QString &message, bool modal)
         box.exec();
     } else {
         notificator->notify(Notificator::Critical, title, message);
+    }
+}
+
+void BitcoinGUI::resizeEvent(QResizeEvent *e)
+{
+    QMainWindow::resizeEvent(e);
+    fitSidebar();
+}
+
+// Shrink sidebar icons, then drop the logo, so every action fits the window height.
+void BitcoinGUI::fitSidebar()
+{
+    if (!mainToolbar || !mainIconAction || mainToolbar->orientation() != Qt::Vertical)
+        return;
+    const int avail = mainToolbar->height();
+    const int sizes[] = {24, 20, 16};
+    for (int pass = 0; pass < 2; ++pass) {
+        mainIconAction->setVisible(pass == 0);
+        for (int px : sizes) {
+            mainToolbar->setIconSize(QSize(px, px));
+            if (mainToolbar->sizeHint().height() <= avail)
+                return;
+        }
     }
 }
 
