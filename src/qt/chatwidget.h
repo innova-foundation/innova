@@ -25,6 +25,8 @@ class MessageModel;
 class WalletModel;
 class EmojiPicker;
 class EmojiAutocomplete;
+class LinkPreviewFetcher;
+struct NyxEmbed;
 
 /** Discord-like chat widget with contacts panel and conversation view */
 class ChatWidget : public QWidget
@@ -46,6 +48,9 @@ public:
     static bool setMessagingEnabled(bool fEnable, QString *pError = 0);
     /** Saved preference; defaults to the live state when never set. */
     static bool messagingPreference();
+    /** Sender-side link previews (Options > Messaging); default on. */
+    static bool linkPreviewsEnabled();
+    static void setLinkPreviewsEnabled(bool fEnable);
     /** Apply the saved preference once at startup. */
     static void applyMessagingPreference();
 
@@ -106,7 +111,14 @@ private:
     void refreshContacts();
     void loadConversation(const QString& address);
     void addChatBubble(const QString& text, const QString& time, bool isMine,
-                       bool fFailed = false, const QString& failReason = QString());
+                       bool fFailed = false, const QString& failReason = QString(),
+                       const NyxEmbed* embed = 0, const QString& owner = QString());
+    QWidget* makeEmbedCard(const NyxEmbed& e, bool fRemovable, const QString& owner);
+    void removeEmbed(const QString& id, const QString& owner);
+    void schedulePreview();
+    void onPreviewFinished(const QString& url, bool ok, const QString& title, const QString& desc,
+                           const QString& site, const QByteArray& thumb);
+    void clearPreview(bool fDismiss);
     void addDateSeparator(const QDate& date);
     void addCenteredNote(const QString& text);
     void showEmptyConversation();
@@ -169,6 +181,17 @@ private:
     qint64 cachedIPFSMaxSize;      // cached gateway check result (0 = unchecked/unavailable)
     QMap<QString, qint64> mapLastReadTime; // address -> msec timestamp when conversation was last opened
     QMap<QString, QString> mapContactNicknames; // address -> user-assigned nickname
+
+    // Link preview for the message being composed
+    LinkPreviewFetcher *previewFetcher;
+    QTimer *previewTimer;
+    QWidget *previewChip;
+    QLabel *previewChipText;
+    QString previewUrl;           // URL of the ready preview
+    QString previewDismissedUrl;  // user closed the preview for this URL
+    QString previewTitle, previewDesc, previewSite;
+    QByteArray previewThumb;
+    QSet<QString> setHiddenNow;   // removals sent this session, before the outbox echo arrives
 
     void updateContactTypingDisplay();
     void refreshComposerIcons();

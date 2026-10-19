@@ -102,11 +102,20 @@ OptionsDialog::OptionsDialog(QWidget *parent) :
                                      "Takes effect immediately and is remembered on restart. -nosmsg always keeps it off."));
         info->setWordWrap(true);
         ml->addWidget(info);
+        linkPreviewCheck = new QCheckBox(tr("Fetch &link previews when sending"));
+        linkPreviewCheck->setChecked(ChatWidget::linkPreviewsEnabled());
+        ml->addWidget(linkPreviewCheck);
+        QLabel *pinfo = new QLabel(tr("When on, your wallet contacts the linked site (https only) while you type, through your "
+                                      "proxy or Tor when one is set, and the preview travels inside the encrypted message. "
+                                      "Recipients never contact the site. On by default."));
+        pinfo->setWordWrap(true);
+        ml->addWidget(pinfo);
         ml->addStretch();
         if (GetBoolArg("-nosmsg", false))
             nyxMessengerCheck->setEnabled(false);
         ui->tabWidget->addTab(tabMsg, tr("&Messaging"));
         connect(nyxMessengerCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
+        connect(linkPreviewCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
     }
 
     /* Widget-to-option mapper */
@@ -209,6 +218,7 @@ void OptionsDialog::setSaveButtonState(bool fState)
 
 void OptionsDialog::applyMessagingToggle()
 {
+    ChatWidget::setLinkPreviewsEnabled(linkPreviewCheck->isChecked());
     if (nyxMessengerCheck->isChecked() == (bool)fSecMsgEnabled)
         return;
     QString err;

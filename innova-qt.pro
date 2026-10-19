@@ -405,6 +405,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/nullsendmixwidget.h \
     src/qt/chatwidget.h \
     src/qt/emojipicker.h \
+    src/qt/linkpreview.h \
     src/qt/walletworker.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
@@ -595,6 +596,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/nullsendmixwidget.cpp \
     src/qt/chatwidget.cpp \
     src/qt/emojipicker.cpp \
+    src/qt/linkpreview.cpp \
     src/qt/walletworker.cpp \
     src/rpchyperfile.cpp \
     src/qt/termsofuse.cpp \

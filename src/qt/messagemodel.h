@@ -45,6 +45,7 @@ struct MessageTableEntry
     QDateTime sent_datetime;
     QDateTime received_datetime;
     QString message;
+    QString ext;        // nyx extension record after the NUL, if any
 
     MessageTableEntry() {}
     MessageTableEntry(std::vector<unsigned char> &chKey,
@@ -128,7 +129,9 @@ public:
         /** HTML Formatted */
         HTMLRole,
         /** Ambiguous bool */
-        Ambiguous
+        Ambiguous,
+        /** Nyx extension record */
+        ExtRole
     };
 
     static const QString Sent; /**< Specifies sent message */
@@ -156,6 +159,9 @@ public:
     OptionsModel *getOptionsModel();
 
     void resetFilter();
+
+    /** Verified (sender, embed id) removal records. */
+    std::vector<std::pair<std::string, std::string> > embedRemovals() const;
 
     bool getAddressOrPubkey( QString &Address,  QString &Pubkey) const;
 
@@ -187,6 +193,7 @@ public slots:
     friend class MessageTablePriv;
 
 signals:
+    void embedRemovalsChanged();
     // Asynchronous error notification
     void error(const QString &title, const QString &message, bool modal);
 };

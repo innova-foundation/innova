@@ -9,6 +9,7 @@
 #include "base58.h"
 #include "emojipicker.h"
 #include "nyxembed.h"
+#include "linkpreview.h"
 
 #include <QApplication>
 #include <QScrollBar>
@@ -30,6 +31,8 @@
 #include <QGridLayout>
 #include <QPainter>
 #include <QDesktopServices>
+#include <QBuffer>
+#include <QImageReader>
 #include <QUrl>
 #include <QPainterPath>
 #include <QEvent>
@@ -362,6 +365,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
         if (fSecMsgEnabled && !currentContact.isEmpty() && !messageInput->toPlainText().trimmed().isEmpty())
             onSendTypingNotification();
         updateSendButton();
+        previewTimer->start();
 
         // Check for :shortcode pattern
         QString text = messageInput->toPlainText();
@@ -380,6 +384,36 @@ ChatWidget::ChatWidget(QWidget *parent) :
         }
         emojiAutocomplete->hide();
     });
+
+    // Link preview chip above the composer
+    previewChip = new QWidget();
+    previewChip->setAttribute(Qt::WA_StyledBackground, true);
+    previewChip->setStyleSheet("background-color: palette(alternate-base); border-top: 1px solid palette(mid);");
+    {
+        QHBoxLayout *pl = new QHBoxLayout(previewChip);
+        pl->setContentsMargins(12, 4, 8, 4);
+        previewChipText = new QLabel();
+        previewChipText->setTextFormat(Qt::PlainText);
+        previewChipText->setStyleSheet("color: palette(dark); font-size: 11px; background: transparent;");
+        previewChipText->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        pl->addWidget(previewChipText, 1);
+        QToolButton *x = new QToolButton();
+        x->setText(QString::fromUtf8("\xC3\x97"));
+        x->setAutoRaise(true);
+        x->setToolTip(tr("Send without a link preview"));
+        x->setStyleSheet("QToolButton { padding: 0px 4px; border: none; font-size: 14px; }");
+        pl->addWidget(x);
+        connect(x, &QToolButton::clicked, [this]() { clearPreview(true); });
+    }
+    previewChip->hide();
+    rightLayout->addWidget(previewChip);
+
+    previewFetcher = new LinkPreviewFetcher(this);
+    connect(previewFetcher, &LinkPreviewFetcher::finished, this, &ChatWidget::onPreviewFinished);
+    previewTimer = new QTimer(this);
+    previewTimer->setSingleShot(true);
+    previewTimer->setInterval(700);
+    connect(previewTimer, &QTimer::timeout, this, &ChatWidget::schedulePreview);
 
     rightLayout->addWidget(inputFrame);
 
@@ -459,6 +493,7 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
     if (msgModel)
     {
         connect(msgModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SLOT(onNewMessage()));
+        connect(msgModel, SIGNAL(embedRemovalsChanged()), this, SLOT(onNewMessage()));
         refreshContacts();
     }
 
@@ -716,6 +751,7 @@ void ChatWidget::loadConversation(const QString& address)
     if (msgIndices.isEmpty())
         addCenteredNote(tr("No messages yet. Say hello."));
 
+    const std::vector<std::pair<std::string, std::string> > removals = msgModel->embedRemovals();
     QDate lastDate;
     for (const auto& pair : msgIndices)
     {
@@ -735,16 +771,25 @@ void ChatWidget::loadConversation(const QString& address)
         QString cid, encKeyHex, filename;
         qint64 fileSize;
         if (parseFileMessage(msg, cid, encKeyHex, filename, fileSize))
+        {
             addFileBubble(cid, encKeyHex, filename, fileSize, dt.toString("hh:mm"), isMine);
-        else
-            addChatBubble(msg, dt.toString("hh:mm"), isMine);
+            continue;
+        }
+        QString ext = msgModel->data(msgModel->index(row, 0, QModelIndex()), MessageModel::ExtRole).toString();
+        QString owner = msgModel->data(msgModel->index(row, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString();
+        NyxEmbed embed;
+        bool fEmbed = !ext.isEmpty() && owner != "anon" && NyxDecodeEmbed(ext.toStdString(), embed)
+                      && !setHiddenNow.contains(QString::fromStdString(embed.id))
+                      && !NyxEmbedHidden(owner.toStdString(), embed.id, removals);
+        addChatBubble(msg, dt.toString("hh:mm"), isMine, false, QString(), fEmbed ? &embed : 0, owner);
     }
 
     chatView->scrollToBottom();
 }
 
 void ChatWidget::addChatBubble(const QString& text, const QString& time, bool isMine,
-                               bool fFailed, const QString& failReason)
+                               bool fFailed, const QString& failReason,
+                               const NyxEmbed* embed, const QString& owner)
 {
     QWidget *bubbleWidget = new QWidget();
     QHBoxLayout *bubbleLayout = new QHBoxLayout(bubbleWidget);
@@ -769,6 +814,8 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     body->setFont(GUIUtil::emojiFont(13));
     body->setStyleSheet("background: transparent;");
     bl->addWidget(body);
+    if (embed)
+        bl->addWidget(makeEmbedCard(*embed, isMine && !fFailed && !owner.isEmpty(), owner));
 
     QString status;
     if (isMine)
@@ -899,6 +946,162 @@ void ChatWidget::updateSendButton()
 }
 
 static const char* NYX_PREF_KEY = "fNyxMessenger";
+static const char* NYX_PREVIEW_KEY = "fNyxLinkPreviews";
+
+bool ChatWidget::linkPreviewsEnabled()
+{
+    QSettings settings;
+    return settings.value(NYX_PREVIEW_KEY, true).toBool();
+}
+
+void ChatWidget::setLinkPreviewsEnabled(bool fEnable)
+{
+    QSettings settings;
+    settings.setValue(NYX_PREVIEW_KEY, fEnable);
+}
+
+void ChatWidget::schedulePreview()
+{
+    QString text = messageInput->toPlainText();
+    QString url = QString::fromStdString(NyxFirstHttpsUrl(text.toStdString()));
+    if (url.isEmpty() || !fSecMsgEnabled || !linkPreviewsEnabled() || isFileMessage(text.trimmed()))
+    {
+        clearPreview(false);
+        return;
+    }
+    if (url == previewDismissedUrl || url == previewUrl || url == previewFetcher->currentUrl())
+        return;
+    clearPreview(false);
+    if (!previewFetcher->start(url))
+        return;
+    previewChipText->setText(tr("Fetching link preview from %1 ...").arg(QUrl(url).host()));
+    previewChip->show();
+}
+
+void ChatWidget::onPreviewFinished(const QString& url, bool ok, const QString& title, const QString& desc,
+                                   const QString& site, const QByteArray& thumb)
+{
+    if (!ok || QString::fromStdString(NyxFirstHttpsUrl(messageInput->toPlainText().toStdString())) != url)
+    {
+        previewChip->hide();
+        return;
+    }
+    previewUrl = url;
+    previewTitle = title;
+    previewDesc = desc;
+    previewSite = site;
+    previewThumb = thumb;
+    QString shown = title.isEmpty() ? desc : title;
+    previewChipText->setText(tr("Link preview: %1").arg(shown.left(80)));
+    previewChip->show();
+}
+
+void ChatWidget::clearPreview(bool fDismiss)
+{
+    if (fDismiss)
+        previewDismissedUrl = !previewUrl.isEmpty() ? previewUrl : previewFetcher->currentUrl();
+    previewFetcher->cancel();
+    previewUrl.clear();
+    previewTitle.clear();
+    previewDesc.clear();
+    previewSite.clear();
+    previewThumb.clear();
+    previewChip->hide();
+}
+
+QWidget* ChatWidget::makeEmbedCard(const NyxEmbed& e, bool fRemovable, const QString& owner)
+{
+    QFrame *card = new QFrame();
+    card->setObjectName("embed");
+    card->setStyleSheet("QFrame#embed { background-color: rgba(127,127,127,40); border-left: 3px solid #5865F2;"
+                        " border-radius: 4px; } QLabel { background: transparent; }");
+    card->setMaximumWidth(400);
+    QGridLayout *g = new QGridLayout(card);
+    g->setContentsMargins(10, 8, 6, 8);
+    g->setHorizontalSpacing(8);
+    g->setVerticalSpacing(2);
+
+    QLabel *site = new QLabel(QString::fromStdString(e.site));
+    site->setTextFormat(Qt::PlainText);
+    site->setStyleSheet("font-size: 10px; opacity: 0.8;");
+    g->addWidget(site, 0, 0);
+
+    const QString url = QString::fromStdString(e.url);
+    if (!e.title.empty())
+    {
+        QLabel *title = new QLabel(QString("<a href=\"%1\">%2</a>")
+            .arg(QString::fromStdString(NyxHtmlEscape(e.url)), QString::fromStdString(NyxHtmlEscape(e.title))));
+        title->setTextFormat(Qt::RichText);
+        title->setOpenExternalLinks(false);
+        title->setWordWrap(true);
+        title->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        title->setStyleSheet("font-size: 13px; font-weight: bold;");
+        title->setToolTip(url);
+        connect(title, &QLabel::linkActivated, this, &ChatWidget::confirmOpenUrl);
+        g->addWidget(title, 1, 0);
+    }
+    if (!e.desc.empty())
+    {
+        QLabel *desc = new QLabel(QString::fromStdString(e.desc));
+        desc->setTextFormat(Qt::PlainText);
+        desc->setWordWrap(true);
+        desc->setFont(GUIUtil::emojiFont(12));
+        desc->setMaximumHeight(QFontMetrics(desc->font()).lineSpacing() * 3 + 2);
+        g->addWidget(desc, 2, 0);
+    }
+
+    if (!e.thumb.empty())
+    {
+        QByteArray data(e.thumb.data(), (int)e.thumb.size());
+        QBuffer buf(&data);
+        buf.open(QIODevice::ReadOnly);
+        QImageReader rd(&buf, "jpeg");
+        rd.setAllocationLimit(1);
+        QSize sz = rd.size();
+        if (sz.isValid() && sz.width() <= 256 && sz.height() <= 256)
+        {
+            rd.setScaledSize(QSize(64, 64));
+            QImage img = rd.read();
+            if (!img.isNull())
+            {
+                QLabel *th = new QLabel();
+                th->setPixmap(QPixmap::fromImage(img));
+                th->setFixedSize(64, 64);
+                g->addWidget(th, 0, 1, 3, 1, Qt::AlignTop);
+            }
+        }
+    }
+
+    if (fRemovable)
+    {
+        QToolButton *x = new QToolButton();
+        x->setText(QString::fromUtf8("\xC3\x97"));
+        x->setAutoRaise(true);
+        x->setFixedSize(18, 18);
+        x->setToolTip(tr("Remove this preview for everyone"));
+        x->setStyleSheet("QToolButton { padding: 0px; border: none; font-size: 13px; }");
+        const QString id = QString::fromStdString(e.id);
+        connect(x, &QToolButton::clicked, [this, id, owner]() { removeEmbed(id, owner); });
+        g->addWidget(x, 0, 2, Qt::AlignTop | Qt::AlignRight);
+    }
+    g->setColumnStretch(0, 1);
+    return card;
+}
+
+void ChatWidget::removeEmbed(const QString& id, const QString& owner)
+{
+    if (currentContact.isEmpty() || owner.isEmpty() || owner == "anon")
+        return;
+    std::string from = owner.toStdString(), to = currentContact.toStdString();
+    std::string plain = NyxRemovalPlain(id.toStdString()), sError;
+    if (SecureMsgSend(from, to, plain, sError) != 0)
+    {
+        QMessageBox::warning(this, tr("Remove preview"), QString::fromStdString(sError));
+        return;
+    }
+    setHiddenNow.insert(id);
+    loadConversation(currentContact);
+}
 
 bool ChatWidget::messagingPreference()
 {
@@ -1064,6 +1267,30 @@ void ChatWidget::onSendClicked()
 
     std::string sendTo = currentContact.toStdString();
     std::string msgText = message.toStdString();
+    NyxEmbed sentEmbed;
+    bool fSentEmbed = false;
+    if (!fFile && !previewUrl.isEmpty() && previewUrl != previewDismissedUrl
+        && QString::fromStdString(NyxFirstHttpsUrl(msgText)) == previewUrl)
+    {
+        unsigned char rnd[8];
+        if (RAND_bytes(rnd, sizeof(rnd)) == 1)
+        {
+            sentEmbed.id = QByteArray((const char*)rnd, sizeof(rnd)).toHex().toStdString();
+            sentEmbed.url = previewUrl.toStdString();
+            sentEmbed.title = previewTitle.toStdString();
+            sentEmbed.desc = previewDesc.toStdString();
+            sentEmbed.site = previewSite.toStdString();
+            sentEmbed.thumb = std::string(previewThumb.constData(), previewThumb.size());
+            std::string ext = NyxFitEmbed(msgText, sentEmbed, SMSG_MAX_MSG_BYTES);
+            NyxEmbed check;
+            if (!ext.empty() && NyxDecodeEmbed(ext, check))
+            {
+                msgText = NyxComposePlain(msgText, ext);
+                sentEmbed = check;
+                fSentEmbed = true;
+            }
+        }
+    }
     if (SecureMsgSend(addFrom, sendTo, msgText, sError) != 0)
     {
         QString reason = QString::fromStdString(sError);
@@ -1077,12 +1304,14 @@ void ChatWidget::onSendClicked()
     }
 
     messageInput->clear();
+    clearPreview(false);
 
     // Model refresh rebuilds the view; paint now so the send feels immediate.
     if (fFile)
         addFileBubble(cid, encKeyHex, filename, fileSize, now, true);
     else
-        addChatBubble(message, now, true);
+        addChatBubble(message, now, true, false, QString(), fSentEmbed ? &sentEmbed : 0,
+                      QString::fromStdString(addFrom));
     chatView->scrollToBottom();
 }
 

@@ -9,6 +9,7 @@
 #include "util.h"
 #include "net.h"
 #include "dandelion.h"
+#include "nyxembed.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -17,6 +18,48 @@ using namespace std;
 
 extern CDandelionState dandelionState;
 extern CDandelionRouter dandelionRouter;
+
+struct NyxRemovalCache
+{
+    bool fLoaded;
+    std::vector<std::pair<std::string, std::string> > v;
+    NyxRemovalCache() : fLoaded(false) {}
+};
+
+// Visible text plus any embed or control record carried after the NUL.
+void NyxPushMessageText(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache)
+{
+    std::string text, ext, id;
+    NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+    o.push_back(json_spirit::Pair("text", text));
+    if (ext.empty() || msg.sFromAddress == "anon")
+        return;
+    NyxEmbed e;
+    if (NyxDecodeEmbed(ext, e))
+    {
+        if (!cache.fLoaded)
+        {
+            SecureMsgCollectEmbedRemovals(cache.v);
+            cache.fLoaded = true;
+        }
+        json_spirit::Object em;
+        em.push_back(json_spirit::Pair("id", e.id));
+        em.push_back(json_spirit::Pair("url", e.url));
+        em.push_back(json_spirit::Pair("title", e.title));
+        em.push_back(json_spirit::Pair("description", e.desc));
+        em.push_back(json_spirit::Pair("site", e.site));
+        em.push_back(json_spirit::Pair("thumbnail_bytes", (int)e.thumb.size()));
+        em.push_back(json_spirit::Pair("removed", NyxEmbedHidden(msg.sFromAddress, e.id, cache.v)));
+        o.push_back(json_spirit::Pair("embed", em));
+    }
+    else if (NyxDecodeRemoval(ext, id))
+    {
+        json_spirit::Object c;
+        c.push_back(json_spirit::Pair("op", "rmembed"));
+        c.push_back(json_spirit::Pair("id", id));
+        o.push_back(json_spirit::Pair("control", c));
+    }
+}
 
 static void EnsureNyxEnabled()
 {
@@ -88,6 +131,71 @@ static Value nyx_send(const Array& params)
     return result;
 }
 
+// Caller supplies the card fields; the node never fetches the URL.
+static Value nyx_sendembed(const Array& params)
+{
+    if (params.size() < 5 || params.size() > 7)
+        throw runtime_error(
+            "nyx sendembed <from> <to> <message> <title> [description] [site]\n"
+            "Send a message with a link preview card for the first https URL in <message>.");
+
+    EnsureNyxEnabled();
+
+    std::string addrFrom = params[1].get_str();
+    std::string addrTo   = params[2].get_str();
+    std::string msg      = params[3].get_str();
+
+    NyxEmbed e;
+    e.url = NyxFirstHttpsUrl(msg);
+    if (e.url.empty())
+        throw runtime_error("Message has no https URL.");
+    e.title = params[4].get_str();
+    if (params.size() > 5) e.desc = params[5].get_str();
+    e.site = params.size() > 6 ? params[6].get_str() : NyxUrlHost(e.url);
+    e.id = GetRandHash().GetHex().substr(0, 16);
+
+    std::string ext = NyxFitEmbed(msg, e, SMSG_MAX_MSG_BYTES);
+    if (ext.empty())
+        throw runtime_error("Message too long to carry a preview card.");
+    std::string full = NyxComposePlain(msg, ext);
+
+    Object result;
+    std::string sError;
+    if (SecureMsgSend(addrFrom, addrTo, full, sError) != 0)
+    {
+        result.push_back(Pair("result", "Send failed."));
+        result.push_back(Pair("error", sError));
+    }
+    else
+    {
+        result.push_back(Pair("result", "Sent."));
+        result.push_back(Pair("embed_id", e.id));
+    }
+    return result;
+}
+
+static Value nyx_removeembed(const Array& params)
+{
+    if (params.size() != 2)
+        throw runtime_error(
+            "nyx removeembed <embedid>\n"
+            "Remove a link preview card you sent, for every recipient that receives the removal.");
+
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+
+    Object result;
+    std::string sError;
+    if (SecureMsgRemoveEmbed(params[1].get_str(), sError) != 0)
+    {
+        result.push_back(Pair("result", "Remove failed."));
+        result.push_back(Pair("error", sError));
+    }
+    else
+        result.push_back(Pair("result", "Removal sent."));
+    return result;
+}
+
 static Value nyx_sendanon(const Array& params)
 {
     if (params.size() != 3)
@@ -118,6 +226,7 @@ static Value nyx_sendanon(const Array& params)
 
 static Value nyx_inbox(const Array& params)
 {
+    NyxRemovalCache nyxRemovals;
     EnsureNyxEnabled();
     EnsureWalletUnlocked();
 
@@ -197,7 +306,7 @@ static Value nyx_inbox(const Array& params)
                 objM.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
                 objM.push_back(Pair("from", msg.sFromAddress));
                 objM.push_back(Pair("to", smsgStored.sAddrTo));
-                objM.push_back(Pair("text", std::string((char*)&msg.vchMessage[0])));
+                NyxPushMessageText(objM, msg, nyxRemovals);
                 objM.push_back(Pair("unread", (smsgStored.status & SMSG_MASK_UNREAD) ? true : false));
                 messages.push_back(objM);
                 nShown++;
@@ -216,6 +325,7 @@ static Value nyx_inbox(const Array& params)
 
 static Value nyx_outbox(const Array& params)
 {
+    NyxRemovalCache nyxRemovals;
     EnsureNyxEnabled();
     EnsureWalletUnlocked();
 
@@ -272,7 +382,7 @@ static Value nyx_outbox(const Array& params)
                 objM.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
                 objM.push_back(Pair("from", msg.sFromAddress));
                 objM.push_back(Pair("to", smsgStored.sAddrTo));
-                objM.push_back(Pair("text", std::string((char*)&msg.vchMessage[0])));
+                NyxPushMessageText(objM, msg, nyxRemovals);
                 messages.push_back(objM);
             }
             nMessages++;
@@ -288,6 +398,7 @@ static Value nyx_outbox(const Array& params)
 
 static Value nyx_read(const Array& params)
 {
+    NyxRemovalCache nyxRemovals;
     if (params.size() != 2)
         throw runtime_error("nyx read <msgid>\nRead a specific message by ID.");
 
@@ -333,7 +444,7 @@ static Value nyx_read(const Array& params)
     result.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
     result.push_back(Pair("from", msg.sFromAddress));
     result.push_back(Pair("to", smsgStored.sAddrTo));
-    result.push_back(Pair("text", std::string((char*)&msg.vchMessage[0])));
+    NyxPushMessageText(result, msg, nyxRemovals);
     return result;
 }
 
@@ -558,6 +669,9 @@ Value nyx(const Array& params, bool fHelp)
             "\nSubcommands:\n"
             "  send <from> <to> <message>  Send an encrypted message\n"
             "  sendanon <to> <message>     Send an anonymous encrypted message\n"
+            "  sendembed <from> <to> <message> <title> [description] [site]\n"
+            "                              Send with a link preview card (fields supplied by the caller)\n"
+            "  removeembed <embedid>       Remove a preview card you sent, for everyone\n"
             "  inbox [all|unread|clear] [offset] [count]\n"
             "                              View received messages (default: unread)\n"
             "  outbox [all|clear]          View sent messages\n"
@@ -574,6 +688,8 @@ Value nyx(const Array& params, bool fHelp)
 
     if (subcmd == "send")        return nyx_send(params);
     if (subcmd == "sendanon")    return nyx_sendanon(params);
+    if (subcmd == "sendembed")   return nyx_sendembed(params);
+    if (subcmd == "removeembed") return nyx_removeembed(params);
     if (subcmd == "inbox")       return nyx_inbox(params);
     if (subcmd == "outbox")      return nyx_outbox(params);
     if (subcmd == "read")        return nyx_read(params);

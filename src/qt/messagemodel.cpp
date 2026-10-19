@@ -5,6 +5,7 @@
 #include "walletmodel.h"
 #include "messagemodel.h"
 #include "addresstablemodel.h"
+#include "nyxembed.h"
 
 #include "ui_interface.h"
 #include "base58.h"
@@ -49,7 +50,31 @@ class MessageTablePriv
 {
 public:
     QList<MessageTableEntry> cachedMessageTable;
+    std::vector<std::pair<std::string, std::string> > removals; // (verified sender, embed id)
     MessageModel *parent;
+
+    // Removal control records are applied, never shown as rows.
+    void addDecoded(std::vector<unsigned char>& vchKey, MessageTableEntry::Type type, const QString& label,
+                    const QString& to, const QString& from, const QDateTime& sent, const QDateTime& recv,
+                    const MessageData& msg, bool append)
+    {
+        std::string full;
+        if (!msg.vchMessage.empty())
+            full.assign((const char*)&msg.vchMessage[0], msg.vchMessage.size() - 1);
+        std::string text, ext, rid;
+        NyxSplitPlain(full, text, ext);
+        if (NyxDecodeRemoval(ext, rid))
+        {
+            if (from != "anon")
+                removals.push_back(std::make_pair(from.toStdString(), rid));
+            if (!append)
+                emit parent->embedRemovalsChanged();
+            return;
+        }
+        MessageTableEntry e(vchKey, type, label, to, from, sent, recv, QString::fromStdString(text));
+        e.ext = QString::fromLatin1(ext.data(), (int)ext.size());
+        addMessageEntry(e, append);
+    }
 
     MessageTablePriv(MessageModel *parent):
         parent(parent) {}
@@ -57,6 +82,7 @@ public:
     void refreshMessageTable()
     {
         cachedMessageTable.clear();
+        removals.clear();
 
         if (parent->getWalletModel()->getEncryptionStatus() == WalletModel::Locked)
         {
@@ -100,15 +126,7 @@ public:
 
                     memcpy(&vchKey[0], chKey, 18);
 
-                    addMessageEntry(MessageTableEntry(vchKey,
-                                                      MessageTableEntry::Received,
-                                                      label,
-                                                      QString::fromStdString(smsgStored.sAddrTo),
-                                                      QString::fromStdString(msg.sFromAddress),
-                                                      sent_datetime,
-                                                      received_datetime,
-                                                      (char*)&msg.vchMessage[0]),
-                                    true);
+                    addDecoded(vchKey, MessageTableEntry::Received, label, QString::fromStdString(smsgStored.sAddrTo), QString::fromStdString(msg.sFromAddress), sent_datetime, received_datetime, msg, true);
                 }
             };
 
@@ -131,15 +149,7 @@ public:
 
                     memcpy(&vchKey[0], chKey, 18);
 
-                    addMessageEntry(MessageTableEntry(vchKey,
-                                                      MessageTableEntry::Sent,
-                                                      label,
-                                                      QString::fromStdString(smsgStored.sAddrTo),
-                                                      QString::fromStdString(msg.sFromAddress),
-                                                      sent_datetime,
-                                                      received_datetime,
-                                                      (char*)&msg.vchMessage[0]),
-                                    true);
+                    addDecoded(vchKey, MessageTableEntry::Sent, label, QString::fromStdString(smsgStored.sAddrTo), QString::fromStdString(msg.sFromAddress), sent_datetime, received_datetime, msg, true);
                 }
             };
 
@@ -176,15 +186,7 @@ public:
             memcpy(&vchKey[2],  &psmsg->timestamp, 8);
             memcpy(&vchKey[10], &smsgStored.vchMessage[SMSG_HDR_LEN], 8);    // sample
 
-            addMessageEntry(MessageTableEntry(vchKey,
-                                              MessageTableEntry::Received,
-                                              label,
-                                              QString::fromStdString(smsgStored.sAddrTo),
-                                              QString::fromStdString(msg.sFromAddress),
-                                              sent_datetime,
-                                              received_datetime,
-                                              (char*)&msg.vchMessage[0]),
-                            false);
+            addDecoded(vchKey, MessageTableEntry::Received, label, QString::fromStdString(smsgStored.sAddrTo), QString::fromStdString(msg.sFromAddress), sent_datetime, received_datetime, msg, false);
         }
     }
 
@@ -216,15 +218,7 @@ public:
             memcpy(&vchKey[2],  &psmsg->timestamp, 8);
             memcpy(&vchKey[10], &smsgStored.vchMessage[SMSG_HDR_LEN], 8);    // sample
 
-            addMessageEntry(MessageTableEntry(vchKey,
-                                              MessageTableEntry::Sent,
-                                              label,
-                                              QString::fromStdString(smsgStored.sAddrTo),
-                                              QString::fromStdString(msg.sFromAddress),
-                                              sent_datetime,
-                                              received_datetime,
-                                              (char*)&msg.vchMessage[0]),
-                            false);
+            addDecoded(vchKey, MessageTableEntry::Sent, label, QString::fromStdString(smsgStored.sAddrTo), QString::fromStdString(msg.sFromAddress), sent_datetime, received_datetime, msg, false);
         }
     }
 
@@ -507,6 +501,7 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
     case FilterAddressRole: return (rec->type == MessageTableEntry::Sent ? rec->to_address + rec->from_address : rec->from_address + rec->to_address);
     case LabelRole:         return rec->label;
     case MessageRole:       return rec->message;
+    case ExtRole:           return rec->ext;
     case ShortMessageRole:  return rec->message; // TODO: Short message
     case HTMLRole:          return rec->received_datetime.toString() + "<br>"  + (rec->label.isEmpty() ? rec->from_address : rec->label)  + "<br>" + rec->message;
     case Ambiguous:
@@ -638,4 +633,9 @@ void MessageModel::unsubscribeFromCoreSignals()
     NotifySecMsgWalletUnlocked.disconnect(boost::bind(NotifySecMsgWallet, this));
 
     disconnect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
+}
+
+std::vector<std::pair<std::string, std::string> > MessageModel::embedRemovals() const
+{
+    return priv->removals;
 }

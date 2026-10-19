@@ -61,6 +61,7 @@ Notes:
 
 #include "xxhash/xxhash.h"
 #include "xxhash/xxhash.c"
+#include "nyxembed.h"
 
 
 namespace fs = boost::filesystem;
@@ -2229,6 +2230,97 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
     return true;
 };
+
+std::string SecureMsgPlaintext(const MessageData& msg)
+{
+    if (msg.vchMessage.empty())
+        return std::string();
+    return std::string((const char*)&msg.vchMessage[0], msg.vchMessage.size() - 1);
+}
+
+void SecureMsgCollectEmbedRemovals(std::vector<std::pair<std::string, std::string> >& out)
+{
+    out.clear();
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cr+"))
+        return;
+    static const char* prefixes[2] = {"im", "nm"};
+    for (int k = 0; k < 2; k++)
+    {
+        std::string sPrefix(prefixes[k]);
+        unsigned char chKey[18];
+        SecMsgStored smsgStored;
+        leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+        while (db.NextSmesg(it, sPrefix, chKey, smsgStored))
+        {
+            unsigned char* pHeader = NULL;
+            unsigned char* pPayload = NULL;
+            uint32_t nPayload = 0;
+            MessageData msg;
+            std::string addr = k == 0 ? smsgStored.sAddrTo : smsgStored.sAddrOutbox;
+            if (!SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                || SecureMsgDecrypt(false, addr, pHeader, pPayload, nPayload, msg) != 0
+                || msg.sFromAddress == "anon")
+                continue;
+            std::string text, ext, id;
+            NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+            if (NyxDecodeRemoval(ext, id))
+                out.push_back(std::make_pair(msg.sFromAddress, id));
+        }
+        delete it;
+    }
+}
+
+int SecureMsgRemoveEmbed(const std::string& id, std::string& sError)
+{
+    if (!NyxIsHexId(id))
+    {
+        sError = "Invalid embed id.";
+        return 1;
+    }
+    std::string from, to;
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        if (!db.Open("cr+"))
+        {
+            sError = "Could not open DB.";
+            return 1;
+        }
+        std::string sPrefix("nm");
+        unsigned char chKey[18];
+        SecMsgStored smsgStored;
+        leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+        while (from.empty() && db.NextSmesg(it, sPrefix, chKey, smsgStored))
+        {
+            unsigned char* pHeader = NULL;
+            unsigned char* pPayload = NULL;
+            uint32_t nPayload = 0;
+            MessageData msg;
+            if (!SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                || SecureMsgDecrypt(false, smsgStored.sAddrOutbox, pHeader, pPayload, nPayload, msg) != 0
+                || msg.sFromAddress == "anon")
+                continue;
+            std::string text, ext;
+            NyxEmbed e;
+            NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+            if (NyxDecodeEmbed(ext, e) && e.id == id)
+            {
+                from = msg.sFromAddress;
+                to = smsgStored.sAddrTo;
+            }
+        }
+        delete it;
+    }
+    if (from.empty())
+    {
+        sError = "No sent message carries that embed id.";
+        return 1;
+    }
+    std::string plain = NyxRemovalPlain(id);
+    return SecureMsgSend(from, to, plain, sError);
+}
 
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 {

@@ -11,6 +11,14 @@
 #include "init.h" // pwalletMain
 #include "util.h"
 
+struct NyxRemovalCache
+{
+    bool fLoaded;
+    std::vector<std::pair<std::string, std::string> > v;
+    NyxRemovalCache() : fLoaded(false) {}
+};
+void NyxPushMessageText(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache);
+
 using namespace json_spirit;
 using namespace std;
 
@@ -581,6 +589,7 @@ Value smsgsendanon(const Array& params, bool fHelp)
 
 Value smsginbox(const Array& params, bool fHelp)
 {
+    NyxRemovalCache nyxRemovals;
     if (fHelp || params.size() > 1) // defaults to read
         throw runtime_error(
             "smsginbox [all|unread|clear]\n"
@@ -665,7 +674,7 @@ Value smsginbox(const Array& params, bool fHelp)
                     objM.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
                     objM.push_back(Pair("from", msg.sFromAddress));
                     objM.push_back(Pair("to", smsgStored.sAddrTo));
-                    objM.push_back(Pair("text", std::string((char*)&msg.vchMessage[0]))); // ugh
+                    NyxPushMessageText(objM, msg, nyxRemovals);
 
                     result.push_back(Pair("message", objM));
                 } else
@@ -698,6 +707,7 @@ Value smsginbox(const Array& params, bool fHelp)
 
 Value smsgoutbox(const Array& params, bool fHelp)
 {
+    NyxRemovalCache nyxRemovals;
     if (fHelp || params.size() > 1) // defaults to read
         throw runtime_error(
             "smsgoutbox [all|clear]\n"
@@ -770,7 +780,7 @@ Value smsgoutbox(const Array& params, bool fHelp)
                     objM.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
                     objM.push_back(Pair("from", msg.sFromAddress));
                     objM.push_back(Pair("to", smsgStored.sAddrTo));
-                    objM.push_back(Pair("text", std::string((char*)&msg.vchMessage[0]))); // ugh
+                    NyxPushMessageText(objM, msg, nyxRemovals);
 
                     result.push_back(Pair("message", objM));
                 } else

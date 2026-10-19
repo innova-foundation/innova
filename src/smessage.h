@@ -444,6 +444,13 @@ extern std::map<uint256, SmsgStemEntry> mapSmsgStemState;
 /** Send an ephemeral typing notification via P2P. */
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo);
 
+/** Full decrypted plaintext, including any nyx extension after the NUL. */
+std::string SecureMsgPlaintext(const MessageData& msg);
+/** Embed removals stored in the inbox and outbox, as (verified sender, embed id). */
+void SecureMsgCollectEmbedRemovals(std::vector<std::pair<std::string, std::string> >& out);
+/** Send a removal for an embed this wallet sent, to that message's recipient. */
+int SecureMsgRemoveEmbed(const std::string& id, std::string& sError);
+
 
 /** Canonical v1 proof transcript: header[4..103] || payload || payload. */
 bool SecureMsgComputeProofHash(const SecureMessage& smsg,

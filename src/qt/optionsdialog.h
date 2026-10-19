@@ -57,6 +57,7 @@ private:
     bool fRestartWarningDisplayed_Lang;
     bool fProxyIpValid;
     QCheckBox *nyxMessengerCheck;
+    QCheckBox *linkPreviewCheck;
     void applyMessagingToggle();
 };
 
