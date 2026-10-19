@@ -308,6 +308,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     // Progress bar and label for blocks download
     progressBarLabel = new QLabel();
+    progressBarLabel->setTextFormat(Qt::PlainText);
     progressBarLabel->setVisible(false);
     progressBar = new QProgressBar();
     progressBar->setAlignment(Qt::AlignCenter);
@@ -1143,7 +1144,9 @@ void BitcoinGUI::error(const QString &title, const QString &message, bool modal)
 {
     if(modal)
     {
-        QMessageBox::critical(this, title, message, QMessageBox::Ok, QMessageBox::Ok);
+        QMessageBox box(QMessageBox::Critical, title, message, QMessageBox::Ok, this);
+        box.setTextFormat(Qt::PlainText);
+        box.exec();
     } else {
         notificator->notify(Notificator::Critical, title, message);
     }

@@ -385,6 +385,14 @@ void RPCConsole::clear()
     message(CMD_REPLY, (tr("Welcome to the Innova RPC console.") + "<br>" +
                         tr("Use up and down arrows to navigate history, and <b>Ctrl-L</b> to clear screen.") + "<br>" +
                         tr("Type <b>help</b> for an overview of available commands.")), true);
+    showScamWarning();
+}
+
+void RPCConsole::showScamWarning()
+{
+    message(CMD_ERROR, QString("<span style=\"color:red; font-weight:bold;\">") +
+            GUIUtil::HtmlEscape(tr("WARNING: Scammers ask people to type commands here to steal their coins. Never share output of this command.")) +
+            "</span>", true);
 }
 
 void RPCConsole::message(int category, const QString &message, bool html)
@@ -482,6 +490,14 @@ bool CommandCarriesSecret(const QString& cmd)
     return false;
 }
 
+// Commands that reveal a key, seed or passphrase-unlocked wallet.
+bool CommandRevealsSecret(const QString& cmd)
+{
+    const QString first = cmd.trimmed().section(' ', 0, 0).toLower();
+    return first == "dumpprivkey" || first == "dumpwallet" || first == "dumpphrase" ||
+           first == "walletpassphrase" || first.contains("export");
+}
+
 // The command word, with every argument replaced. Keeping the word is deliberate: the
 // user needs to see that their command ran.
 QString RedactCommand(const QString& cmd)
@@ -505,6 +521,8 @@ void RPCConsole::on_lineEdit_returnPressed()
         const bool fSensitive = CommandCarriesSecret(cmd);
         // A command whose arguments are a secret is echoed with them removed.
         message(CMD_REQUEST, fSensitive ? RedactCommand(cmd) : cmd);
+        if (CommandRevealsSecret(cmd))
+            showScamWarning();
         emit cmdRequest(cmd);
         // Remove command, if already in history
         history.removeOne(cmd);

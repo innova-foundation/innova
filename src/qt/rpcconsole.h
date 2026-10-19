@@ -68,6 +68,7 @@ private slots:
 public slots:
     void clear();
     void message(int category, const QString &message, bool html = false);
+    void showScamWarning();
     /** Set number of connections shown in the UI */
     void setNumConnections(int count);
     /** Set number of blocks shown in the UI */
