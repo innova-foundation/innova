@@ -5,11 +5,17 @@
 #include "monitoreddatamapper.h"
 #include "netbase.h"
 #include "optionsmodel.h"
+#include "chatwidget.h"
+#include "smessage.h"
+#include "util.h"
 
 #include <QDir>
 #include <QIntValidator>
 #include <QLocale>
 #include <QMessageBox>
+#include <QCheckBox>
+#include <QVBoxLayout>
+#include <QLabel>
 #include <QRegularExpression>
 #include <QRegularExpression>
 
@@ -82,6 +88,26 @@ OptionsDialog::OptionsDialog(QWidget *parent) :
     }
 
     ui->unit->setModel(new BitcoinUnits(this));
+
+    /* Messaging tab */
+    {
+        QWidget *tabMsg = new QWidget();
+        QVBoxLayout *ml = new QVBoxLayout(tabMsg);
+        nyxMessengerCheck = new QCheckBox(tr("&Enable Nyx Messenger"));
+        nyxMessengerCheck->setChecked(fSecMsgEnabled);
+        ml->addWidget(nyxMessengerCheck);
+        QLabel *info = new QLabel(tr("Nyx Messenger sends end-to-end encrypted messages between Innova addresses. "
+                                     "A message is encrypted to the recipient's address key and only that wallet can read it. "
+                                     "Turning this on joins the message relay and stores encrypted messages for a limited time.\n\n"
+                                     "Takes effect immediately and is remembered on restart. -nosmsg always keeps it off."));
+        info->setWordWrap(true);
+        ml->addWidget(info);
+        ml->addStretch();
+        if (GetBoolArg("-nosmsg", false))
+            nyxMessengerCheck->setEnabled(false);
+        ui->tabWidget->addTab(tabMsg, tr("&Messaging"));
+        connect(nyxMessengerCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
+    }
 
     /* Widget-to-option mapper */
     mapper = new MonitoredDataMapper(this);
@@ -181,9 +207,21 @@ void OptionsDialog::setSaveButtonState(bool fState)
     ui->okButton->setEnabled(fState);
 }
 
+void OptionsDialog::applyMessagingToggle()
+{
+    if (nyxMessengerCheck->isChecked() == (bool)fSecMsgEnabled)
+        return;
+    QString err;
+    bool fNow = ChatWidget::setMessagingEnabled(nyxMessengerCheck->isChecked(), &err);
+    nyxMessengerCheck->setChecked(fNow);
+    if (!err.isEmpty())
+        QMessageBox::warning(this, tr("Nyx Messenger"), err);
+}
+
 void OptionsDialog::on_okButton_clicked()
 {
     mapper->submit();
+    applyMessagingToggle();
     accept();
 }
 
@@ -195,6 +233,7 @@ void OptionsDialog::on_cancelButton_clicked()
 void OptionsDialog::on_applyButton_clicked()
 {
     mapper->submit();
+    applyMessagingToggle();
     disableApplyButton();
 }
 

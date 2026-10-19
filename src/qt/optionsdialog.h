@@ -9,6 +9,7 @@ class OptionsDialog;
 class OptionsModel;
 class MonitoredDataMapper;
 class QValidatedLineEdit;
+class QCheckBox;
 
 /** Preferences dialog. */
 class OptionsDialog : public QDialog
@@ -55,6 +56,8 @@ private:
     bool fRestartWarningDisplayed_Proxy;
     bool fRestartWarningDisplayed_Lang;
     bool fProxyIpValid;
+    QCheckBox *nyxMessengerCheck;
+    void applyMessagingToggle();
 };
 
 #endif // OPTIONSDIALOG_H
