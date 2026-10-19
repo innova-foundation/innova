@@ -1266,23 +1266,17 @@ void BitcoinGUI::incomingMessage(const QModelIndex & parent, int start, int end)
 
     if (mm->index(start, MessageModel::TypeInt, parent).data().toInt() == MessageTableEntry::Received)
     {
-        QString sent_datetime = mm->index(start, MessageModel::ReceivedDateTime, parent).data().toString();
         QString from_address  = mm->index(start, MessageModel::FromAddress,      parent).data().toString();
-        QString to_address    = mm->index(start, MessageModel::ToAddress,        parent).data().toString();
         QString message       = mm->index(start, MessageModel::Message,          parent).data().toString();
-        QTextDocument html;
-        html.setHtml(message);
-        QString messageText(html.toPlainText());
+        // Plain text only; the notifier never interprets the sender's markup.
+        QString messageText = message.simplified();
+        if (ChatWidget::isFileMessage(messageText))
+            messageText = tr("[File attachment]");
+        else if (messageText.length() > 120)
+            messageText = messageText.left(120) + QString::fromUtf8("\xE2\x80\xA6");
         notificator->notify(Notificator::Information,
-                            tr("Incoming Message"),
-                            tr("Date: %1\n"
-                               "From Address: %2\n"
-                               "To Address: %3\n"
-                               "Message: %4\n")
-                              .arg(sent_datetime)
-                              .arg(from_address)
-                              .arg(to_address)
-                              .arg(messageText));
+                            tr("Nyx Messenger"),
+                            tr("From %1:\n%2").arg(from_address, messageText));
     };
 }
 

@@ -16,6 +16,7 @@
 #include <QMap>
 #include <QSet>
 #include <QSettings>
+#include <QDate>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 
@@ -39,6 +40,14 @@ public:
      *  taken before smsgenable/smsgdisable ran. */
     void refreshMessagingEnabled();
 
+    /** Turn the messaging subsystem on or off now and remember the choice.
+     *  -nosmsg on the command line always wins. Returns the resulting state. */
+    static bool setMessagingEnabled(bool fEnable, QString *pError = 0);
+    /** Saved preference; defaults to the live state when never set. */
+    static bool messagingPreference();
+    /** Apply the saved preference once at startup. */
+    static void applyMessagingPreference();
+
     /** Check if a message is an encrypted file attachment.
      *  Format: [file:CID:encKeyHex:filename:sizeBytes] */
     static bool isFileMessage(const QString& text);
@@ -60,6 +69,11 @@ private slots:
     void onRenameConversationClicked();
     void onTypingTimeout();
     void onSendTypingNotification();
+    void onEnableMessagingClicked();
+    void updateSendButton();
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *event);
 
 private:
     MessageModel *msgModel;
@@ -73,7 +87,10 @@ private:
 
     // Right panel -- conversation
     QLabel *chatHeader;
-    QLabel *messagingDisabledBanner;  // Shown when the messaging subsystem is off
+    QWidget *messagingDisabledBanner;  // Shown when the messaging subsystem is off
+    QPushButton *enableMessagingButton;
+    QLabel *contactsEmptyLabel;
+    QLabel *encryptionNote;
     QLabel *ipfsBanner;  // Red banner when IPFS gateway unreachable
     QListWidget *chatView;
     QTextEdit *messageInput;
@@ -85,7 +102,14 @@ private:
 
     void refreshContacts();
     void loadConversation(const QString& address);
-    void addChatBubble(const QString& text, const QString& time, bool isMine);
+    void addChatBubble(const QString& text, const QString& time, bool isMine,
+                       bool fFailed = false, const QString& failReason = QString());
+    void addDateSeparator(const QDate& date);
+    void addCenteredNote(const QString& text);
+    void showEmptyConversation();
+    QString displayNameFor(const QString& address) const;
+    void markRead(const QString& address);
+    QString pickSendFromAddress() const;
     void addFileBubble(const QString& cid, const QString& encKeyHex,
                        const QString& filename, qint64 size, const QString& time, bool isMine);
 

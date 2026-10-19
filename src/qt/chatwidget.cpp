@@ -25,6 +25,8 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 #include <QTimer>
+#include <QKeyEvent>
+#include <QGridLayout>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -115,7 +117,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
     leftLayout->setSpacing(0);
 
     // Contacts header
-    QLabel *contactsTitle = new QLabel(tr("  Conversations"));
+    QLabel *contactsTitle = new QLabel(tr("  Nyx Messenger"));
     contactsTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: palette(text); padding: 12px 8px; background-color: palette(alternate-base);");
     contactsTitle->setMinimumHeight(44);
     leftLayout->addWidget(contactsTitle);
@@ -124,10 +126,18 @@ ChatWidget::ChatWidget(QWidget *parent) :
     contactList = new QListWidget();
     contactList->setStyleSheet(
         "QListWidget { background-color: palette(window); border: none; color: palette(text); font-size: 12px; }"
-        "QListWidget::item { padding: 10px 12px; border-bottom: 1px solid palette(mid); }"
-        "QListWidget::item:selected { background-color: palette(highlight); color: white; }"
-        "QListWidget::item:hover { background-color: palette(base); }");
+        "QListWidget::item { border-bottom: 1px solid palette(mid); }"
+        "QListWidget::item:selected { background-color: palette(highlight); }"
+        "QListWidget::item:hover:!selected { background-color: palette(base); }");
+    contactList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     leftLayout->addWidget(contactList);
+
+    contactsEmptyLabel = new QLabel(tr("No conversations yet.\n\nPress \"+ New\" and enter an Innova address to start one."));
+    contactsEmptyLabel->setWordWrap(true);
+    contactsEmptyLabel->setAlignment(Qt::AlignCenter);
+    contactsEmptyLabel->setStyleSheet("color: palette(dark); padding: 24px 16px; font-size: 12px;");
+    contactsEmptyLabel->hide();
+    leftLayout->addWidget(contactsEmptyLabel, 1);
 
     // Button row: New Chat + Delete
     QHBoxLayout *contactButtons = new QHBoxLayout();
@@ -172,15 +182,29 @@ ChatWidget::ChatWidget(QWidget *parent) :
     rightLayout->addWidget(chatHeader);
 
     // Messaging-disabled banner (hidden by default)
-    messagingDisabledBanner = new QLabel();
-    messagingDisabledBanner->setWordWrap(true);
-    messagingDisabledBanner->setStyleSheet(
-        "background-color: #8a5b12; color: white; padding: 8px 12px; font-size: 12px; font-weight: bold;");
-    messagingDisabledBanner->setText(
-        tr("Secure messaging is disabled on this node, so messages cannot be sent or received. "
-           "Set smsg=1 in innova.conf and restart, or run smsgenable, to turn it on."));
+    messagingDisabledBanner = new QWidget();
+    messagingDisabledBanner->setAttribute(Qt::WA_StyledBackground, true);
+    messagingDisabledBanner->setStyleSheet("background-color: #8a5b12;");
+    {
+        QHBoxLayout *bl = new QHBoxLayout(messagingDisabledBanner);
+        bl->setContentsMargins(12, 6, 8, 6);
+        QLabel *bt = new QLabel(tr("Nyx Messenger is off, so messages cannot be sent or received."));
+        bt->setWordWrap(true);
+        bt->setStyleSheet("color: white; font-size: 12px; font-weight: bold;");
+        bl->addWidget(bt, 1);
+        enableMessagingButton = new QPushButton(tr("Enable messaging"));
+        enableMessagingButton->setStyleSheet(
+            "QPushButton { background-color: white; color: #8a5b12; border: none; border-radius: 4px; padding: 5px 12px; font-weight: bold; }");
+        bl->addWidget(enableMessagingButton);
+    }
     messagingDisabledBanner->hide();
     rightLayout->addWidget(messagingDisabledBanner);
+
+    encryptionNote = new QLabel(tr("Messages are end-to-end encrypted to the recipient's address key. "
+                                   "Only that address's wallet can read them."));
+    encryptionNote->setWordWrap(true);
+    encryptionNote->setStyleSheet("color: palette(dark); font-size: 11px; padding: 4px 12px; background-color: palette(alternate-base); border-left: 1px solid palette(mid);");
+    rightLayout->addWidget(encryptionNote);
 
     // IPFS gateway banner (hidden by default)
     ipfsBanner = new QLabel();
@@ -210,6 +234,8 @@ ChatWidget::ChatWidget(QWidget *parent) :
     messageInput = new QTextEdit();
     messageInput->setPlaceholderText(tr("Type a message..."));
     messageInput->setMaximumHeight(60);
+    messageInput->setAcceptRichText(false);
+    messageInput->installEventFilter(this);
     messageInput->setStyleSheet(
         "QTextEdit { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 8px; padding: 6px; font-size: 13px; }");
     inputLayout->addWidget(messageInput);
@@ -236,7 +262,8 @@ ChatWidget::ChatWidget(QWidget *parent) :
     sendButton->setStyleSheet(
         "QPushButton { background-color: #4CAF50; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 13px; }"
         "QPushButton:hover { background-color: #45a049; }"
-        "QPushButton:disabled { background-color: #333; }");
+        "QPushButton:disabled { background-color: palette(mid); color: palette(dark); }");
+    sendButton->setToolTip(tr("Send (Enter). Shift+Enter inserts a new line."));
     sendButton->setEnabled(false);
     inputLayout->addWidget(sendButton);
 
@@ -274,6 +301,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
         // Send typing notification (rate-limited)
         if (fSecMsgEnabled && !currentContact.isEmpty() && !messageInput->toPlainText().trimmed().isEmpty())
             onSendTypingNotification();
+        updateSendButton();
 
         // Check for :shortcode pattern
         QString text = messageInput->toPlainText();
@@ -304,6 +332,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
     connect(attachButton, SIGNAL(clicked()), this, SLOT(onFileAttachClicked()));
     connect(deleteConversationButton, SIGNAL(clicked()), this, SLOT(onDeleteConversationClicked()));
     connect(renameConversationButton, SIGNAL(clicked()), this, SLOT(onRenameConversationClicked()));
+    connect(enableMessagingButton, SIGNAL(clicked()), this, SLOT(onEnableMessagingClicked()));
 
     // Load saved nicknames from settings
     {
@@ -315,7 +344,14 @@ ChatWidget::ChatWidget(QWidget *parent) :
             mapContactNicknames[settings.value("address").toString()] = settings.value("name").toString();
         }
         settings.endArray();
+
+        settings.beginGroup("chatLastRead");
+        foreach (const QString& k, settings.childKeys())
+            mapLastReadTime[k] = settings.value(k).toLongLong();
+        settings.endGroup();
     }
+
+    showEmptyConversation();
 
     // Typing indicator timers
     typingDisplayTimer = new QTimer(this);
@@ -366,6 +402,7 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
         refreshContacts();
     }
 
+    applyMessagingPreference();
     refreshMessagingEnabled();
 
     // Connect typing notification signal from smessage layer (thread-safe)
@@ -395,16 +432,32 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
     });
 }
 
+QString ChatWidget::displayNameFor(const QString& address) const
+{
+    return mapContactNicknames.value(address, address.left(12) + QString::fromUtf8("\xE2\x80\xA6") + address.right(6));
+}
+
+void ChatWidget::markRead(const QString& address)
+{
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    mapLastReadTime[address] = now;
+    QSettings settings;
+    settings.beginGroup("chatLastRead");
+    settings.setValue(address, now);
+    settings.endGroup();
+}
+
 void ChatWidget::refreshContacts()
 {
     if (!msgModel)
         return;
 
     QString prevContact = currentContact;
+    contactList->blockSignals(true);
     contactList->clear();
 
-    // Build unique contact list from message history
-    QMap<QString, QPair<QString, QDateTime>> contacts; // address -> (lastMsg, lastTime)
+    struct ContactInfo { QString preview; QDateTime last; int unread; bool lastMine; };
+    QMap<QString, ContactInfo> contacts;
 
     for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
     {
@@ -415,83 +468,94 @@ void ChatWidget::refreshContacts()
         QString msg = msgModel->data(msgModel->index(i, MessageModel::Message, QModelIndex()), Qt::DisplayRole).toString();
         QDateTime dt = msgModel->data(msgModel->index(i, MessageModel::ReceivedDateTime, QModelIndex()), Qt::DisplayRole).toDateTime();
 
-        // The "other party" is the one that isn't us
-        QString contactAddr = (type == MessageTableEntry::Sent) ? to : from;
+        bool isMine = (type == MessageTableEntry::Sent);
+        QString contactAddr = isMine ? to : from;
 
-        if (!contacts.contains(contactAddr) || dt > contacts[contactAddr].second)
+        ContactInfo& ci = contacts[contactAddr];
+        if (!isMine && dt.toMSecsSinceEpoch() > mapLastReadTime.value(contactAddr, 0))
+            ci.unread++;
+
+        if (ci.last.isNull() || dt > ci.last)
         {
-            // For file messages, show "[File]" instead of raw protocol
             QString preview;
-            if (isFileMessage(msg))
-            {
-                QString cid, key, fname;
-                qint64 sz;
-                if (parseFileMessage(msg, cid, key, fname, sz))
-                    preview = QString("[File: %1]").arg(fname);
-                else
-                    preview = "[File attachment]";
-            }
+            QString cid, key, fname;
+            qint64 sz;
+            if (parseFileMessage(msg, cid, key, fname, sz))
+                preview = tr("[File: %1]").arg(fname);
+            else if (isFileMessage(msg))
+                preview = tr("[File attachment]");
             else
-            {
-                preview = msg.left(40);
-                if (msg.length() > 40) preview += "...";
-                QTextDocument doc;
-                doc.setHtml(preview);
-                preview = doc.toPlainText().left(40);
-            }
-
-            contacts[contactAddr] = qMakePair(preview, dt);
+                preview = msg.simplified();
+            if (preview.length() > 48)
+                preview = preview.left(48) + QString::fromUtf8("\xE2\x80\xA6");
+            ci.preview = preview;
+            ci.last = dt;
+            ci.lastMine = isMine;
         }
     }
 
-    // Sort by most recent
     QList<QPair<QDateTime, QString>> sorted;
     for (auto it = contacts.begin(); it != contacts.end(); ++it)
-        sorted.append(qMakePair(it.value().second, it.key()));
+        sorted.append(qMakePair(it.value().last, it.key()));
     std::sort(sorted.begin(), sorted.end(), [](const QPair<QDateTime,QString>& a, const QPair<QDateTime,QString>& b) {
-        return a.first > b.first; // newest first
+        return a.first > b.first;
     });
 
     int restoreRow = -1;
     for (int i = 0; i < sorted.size(); i++)
     {
         const QString& addr = sorted[i].second;
-        const QString& preview = contacts[addr].first;
-        const QDateTime& dt = contacts[addr].second;
+        const ContactInfo& ci = contacts[addr];
 
-        // Time display
         QString timeStr;
-        int secsAgo = dt.secsTo(QDateTime::currentDateTime());
+        qint64 secsAgo = ci.last.secsTo(QDateTime::currentDateTime());
         if (secsAgo < 60) timeStr = tr("now");
         else if (secsAgo < 3600) timeStr = tr("%1m").arg(secsAgo / 60);
         else if (secsAgo < 86400) timeStr = tr("%1h").arg(secsAgo / 3600);
-        else timeStr = dt.toString("MMM d");
+        else timeStr = ci.last.toString("MMM d");
 
-        // Show nickname if set, otherwise truncated address
-        QString nameDisplay = mapContactNicknames.value(addr, addr.left(12) + "..." + addr.right(6));
-        QString displayText = nameDisplay + "\n" + preview + "  " + timeStr;
+        int unread = (addr == currentContact) ? 0 : ci.unread;
+        bool typing = mapTypingContacts.contains(addr);
 
-        // Unread detection: check if latest message is newer than our last-read timestamp
-        qint64 lastRead = mapLastReadTime.value(addr, 0);
-        qint64 latestMsgMs = dt.toMSecsSinceEpoch();
-        bool hasUnread = (latestMsgMs > lastRead) && (addr != currentContact);
+        QWidget *row = new QWidget();
+        row->setAttribute(Qt::WA_TranslucentBackground);
+        QGridLayout *g = new QGridLayout(row);
+        g->setContentsMargins(12, 8, 10, 8);
+        g->setHorizontalSpacing(6);
+        g->setVerticalSpacing(2);
 
-        if (hasUnread)
-            displayText = QString::fromUtf8("\xF0\x9F\x94\xB5 ") + displayText; // blue dot
+        QLabel *name = new QLabel(displayNameFor(addr));
+        name->setTextFormat(Qt::PlainText);
+        name->setStyleSheet(QString("font-size: 13px; font-weight: %1; background: transparent;").arg(unread ? "bold" : "600"));
+        QLabel *when = new QLabel(timeStr);
+        when->setStyleSheet("font-size: 10px; color: palette(dark); background: transparent;");
+        QString prevText = typing ? tr("typing...") : ((ci.lastMine ? tr("You: ") : QString()) + ci.preview);
+        QLabel *prev = new QLabel(prevText);
+        prev->setTextFormat(Qt::PlainText);
+        prev->setStyleSheet(QString("font-size: 11px; color: %1; background: transparent;")
+                            .arg(typing ? "#4CAF50" : "palette(dark)"));
+        prev->setMinimumWidth(10);
+        prev->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-        contactList->addItem(displayText);
-        contactList->item(i)->setData(Qt::UserRole, addr);
-
-        if (hasUnread)
+        g->addWidget(name, 0, 0);
+        g->addWidget(when, 0, 1, Qt::AlignRight);
+        g->addWidget(prev, 1, 0);
+        if (unread > 0)
         {
-            contactList->item(i)->setBackground(QColor("palette(mid)"));
-            contactList->item(i)->setForeground(QColor("#fff"));
+            QLabel *badge = new QLabel(unread > 99 ? QString("99+") : QString::number(unread));
+            badge->setAlignment(Qt::AlignCenter);
+            badge->setMinimumWidth(20);
+            badge->setStyleSheet("background-color: #2196F3; color: white; border-radius: 9px; font-size: 10px; font-weight: bold; padding: 1px 6px;");
+            g->addWidget(badge, 1, 1, Qt::AlignRight);
         }
-        else
-        {
-            contactList->item(i)->setBackground(QColor("palette(window)"));
-            contactList->item(i)->setForeground(QColor("palette(text)"));
-        }
+        g->setColumnStretch(0, 1);
+
+        QListWidgetItem *item = new QListWidgetItem();
+        item->setData(Qt::UserRole, addr);
+        item->setToolTip(addr);
+        item->setSizeHint(QSize(0, 54));
+        contactList->addItem(item);
+        contactList->setItemWidget(item, row);
 
         if (addr == prevContact)
             restoreRow = i;
@@ -499,6 +563,11 @@ void ChatWidget::refreshContacts()
 
     if (restoreRow >= 0)
         contactList->setCurrentRow(restoreRow);
+    contactList->blockSignals(false);
+
+    bool empty = sorted.isEmpty();
+    contactList->setVisible(!empty);
+    contactsEmptyLabel->setVisible(empty);
 }
 
 void ChatWidget::onContactSelected(int row)
@@ -508,20 +577,57 @@ void ChatWidget::onContactSelected(int row)
 
     currentContact = contactList->item(row)->data(Qt::UserRole).toString();
 
-    // Show nickname or truncated address in header
-    QString displayName = mapContactNicknames.value(currentContact,
-        currentContact.left(16) + "..." + currentContact.right(6));
-    chatHeader->setText(tr("  Chat with %1").arg(displayName));
+    chatHeader->setText(tr("  Chat with %1").arg(displayNameFor(currentContact)));
+    chatHeader->setToolTip(currentContact);
 
-    sendButton->setEnabled(fSecMsgEnabled);
     deleteConversationButton->setEnabled(true);
     renameConversationButton->setEnabled(true);
+    updateSendButton();
 
-    // Mark as read: store current timestamp so future messages after this are "unread"
-    mapLastReadTime[currentContact] = QDateTime::currentMSecsSinceEpoch();
+    markRead(currentContact);
 
     loadConversation(currentContact);
-    refreshContacts(); // Refresh sidebar to clear unread indicator
+    refreshContacts();
+    messageInput->setFocus();
+}
+
+void ChatWidget::addCenteredNote(const QString& text)
+{
+    QLabel *lbl = new QLabel(text);
+    lbl->setTextFormat(Qt::PlainText);
+    lbl->setWordWrap(true);
+    lbl->setAlignment(Qt::AlignCenter);
+    lbl->setStyleSheet("color: palette(dark); font-size: 12px; padding: 24px; background: transparent;");
+    QListWidgetItem *item = new QListWidgetItem();
+    item->setFlags(Qt::NoItemFlags);
+    item->setSizeHint(QSize(0, lbl->sizeHint().height() + 40));
+    chatView->addItem(item);
+    chatView->setItemWidget(item, lbl);
+}
+
+void ChatWidget::showEmptyConversation()
+{
+    chatView->clear();
+    addCenteredNote(tr("Select a conversation, or press \"+ New\" to message an Innova address.\n\n"
+                       "Messages are end-to-end encrypted with the recipient's address key and "
+                       "relayed by peers that run Nyx Messenger. Nobody but the recipient can read them."));
+}
+
+void ChatWidget::addDateSeparator(const QDate& date)
+{
+    QString text;
+    if (date == QDate::currentDate()) text = tr("Today");
+    else if (date == QDate::currentDate().addDays(-1)) text = tr("Yesterday");
+    else text = date.toString("dddd, MMMM d, yyyy");
+
+    QLabel *lbl = new QLabel(text);
+    lbl->setAlignment(Qt::AlignCenter);
+    lbl->setStyleSheet("color: palette(dark); font-size: 10px; font-weight: bold; padding: 6px; background: transparent;");
+    QListWidgetItem *item = new QListWidgetItem();
+    item->setFlags(Qt::NoItemFlags);
+    item->setSizeHint(QSize(0, 26));
+    chatView->addItem(item);
+    chatView->setItemWidget(item, lbl);
 }
 
 void ChatWidget::loadConversation(const QString& address)
@@ -531,8 +637,7 @@ void ChatWidget::loadConversation(const QString& address)
     if (!msgModel)
         return;
 
-    // Collect messages for this contact, sorted by time
-    QList<QPair<QDateTime, int>> msgIndices; // (time, row)
+    QList<QPair<QDateTime, int>> msgIndices;
 
     for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
     {
@@ -546,9 +651,12 @@ void ChatWidget::loadConversation(const QString& address)
         }
     }
 
-    // Sort chronologically
     std::sort(msgIndices.begin(), msgIndices.end());
 
+    if (msgIndices.isEmpty())
+        addCenteredNote(tr("No messages yet. Say hello."));
+
+    QDate lastDate;
     for (const auto& pair : msgIndices)
     {
         int row = pair.second;
@@ -556,78 +664,83 @@ void ChatWidget::loadConversation(const QString& address)
         QString msg = msgModel->data(msgModel->index(row, MessageModel::Message, QModelIndex()), Qt::DisplayRole).toString();
         QDateTime dt = pair.first;
 
+        if (dt.date() != lastDate)
+        {
+            addDateSeparator(dt.date());
+            lastDate = dt.date();
+        }
+
         bool isMine = (type == MessageTableEntry::Sent);
 
-        // Check if this is a file attachment message
         QString cid, encKeyHex, filename;
         qint64 fileSize;
         if (parseFileMessage(msg, cid, encKeyHex, filename, fileSize))
-        {
             addFileBubble(cid, encKeyHex, filename, fileSize, dt.toString("hh:mm"), isMine);
-        }
         else
-        {
-            // Strip HTML tags for clean display
-            QTextDocument doc;
-            doc.setHtml(msg);
-            QString plainText = doc.toPlainText();
-            addChatBubble(plainText, dt.toString("hh:mm"), isMine);
-        }
+            addChatBubble(msg, dt.toString("hh:mm"), isMine);
     }
 
-    // Scroll to bottom
     chatView->scrollToBottom();
 }
 
-void ChatWidget::addChatBubble(const QString& text, const QString& time, bool isMine)
+void ChatWidget::addChatBubble(const QString& text, const QString& time, bool isMine,
+                               bool fFailed, const QString& failReason)
 {
     QWidget *bubbleWidget = new QWidget();
     QHBoxLayout *bubbleLayout = new QHBoxLayout(bubbleWidget);
     bubbleLayout->setContentsMargins(8, 2, 8, 2);
 
-    QLabel *bubble = new QLabel();
-    bubble->setWordWrap(true);
-    bubble->setTextFormat(Qt::RichText);
-    bubble->setMaximumWidth(400);
+    QFrame *bubble = new QFrame();
+    bubble->setObjectName("bubble");
+    QVBoxLayout *bl = new QVBoxLayout(bubble);
+    bl->setContentsMargins(12, 8, 12, 6);
+    bl->setSpacing(2);
 
-    // HTML-escape user text
-    QString safeText = text.toHtmlEscaped();
+    // Received text is untrusted: plain text only, no links or markup.
+    QLabel *body = new QLabel();
+    body->setTextFormat(Qt::PlainText);
+    body->setText(text);
+    body->setWordWrap(true);
+    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    body->setMaximumWidth(400);
+    body->setStyleSheet("background: transparent; font-size: 13px;"
+                        " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', -apple-system, sans-serif;");
+    bl->addWidget(body);
 
-    // Checkmarks for sent messages
-    // Single check = sent, double = read (future: read receipts)
-    QString checkHtml;
+    QString status;
     if (isMine)
-        checkHtml = "<span style='font-size:9px;letter-spacing:-1px;'> &#10003;</span>"; // single check = delivered
-    QString timeHtml = QString("<br><span style='font-size:9px;color:%1;letter-spacing:0px;'>%2%3</span>")
-                       .arg(isMine ? "#8ab4f8" : "palette(dark)", time, checkHtml);
-
-    bubble->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
+        status = fFailed ? tr("  Not sent") : QString::fromUtf8("  \xE2\x9C\x93 ") + tr("Sent");
+    QLabel *meta = new QLabel(time + status);
+    meta->setTextFormat(Qt::PlainText);
+    meta->setAlignment(isMine ? Qt::AlignRight : Qt::AlignLeft);
+    if (fFailed && !failReason.isEmpty())
+        meta->setToolTip(failReason);
+    bl->addWidget(meta);
 
     if (isMine)
     {
-        bubble->setText(safeText + timeHtml);
-        bubble->setStyleSheet(
-            "background-color: #2a5298; color: white; border-radius: 12px; "
-            "padding: 8px 12px 10px 12px; font-size: 13px;"
-            " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', -apple-system, sans-serif;");
+        bubble->setStyleSheet(fFailed
+            ? "QFrame#bubble { background-color: transparent; border: 1px solid #c0392b; border-radius: 12px; }"
+              "QLabel { color: palette(text); }"
+            : "QFrame#bubble { background-color: #2a5298; border-radius: 12px; } QLabel { color: white; }");
+        meta->setStyleSheet(QString("background: transparent; font-size: 10px; color: %1;").arg(fFailed ? "#c0392b" : "#c8d8ff"));
         bubbleLayout->addStretch();
         bubbleLayout->addWidget(bubble);
     }
     else
     {
-        bubble->setText(safeText + timeHtml);
-        bubble->setStyleSheet(
-            "background-color: palette(mid); color: palette(text); border-radius: 12px; "
-            "padding: 8px 12px 10px 12px; font-size: 13px;"
-            " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', -apple-system, sans-serif;");
+        bubble->setStyleSheet("QFrame#bubble { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 12px; }"
+                              "QLabel { color: palette(text); }");
+        meta->setStyleSheet("background: transparent; font-size: 10px; color: palette(dark);");
         bubbleLayout->addWidget(bubble);
         bubbleLayout->addStretch();
     }
 
     QListWidgetItem *item = new QListWidgetItem();
+    item->setFlags(Qt::NoItemFlags);
     bubbleWidget->adjustSize();
-    int bubbleH = bubble->sizeHint().height() + 12;
-    item->setSizeHint(QSize(chatView->viewport()->width(), qMax(bubbleH, 50)));
+    int bubbleH = bubbleWidget->sizeHint().height() + 4;
+    item->setSizeHint(QSize(0, qMax(bubbleH, 44)));
     chatView->addItem(item);
     chatView->setItemWidget(item, bubbleWidget);
 }
@@ -704,16 +817,126 @@ void ChatWidget::refreshMessagingEnabled()
     const bool fEnabled = fSecMsgEnabled;
 
     messagingDisabledBanner->setVisible(!fEnabled);
+    enableMessagingButton->setVisible(!GetBoolArg("-nosmsg", false));
 
     messageInput->setReadOnly(!fEnabled);
     messageInput->setPlaceholderText(fEnabled
-        ? tr("Type a message...")
-        : tr("Secure messaging is disabled - set smsg=1 in innova.conf to enable it."));
+        ? tr("Type a message...  (Enter sends, Shift+Enter for a new line)")
+        : tr("Nyx Messenger is off. Enable it above or in Settings > Options > Messaging."));
 
     attachButton->setEnabled(fEnabled);
     newChatButton->setEnabled(fEnabled);
-    sendButton->setEnabled(fEnabled && !currentContact.isEmpty()
+    updateSendButton();
+}
+
+void ChatWidget::updateSendButton()
+{
+    sendButton->setEnabled(fSecMsgEnabled && !currentContact.isEmpty()
                            && !messageInput->toPlainText().trimmed().isEmpty());
+}
+
+static const char* NYX_PREF_KEY = "fNyxMessenger";
+
+bool ChatWidget::messagingPreference()
+{
+    QSettings settings;
+    return settings.value(NYX_PREF_KEY, (bool)fSecMsgEnabled).toBool();
+}
+
+bool ChatWidget::setMessagingEnabled(bool fEnable, QString *pError)
+{
+    if (fEnable && GetBoolArg("-nosmsg", false))
+    {
+        if (pError) *pError = tr("Messaging is forced off by -nosmsg.");
+        return fSecMsgEnabled;
+    }
+    QSettings settings;
+    settings.setValue(NYX_PREF_KEY, fEnable);
+    if (fEnable && !fSecMsgEnabled)
+    {
+        if (!SecureMsgEnable() && pError)
+            *pError = tr("Messaging could not be started. See debug.log.");
+    }
+    else if (!fEnable && fSecMsgEnabled)
+        SecureMsgDisable();
+    return fSecMsgEnabled;
+}
+
+void ChatWidget::applyMessagingPreference()
+{
+    QSettings settings;
+    if (!settings.contains(NYX_PREF_KEY))
+        return;
+    bool fWant = settings.value(NYX_PREF_KEY).toBool();
+    // An explicit -smsg on the command line or in innova.conf wins over the saved toggle.
+    if (!fWant && mapArgs.count("-smsg"))
+        return;
+    if (fWant != (bool)fSecMsgEnabled)
+        setMessagingEnabled(fWant);
+}
+
+void ChatWidget::onEnableMessagingClicked()
+{
+    QString err;
+    setMessagingEnabled(true, &err);
+    if (!err.isEmpty())
+        QMessageBox::warning(this, tr("Nyx Messenger"), err);
+    refreshMessagingEnabled();
+    refreshContacts();
+}
+
+bool ChatWidget::eventFilter(QObject *obj, QEvent *event)
+{
+    if (obj == messageInput && event->type() == QEvent::KeyPress)
+    {
+        QKeyEvent *ke = static_cast<QKeyEvent*>(event);
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && !(ke->modifiers() & Qt::ShiftModifier)
+            && !emojiAutocomplete->isVisible())
+        {
+            if (sendButton->isEnabled())
+                onSendClicked();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
+QString ChatWidget::pickSendFromAddress() const
+{
+    // Prefer the address this contact last wrote to, so replies come from the same identity.
+    if (msgModel)
+    {
+        QDateTime best;
+        QString addr;
+        for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
+        {
+            int type = msgModel->data(msgModel->index(i, 0, QModelIndex()), MessageModel::TypeRole).toInt();
+            QString from = msgModel->data(msgModel->index(i, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString();
+            QString to = msgModel->data(msgModel->index(i, MessageModel::ToAddress, QModelIndex()), Qt::DisplayRole).toString();
+            QDateTime dt = msgModel->data(msgModel->index(i, MessageModel::ReceivedDateTime, QModelIndex()), Qt::DisplayRole).toDateTime();
+            QString mine;
+            if (type == MessageTableEntry::Received && from == currentContact) mine = to;
+            else if (type == MessageTableEntry::Sent && to == currentContact) mine = from;
+            if (!mine.isEmpty() && (best.isNull() || dt > best)) { best = dt; addr = mine; }
+        }
+        if (!addr.isEmpty())
+            return addr;
+    }
+
+    if (!pwalletMain)
+        return QString();
+    LOCK(pwalletMain->cs_wallet);
+    for (const auto& pair : pwalletMain->mapAddressBook)
+    {
+        if (IsMine(*pwalletMain, pair.first))
+            return QString::fromStdString(CBitcoinAddress(pair.first).ToString());
+    }
+    std::set<CKeyID> setKeyID;
+    pwalletMain->GetKeys(setKeyID);
+    if (!setKeyID.empty())
+        return QString::fromStdString(CBitcoinAddress(*setKeyID.begin()).ToString());
+    return QString();
 }
 
 void ChatWidget::onSendClicked()
@@ -721,15 +944,9 @@ void ChatWidget::onSendClicked()
     if (!msgModel || currentContact.isEmpty())
         return;
 
-    // Re-check at the moment of the send. SecureMsgSend refuses too, but
-    // stopping here keeps the composer from clearing and from painting a bubble
-    // for a message that was never queued.
     if (!fSecMsgEnabled)
     {
         refreshMessagingEnabled();
-        QMessageBox::warning(this, tr("Send Message"),
-            tr("Secure messaging is disabled on this node, so this message was not sent.\n\n"
-               "Set smsg=1 in innova.conf and restart, or run smsgenable, to turn it on."));
         return;
     }
 
@@ -737,61 +954,46 @@ void ChatWidget::onSendClicked()
     if (message.isEmpty())
         return;
 
-    // Get our own address to send from
-    std::string sError;
-    std::string sendTo = currentContact.toStdString();
-    std::string msgText = message.toStdString();
-
-    // Use the first address that has smessage keys
-    std::string addFrom;
     if (!pwalletMain)
     {
         QMessageBox::warning(this, tr("Send Message"), tr("Wallet not loaded."));
         return;
     }
-    {
-        LOCK(pwalletMain->cs_wallet);
-        for (const auto& pair : pwalletMain->mapAddressBook)
-        {
-            if (pair.second == "receive")
-            {
-                addFrom = CBitcoinAddress(pair.first).ToString();
-                break;
-            }
-        }
-        if (addFrom.empty())
-        {
-            // Try any address
-            std::set<CKeyID> setKeyID;
-            pwalletMain->GetKeys(setKeyID);
-            if (!setKeyID.empty())
-                addFrom = CBitcoinAddress(*setKeyID.begin()).ToString();
-        }
-    }
 
+    std::string addFrom = pickSendFromAddress().toStdString();
     if (addFrom.empty())
     {
         QMessageBox::warning(this, tr("Send Message"), tr("No address available to send from."));
         return;
     }
 
+    std::string sError;
+    QString cid, encKeyHex, filename;
+    qint64 fileSize;
+    bool fFile = parseFileMessage(message, cid, encKeyHex, filename, fileSize);
+    QString now = QDateTime::currentDateTime().toString("hh:mm");
+
+    std::string sendTo = currentContact.toStdString();
+    std::string msgText = message.toStdString();
     if (SecureMsgSend(addFrom, sendTo, msgText, sError) != 0)
     {
-        QMessageBox::warning(this, tr("Send Message"),
-            tr("Failed to send: %1").arg(QString::fromStdString(sError)));
+        QString reason = QString::fromStdString(sError);
+        if (reason.contains("public key", Qt::CaseInsensitive))
+            reason += tr("\nThe recipient's public key is not known yet. It is learned once they send you "
+                         "a message or have sent any transaction from that address.");
+        // Text stays in the composer so it can be retried.
+        addChatBubble(message, now, true, true, reason);
+        chatView->scrollToBottom();
         return;
     }
 
     messageInput->clear();
 
-    // Add bubble immediately (don't wait for model refresh)
-    // Check if this was a file message
-    QString cid, encKeyHex, filename;
-    qint64 fileSize;
-    if (parseFileMessage(message, cid, encKeyHex, filename, fileSize))
-        addFileBubble(cid, encKeyHex, filename, fileSize, QDateTime::currentDateTime().toString("hh:mm"), true);
+    // Model refresh rebuilds the view; paint now so the send feels immediate.
+    if (fFile)
+        addFileBubble(cid, encKeyHex, filename, fileSize, now, true);
     else
-        addChatBubble(message, QDateTime::currentDateTime().toString("hh:mm"), true);
+        addChatBubble(message, now, true);
     chatView->scrollToBottom();
 }
 
@@ -1601,9 +1803,7 @@ void ChatWidget::onRenameConversationClicked()
     }
 
     // Update UI
-    QString displayName = mapContactNicknames.value(currentContact,
-        currentContact.left(16) + "..." + currentContact.right(6));
-    chatHeader->setText(tr("  Chat with %1").arg(displayName));
+    chatHeader->setText(tr("  Chat with %1").arg(displayNameFor(currentContact)));
     refreshContacts();
 }
 
@@ -1639,10 +1839,12 @@ void ChatWidget::onDeleteConversationClicked()
 
     // Clear UI
     currentContact.clear();
-    chatView->clear();
+    showEmptyConversation();
     chatHeader->setText(tr("  Select a conversation"));
+    chatHeader->setToolTip(QString());
     sendButton->setEnabled(false);
     deleteConversationButton->setEnabled(false);
+    renameConversationButton->setEnabled(false);
 
     refreshContacts();
 }
@@ -1729,46 +1931,14 @@ void ChatWidget::onTypingTimeout()
 
 void ChatWidget::updateContactTypingDisplay()
 {
-    // Update contact list items to show "typing..." for active typing contacts
-    for (int i = 0; i < contactList->count(); i++)
-    {
-        QListWidgetItem *item = contactList->item(i);
-        if (!item) continue;
-
-        QString addr = item->data(Qt::UserRole).toString();
-        QString displayText = item->text();
-
-        // Remove any existing typing indicator
-        int typingIdx = displayText.indexOf("\ntyping...");
-        if (typingIdx >= 0)
-            displayText = displayText.left(typingIdx) + displayText.mid(typingIdx + 10);
-
-        // Add typing indicator if this contact is typing
-        if (mapTypingContacts.contains(addr))
-        {
-            // Replace the last line (preview) with "typing..."
-            int nlPos = displayText.indexOf('\n');
-            if (nlPos >= 0)
-                displayText = displayText.left(nlPos) + "\ntyping...";
-            else
-                displayText += "\ntyping...";
-
-            item->setForeground(QColor("#4CAF50")); // Green when typing
-        }
-        else
-        {
-            item->setForeground(QColor("palette(text)")); // Normal color
-        }
-
-        item->setText(displayText);
-    }
+    refreshContacts();
 }
 
 void ChatWidget::onNewMessage()
 {
     // Update last-read so current contact doesn't flash unread
-    if (!currentContact.isEmpty())
-        mapLastReadTime[currentContact] = QDateTime::currentMSecsSinceEpoch();
+    if (!currentContact.isEmpty() && isVisible())
+        markRead(currentContact);
 
     refreshContacts();
     if (!currentContact.isEmpty())

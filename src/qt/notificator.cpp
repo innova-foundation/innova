@@ -187,7 +187,7 @@ void Notificator::notifyDBus(Class cls, const QString &title, const QString &tex
     args.append(title);
 
     // Body
-    args.append(text);
+    args.append(text.toHtmlEscaped()); // body markup is interpreted by many servers
 
     // Actions (none, actions are deprecated)
     QStringList actions;
