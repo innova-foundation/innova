@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QMap>
 #include <QListWidget>
+#include <QToolButton>
 
 /** Emoji data: shortcode → unicode mapping */
 struct EmojiEntry {
@@ -41,6 +42,8 @@ private:
     QLineEdit *searchEdit;
     QGridLayout *emojiGrid;
     QWidget *gridWidget;
+
+    QList<QToolButton*> buttons;
 
     void populateGrid(const QString& filter = "");
 

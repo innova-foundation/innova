@@ -54,6 +54,22 @@ static boost::filesystem::detail::utf8_codecvt_facet utf8;
 #endif
 
 namespace GUIUtil {
+
+QFont emojiFont(int px, bool emojiFirst)
+{
+    QFont f = QApplication::font();
+    QStringList fams;
+    fams << "Apple Color Emoji" << "Segoe UI Emoji" << "Noto Color Emoji"
+         << "Twemoji Mozilla" << "EmojiOne Color";
+    if (emojiFirst)
+        fams << f.family();
+    else
+        fams.prepend(f.family());
+    fams << "Symbola";
+    f.setFamilies(fams);
+    f.setPixelSize(px);
+    return f;
+}
 #if BOOST_FILESYSTEM_VERSION >= 3
 boost::filesystem::path qstringToBoostPath(const QString &path)
 {

@@ -289,7 +289,8 @@ ChatWidget::ChatWidget(QWidget *parent) :
     messageInput->setAcceptRichText(false);
     messageInput->installEventFilter(this);
     messageInput->setStyleSheet(
-        "QTextEdit { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 8px; padding: 6px; font-size: 13px; }");
+        "QTextEdit { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 8px; padding: 6px; }");
+    messageInput->setFont(GUIUtil::emojiFont(13));
     inputLayout->addWidget(messageInput);
 
     // Composer buttons draw their glyphs as icons so no style padding can clip them.
@@ -759,8 +760,8 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     body->setWordWrap(true);
     body->setTextInteractionFlags(Qt::TextSelectableByMouse);
     body->setMaximumWidth(400);
-    body->setStyleSheet("background: transparent; font-size: 13px;"
-                        " font-family: 'Apple Color Emoji', 'Segoe UI Emoji', -apple-system, sans-serif;");
+    body->setFont(GUIUtil::emojiFont(13));
+    body->setStyleSheet("background: transparent;");
     bl->addWidget(body);
 
     QString status;

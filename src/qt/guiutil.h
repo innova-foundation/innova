@@ -24,6 +24,9 @@ class SendCoinsRecipient;
  */
 namespace GUIUtil
 {
+    /** Font with colour emoji fallbacks for each platform; emojiFirst puts them ahead of the text font. */
+    QFont emojiFont(int px, bool emojiFirst = false);
+
 	/* Convert QString to OS specific boost path through UTF-8 */
     boost::filesystem::path qstringToBoostPath(const QString &path);
      /* Convert OS specific boost path to QString through UTF-8 */
