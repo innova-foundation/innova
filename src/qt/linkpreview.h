@@ -42,7 +42,6 @@ private:
     QByteArray body;
     int redirects;
     bool fImage;
-    bool fUseProxy;
     QNetworkProxy proxy;
     quint64 generation;
 

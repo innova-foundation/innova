@@ -5,8 +5,6 @@
 #include "net.h"
 
 #include <QBuffer>
-#include <QHostAddress>
-#include <QHostInfo>
 #include <QImage>
 #include <QImageReader>
 #include <QNetworkAccessManager>
@@ -18,12 +16,13 @@
 static const int PAGE_CAP = 512 * 1024;
 static const int IMAGE_CAP = 2 * 1024 * 1024;
 static const int MAX_REDIRECTS = 3;
-static const int TOTAL_MS = 8000;
-static const int IDLE_MS = 5000;
+static const int TOTAL_MS = 20000;
+static const int IDLE_MS = 10000;
+static const int THUMB_TARGET = 1536;
 
 LinkPreviewFetcher::LinkPreviewFetcher(QObject *parent) :
     QObject(parent), nam(new QNetworkAccessManager(this)), deadline(new QTimer(this)),
-    redirects(0), fImage(false), fUseProxy(false), generation(0)
+    redirects(0), fImage(false), generation(0)
 {
     nam->setCookieJar(new QNetworkCookieJar(nam));
     nam->setRedirectPolicy(QNetworkRequest::ManualRedirectPolicy);
@@ -55,40 +54,18 @@ void LinkPreviewFetcher::cancel()
     pageUrl.clear();
 }
 
-// Proxy choice mirrors the node: -proxy for clearnet, the Tor proxy for onion or onion-only nodes.
+// Tor only: no SOCKS proxy for onion traffic means no fetch, never a direct connection.
 bool LinkPreviewFetcher::choosePolicy(const QUrl& u)
 {
     if (u.scheme() != "https" || u.port(443) != 443)
         return false;
     const std::string host = u.host(QUrl::FullyEncoded).toLower().toStdString();
-    proxyType p4, pTor;
-    bool fHave4 = GetProxy(NET_IPV4, p4);
-    bool fHaveTor = GetProxy(NET_TOR, pTor);
-    bool fOnion = host.size() > 6 && host.compare(host.size() - 6, 6, ".onion") == 0;
-    if (!NyxIsFetchableHost(host, fHaveTor))
+    proxyType pTor;
+    if (!GetProxy(NET_TOR, pTor) || !pTor.first.IsValid() || !NyxIsFetchableHost(host, true))
         return false;
-
-    const proxyType *use = 0;
-    if (fOnion)
-        use = &pTor;
-    else if (fHave4)
-        use = &p4;
-    else if (IsLimited(NET_IPV4) && IsLimited(NET_IPV6))
-    {
-        if (!fHaveTor)
-            return false;
-        use = &pTor;
-    }
-
-    fUseProxy = (use != 0);
-    if (use)
-    {
-        proxy = QNetworkProxy(QNetworkProxy::Socks5Proxy,
-                              QString::fromStdString(use->first.ToStringIP()), use->first.GetPort());
-        proxy.setCapabilities(proxy.capabilities() | QNetworkProxy::HostNameLookupCapability);
-    }
-    else
-        proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    proxy = QNetworkProxy(QNetworkProxy::Socks5Proxy,
+                          QString::fromStdString(pTor.first.ToStringIP()), pTor.first.GetPort());
+    proxy.setCapabilities(proxy.capabilities() | QNetworkProxy::HostNameLookupCapability);
     nam->setProxy(proxy);
     return true;
 }
@@ -115,44 +92,7 @@ void LinkPreviewFetcher::request(const QUrl& u)
         failStep();
         return;
     }
-    if (fUseProxy)
-    {
-        send(u);
-        return;
-    }
-    // Direct fetch: refuse names that resolve to a private or local address.
-    const quint64 gen = generation;
-    QHostInfo::lookupHost(u.host(), this, [this, u, gen](const QHostInfo& info) {
-        if (gen != generation)
-            return;
-        if (info.error() != QHostInfo::NoError || info.addresses().isEmpty())
-        {
-            failStep();
-            return;
-        }
-        for (const QHostAddress& a : info.addresses())
-        {
-            bool fPublic = false;
-            if (a.protocol() == QAbstractSocket::IPv4Protocol)
-            {
-                quint32 v = a.toIPv4Address();
-                unsigned char b[4] = {(unsigned char)(v >> 24), (unsigned char)(v >> 16),
-                                      (unsigned char)(v >> 8), (unsigned char)v};
-                fPublic = NyxIsPublicAddress(b, 4);
-            }
-            else if (a.protocol() == QAbstractSocket::IPv6Protocol)
-            {
-                Q_IPV6ADDR v6 = a.toIPv6Address();
-                fPublic = NyxIsPublicAddress(v6.c, 16);
-            }
-            if (!fPublic)
-            {
-                failStep();
-                return;
-            }
-        }
-        send(u);
-    });
+    send(u);
 }
 
 void LinkPreviewFetcher::failStep()
@@ -280,15 +220,16 @@ void LinkPreviewFetcher::finishImage()
         finish(true);
         return;
     }
-    QImage sq = img.scaled(80, 80, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    sq = sq.copy((sq.width() - 80) / 2, (sq.height() - 80) / 2, 80, 80).convertToFormat(QImage::Format_RGB888);
-    static const int qualities[] = {70, 55, 40, 25};
+    // Re-encoded here so no source bytes or metadata are forwarded.
+    QImage sq = img.scaled(64, 64, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    sq = sq.copy((sq.width() - 64) / 2, (sq.height() - 64) / 2, 64, 64).convertToFormat(QImage::Format_RGB888);
+    static const int qualities[] = {60, 45, 32, 20};
     for (int q : qualities)
     {
         QByteArray jpg;
         QBuffer out(&jpg);
         out.open(QIODevice::WriteOnly);
-        if (sq.save(&out, "JPEG", q) && jpg.size() <= (int)NYX_EMBED_MAX_THUMB)
+        if (sq.save(&out, "JPEG", q) && jpg.size() <= THUMB_TARGET)
         {
             finish(true, jpg);
             return;
