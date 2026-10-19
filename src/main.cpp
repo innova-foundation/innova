@@ -9786,6 +9786,8 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         if (!vNoteFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockNoteVotes(txdb, pindex->GetBlockHash(), vNoteFinalityVotes))
             return error("DisconnectBlock() : DisconnectBlockNoteVotes failed");
+
+        g_finalityTracker.ReturnCarriedEquivocationEvidence(pindex->GetBlockHash(), pindex->nHeight);
     }
 
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
@@ -11241,7 +11243,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                                        &strEvidenceError))
             return DoS(100, error("ConnectBlock() : equivocation evidence invalid: %s",
                                   strEvidenceError.c_str()));
-        g_finalityTracker.MarkEquivocationEvidenceCarried(vEquivocationEvidence);
     }
     std::vector<CNoteFinalityVote> vNoteFinalityVotes;
     FinalityEnvelopeDecodeResult noteVoteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
@@ -13062,6 +13063,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 "ConnectBlock() : ConnectBlockTallyShares deterministic validation failure"));
         }
     }
+    if (!fJustCheck && !vEquivocationEvidence.empty())
+        g_finalityTracker.MarkEquivocationEvidenceCarried(vEquivocationEvidence,
+                                                          pindex->GetBlockHash());
     if (!fJustCheck && !vFinalityCerts.empty())
     {
         FinalityResult finalityResult = FINALITY_RESULT_INVALID;

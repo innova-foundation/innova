@@ -1418,7 +1418,14 @@ public:
     /** Equivocation evidence a miner may carry in a block at nBlockHeight. */
     std::vector<CFinalityEquivocationEvidence> GetPendingEquivocationEvidenceForBlock(int nBlockHeight) const;
     void AddPendingEquivocationEvidence(const CFinalityEquivocationEvidence& ev);
-    void MarkEquivocationEvidenceCarried(const std::vector<CFinalityEquivocationEvidence>& vEvidence);
+    /** Call only after the carrier block connected. */
+    void MarkEquivocationEvidenceCarried(const std::vector<CFinalityEquivocationEvidence>& vEvidence,
+                                         const uint256& hashBlock = 0);
+    /** Carrier disconnected: evidence goes back to pending while nNextHeight is in its window. */
+    void ReturnCarriedEquivocationEvidence(const uint256& hashBlock, int nNextHeight);
+    void PruneEquivocationEvidence(int nMinEpoch);
+    void GetEquivocationEvidenceCounts(size_t& nPending, size_t& nCarried) const;
+    void SetMaxPendingEquivocationEvidence(size_t nMax) { LOCK(cs_finality); nMaxPendingEquivocationEvidence = nMax; }
     /** Stake-proof controlling keys of a connected vote (P2CS owner, else the stake key). */
     static bool ResolveVoteControlKeys(const CFinalityVote& vote, CTxDB& txdb,
                                        std::vector<CKeyID>& vKeysOut);
@@ -1657,7 +1664,9 @@ private:
     void RecordConflictingNullifierVote(const CFinalityVote& vote);
     std::map<uint256, std::vector<CKeyID> > mapVoteControlKeys;   // nullifier -> controlling keys
     std::map<std::pair<int, CKeyID>, CFinalityEquivocationEvidence> mapPendingEquivocationEvidence;
-    std::set<std::pair<int, CKeyID> > setCarriedEquivocationEvidence;
+    std::map<std::pair<int, CKeyID>, std::pair<uint256, CFinalityEquivocationEvidence> >
+        mapCarriedEquivocationEvidence;   // -> carrier block
+    size_t nMaxPendingEquivocationEvidence = FINALITY_MAX_VOTES;
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;

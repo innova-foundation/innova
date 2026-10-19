@@ -426,4 +426,190 @@ BOOST_AUTO_TEST_CASE(conflicting_relay_vote_becomes_pending_evidence)
     }
 }
 
+namespace {
+CFinalityEquivocationEvidence EvidenceFor(const CKey& key, int nEpoch, uint32_t nSalt)
+{
+    CFinalityEquivocationEvidence ev;
+    const int nBoundary = Boundary(nEpoch);
+    BOOST_REQUIRE(ev.FromVotes(SignedVote(key, nEpoch, uint256(nSalt), nBoundary),
+                               SignedVote(key, nEpoch, uint256(nSalt + 1), nBoundary)));
+    return ev;
+}
+size_t PendingCount(const CFinalityTracker& t) { size_t p, c; t.GetEquivocationEvidenceCounts(p, c); return p; }
+size_t CarriedCount(const CFinalityTracker& t) { size_t p, c; t.GetEquivocationEvidenceCounts(p, c); return c; }
+}
+
+BOOST_AUTO_TEST_CASE(carried_evidence_returns_to_pending_on_disconnect)
+{
+    const int nEpoch = Epoch(11);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(nBoundary);
+    const int nClose = GetFinalityVoteSetCloseOffset(nBoundary);
+    CFinalityTracker tracker;
+    const CFinalityEquivocationEvidence ev = EvidenceFor(NewKey(), nEpoch, 71);
+    tracker.AddPendingEquivocationEvidence(ev);
+    std::vector<CFinalityEquivocationEvidence> vEv = tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 2);
+    BOOST_REQUIRE_EQUAL(vEv.size(), 1u);
+
+    const uint256 hashA(0xA1u), hashB(0xB1u);
+    tracker.MarkEquivocationEvidenceCarried(vEv, hashA);
+    BOOST_CHECK(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 2).empty());
+    tracker.AddPendingEquivocationEvidence(ev);   // relay re-offer of carried evidence
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 0u);
+
+    // Another block's disconnect leaves it carried.
+    tracker.ReturnCarriedEquivocationEvidence(hashB, nBoundary + 2);
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 1u);
+
+    // Its carrier disconnects inside the window: minable again on the new branch.
+    tracker.ReturnCarriedEquivocationEvidence(hashA, nBoundary + 2);
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 2).size(), 1u);
+
+    // Carrier disconnects after the window closed: nothing left to mine.
+    tracker.MarkEquivocationEvidenceCarried(vEv, hashB);
+    tracker.ReturnCarriedEquivocationEvidence(hashB, nBoundary + nClose);
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 0u);
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(abort_restore_reoffers_carried_evidence)
+{
+    const int nEpoch = Epoch(12);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(nBoundary);
+    CFinalityTracker tracker;
+    tracker.AddPendingEquivocationEvidence(EvidenceFor(NewKey(), nEpoch, 81));
+    tracker.MarkEquivocationEvidenceCarried(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 1),
+                                            uint256(0xC3u));
+    BOOST_REQUIRE_EQUAL(CarriedCount(tracker), 1u);
+    BOOST_REQUIRE(tracker.RestoreCommittedStateAfterAbort());
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 1).size(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(pending_evidence_prunes_and_evicts_oldest)
+{
+    const int nEpoch = Epoch(13);
+    MergesetAt fork(Boundary(nEpoch));
+    CFinalityTracker tracker;
+    tracker.SetMaxPendingEquivocationEvidence(2);
+    CKey key = NewKey();
+    const CFinalityEquivocationEvidence ev0 = EvidenceFor(key, nEpoch, 91);
+    const CFinalityEquivocationEvidence ev1 = EvidenceFor(key, nEpoch + 1, 93);
+    const CFinalityEquivocationEvidence ev2 = EvidenceFor(key, nEpoch + 2, 95);
+    tracker.AddPendingEquivocationEvidence(ev0);
+    tracker.AddPendingEquivocationEvidence(ev1);
+    tracker.AddPendingEquivocationEvidence(ev2);   // full: evicts epoch nEpoch
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 2u);
+    BOOST_CHECK(tracker.GetPendingEquivocationEvidenceForBlock(Boundary(nEpoch) + 1).empty());
+    BOOST_CHECK_EQUAL(tracker.GetPendingEquivocationEvidenceForBlock(Boundary(nEpoch + 2) + 1).size(), 1u);
+    tracker.AddPendingEquivocationEvidence(ev0);   // older than everything held: refused
+    BOOST_CHECK(tracker.GetPendingEquivocationEvidenceForBlock(Boundary(nEpoch) + 1).empty());
+
+    tracker.MarkEquivocationEvidenceCarried(std::vector<CFinalityEquivocationEvidence>(1, ev1), uint256(1));
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 1u);
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 1u);
+
+    // Epoch rollover prunes both maps below the window.
+    tracker.PruneOldEpochs(nEpoch + 2 + 10);
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 1u);
+    BOOST_CHECK_EQUAL(CarriedCount(tracker), 0u);
+    tracker.PruneOldEpochs(nEpoch + 3 + 10);
+    BOOST_CHECK_EQUAL(PendingCount(tracker), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(side_block_evidence_is_not_canonical)
+{
+    // Evidence in a merged side block never reaches the extractor: ConnectBlock reads the
+    // canonical block only, so the evidence stays pending for a canonical carrier.
+    const int nEpoch = Epoch(14);
+    const int nBoundary = Boundary(nEpoch);
+    for (int fFork = 0; fFork < 2; fFork++)
+    {
+        MergesetAt fork(fFork ? nBoundary : PRIVACY_VNEXT_HEIGHT_UNSET);
+        CKey key = NewKey();
+        CFinalityEquivocationEvidence ev;
+        BOOST_REQUIRE(ev.FromVotes(SignedVote(key, nEpoch, uint256(101), nBoundary),
+                                   SignedVote(key, nEpoch, uint256(102), nBoundary)));
+        CScript script;
+        BOOST_REQUIRE(BuildFinalityEquivocationScript(ev, script));
+        CTransaction coinbase;
+        coinbase.vin.resize(1);
+        coinbase.vin[0].prevout.SetNull();
+        CBlock canonical, side;
+        canonical.vtx.push_back(coinbase);
+        coinbase.vout.push_back(CTxOut(0, script));
+        side.vtx.push_back(coinbase);
+
+        std::vector<CFinalityEquivocationEvidence> vCanon, vSide;
+        BOOST_REQUIRE(ExtractFinalityEquivocationEvidenceFromBlockForHeight(canonical, nBoundary + 1, vCanon));
+        BOOST_REQUIRE(ExtractFinalityEquivocationEvidenceFromBlockForHeight(side, nBoundary + 1, vSide));
+        BOOST_CHECK(vCanon.empty());
+        BOOST_CHECK_EQUAL(vSide.size(), fFork ? 1u : 0u);
+
+        CFinalityTracker tracker;
+        tracker.AddPendingEquivocationEvidence(ev);
+        tracker.MarkEquivocationEvidenceCarried(vCanon, uint256(0xD1u));
+        BOOST_CHECK_EQUAL(tracker.GetPendingEquivocationEvidenceForBlock(nBoundary + 1).size(),
+                          fFork ? 1u : 0u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(quorum_reference_and_exclusion_are_order_independent)
+{
+    const int nEpoch = Epoch(30);
+    MergesetAt fork(Boundary(nEpoch - 12));
+    std::vector<CFinalityVote> votes;
+    for (int e = nEpoch - 4; e < nEpoch; e++)
+        for (int i = 0; i < 3; i++)
+            votes.push_back(SignedVote(NewKey(), e, uint256(200 + e), Boundary(e), (1000 + 500 * i) * COIN));
+    CFinalityTracker a, b;
+    for (size_t i = 0; i < votes.size(); i++)
+        BOOST_REQUIRE(a.AddVote(votes[i], false, true));
+    for (size_t i = votes.size(); i-- > 0; )
+        BOOST_REQUIRE(b.AddVote(votes[i], false, true));
+    BOOST_CHECK_EQUAL(a.GetFinalityQuorumReference(nEpoch, false), 4500 * COIN);
+    BOOST_CHECK_EQUAL(a.GetFinalityQuorumReference(nEpoch, false), b.GetFinalityQuorumReference(nEpoch, false));
+    BOOST_CHECK_EQUAL(a.GetFinalityQuorumReference(nEpoch, true), b.GetFinalityQuorumReference(nEpoch, true));
+
+    std::set<CKeyID> setExcluded;
+    setExcluded.insert(KeyIDOf(votes[1]));
+    std::vector<CFinalityVote> fwd(votes.begin(), votes.begin() + 3), rev(fwd.rbegin(), fwd.rend());
+    FilterFinalitySettlementVotes(fwd, setExcluded);
+    FilterFinalitySettlementVotes(rev, setExcluded);
+    BOOST_REQUIRE_EQUAL(fwd.size(), 2u);
+    BOOST_REQUIRE_EQUAL(rev.size(), 2u);
+    std::set<uint256> sf, sr;
+    for (size_t i = 0; i < 2; i++) { sf.insert(fwd[i].nullifier); sr.insert(rev[i].nullifier); }
+    BOOST_CHECK(sf == sr);
+}
+
+BOOST_AUTO_TEST_CASE(quorum_reference_collapses_after_lookback)
+{
+    // A turnout drop holds HARD back for at most FINALITY_QUORUM_LOOKBACK_EPOCHS epochs.
+    const int nEpoch = Epoch(40);
+    const int nBoundary = Boundary(nEpoch);
+    MergesetAt fork(Boundary(nEpoch - 15));
+    for (int nAgo = 1; nAgo <= FINALITY_QUORUM_LOOKBACK_EPOCHS + 1; nAgo++)
+    {
+        CFinalityTracker tracker;
+        const int nHeavy = nEpoch - nAgo;
+        for (int i = 0; i < 2; i++)
+            BOOST_REQUIRE(tracker.AddVote(SignedVote(NewKey(), nHeavy, uint256(300), Boundary(nHeavy), 5000 * COIN),
+                                          false, true));
+        for (int i = 0; i < 2; i++)
+            BOOST_REQUIRE(tracker.AddVote(SignedVote(NewKey(), nEpoch, uint256(301), nBoundary, 2000 * COIN),
+                                          false, true));
+        const bool fInLookback = nAgo <= FINALITY_QUORUM_LOOKBACK_EPOCHS;
+        BOOST_CHECK_EQUAL(tracker.GetFinalityQuorumReference(nEpoch, false), fInLookback ? 10000 * COIN : 0);
+        int nTier = 0, nHeight = 0, nVoters = 0;
+        uint256 hashWinner;
+        CFinalityTallyCertificate noCert;
+        BOOST_REQUIRE(tracker.ComputeDeterministicEpochTier(nEpoch, false, noCert, nTier,
+                                                            hashWinner, nHeight, nVoters));
+        BOOST_CHECK_EQUAL(nTier, fInLookback ? FINALITY_SOFT : FINALITY_HARD);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

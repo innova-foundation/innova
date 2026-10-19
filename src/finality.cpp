@@ -7832,14 +7832,23 @@ void CFinalityTracker::AddPendingEquivocationEvidence(const CFinalityEquivocatio
     if (!ev.GetKeyID(keyID) || !IsFinalityHardeningActiveForEpoch(ev.GetEpoch()) || !ev.IsValid())
         return;
     const std::pair<int, CKeyID> key(ev.GetEpoch(), keyID);
-    if (setCarriedEquivocationEvidence.count(key) ||
-        mapPendingEquivocationEvidence.size() >= (size_t)FINALITY_MAX_VOTES)
+    if (mapCarriedEquivocationEvidence.count(key) || mapPendingEquivocationEvidence.count(key))
         return;
+    if (nMaxPendingEquivocationEvidence == 0)
+        return;
+    // Full: evict the oldest epoch, never drop newer evidence.
+    while (mapPendingEquivocationEvidence.size() >= nMaxPendingEquivocationEvidence)
+    {
+        auto itOld = mapPendingEquivocationEvidence.begin();
+        if (itOld->first.first > key.first)
+            return;
+        mapPendingEquivocationEvidence.erase(itOld);
+    }
     mapPendingEquivocationEvidence[key] = ev;
 }
 
 void CFinalityTracker::MarkEquivocationEvidenceCarried(
-    const std::vector<CFinalityEquivocationEvidence>& vEvidence)
+    const std::vector<CFinalityEquivocationEvidence>& vEvidence, const uint256& hashBlock)
 {
     LOCK(cs_finality);
     for (const CFinalityEquivocationEvidence& ev : vEvidence)
@@ -7848,9 +7857,50 @@ void CFinalityTracker::MarkEquivocationEvidenceCarried(
         if (!ev.GetKeyID(keyID))
             continue;
         const std::pair<int, CKeyID> key(ev.GetEpoch(), keyID);
-        setCarriedEquivocationEvidence.insert(key);
+        mapCarriedEquivocationEvidence[key] = std::make_pair(hashBlock, ev);
         mapPendingEquivocationEvidence.erase(key);
     }
+}
+
+void CFinalityTracker::ReturnCarriedEquivocationEvidence(const uint256& hashBlock, int nNextHeight)
+{
+    std::vector<CFinalityEquivocationEvidence> vReturn;
+    {
+        LOCK(cs_finality);
+        for (auto it = mapCarriedEquivocationEvidence.begin();
+             it != mapCarriedEquivocationEvidence.end(); )
+        {
+            if (it->second.first != hashBlock)
+            {
+                ++it;
+                continue;
+            }
+            std::vector<CFinalityEquivocationEvidence> vOne(1, it->second.second);
+            if (CheckFinalityEquivocationEvidenceForBlock(vOne, nNextHeight))
+                vReturn.push_back(it->second.second);
+            it = mapCarriedEquivocationEvidence.erase(it);
+        }
+    }
+    for (const CFinalityEquivocationEvidence& ev : vReturn)
+        AddPendingEquivocationEvidence(ev);
+}
+
+void CFinalityTracker::PruneEquivocationEvidence(int nMinEpoch)
+{
+    LOCK(cs_finality);
+    for (auto it = mapPendingEquivocationEvidence.begin();
+         it != mapPendingEquivocationEvidence.end() && it->first.first < nMinEpoch; )
+        it = mapPendingEquivocationEvidence.erase(it);
+    for (auto it = mapCarriedEquivocationEvidence.begin();
+         it != mapCarriedEquivocationEvidence.end() && it->first.first < nMinEpoch; )
+        it = mapCarriedEquivocationEvidence.erase(it);
+}
+
+void CFinalityTracker::GetEquivocationEvidenceCounts(size_t& nPending, size_t& nCarried) const
+{
+    LOCK(cs_finality);
+    nPending = mapPendingEquivocationEvidence.size();
+    nCarried = mapCarriedEquivocationEvidence.size();
 }
 
 std::vector<CFinalityEquivocationEvidence>
@@ -8367,6 +8417,11 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapConnectedTallyCertificateByContext.clear();
         mapEpochTallyCertificates.clear();
         mapBlockConnectedTallyCertificates.clear();
+        // Carriers from the aborted batch may not be durable: re-offer all carried evidence.
+        for (const auto& pair : mapCarriedEquivocationEvidence)
+            if (!mapPendingEquivocationEvidence.count(pair.first))
+                mapPendingEquivocationEvidence[pair.first] = pair.second.second;
+        mapCarriedEquivocationEvidence.clear();
     }
 
     CTxDB txdb("r");
@@ -8402,6 +8457,8 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
         else
             ++it;
     }
+
+    PruneEquivocationEvidence(nMinEpoch);
 
     for (auto it = mapEpochEquivocatedVoteNullifiers.begin();
          it != mapEpochEquivocatedVoteNullifiers.end(); )
