@@ -4200,6 +4200,10 @@ bool SecureMsgHandleStem(CNode* pfrom, std::vector<unsigned char>& vchData)
             return true; // already processed
     }
 
+    // A stem hop may be the recipient: deliver locally, relay unchanged.
+    if (!pwalletMain->IsLocked())
+        SecureMsgScanMessage(pHeader, pPayload, nPayload, true);
+
     // Decide: continue stem or fluff?
     CDandelionTxState dummyState;
     bool shouldFluff = dandelionRouter.ShouldFluff(dummyState);
