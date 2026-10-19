@@ -378,6 +378,7 @@ TEST_OBJS= \
     obj/test/epoch_state_determinism_tests.o \
     obj/test/reorg_finality_anchor_tests.o \
     obj/test/dagknight_anchor_cache_tests.o \
+    obj/test/dagknight_hardening_tests.o \
     obj/test/dag_reachability_tests.o \
     obj/test/dag_privacy_interaction_tests.o \
     obj/test/finality_settlement_tests.o \
@@ -665,6 +666,7 @@ check-dag-privacy-interaction: test_innova
 
 check-dagknight-anchor-cache: test_innova
 	./test_innova --run_test=dagknight_anchor_cache_tests
+	./test_innova --run_test=dagknight_hardening_tests
 
 check-finality-settlement: test_innova
 	./test_innova --run_test=finality_settlement_tests
