@@ -540,6 +540,7 @@ set(INNOVA_CXX_SOURCES
     src/version.cpp
     src/sync.cpp
     src/smessage.cpp
+    src/nyxembed.cpp
     src/util.cpp
     src/netbase.cpp
     src/key.cpp
@@ -716,6 +717,7 @@ set(INNOVA_HEADERS
     src/serialize.h
     src/strlcpy.h
     src/smessage.h
+    src/nyxembed.h
     src/main.h
     src/core.h
     src/state.h

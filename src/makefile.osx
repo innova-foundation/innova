@@ -211,6 +211,7 @@ OBJS= \
     obj/pbkdf2.o \
     obj/scrypt.o \
     obj/smessage.o \
+    obj/nyxembed.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
     obj/collateralnodeconfig.o \
@@ -245,6 +246,7 @@ TEST_OBJS= \
     obj/test/test_innova.o \
     obj/test/allocator_tests.o \
     obj/test/base32_tests.o \
+    obj/test/nyx_embed_tests.o \
     obj/test/base64_tests.o \
     obj/test/getarg_tests.o \
     obj/test/mruset_tests.o \
