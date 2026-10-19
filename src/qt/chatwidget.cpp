@@ -9,6 +9,7 @@
 #include "base58.h"
 #include "emojipicker.h"
 #include "nyxembed.h"
+#include "nyxsafety.h"
 #include "linkpreview.h"
 
 #include <QApplication>
@@ -547,6 +548,7 @@ void ChatWidget::refreshContacts()
     if (!msgModel)
         return;
 
+    refreshSafetyCache();
     QString prevContact = currentContact;
     contactList->blockSignals(true);
     contactList->clear();
@@ -565,6 +567,8 @@ void ChatWidget::refreshContacts()
 
         bool isMine = (type == MessageTableEntry::Sent);
         QString contactAddr = isMine ? to : from;
+        if (!isMine && contactState(contactAddr) == NYX_SENDER_BLOCKED)
+            continue;
 
         ContactInfo& ci = contacts[contactAddr];
         if (!isMine && dt.toMSecsSinceEpoch() > mapLastReadTime.value(contactAddr, 0))
@@ -625,6 +629,8 @@ void ChatWidget::refreshContacts()
         QLabel *when = new QLabel(timeStr);
         when->setStyleSheet("font-size: 10px; color: palette(dark); background: transparent;");
         QString prevText = typing ? tr("typing...") : ((ci.lastMine ? tr("You: ") : QString()) + ci.preview);
+        if (!typing && contactState(addr) == NYX_SENDER_REQUEST)
+            prevText = tr("Request: ") + prevText;
         QLabel *prev = new QLabel(prevText);
         prev->setTextFormat(Qt::PlainText);
         prev->setStyleSheet(QString("font-size: 11px; color: %1; background: transparent;")
@@ -732,6 +738,16 @@ void ChatWidget::loadConversation(const QString& address)
     if (!msgModel)
         return;
 
+    refreshSafetyCache();
+    const int state = contactState(address);
+    if (state == NYX_SENDER_BLOCKED)
+    {
+        addCenteredNote(tr("You blocked this address. Its messages are discarded."));
+        return;
+    }
+    if (state == NYX_SENDER_REQUEST)
+        addRequestBar(address);
+
     QList<QPair<QDateTime, int>> msgIndices;
 
     for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
@@ -781,7 +797,9 @@ void ChatWidget::loadConversation(const QString& address)
         bool fEmbed = !ext.isEmpty() && owner != "anon" && NyxDecodeEmbed(ext.toStdString(), embed)
                       && !setHiddenNow.contains(QString::fromStdString(embed.id))
                       && !NyxEmbedHidden(owner.toStdString(), embed.id, removals);
-        addChatBubble(msg, dt.toString("hh:mm"), isMine, false, QString(), fEmbed ? &embed : 0, owner);
+        const bool fRequest = !isMine && state != NYX_SENDER_KNOWN;
+        addChatBubble(msg, dt.toString("hh:mm"), isMine, false, QString(),
+                      fEmbed && !fRequest ? &embed : 0, owner, fRequest);
     }
 
     chatView->scrollToBottom();
@@ -789,7 +807,7 @@ void ChatWidget::loadConversation(const QString& address)
 
 void ChatWidget::addChatBubble(const QString& text, const QString& time, bool isMine,
                                bool fFailed, const QString& failReason,
-                               const NyxEmbed* embed, const QString& owner)
+                               const NyxEmbed* embed, const QString& owner, bool fRequest)
 {
     QWidget *bubbleWidget = new QWidget();
     QHBoxLayout *bubbleLayout = new QHBoxLayout(bubbleWidget);
@@ -801,14 +819,28 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     bl->setContentsMargins(12, 8, 12, 6);
     bl->setSpacing(2);
 
+    if (!isMine && NyxLooksLikeScam(text.toStdString()))
+    {
+        QLabel *warn = new QLabel(tr("Warning: this message asks for a recovery phrase, private key or wallet "
+                                     "\"verification\". It is almost certainly a scam.") + "\n" + tr(NYX_SECRET_WARNING));
+        warn->setTextFormat(Qt::PlainText);
+        warn->setWordWrap(true);
+        warn->setMaximumWidth(400);
+        warn->setStyleSheet("background-color: #c0392b; color: white; font-weight: bold; font-size: 11px;"
+                            " border-radius: 6px; padding: 6px;");
+        bl->addWidget(warn);
+    }
+
     // Untrusted text: everything is escaped; only http(s) anchors are added. Links open via a confirm.
+    // A message request gets no anchors at all.
     QLabel *body = new QLabel();
     body->setTextFormat(Qt::RichText);
-    body->setText("<span style=\"white-space: pre-wrap;\">"
-                  + QString::fromStdString(NyxLinkify(text.toStdString())) + "</span>");
+    const std::string html = fRequest ? NyxEscapeText(text.toStdString()) : NyxLinkify(text.toStdString());
+    body->setText("<span style=\"white-space: pre-wrap;\">" + QString::fromStdString(html) + "</span>");
     body->setOpenExternalLinks(false);
     body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
+    body->setTextInteractionFlags(fRequest ? Qt::TextSelectableByMouse
+                                           : (Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse));
     connect(body, &QLabel::linkActivated, this, &ChatWidget::confirmOpenUrl);
     body->setMaximumWidth(400);
     body->setFont(GUIUtil::emojiFont(13));
@@ -963,7 +995,7 @@ void ChatWidget::setLinkPreviewsEnabled(bool fEnable)
 void ChatWidget::schedulePreview()
 {
     QString text = messageInput->toPlainText();
-    QString url = QString::fromStdString(NyxFirstHttpsUrl(text.toStdString()));
+    QString url = QString::fromStdString(NyxStripTracking(NyxFirstHttpsUrl(text.toStdString())));
     if (url.isEmpty() || !fSecMsgEnabled || !linkPreviewsEnabled() || isFileMessage(text.trimmed()))
     {
         clearPreview(false);
@@ -974,14 +1006,14 @@ void ChatWidget::schedulePreview()
     clearPreview(false);
     if (!previewFetcher->start(url))
         return;
-    previewChipText->setText(tr("Fetching link preview from %1 ...").arg(QUrl(url).host()));
+    previewChipText->setText(tr("Fetching link preview from %1 through Tor ...").arg(QUrl(url).host()));
     previewChip->show();
 }
 
 void ChatWidget::onPreviewFinished(const QString& url, bool ok, const QString& title, const QString& desc,
                                    const QString& site, const QByteArray& thumb)
 {
-    if (!ok || QString::fromStdString(NyxFirstHttpsUrl(messageInput->toPlainText().toStdString())) != url)
+    if (!ok || QString::fromStdString(NyxStripTracking(NyxFirstHttpsUrl(messageInput->toPlainText().toStdString()))) != url)
     {
         previewChip->hide();
         return;
@@ -1151,16 +1183,37 @@ void ChatWidget::onEnableMessagingClicked()
     refreshContacts();
 }
 
-void ChatWidget::confirmOpenUrl(const QString& link)
+void ChatWidget::confirmOpenUrl(const QString& linkIn)
 {
-    if (!NyxIsLinkableUrl(link.toStdString()))
+    const std::string link = NyxStripTracking(linkIn.toStdString());
+    if (!NyxIsLinkableUrl(link))
         return;
-    QUrl url(link, QUrl::StrictMode);
+    QUrl url(QString::fromStdString(link), QUrl::StrictMode);
     if (!url.isValid() || (url.scheme() != "https" && url.scheme() != "http") || url.host().isEmpty())
         return;
-    QMessageBox box(QMessageBox::Warning, tr("Open link"),
-                    tr("You are leaving Innova:") + "\n\n" + url.toString(QUrl::FullyEncoded),
-                    QMessageBox::NoButton, this);
+    const std::string host = NyxUrlHost(link);
+    const QString domain = QString::fromStdString(NyxRegistrableDomain(host));
+    const int flags = NyxUrlRiskFlags(link);
+
+    QString html = tr("You are leaving Innova for:") + "<p style=\"font-size: 20px; font-weight: bold;\">"
+                   + domain.toHtmlEscaped() + "</p>";
+    QStringList warnings;
+    if (flags & NYX_URL_LOOKALIKE)
+        warnings << tr("This address uses characters from other alphabets that can imitate a familiar site (shown as %1).")
+                        .arg(QUrl::fromAce(QByteArray::fromStdString(host)).toHtmlEscaped());
+    else if (flags & NYX_URL_IDN)
+        warnings << tr("This is an internationalised domain, shown as %1.")
+                        .arg(QUrl::fromAce(QByteArray::fromStdString(host)).toHtmlEscaped());
+    if (flags & NYX_URL_HIDDEN_CHARS)
+        warnings << tr("The link contains invisible or text-direction characters that can disguise where it goes.");
+    if (url.scheme() == "http")
+        warnings << tr("The connection is not encrypted (http).");
+    for (const QString& w : warnings)
+        html += "<p style=\"color: #c0392b; font-weight: bold;\">" + w + "</p>";
+    html += "<p style=\"font-size: 11px;\">" + QString::fromStdString(link).toHtmlEscaped() + "</p>";
+
+    QMessageBox box(QMessageBox::Warning, tr("Open link"), html, QMessageBox::NoButton, this);
+    box.setTextFormat(Qt::RichText);
     QPushButton *open = box.addButton(tr("Open"), QMessageBox::AcceptRole);
     QPushButton *cancel = box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(cancel);
@@ -1168,6 +1221,101 @@ void ChatWidget::confirmOpenUrl(const QString& link)
     box.exec();
     if (box.clickedButton() == open)
         QDesktopServices::openUrl(url);
+}
+
+int ChatWidget::contactState(const QString& address) const
+{
+    const std::string a = address.toStdString();
+    return NyxClassifySender(a, setSentTo.contains(address), setAddressBook.contains(address),
+                             NyxIsAccepted(a), NyxIsBlocked(a));
+}
+
+void ChatWidget::refreshSafetyCache()
+{
+    std::set<std::string> sent, book;
+    SecureMsgCollectSentTo(sent);
+    SecureMsgCollectAddressBook(book);
+    setSentTo.clear();
+    setAddressBook.clear();
+    for (const std::string& a : sent)
+        setSentTo.insert(QString::fromStdString(a));
+    for (const std::string& a : book)
+        setAddressBook.insert(QString::fromStdString(a));
+    if (msgModel)
+        for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
+            if (msgModel->data(msgModel->index(i, 0, QModelIndex()), MessageModel::TypeRole).toInt() == MessageTableEntry::Sent)
+                setSentTo.insert(msgModel->data(msgModel->index(i, MessageModel::ToAddress, QModelIndex()), Qt::DisplayRole).toString());
+}
+
+void ChatWidget::addRequestBar(const QString& address)
+{
+    QFrame *bar = new QFrame();
+    bar->setObjectName("request");
+    bar->setStyleSheet("QFrame#request { background-color: palette(alternate-base); border: 1px solid palette(mid);"
+                       " border-radius: 8px; } QLabel { background: transparent; color: palette(text); }");
+    QVBoxLayout *v = new QVBoxLayout(bar);
+    v->setContentsMargins(12, 10, 12, 10);
+    QLabel *t = new QLabel(address == "anon"
+        ? tr("Anonymous message. Links stay inactive and link previews are hidden.")
+        : tr("Message request from %1. You have not messaged this address and it is not in your address book. "
+             "Links stay inactive and link previews are hidden until you accept.").arg(address));
+    t->setTextFormat(Qt::PlainText);
+    t->setWordWrap(true);
+    v->addWidget(t);
+    if (address != "anon")
+    {
+        QHBoxLayout *h = new QHBoxLayout();
+        QPushButton *accept = new QPushButton(tr("Accept"));
+        QPushButton *block = new QPushButton(tr("Block"));
+        block->setStyleSheet("QPushButton { color: #c0392b; }");
+        h->addWidget(accept);
+        h->addWidget(block);
+        h->addStretch();
+        v->addLayout(h);
+        connect(accept, &QPushButton::clicked, this, [this, address]() { acceptContact(address); });
+        connect(block, &QPushButton::clicked, this, [this, address]() { blockContact(address); });
+    }
+    QWidget *wrap = new QWidget();
+    QHBoxLayout *wl = new QHBoxLayout(wrap);
+    wl->setContentsMargins(8, 6, 8, 6);
+    wl->addWidget(bar);
+    QListWidgetItem *item = new QListWidgetItem();
+    item->setFlags(Qt::NoItemFlags);
+    item->setSizeHint(QSize(0, wrap->sizeHint().height() + 8));
+    chatView->addItem(item);
+    chatView->setItemWidget(item, wrap);
+}
+
+void ChatWidget::acceptContact(const QString& address)
+{
+    if (!NyxAccept(address.toStdString()))
+        QMessageBox::warning(this, tr("Accept"), tr("Could not save the contact list."));
+    loadConversation(currentContact);
+    refreshContacts();
+}
+
+void ChatWidget::blockContact(const QString& address)
+{
+    if (QMessageBox::question(this, tr("Block"),
+            tr("Block %1? Its messages are deleted and future messages from it are discarded.").arg(address),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    if (!NyxBlock(address.toStdString()))
+    {
+        QMessageBox::warning(this, tr("Block"), tr("Could not save the block list."));
+        return;
+    }
+    SecureMsgDiscardFrom(address.toStdString());
+    if (currentContact == address)
+    {
+        currentContact.clear();
+        chatHeader->setText(QString());
+        deleteConversationButton->setEnabled(false);
+        renameConversationButton->setEnabled(false);
+        showEmptyConversation();
+        updateSendButton();
+    }
+    refreshContacts();
 }
 
 void ChatWidget::changeEvent(QEvent *event)
@@ -1245,6 +1393,25 @@ void ChatWidget::onSendClicked()
     QString message = EmojiPicker::replaceShortcodes(messageInput->toPlainText().trimmed());
     if (message.isEmpty())
         return;
+    message = QString::fromStdString(NyxStripTrackingInText(message.toStdString()));
+
+    NyxSecretKind secret = isFileMessage(message) ? NYX_SECRET_NONE : NyxDetectSecret(message.toStdString());
+    if (secret != NYX_SECRET_NONE)
+    {
+        QMessageBox box(QMessageBox::Critical, tr("Do not send this"),
+                        tr("This message looks like it contains a %1.")
+                            .arg(QString::fromStdString(NyxSecretKindName(secret)))
+                        + "\n\n" + tr(NYX_SECRET_WARNING)
+                        + "\n\n" + tr("Anyone who has it can take your coins."),
+                        QMessageBox::NoButton, this);
+        QPushButton *cancel = box.addButton(tr("Don't send"), QMessageBox::RejectRole);
+        QPushButton *force = box.addButton(tr("Send anyway"), QMessageBox::DestructiveRole);
+        box.setDefaultButton(cancel);
+        box.setEscapeButton(cancel);
+        box.exec();
+        if (box.clickedButton() != force)
+            return;
+    }
 
     if (!pwalletMain)
     {

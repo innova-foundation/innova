@@ -112,9 +112,16 @@ private:
     void loadConversation(const QString& address);
     void addChatBubble(const QString& text, const QString& time, bool isMine,
                        bool fFailed = false, const QString& failReason = QString(),
-                       const NyxEmbed* embed = 0, const QString& owner = QString());
+                       const NyxEmbed* embed = 0, const QString& owner = QString(),
+                       bool fRequest = false);
     QWidget* makeEmbedCard(const NyxEmbed& e, bool fRemovable, const QString& owner);
     void removeEmbed(const QString& id, const QString& owner);
+    /** NyxSenderState for a conversation partner, from the caches below. */
+    int contactState(const QString& address) const;
+    void refreshSafetyCache();
+    void addRequestBar(const QString& address);
+    void acceptContact(const QString& address);
+    void blockContact(const QString& address);
     void schedulePreview();
     void onPreviewFinished(const QString& url, bool ok, const QString& title, const QString& desc,
                            const QString& site, const QByteArray& thumb);
@@ -191,6 +198,8 @@ private:
     QString previewDismissedUrl;  // user closed the preview for this URL
     QString previewTitle, previewDesc, previewSite;
     QByteArray previewThumb;
+    QSet<QString> setSentTo;      // addresses this wallet has messaged
+    QSet<QString> setAddressBook;
     QSet<QString> setHiddenNow;   // removals sent this session, before the outbox echo arrives
 
     void updateContactTypingDisplay();
