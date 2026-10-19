@@ -8,6 +8,7 @@
 #include "init.h"
 #include "base58.h"
 #include "emojipicker.h"
+#include "nyxembed.h"
 
 #include <QApplication>
 #include <QScrollBar>
@@ -28,6 +29,8 @@
 #include <QKeyEvent>
 #include <QGridLayout>
 #include <QPainter>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QPainterPath>
 #include <QEvent>
 
@@ -753,12 +756,15 @@ void ChatWidget::addChatBubble(const QString& text, const QString& time, bool is
     bl->setContentsMargins(12, 8, 12, 6);
     bl->setSpacing(2);
 
-    // Received text is untrusted: plain text only, no links or markup.
+    // Untrusted text: everything is escaped; only http(s) anchors are added. Links open via a confirm.
     QLabel *body = new QLabel();
-    body->setTextFormat(Qt::PlainText);
-    body->setText(text);
+    body->setTextFormat(Qt::RichText);
+    body->setText("<span style=\"white-space: pre-wrap;\">"
+                  + QString::fromStdString(NyxLinkify(text.toStdString())) + "</span>");
+    body->setOpenExternalLinks(false);
     body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
+    connect(body, &QLabel::linkActivated, this, &ChatWidget::confirmOpenUrl);
     body->setMaximumWidth(400);
     body->setFont(GUIUtil::emojiFont(13));
     body->setStyleSheet("background: transparent;");
@@ -940,6 +946,25 @@ void ChatWidget::onEnableMessagingClicked()
         QMessageBox::warning(this, tr("Nyx Messenger"), err);
     refreshMessagingEnabled();
     refreshContacts();
+}
+
+void ChatWidget::confirmOpenUrl(const QString& link)
+{
+    if (!NyxIsLinkableUrl(link.toStdString()))
+        return;
+    QUrl url(link, QUrl::StrictMode);
+    if (!url.isValid() || (url.scheme() != "https" && url.scheme() != "http") || url.host().isEmpty())
+        return;
+    QMessageBox box(QMessageBox::Warning, tr("Open link"),
+                    tr("You are leaving Innova:") + "\n\n" + url.toString(QUrl::FullyEncoded),
+                    QMessageBox::NoButton, this);
+    QPushButton *open = box.addButton(tr("Open"), QMessageBox::AcceptRole);
+    QPushButton *cancel = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(cancel);
+    box.setEscapeButton(cancel);
+    box.exec();
+    if (box.clickedButton() == open)
+        QDesktopServices::openUrl(url);
 }
 
 void ChatWidget::changeEvent(QEvent *event)

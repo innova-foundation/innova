@@ -72,6 +72,7 @@ private slots:
     void onSendTypingNotification();
     void onEnableMessagingClicked();
     void updateSendButton();
+    void confirmOpenUrl(const QString& link);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event);
