@@ -27,6 +27,9 @@
 #include <QTimer>
 #include <QKeyEvent>
 #include <QGridLayout>
+#include <QPainter>
+#include <QPainterPath>
+#include <QEvent>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -92,6 +95,55 @@ bool ChatWidget::parseFileMessage(const QString& text, QString& cid, QString& en
     filename = inner.mid(secondColon + 1);
 
     return !cid.isEmpty() && encKeyHex.length() == 88 && !filename.isEmpty() && size > 0;
+}
+
+enum ComposerGlyph { GLYPH_ATTACH, GLYPH_EMOJI };
+
+static QIcon composerIcon(ComposerGlyph g, const QColor& c, qreal dpr)
+{
+    const int px = 20;
+    QPixmap pm(QSize(px, px) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(c, 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    if (g == GLYPH_ATTACH)
+    {
+        // Paperclip: three nested U-loops, rotated.
+        p.translate(10, 10);
+        p.rotate(40);
+        QPainterPath clip;
+        clip.moveTo(1.4, -3.0);
+        clip.lineTo(1.4, 5.0);
+        clip.arcTo(QRectF(-4.4, 2.0, 5.8, 5.8), 0, -180);
+        clip.lineTo(-4.4, -5.0);
+        clip.arcTo(QRectF(-4.4, -9.4, 8.8, 8.8), 180, -180);
+        clip.lineTo(4.4, 4.0);
+        p.drawPath(clip);
+    }
+    else
+    {
+        p.drawEllipse(QRectF(2.5, 2.5, 15, 15));
+        p.setBrush(c);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(7.4, 8.3), 1.15, 1.35);
+        p.drawEllipse(QPointF(12.6, 8.3), 1.15, 1.35);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(6.0, 7.0, 8.0, 7.0), 200 * 16, 140 * 16);
+    }
+    return QIcon(pm);
+}
+
+void ChatWidget::refreshComposerIcons()
+{
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    const QColor c = palette().color(QPalette::Text);
+    attachButton->setIcon(composerIcon(GLYPH_ATTACH, c, dpr));
+    emojiButton->setIcon(composerIcon(GLYPH_EMOJI, c, dpr));
 }
 
 ChatWidget::ChatWidget(QWidget *parent) :
@@ -240,22 +292,26 @@ ChatWidget::ChatWidget(QWidget *parent) :
         "QTextEdit { background-color: palette(alternate-base); color: palette(text); border: 1px solid palette(mid); border-radius: 8px; padding: 6px; font-size: 13px; }");
     inputLayout->addWidget(messageInput);
 
-    // File attachment button
-    attachButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x93\x8E")); // paperclip
+    // Composer buttons draw their glyphs as icons so no style padding can clip them.
+    const QString toolCss =
+        "QToolButton { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; padding: 0px; }"
+        "QToolButton:hover { background-color: palette(highlight); }";
+    attachButton = new QToolButton();
+    attachButton->setStyleSheet(toolCss);
+    attachButton->setIconSize(QSize(20, 20));
     attachButton->setFixedSize(40, 40);
-    attachButton->setStyleSheet(
-        "QPushButton { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; font-size: 16px; }"
-        "QPushButton:hover { background-color: palette(highlight); }");
+    attachButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     attachButton->setToolTip(tr("Attach file (encrypted, uploaded via IPFS)"));
     inputLayout->addWidget(attachButton);
 
-    emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x98\x84")); // smile emoji
+    emojiButton = new QToolButton();
+    emojiButton->setStyleSheet(toolCss);
+    emojiButton->setIconSize(QSize(20, 20));
     emojiButton->setFixedSize(40, 40);
-    emojiButton->setStyleSheet(
-        "QPushButton { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; font-size: 18px; }"
-        "QPushButton:hover { background-color: palette(highlight); }");
+    emojiButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     emojiButton->setToolTip(tr("Open emoji picker"));
     inputLayout->addWidget(emojiButton);
+    refreshComposerIcons();
 
     sendButton = new QPushButton(tr("Send"));
     sendButton->setMinimumSize(70, 40);
@@ -274,7 +330,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
         messageInput->insertPlainText(emoji);
         messageInput->setFocus();
     });
-    connect(emojiButton, &QPushButton::clicked, [this]() {
+    connect(emojiButton, &QToolButton::clicked, [this]() {
         QPoint pos = emojiButton->mapToGlobal(QPoint(0, -emojiPicker->height() - 5));
         emojiPicker->move(pos);
         emojiPicker->show();
@@ -883,6 +939,13 @@ void ChatWidget::onEnableMessagingClicked()
         QMessageBox::warning(this, tr("Nyx Messenger"), err);
     refreshMessagingEnabled();
     refreshContacts();
+}
+
+void ChatWidget::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)
+        refreshComposerIcons();
+    QWidget::changeEvent(event);
 }
 
 bool ChatWidget::eventFilter(QObject *obj, QEvent *event)

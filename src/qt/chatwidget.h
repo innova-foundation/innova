@@ -6,6 +6,7 @@
 #include <QListView>
 #include <QTextEdit>
 #include <QPushButton>
+#include <QToolButton>
 #include <QLabel>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -74,6 +75,7 @@ private slots:
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event);
+    void changeEvent(QEvent *event);
 
 private:
     MessageModel *msgModel;
@@ -95,8 +97,8 @@ private:
     QListWidget *chatView;
     QTextEdit *messageInput;
     QPushButton *sendButton;
-    QPushButton *emojiButton;
-    QPushButton *attachButton;
+    QToolButton *emojiButton;
+    QToolButton *attachButton;
     EmojiPicker *emojiPicker;
     EmojiAutocomplete *emojiAutocomplete;
 
@@ -168,6 +170,7 @@ private:
     QMap<QString, QString> mapContactNicknames; // address -> user-assigned nickname
 
     void updateContactTypingDisplay();
+    void refreshComposerIcons();
 };
 
 #endif // CHATWIDGET_H
