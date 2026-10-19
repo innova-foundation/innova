@@ -386,7 +386,6 @@ static const CRPCCommand vRPCCommands[] =
     { "resendtx",               &resendtx,               false,  false},
     { "makekeypair",            &makekeypair,            false,  true},
     { "setdebug",               &setdebug,               true,   false },
-    { "sendalert",              &sendalert,              false,  false},
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
     { "burn",                   &burn,                   false,  false },
@@ -1112,9 +1111,7 @@ void ThreadRPCServer2(void* parg)
               "rpcpassword=%s\n"
               "(you do not need to remember this password)\n"
               "The username and password MUST NOT be the same.\n"
-              "If the file does not exist, create it with owner-readable-only file permissions.\n"
-              "It is also recommended to set alertnotify so you are notified of problems;\n"
-              "for example: alertnotify=echo %%s | mail -s \"Innova Alert\" admin@foo.com\n"),
+              "If the file does not exist, create it with owner-readable-only file permissions.\n"),
                 strWhatAmI.c_str(),
                 GetConfigFile().string().c_str(),
                 EncodeBase58(&rand_pwd[0],&rand_pwd[0]+32).c_str()),
@@ -1728,11 +1725,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_nullsend"            && n > 4) ConvertTo<int64_t>(params[4]);
 
 
-    if (strMethod == "sendalert"              && n > 2) ConvertTo<int64_t>(params[2]);
-    if (strMethod == "sendalert"              && n > 3) ConvertTo<int64_t>(params[3]);
-    if (strMethod == "sendalert"              && n > 4) ConvertTo<int64_t>(params[4]);
-    if (strMethod == "sendalert"              && n > 5) ConvertTo<int64_t>(params[5]);
-    if (strMethod == "sendalert"              && n > 6) ConvertTo<int64_t>(params[6]);
 
     if (strMethod == "sendmany"               && n > 1) ConvertTo<Object>(params[1]);
     if (strMethod == "sendmany"               && n > 2) ConvertTo<int64_t>(params[2]);

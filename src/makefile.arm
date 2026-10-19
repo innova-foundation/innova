@@ -283,7 +283,6 @@ OBJS= \
     obj/echo.o \
     obj/jh.o \
     obj/keccak.o \
-    obj/alert.o \
     obj/version.o \
     obj/checkpoints.o \
     obj/netbase.o \
@@ -377,7 +376,6 @@ OBJS= \
     obj/echo.o \
     obj/jh.o \
     obj/keccak.o \
-    obj/alert.o \
     obj/version.o \
     obj/checkpoints.o \
     obj/netbase.o \

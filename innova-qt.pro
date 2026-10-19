@@ -410,7 +410,6 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
     src/qt/bantablemodel.h \
-    src/alert.h \
     src/addrman.h \
     src/base58.h \
     src/bignum.h \
@@ -599,7 +598,6 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpchyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/qt/bantablemodel.cpp \
-    src/alert.cpp \
     src/stun.cpp \
     src/base58.cpp \
     src/version.cpp \

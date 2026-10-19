@@ -535,7 +535,6 @@ set(INNOVA_CXX_SOURCES
     src/rpchyperfile.cpp
     src/qt/termsofuse.cpp
     src/qt/bantablemodel.cpp
-    src/alert.cpp
     src/stun.cpp
     src/base58.cpp
     src/version.cpp
@@ -701,7 +700,6 @@ set(INNOVA_HEADERS
     src/qt/multisiginputentry.h
     src/qt/multisigdialog.h
     src/qt/bantablemodel.h
-    src/alert.h
     src/addrman.h
     src/base58.h
     src/bignum.h
