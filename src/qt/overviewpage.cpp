@@ -1,3 +1,4 @@
+#include <QLocale>
 #include "overviewpage.h"
 #include "ui_overviewpage.h"
 
@@ -412,30 +413,13 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelWatchTotal->setText(BitcoinUnits::formatWithUnit(unit, watchOnlyBalance + watchUnconfBalance + watchImmatureBalance));
 
 
-  	QString total;
-    double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
-  	total = QString::number(dollarg1, 'f', 2);
-  	ui->labelUSDTotal->setText("$" + total + " USD");
-
-	  QString eurtotal;
-	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
-  	eurtotal = QString::number(eurog1, 'f', 4);
-  	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
-
-    QString gbptotal;
-    double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
-    gbptotal = QString::number(poundg1, 'f', 6);
-    ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
-
-    QString rubtotal;
-    double rubleg1 = (rubleg.toDouble() * totalBalance / 100000000);
-    rubtotal = QString::number(rubleg1, 'f', 10);
-    ui->labelRUBTotal->setText("₽" + rubtotal + " RUB");
-
-    QString jpytotal;
-    double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
-    jpytotal = QString::number(yeng1, 'f', 12);
-    ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
+    const double inn = totalBalance / 100000000.0;
+    QLocale loc;
+    ui->labelUSDTotal->setText("$" + loc.toString(dollarg.toDouble() * inn, 'f', 2) + " USD");
+    ui->labelEURTotal->setText("€" + loc.toString(eurog.toDouble() * inn, 'f', 2) + " EUR");
+    ui->labelGBPTotal->setText("£" + loc.toString(poundg.toDouble() * inn, 'f', 2) + " GBP");
+    ui->labelRUBTotal->setText("₽" + loc.toString(rubleg.toDouble() * inn, 'f', 2) + " RUB");
+    ui->labelJPYTotal->setText("¥" + loc.toString(yeng.toDouble() * inn, 'f', 0) + " JPY");
 
     ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     // Trade link hidden - No exchanges for now
