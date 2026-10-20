@@ -1625,7 +1625,7 @@ void BitcoinGUI::mainToolbarOrientation(Qt::Orientation orientation)
         mainIcon->show();
         mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
         mainToolbar->setStyleSheet("");
-        messageAction->setIconText(tr("&Messages"));
+        messageAction->setIconText(tr("Messages"));
     }
     else
     {
@@ -1634,7 +1634,7 @@ void BitcoinGUI::mainToolbarOrientation(Qt::Orientation orientation)
         mainIcon->show();
         mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         mainToolbar->setStyleSheet("");
-        messageAction->setIconText(tr("Encrypted &Messages"));
+        messageAction->setIconText(tr("Nyx Messenger"));
     }
 }
 
