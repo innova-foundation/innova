@@ -429,6 +429,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/smessage.h \
     src/nyxembed.h \
     src/nyxsafety.h \
+    src/nyxui.h \
     src/main.h \
     src/core.h \
     src/state.h \
@@ -609,6 +610,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/smessage.cpp \
     src/nyxembed.cpp \
     src/nyxsafety.cpp \
+    src/nyxui.cpp \
     src/util.cpp \
     src/netbase.cpp \
     src/key.cpp \

@@ -283,6 +283,7 @@ OBJS= \
     obj/smessage.o \
     obj/nyxembed.o \
     obj/nyxsafety.o \
+    obj/nyxui.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
     obj/collateralnodeconfig.o \
@@ -325,6 +326,7 @@ TEST_OBJS= \
     obj/test/base32_tests.o \
     obj/test/nyx_embed_tests.o \
     obj/test/nyx_safety_tests.o \
+    obj/test/nyx_ui_tests.o \
     obj/test/base64_tests.o \
     obj/test/getarg_tests.o \
     obj/test/mruset_tests.o \
