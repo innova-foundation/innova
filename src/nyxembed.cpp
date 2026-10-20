@@ -124,6 +124,11 @@ static std::string CleanText(const std::string& in, size_t cap)
     return Utf8Cap(out, cap);
 }
 
+std::string NyxCleanText(const std::string& in, size_t cap)
+{
+    return CleanText(in, cap);
+}
+
 static bool StrictB64(const std::string& s, std::string& out)
 {
     if (s.size() % 4 != 0)

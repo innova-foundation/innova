@@ -212,6 +212,7 @@ OBJS= \
     obj/scrypt.o \
     obj/smessage.o \
     obj/nyxembed.o \
+    obj/nyxext.o \
     obj/nyxsafety.o \
     obj/nyxui.o \
     obj/stealth.o \
@@ -249,6 +250,7 @@ TEST_OBJS= \
     obj/test/allocator_tests.o \
     obj/test/base32_tests.o \
     obj/test/nyx_embed_tests.o \
+    obj/test/nyx_ext_tests.o \
     obj/test/nyx_safety_tests.o \
     obj/test/nyx_ui_tests.o \
     obj/test/base64_tests.o \

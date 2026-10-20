@@ -49,6 +49,8 @@ bool NyxEmbedHidden(const std::string& owner, const std::string& id,
                     const std::vector<std::pair<std::string, std::string> >& removals);
 
 bool NyxIsHexId(const std::string& id);
+/** Drop controls, bidi overrides and invalid UTF-8, collapse whitespace, cap to n bytes. */
+std::string NyxCleanText(const std::string& in, size_t cap);
 
 /** Build the ext for text + embed within maxBytes, truncating text fields then dropping the
  *  thumbnail. Returns empty when no card fits. */
