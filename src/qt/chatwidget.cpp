@@ -39,6 +39,39 @@
 #include <QPainterPath>
 #include <QEvent>
 #include <QMenu>
+#include <QTextBoundaryFinder>
+
+/** Single-line label that elides its text to the available width. */
+class NyxElideLabel : public QLabel
+{
+public:
+    explicit NyxElideLabel(const QString& t) : QLabel(), full(t) { setTextFormat(Qt::PlainText); setToolTip(t); }
+protected:
+    void resizeEvent(QResizeEvent* e) override { QLabel::resizeEvent(e); setText(fontMetrics().elidedText(full, Qt::ElideRight, width())); }
+    QSize minimumSizeHint() const override { return QSize(10, QLabel::minimumSizeHint().height()); }
+private:
+    QString full;
+};
+
+static bool isEmojiCp(uint c)
+{
+    return (c >= 0x1F000 && c <= 0x1FAFF) || (c >= 0x2600 && c <= 0x27BF) || (c >= 0x2B00 && c <= 0x2BFF) ||
+           c == 0x200D || c == 0xFE0F || c == 0x20E3 || (c >= 0xE0020 && c <= 0xE007F) || c == 0x00A9 || c == 0x00AE ||
+           (c >= 0x2190 && c <= 0x21FF) || (c >= 0x2300 && c <= 0x23FF);
+}
+
+/** 1-3 emoji and nothing else. */
+static bool isJumboEmoji(const QString& text)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty()) return false;
+    for (uint c : t.toUcs4())
+        if (!isEmojiCp(c)) return false;
+    QTextBoundaryFinder f(QTextBoundaryFinder::Grapheme, t);
+    int n = 0;
+    while (f.toNextBoundary() > 0) ++n;
+    return n <= 3;
+}
 #include <QClipboard>
 #include <QAbstractTextDocumentLayout>
 #include <QResizeEvent>
@@ -176,6 +209,7 @@ void ChatWidget::refreshComposerIcons()
     const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
     const QColor c = mutedColor(palette());
     attachButton->setIcon(composerIcon(GLYPH_ATTACH, c, dpr));
+    newChatButton->setIcon(composerIcon(GLYPH_ATTACH, c, dpr));
     emojiButton->setIcon(composerIcon(GLYPH_EMOJI, c, dpr));
     chatHeaderLock->setPixmap(composerIcon(GLYPH_LOCK, c, dpr).pixmap(QSize(16, 16)));
 }
@@ -295,12 +329,12 @@ ChatWidget::ChatWidget(QWidget *parent) :
         contactsTitle->setStyleSheet("font-size: 15px; font-weight: bold; color: palette(text); background: transparent;");
         hl->addWidget(contactsTitle, 1);
         newChatButton = new QToolButton();
-        newChatButton->setText("+");
+        newChatButton->setIconSize(QSize(20, 20));
         newChatButton->setFixedSize(28, 28);
         newChatButton->setToolTip(tr("New conversation"));
         newChatButton->setAccessibleName(tr("New conversation"));
         newChatButton->setStyleSheet(
-            "QToolButton { border: none; border-radius: 14px; font-size: 20px; font-weight: bold; color: palette(text); background: transparent; }"
+            "QToolButton { border: none; border-radius: 6px; background: transparent; padding: 0px; }"
             "QToolButton:hover { background-color: rgba(127,127,127,50); }"
             "QToolButton:disabled { color: rgba(127,127,127,120); }");
         hl->addWidget(newChatButton);
@@ -660,8 +694,9 @@ void ChatWidget::setHeaderContact(const QString& address)
     chatHeaderName->setToolTip(address);
     chatHeaderAvatar->setPixmap(avatarFor(address, name, 24));
     chatHeaderAvatar->show();
-    chatHeaderAddr->setText(QString::fromStdString(NyxShortAddress(address.toStdString())));
-    chatHeaderAddr->show();
+    const QString shortAddr = QString::fromStdString(NyxShortAddress(address.toStdString()));
+    chatHeaderAddr->setText(shortAddr);
+    chatHeaderAddr->setVisible(name != shortAddr && name != address);
     chatHeaderLock->show();
 }
 
@@ -874,6 +909,7 @@ void ChatWidget::refreshContacts()
         QGridLayout *g = new QGridLayout(row);
         g->setContentsMargins(8, 6, 8, 6);
         g->setHorizontalSpacing(10);
+        g->setColumnMinimumWidth(2, 36);
         g->setVerticalSpacing(1);
 
         QLabel *av = new QLabel();
@@ -882,16 +918,14 @@ void ChatWidget::refreshContacts()
         av->setStyleSheet("background: transparent;");
         g->addWidget(av, 0, 0, 2, 1, Qt::AlignVCenter);
 
-        QLabel *nameLbl = new QLabel(name);
-        nameLbl->setTextFormat(Qt::PlainText);
+        QLabel *nameLbl = new NyxElideLabel(name);
         nameLbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         nameLbl->setStyleSheet(QString("font-size: 13px; font-weight: %1; color: %2; background: transparent;")
                                .arg(unread ? "bold" : "600", unread ? "palette(text)" : cssColor(mutedColor(palette()))));
         QLabel *when = new QLabel(timeStr);
         when->setStyleSheet("font-size: 10px; color: palette(dark); background: transparent;");
         QString prevText = typing ? tr("typing...") : ((ci.lastMine ? tr("You: ") : QString()) + ci.preview);
-        QLabel *prev = new QLabel(prevText);
-        prev->setTextFormat(Qt::PlainText);
+        QLabel *prev = new NyxElideLabel(prevText);
         prev->setFont(GUIUtil::emojiFont(11));
         prev->setStyleSheet(QString("font-size: 11px; color: %1; background: transparent;")
                             .arg(typing ? "#23a55a" : (unread ? "palette(text)" : "palette(dark)")));
@@ -1172,7 +1206,7 @@ void ChatWidget::addMessageRow(const RowArgs& a)
 
     NyxMsgRow *rowW = new NyxMsgRow();
     QHBoxLayout *rl = new QHBoxLayout(rowW);
-    rl->setContentsMargins(16, fGrouped ? 1 : 10, 48, 1);
+    rl->setContentsMargins(16, fGrouped ? 0 : 16, 48, 1);
     rl->setSpacing(14);
 
     // Avatar column: avatar on a group's first row, hover time on the rest.
@@ -1194,7 +1228,7 @@ void ChatWidget::addMessageRow(const RowArgs& a)
     {
         QLabel *av = new QLabel();
         av->setFixedSize(40, 40);
-        av->setPixmap(avatarFor(addr.isEmpty() ? name : addr, name, 40));
+        av->setPixmap(a.isMine ? avatarFor(QStringLiteral("nyx-self"), name, 40) : avatarFor(addr.isEmpty() ? name : addr, name, 40));
         av->setToolTip(addr);
         av->setStyleSheet("background: transparent;");
         cl->addWidget(av);
@@ -1282,9 +1316,10 @@ void ChatWidget::addMessageRow(const RowArgs& a)
         body->setTextInteractionFlags(a.fRequest ? Qt::TextSelectableByMouse
                                                  : (Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse));
         connect(body, &QLabel::linkActivated, this, &ChatWidget::confirmOpenUrl);
-        body->setFont(GUIUtil::emojiFont(14));
-        body->setStyleSheet(a.fFailed ? "background: transparent; color: palette(dark);"
-                                      : "background: transparent; color: palette(text);");
+        body->setFont(GUIUtil::emojiFont(!a.fFile && isJumboEmoji(a.text) ? 42 : 14));
+        body->setStyleSheet(QString(a.fFailed ? "background: transparent; color: palette(dark);"
+                                              : "background: transparent; color: palette(text);") +
+                            (!a.fFile && isJumboEmoji(a.text) ? " font-size: 42px;" : ""));
         body->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         bl->addWidget(body);
         if (a.embed)
