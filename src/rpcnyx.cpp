@@ -11,6 +11,7 @@
 #include "dandelion.h"
 #include "nyxembed.h"
 #include "nyxsafety.h"
+#include "nyxext.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -33,10 +34,34 @@ struct NyxRemovalCache
 void NyxPushMessageText(json_spirit::Object& o, const MessageData& msg, NyxRemovalCache& cache)
 {
     std::string text, ext, id;
-    NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+    const std::string full = SecureMsgPlaintext(msg);
+    NyxSplitPlain(full, text, ext);
+    o.push_back(json_spirit::Pair("mid", NyxMessageId(msg.sFromAddress, msg.timestamp, full)));
     o.push_back(json_spirit::Pair("text", text));
     if (ext.empty() || msg.sFromAddress == "anon")
         return;
+    NyxRecords recs = NyxParseRecords(ext);
+    if (recs.fReply)
+    {
+        json_spirit::Object r;
+        r.push_back(json_spirit::Pair("mid", recs.reply.mid));
+        r.push_back(json_spirit::Pair("quoted_by_sender", recs.reply.quote));
+        o.push_back(json_spirit::Pair("reply_to", r));
+    }
+    if (recs.IsControl())
+    {
+        json_spirit::Object c;
+        c.push_back(json_spirit::Pair("op", recs.fReact ? (recs.react.fAdd ? "react" : "unreact")
+                                            : recs.fEdit ? "edit" : "delete"));
+        c.push_back(json_spirit::Pair("mid", recs.fReact ? recs.react.mid : recs.fEdit ? recs.edit.mid : recs.delMid));
+        if (recs.fReact)
+            c.push_back(json_spirit::Pair("emoji", recs.react.emoji));
+        if (recs.fEdit)
+            c.push_back(json_spirit::Pair("seq", recs.edit.seq));
+        o.push_back(json_spirit::Pair("control", c));
+        return;
+    }
+    ext = recs.embedRec;
     NyxEmbed e;
     if (NyxDecodeEmbed(ext, e))
     {
@@ -246,6 +271,142 @@ static Value nyx_removeembed(const Array& params)
     }
     else
         result.push_back(Pair("result", "Removal sent."));
+    return result;
+}
+
+static Object NyxControlResult(int rv, const std::string& sError, const char* ok)
+{
+    Object result;
+    if (rv != 0)
+    {
+        result.push_back(Pair("result", "Send failed."));
+        result.push_back(Pair("error", sError));
+    }
+    else
+        result.push_back(Pair("result", ok));
+    return result;
+}
+
+static Value nyx_reply(const Array& params)
+{
+    if (params.size() < 3 || params.size() > 4)
+        throw runtime_error(
+            "nyx reply <mid> <message> [force]\n"
+            "Reply to a stored message by its mid. Old clients see only <message>.");
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    const std::string body = params[2].get_str();
+    if (NyxDetectSecret(body) != NYX_SECRET_NONE && !(params.size() > 3 && NyxParseForce(params[3])))
+        throw runtime_error(std::string("Send refused. ") + NYX_SECRET_WARNING);
+    std::string sError;
+    return NyxControlResult(SecureMsgSendReply(params[1].get_str(), body, sError), sError, "Sent.");
+}
+
+static Value nyx_react(const Array& params)
+{
+    if (params.size() < 3 || params.size() > 4)
+        throw runtime_error(
+            "nyx react <mid> <emoji> [remove]\n"
+            "Add (or with remove=true, take back) a reaction. Never sent anonymously.");
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    bool fRemove = params.size() > 3 && NyxParseForce(params[3]);
+    std::string sError;
+    return NyxControlResult(SecureMsgSendReact(params[1].get_str(), params[2].get_str(), !fRemove, sError),
+                            sError, fRemove ? "Reaction removed." : "Reacted.");
+}
+
+static Value nyx_edit(const Array& params)
+{
+    if (params.size() != 3)
+        throw runtime_error(
+            "nyx edit <mid> <newtext>\n"
+            "Edit a message you sent, within 48 hours. Recipients honour it only when signed by you.");
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    if (NyxDetectSecret(params[2].get_str()) != NYX_SECRET_NONE)
+        throw runtime_error(std::string("Send refused. ") + NYX_SECRET_WARNING);
+    std::string sError;
+    return NyxControlResult(SecureMsgSendEdit(params[1].get_str(), params[2].get_str(), sError), sError, "Edit sent.");
+}
+
+static Value nyx_unsend(const Array& params)
+{
+    if (params.size() != 2)
+        throw runtime_error(
+            "nyx unsend <mid>\n"
+            "Delete a message you sent for everyone: recipients that receive the delete replace it\n"
+            "with a tombstone and erase it. Copies already read or saved elsewhere cannot be recalled.");
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    std::string sError;
+    return NyxControlResult(SecureMsgSendDelete(params[1].get_str(), sError), sError, "Deleted for everyone.");
+}
+
+static Value nyx_thread(const Array& params)
+{
+    if (params.size() != 2)
+        throw runtime_error(
+            "nyx thread <address>\n"
+            "Conversation with <address> after applying replies, reactions, edits and deletes.");
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    const std::string peer = params[1].get_str();
+    std::set<std::string> sentTo, book;
+    SecureMsgCollectSentTo(sentTo);
+    SecureMsgCollectAddressBook(book);
+    std::vector<NyxThreadMsg> rows;
+    std::vector<bool> mine;
+    SecureMsgCollectConversation(peer, rows, mine);
+    std::set<std::string> self;
+    for (size_t i = 0; i < rows.size(); i++)
+        if (mine[i])
+            self.insert(rows[i].sender);
+    std::vector<NyxMsgView> v = NyxBuildThread(rows, [&](const std::string& s) {
+        return self.count(s) || SecureMsgSenderState(s, sentTo, book) == NYX_SENDER_KNOWN;
+    });
+    Array out;
+    char cbuf[256];
+    for (size_t i = 0; i < rows.size(); i++)
+    {
+        if (v[i].fControl)
+            continue;
+        Object m;
+        m.push_back(Pair("mid", rows[i].mid));
+        m.push_back(Pair("from", rows[i].sender));
+        m.push_back(Pair("mine", (bool)mine[i]));
+        m.push_back(Pair("sent", getTimeString(rows[i].ts, cbuf, sizeof(cbuf))));
+        m.push_back(Pair("text", v[i].text));
+        if (v[i].fTombstone)
+            m.push_back(Pair("deleted", true));
+        if (v[i].fEdited)
+            m.push_back(Pair("edited", v[i].seq));
+        if (v[i].fReply)
+        {
+            Object r;
+            r.push_back(Pair("mid", v[i].reply.mid));
+            if (v[i].replyIndex >= 0)
+                r.push_back(Pair("original", v[v[i].replyIndex].text));
+            else
+                r.push_back(Pair("quoted_by_sender", v[i].reply.quote));
+            m.push_back(Pair("reply_to", r));
+        }
+        if (!v[i].reactions.empty())
+        {
+            Object rx;
+            for (const auto& e : v[i].reactions)
+            {
+                Array who;
+                for (const std::string& s : e.second)
+                    who.push_back(s);
+                rx.push_back(Pair(e.first, who));
+            }
+            m.push_back(Pair("reactions", rx));
+        }
+        out.push_back(m);
+    }
+    Object result;
+    result.push_back(Pair("messages", out));
     return result;
 }
 
@@ -628,6 +789,7 @@ static Value nyx_status(const Array& params)
     // from the absence of a setting.
     Array unimplemented;
     unimplemented.push_back("group messaging");
+    unimplemented.push_back("typing indicators");
     unimplemented.push_back("forward secrecy");
     unimplemented.push_back("separate messaging identity");
     unimplemented.push_back("delivery acknowledgement");
@@ -737,6 +899,11 @@ Value nyx(const Array& params, bool fHelp)
             "  sendembed <from> <to> <message> <title> [description] [site]\n"
             "                              Send with a link preview card (fields supplied by the caller)\n"
             "  removeembed <embedid>       Remove a preview card you sent, for everyone\n"
+            "  reply <mid> <message> [force] Reply to a message (mid from inbox/outbox/thread)\n"
+            "  react <mid> <emoji> [remove] Add or remove a reaction\n"
+            "  edit <mid> <newtext>        Edit a message you sent (48 h)\n"
+            "  unsend <mid>                Delete a message you sent, for everyone\n"
+            "  thread <address>            Conversation view with replies, reactions and edits applied\n"
             "  inbox [all|unread|clear] [offset] [count]\n"
             "                              View received messages (default: unread)\n"
             "  outbox [all|clear]          View sent messages\n"
@@ -757,6 +924,11 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "sendanon")    return nyx_sendanon(params);
     if (subcmd == "sendembed")   return nyx_sendembed(params);
     if (subcmd == "removeembed") return nyx_removeembed(params);
+    if (subcmd == "reply")       return nyx_reply(params);
+    if (subcmd == "react")       return nyx_react(params);
+    if (subcmd == "edit")        return nyx_edit(params);
+    if (subcmd == "unsend")      return nyx_unsend(params);
+    if (subcmd == "thread")      return nyx_thread(params);
     if (subcmd == "inbox")       return nyx_inbox(params);
     if (subcmd == "accept" || subcmd == "block" || subcmd == "unblock")
         return nyx_contact(params, subcmd);

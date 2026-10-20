@@ -35,6 +35,7 @@ Notes:
 #include <stdexcept>
 #include <sstream>
 #include <errno.h>
+#include <functional>
 
 #include <openssl/crypto.h>
 #include <openssl/ec.h>
@@ -63,6 +64,7 @@ Notes:
 #include "xxhash/xxhash.c"
 #include "nyxembed.h"
 #include "nyxsafety.h"
+#include "nyxext.h"
 
 
 namespace fs = boost::filesystem;
@@ -2386,6 +2388,228 @@ int SecureMsgRemoveEmbed(const std::string& id, std::string& sError)
     return SecureMsgSend(from, to, plain, sError);
 }
 
+// Visit every inbox and outbox message that decrypts. fn returns false to stop.
+static void NyxForEachStored(const std::function<bool(bool fMine, const unsigned char* chKey, const SecMsgStored&, const MessageData&)>& fn)
+{
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cr+"))
+        return;
+    static const char* prefixes[2] = {"im", "nm"};
+    for (int k = 0; k < 2; k++)
+    {
+        std::string sPrefix(prefixes[k]);
+        unsigned char chKey[18];
+        SecMsgStored smsgStored;
+        leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+        bool fStop = false;
+        while (!fStop && db.NextSmesg(it, sPrefix, chKey, smsgStored))
+        {
+            unsigned char* pHeader = NULL;
+            unsigned char* pPayload = NULL;
+            uint32_t nPayload = 0;
+            MessageData msg;
+            std::string addr = k == 0 ? smsgStored.sAddrTo : smsgStored.sAddrOutbox;
+            if (!SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                || SecureMsgDecrypt(false, addr, pHeader, pPayload, nPayload, msg) != 0)
+                continue;
+            fStop = !fn(k == 1, chKey, smsgStored, msg);
+        }
+        delete it;
+        if (fStop)
+            return;
+    }
+}
+
+void SecureMsgCollectConversation(const std::string& counterpart, std::vector<NyxThreadMsg>& out,
+                                  std::vector<bool>& mine)
+{
+    std::vector<std::pair<NyxThreadMsg, bool> > v;
+    NyxForEachStored([&](bool fMine, const unsigned char*, const SecMsgStored& st, const MessageData& msg) {
+        if ((fMine ? st.sAddrTo : msg.sFromAddress) != counterpart)
+            return true;
+        NyxThreadMsg m;
+        std::string full = SecureMsgPlaintext(msg);
+        m.sender = msg.sFromAddress;
+        m.ts = msg.timestamp;
+        m.mid = NyxMessageId(m.sender, m.ts, full);
+        NyxSplitPlain(full, m.text, m.ext);
+        v.push_back(std::make_pair(m, fMine));
+        return true;
+    });
+    std::stable_sort(v.begin(), v.end(), [](const std::pair<NyxThreadMsg, bool>& a, const std::pair<NyxThreadMsg, bool>& b) {
+        return a.first.ts < b.first.ts;
+    });
+    out.clear();
+    mine.clear();
+    for (const auto& p : v)
+    {
+        out.push_back(p.first);
+        mine.push_back(p.second);
+    }
+}
+
+bool SecureMsgFindByMid(const std::string& mid, NyxStoredRef& ref)
+{
+    if (!NyxIsHexId(mid))
+        return false;
+    bool fFound = false;
+    int maxSeq = 0;
+    NyxForEachStored([&](bool fMine, const unsigned char*, const SecMsgStored& st, const MessageData& msg) {
+        std::string full = SecureMsgPlaintext(msg), text, ext;
+        NyxSplitPlain(full, text, ext);
+        if (fMine)
+        {
+            NyxRecords r = NyxParseRecords(ext);
+            if (r.fEdit && r.edit.mid == mid)
+                maxSeq = std::max(maxSeq, r.edit.seq);
+        }
+        if (!fFound && NyxMessageId(msg.sFromAddress, msg.timestamp, full) == mid)
+        {
+            fFound = true;
+            ref.sender = msg.sFromAddress;
+            ref.counterpart = fMine ? st.sAddrTo : msg.sFromAddress;
+            ref.myAddr = fMine ? msg.sFromAddress : st.sAddrTo;
+            ref.text = text;
+            ref.timestamp = msg.timestamp;
+            ref.fMine = fMine;
+        }
+        return true;
+    });
+    ref.maxEditSeq = maxSeq;
+    return fFound;
+}
+
+int SecureMsgWipeMid(const std::string& signer, const std::string& mid)
+{
+    if (signer.empty() || signer == "anon" || !NyxIsHexId(mid))
+        return 0;
+    std::vector<std::vector<unsigned char> > vErase;
+    NyxForEachStored([&](bool, const unsigned char* chKey, const SecMsgStored&, const MessageData& msg) {
+        if (msg.sFromAddress == signer
+            && NyxMessageId(msg.sFromAddress, msg.timestamp, SecureMsgPlaintext(msg)) == mid)
+            vErase.push_back(std::vector<unsigned char>(chKey, chKey + 18));
+        return true;
+    });
+    int n = 0;
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cr+"))
+        return 0;
+    for (size_t i = 0; i < vErase.size(); i++)
+    {
+        SecMsgStored st;
+        if (db.ReadSmesg(&vErase[i][0], st))
+        {
+            // Overwrite before erase so the record is not left intact in the live table.
+            std::fill(st.vchMessage.begin(), st.vchMessage.end(), 0);
+            db.WriteSmesg(&vErase[i][0], st);
+        }
+        if (db.EraseSmesg(&vErase[i][0]))
+            n++;
+    }
+    return n;
+}
+
+static bool NyxLookupForControl(const std::string& mid, NyxStoredRef& ref, std::string& sError)
+{
+    if (!SecureMsgFindByMid(mid, ref))
+    {
+        sError = "No stored message has that id.";
+        return false;
+    }
+    if (ref.counterpart == "anon" || ref.myAddr.empty())
+    {
+        sError = "Anonymous messages cannot be replied to, reacted to, edited or deleted.";
+        return false;
+    }
+    return true;
+}
+
+int SecureMsgSendReply(const std::string& mid, const std::string& body, std::string& sError)
+{
+    NyxStoredRef ref;
+    if (!NyxLookupForControl(mid, ref, sError))
+        return 1;
+    NyxReply r;
+    r.mid = mid;
+    r.quote = ref.text;
+    std::string plain = NyxReplyPlain(body, r, std::string(), SMSG_MAX_MSG_BYTES);
+    if (body.empty() || plain.empty())
+    {
+        sError = "Reply is empty or too long.";
+        return 1;
+    }
+    return SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
+}
+
+int SecureMsgSendReact(const std::string& mid, const std::string& emoji, bool fAdd, std::string& sError)
+{
+    NyxStoredRef ref;
+    if (!NyxLookupForControl(mid, ref, sError))
+        return 1;
+    NyxReact k;
+    k.mid = mid;
+    k.fAdd = fAdd;
+    k.emoji = emoji;
+    std::string plain = NyxReactPlain(k);
+    if (plain.empty())
+    {
+        sError = "Not a reaction emoji.";
+        return 1;
+    }
+    return SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
+}
+
+int SecureMsgSendEdit(const std::string& mid, const std::string& body, std::string& sError)
+{
+    NyxStoredRef ref;
+    if (!NyxLookupForControl(mid, ref, sError))
+        return 1;
+    if (!ref.fMine)
+    {
+        sError = "Only the sender can edit a message.";
+        return 1;
+    }
+    if (GetTime() > ref.timestamp + NYX_EDIT_WINDOW)
+    {
+        sError = "Messages can be edited for 48 hours.";
+        return 1;
+    }
+    NyxEdit e;
+    e.mid = mid;
+    e.seq = ref.maxEditSeq + 1;
+    if (e.seq > 255)
+    {
+        sError = "Edit limit reached.";
+        return 1;
+    }
+    std::string plain = NyxEditPlain(body, e, SMSG_MAX_MSG_BYTES);
+    if (plain.empty())
+    {
+        sError = "Edit is empty or too long.";
+        return 1;
+    }
+    return SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
+}
+
+int SecureMsgSendDelete(const std::string& mid, std::string& sError)
+{
+    NyxStoredRef ref;
+    if (!NyxLookupForControl(mid, ref, sError))
+        return 1;
+    if (!ref.fMine)
+    {
+        sError = "Only the sender can delete a message for everyone.";
+        return 1;
+    }
+    std::string plain = NyxDeletePlain(mid);
+    int rv = SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
+    if (rv == 0)
+        SecureMsgWipeMid(ref.myAddr, mid);
+    return rv;
+}
+
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 {
     // Typing notifications are not sent over the network: a flooded (addrFrom, addrTo)
@@ -3249,6 +3473,18 @@ int SecureMsgScanMessage(unsigned char *pHeader, unsigned char *pPayload, uint32
                 };
             };
         }
+
+        // A signed delete wipes the sender's original.
+        MessageData full;
+        std::string text, ext;
+        if (SecureMsgDecrypt(false, addressTo, pHeader, pPayload, nPayload, full) == 0
+            && full.sFromAddress != "anon")
+        {
+            NyxSplitPlain(SecureMsgPlaintext(full), text, ext);
+            NyxRecords r = NyxParseRecords(ext);
+            if (r.fDelete)
+                SecureMsgWipeMid(full.sFromAddress, r.delMid);
+        }
     };
 
     return 0;
@@ -3957,7 +4193,7 @@ int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t n
     return 0;
 };
 
-int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message)
+int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message, int64_t nTimestamp)
 {
     /* Create a secure message
 
@@ -3995,7 +4231,7 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
     smsg.version[0] = 1;
     smsg.version[1] = 1;
     smsg.flags      = 0;    // reserved; no reader assigns meaning to it yet
-    smsg.SetTimestamp(GetTime());
+    smsg.SetTimestamp(nTimestamp ? nTimestamp : GetTime());
 
 
     bool fSendAnonymous;
@@ -4594,7 +4830,7 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
             printf("Encrypting a copy for outbox, using address %s\n", addressOutbox.c_str());
 
         SecureMessage smsgForOutbox;
-        if ((rv = SecureMsgEncrypt(smsgForOutbox, addressFrom, addressOutbox, message)) != 0)
+        if ((rv = SecureMsgEncrypt(smsgForOutbox, addressFrom, addressOutbox, message, smsg.GetTimestamp())) != 0)
         {
             printf("SecureMsgSend(), encrypt for outbox failed, %d.\n", rv);
         } else

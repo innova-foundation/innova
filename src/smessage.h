@@ -461,6 +461,27 @@ int SecureMsgDiscardFrom(const std::string& addr);
 /** Send a removal for an embed this wallet sent, to that message's recipient. */
 int SecureMsgRemoveEmbed(const std::string& id, std::string& sError);
 
+struct NyxThreadMsg;
+/** Messages exchanged with counterpart, oldest first; mine[i] is true for outbox copies. */
+void SecureMsgCollectConversation(const std::string& counterpart, std::vector<NyxThreadMsg>& out,
+                                  std::vector<bool>& mine);
+struct NyxStoredRef
+{
+    std::string sender, counterpart, myAddr, text;
+    int64_t timestamp;
+    bool fMine;
+    int maxEditSeq;     // highest edit seq this wallet sent for it
+    NyxStoredRef() : timestamp(0), fMine(false), maxEditSeq(0) {}
+};
+bool SecureMsgFindByMid(const std::string& mid, NyxStoredRef& ref);
+/** Erase stored copies of mid whose authenticated sender is signer; returns the count. */
+int SecureMsgWipeMid(const std::string& signer, const std::string& mid);
+int SecureMsgSendReply(const std::string& mid, const std::string& body, std::string& sError);
+int SecureMsgSendReact(const std::string& mid, const std::string& emoji, bool fAdd, std::string& sError);
+int SecureMsgSendEdit(const std::string& mid, const std::string& body, std::string& sError);
+/** Sends the delete to the recipient and wipes this wallet's copy. */
+int SecureMsgSendDelete(const std::string& mid, std::string& sError);
+
 
 /** Canonical v1 proof transcript: header[4..103] || payload || payload. */
 bool SecureMsgComputeProofHash(const SecureMessage& smsg,
@@ -482,7 +503,7 @@ bool SecureMsgVerifyMessageMAC(const unsigned char key[32],
 int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 
-int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message);
+int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message, int64_t nTimestamp = 0);
 
 int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload, MessageData& msg);
 int SecureMsgDecrypt(bool fTestOnly, std::string& address, SecureMessage& smsg, MessageData& msg);
