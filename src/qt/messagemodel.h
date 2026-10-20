@@ -45,7 +45,8 @@ struct MessageTableEntry
     QDateTime sent_datetime;
     QDateTime received_datetime;
     QString message;
-    QString ext;        // nyx extension record after the NUL, if any
+    QString ext;        // nyx extension record after the NUL, if any (Latin-1 bytes)
+    QString mid;        // NyxMessageId
 
     MessageTableEntry() {}
     MessageTableEntry(std::vector<unsigned char> &chKey,
@@ -131,7 +132,9 @@ public:
         /** Ambiguous bool */
         Ambiguous,
         /** Nyx extension record */
-        ExtRole
+        ExtRole,
+        /** Nyx message id */
+        MidRole
     };
 
     static const QString Sent; /**< Specifies sent message */
@@ -162,6 +165,8 @@ public:
 
     /** Verified (sender, embed id) removal records. */
     std::vector<std::pair<std::string, std::string> > embedRemovals() const;
+    /** Reaction, edit and delete records; applied by the view, never shown as rows. */
+    QList<MessageTableEntry> controlEntries() const;
 
     bool getAddressOrPubkey( QString &Address,  QString &Pubkey) const;
 
@@ -194,6 +199,7 @@ public slots:
 
 signals:
     void embedRemovalsChanged();
+    void controlsChanged();
     // Asynchronous error notification
     void error(const QString &title, const QString &message, bool modal);
 };

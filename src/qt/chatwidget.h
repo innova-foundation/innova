@@ -128,14 +128,20 @@ private:
         bool fFile;
         QString cid, encKeyHex, filename;
         qint64 fileSize;
-        RowArgs() : isMine(false), fFailed(false), embed(0), fRequest(false), modelRow(-1), fFile(false), fileSize(0) {}
+        QString mid;
+        bool fEdited, fTombstone, fCanControl, fCanEdit;
+        bool fReply, fReplyFound;
+        QString replyMid, replyName, replyText;
+        QList<QPair<QString, QStringList> > reactions;
+        RowArgs() : isMine(false), fFailed(false), embed(0), fRequest(false), modelRow(-1), fFile(false), fileSize(0),
+                    fEdited(false), fTombstone(false), fCanControl(false), fCanEdit(false), fReply(false), fReplyFound(false) {}
     };
     void addMessageRow(const RowArgs& a);
     void addChatBubble(const QString& text, const QDateTime& when, bool isMine,
                        bool fFailed = false, const QString& failReason = QString(),
                        const NyxEmbed* embed = 0, const QString& owner = QString(),
                        bool fRequest = false, int modelRow = -1);
-    void addListWidget(QListWidget *list, QWidget *w, bool fSelectable = false);
+    QListWidgetItem* addListWidget(QListWidget *list, QWidget *w, bool fSelectable = false);
     void relayoutChat();
     QPixmap avatarFor(const QString& address, const QString& name, int px);
     void setHeaderContact(const QString& address);
@@ -241,6 +247,28 @@ private:
     QSet<QString> setSentTo;      // addresses this wallet has messaged
     QSet<QString> setAddressBook;
     QSet<QString> setHiddenNow;   // removals sent this session, before the outbox echo arrives
+
+    // Replies, reactions, edit and delete-for-everyone
+    QSet<QString> setDraftContacts;   // opened with + but nothing sent yet
+    QString replyMid;
+    QWidget *replyChip;
+    QLabel *replyChipText;
+    QString reactTargetMid;
+    QMap<QString, bool> mapPendingReact;      // "mid\nemoji" -> wanted state, coalesced for 3 s
+    QMap<QString, bool> mapBaseReactMine;     // "mid\nemoji" -> this wallet has reacted
+    QTimer *reactTimer;
+    QMap<QString, QListWidgetItem*> mapMidItems;
+    QSet<QString> setMyAddrs;
+    QWidget* makeReactionBar(const RowArgs& a);
+    void startReply(const QString& mid, const QString& name, const QString& snippet);
+    void cancelReply();
+    void toggleReaction(const QString& mid, const QString& emoji);
+    void flushReactions();
+    void openReactPicker(const QString& mid, QWidget *anchor);
+    void editMessage(const QString& mid, const QString& current);
+    void unsendMessage(const QString& mid);
+    void scrollToMid(const QString& mid);
+    void openConversation(const QString& address);
 
     void updateContactTypingDisplay();
     void refreshComposerIcons();

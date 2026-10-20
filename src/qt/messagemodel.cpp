@@ -6,6 +6,7 @@
 #include "messagemodel.h"
 #include "addresstablemodel.h"
 #include "nyxembed.h"
+#include "nyxext.h"
 
 #include "ui_interface.h"
 #include "base58.h"
@@ -51,6 +52,7 @@ class MessageTablePriv
 public:
     QList<MessageTableEntry> cachedMessageTable;
     std::vector<std::pair<std::string, std::string> > removals; // (verified sender, embed id)
+    QList<MessageTableEntry> controls;
     MessageModel *parent;
 
     // Removal control records are applied, never shown as rows.
@@ -73,7 +75,33 @@ public:
         }
         MessageTableEntry e(vchKey, type, label, to, from, sent, recv, QString::fromStdString(text));
         e.ext = QString::fromLatin1(ext.data(), (int)ext.size());
+        e.mid = QString::fromStdString(NyxMessageId(msg.sFromAddress, msg.timestamp, full));
+        NyxRecords recs = NyxParseRecords(ext);
+        if (from != "anon" && recs.IsControl())
+        {
+            controls.append(e);
+            if (recs.fDelete)
+                dropMid(QString::fromStdString(recs.delMid), from, append);
+            if (!append)
+                emit parent->controlsChanged();
+            return;
+        }
         addMessageEntry(e, append);
+    }
+
+    // The store already wiped these; keep the cache in step.
+    void dropMid(const QString& mid, const QString& from, bool fLoading)
+    {
+        for (int i = cachedMessageTable.size() - 1; i >= 0; i--)
+        {
+            if (cachedMessageTable[i].mid != mid || cachedMessageTable[i].from_address != from)
+                continue;
+            if (!fLoading)
+                parent->beginRemoveRows(QModelIndex(), i, i);
+            cachedMessageTable.removeAt(i);
+            if (!fLoading)
+                parent->endRemoveRows();
+        }
     }
 
     MessageTablePriv(MessageModel *parent):
@@ -83,6 +111,7 @@ public:
     {
         cachedMessageTable.clear();
         removals.clear();
+        controls.clear();
 
         if (parent->getWalletModel()->getEncryptionStatus() == WalletModel::Locked)
         {
@@ -502,6 +531,7 @@ QVariant MessageModel::data(const QModelIndex &index, int role) const
     case LabelRole:         return rec->label;
     case MessageRole:       return rec->message;
     case ExtRole:           return rec->ext;
+    case MidRole:           return rec->mid;
     case ShortMessageRole:  return rec->message; // TODO: Short message
     case HTMLRole:          return rec->received_datetime.toString() + "<br>"  + (rec->label.isEmpty() ? rec->from_address : rec->label)  + "<br>" + rec->message;
     case Ambiguous:
@@ -633,6 +663,11 @@ void MessageModel::unsubscribeFromCoreSignals()
     NotifySecMsgWalletUnlocked.disconnect(boost::bind(NotifySecMsgWallet, this));
 
     disconnect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
+}
+
+QList<MessageTableEntry> MessageModel::controlEntries() const
+{
+    return priv->controls;
 }
 
 std::vector<std::pair<std::string, std::string> > MessageModel::embedRemovals() const

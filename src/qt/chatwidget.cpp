@@ -1,7 +1,6 @@
 #include "chatwidget.h"
 #include "messagemodel.h"
 #include "walletmodel.h"
-#include "sendmessagesdialog.h"
 #include "smessage.h"
 #include "guiutil.h"
 #include "wallet.h"
@@ -9,6 +8,7 @@
 #include "base58.h"
 #include "emojipicker.h"
 #include "nyxembed.h"
+#include "nyxext.h"
 #include "nyxsafety.h"
 #include "linkpreview.h"
 #include "nyxui.h"
@@ -40,6 +40,12 @@
 #include <QEvent>
 #include <QMenu>
 #include <QTextBoundaryFinder>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QPointer>
+#include <functional>
 
 /** Single-line label that elides its text to the available width. */
 class NyxElideLabel : public QLabel
@@ -142,7 +148,13 @@ bool ChatWidget::parseFileMessage(const QString& text, QString& cid, QString& en
     return !cid.isEmpty() && encKeyHex.length() == 88 && !filename.isEmpty() && size > 0;
 }
 
-enum ComposerGlyph { GLYPH_ATTACH, GLYPH_EMOJI, GLYPH_LOCK };
+enum ComposerGlyph { GLYPH_ATTACH, GLYPH_EMOJI, GLYPH_LOCK, GLYPH_PLUS };
+
+static std::string extBytes(const QString& ext)
+{
+    const QByteArray b = ext.toLatin1();
+    return std::string(b.constData(), b.size());
+}
 
 static const char* NYX_ACCENT = "#5865F2";
 static const char* NYX_IPFS_NOTICE_KEY = "fNyxIpfsNoticeDismissed";
@@ -168,6 +180,12 @@ static QIcon composerIcon(ComposerGlyph g, const QColor& c, qreal dpr)
         p.setPen(QPen(Qt::black, 2.0, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(10, 6), QPointF(10, 14));
         p.drawLine(QPointF(6, 10), QPointF(14, 10));
+    }
+    else if (g == GLYPH_PLUS)
+    {
+        p.setPen(QPen(c, 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(10, 4), QPointF(10, 16));
+        p.drawLine(QPointF(4, 10), QPointF(16, 10));
     }
     else if (g == GLYPH_LOCK)
     {
@@ -209,7 +227,7 @@ void ChatWidget::refreshComposerIcons()
     const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
     const QColor c = mutedColor(palette());
     attachButton->setIcon(composerIcon(GLYPH_ATTACH, c, dpr));
-    newChatButton->setIcon(composerIcon(GLYPH_ATTACH, c, dpr));
+    newChatButton->setIcon(composerIcon(GLYPH_PLUS, palette().color(QPalette::Text), dpr));
     emojiButton->setIcon(composerIcon(GLYPH_EMOJI, c, dpr));
     chatHeaderLock->setPixmap(composerIcon(GLYPH_LOCK, c, dpr).pixmap(QSize(16, 16)));
 }
@@ -300,7 +318,10 @@ ChatWidget::ChatWidget(QWidget *parent) :
     ipfsState(-1),
     fUploading(false),
     lastRowTime(0),
-    lastRowDay(0)
+    lastRowDay(0),
+    replyChip(0),
+    replyChipText(0),
+    reactTimer(0)
 {
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -530,10 +551,19 @@ ChatWidget::ChatWidget(QWidget *parent) :
     emojiPicker = new EmojiPicker(this);
     emojiPicker->hide();
     connect(emojiPicker, &EmojiPicker::emojiSelected, [this](const QString& emoji) {
+        if (!reactTargetMid.isEmpty())
+        {
+            const QString mid = reactTargetMid;
+            reactTargetMid.clear();
+            emojiPicker->hide();
+            toggleReaction(mid, emoji);
+            return;
+        }
         messageInput->insertPlainText(emoji);
         messageInput->setFocus();
     });
     connect(emojiButton, &QToolButton::clicked, [this]() {
+        reactTargetMid.clear();
         QPoint pos = emojiButton->mapToGlobal(QPoint(emojiButton->width() - emojiPicker->width(), -emojiPicker->height() - 8));
         emojiPicker->move(pos);
         emojiPicker->show();
@@ -603,7 +633,36 @@ ChatWidget::ChatWidget(QWidget *parent) :
         connect(x, &QToolButton::clicked, [this]() { clearPreview(true); });
     }
     previewChip->hide();
+
+    replyChip = new QWidget();
+    replyChip->setObjectName("nyxReplyChip");
+    replyChip->setAttribute(Qt::WA_StyledBackground, true);
+    replyChip->setStyleSheet("#nyxReplyChip { background-color: rgba(127,127,127,30); border-radius: 4px; }");
+    {
+        QHBoxLayout *pl = new QHBoxLayout(replyChip);
+        pl->setContentsMargins(10, 3, 6, 3);
+        replyChipText = new QLabel();
+        replyChipText->setTextFormat(Qt::PlainText);
+        replyChipText->setFont(GUIUtil::emojiFont(11));
+        replyChipText->setStyleSheet("color: palette(dark); font-size: 11px; background: transparent;");
+        replyChipText->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        pl->addWidget(replyChipText, 1);
+        QToolButton *x = new QToolButton();
+        x->setText(QString::fromUtf8("\xC3\x97"));
+        x->setAutoRaise(true);
+        x->setToolTip(tr("Cancel reply"));
+        x->setStyleSheet("QToolButton { padding: 0px 4px; border: none; font-size: 14px; background: transparent; }");
+        pl->addWidget(x);
+        connect(x, &QToolButton::clicked, this, &ChatWidget::cancelReply);
+    }
+    replyChip->hide();
+    inputOuter->addWidget(replyChip);
     inputOuter->addWidget(previewChip);
+
+    reactTimer = new QTimer(this);
+    reactTimer->setSingleShot(true);
+    reactTimer->setInterval(3000);
+    connect(reactTimer, &QTimer::timeout, this, &ChatWidget::flushReactions);
     inputOuter->addWidget(composerBar);
 
     previewFetcher = new LinkPreviewFetcher(this);
@@ -623,7 +682,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
     // Connections
     connect(contactList, SIGNAL(currentRowChanged(int)), this, SLOT(onContactSelected(int)));
     connect(contactList, SIGNAL(customContextMenuRequested(QPoint)), this, SLOT(onContactMenu(QPoint)));
-    connect(newChatButton, SIGNAL(clicked()), this, SLOT(onNewChatClicked()));
+    connect(newChatButton, &QToolButton::clicked, this, &ChatWidget::onNewChatClicked);
     connect(attachButton, SIGNAL(clicked()), this, SLOT(onFileAttachClicked()));
     connect(enableMessagingButton, SIGNAL(clicked()), this, SLOT(onEnableMessagingClicked()));
 
@@ -709,7 +768,7 @@ void ChatWidget::clearHeaderContact()
     chatHeaderLock->hide();
 }
 
-void ChatWidget::addListWidget(QListWidget *list, QWidget *w, bool fSelectable)
+QListWidgetItem* ChatWidget::addListWidget(QListWidget *list, QWidget *w, bool fSelectable)
 {
     QListWidgetItem *item = new QListWidgetItem();
     if (!fSelectable)
@@ -719,6 +778,7 @@ void ChatWidget::addListWidget(QListWidget *list, QWidget *w, bool fSelectable)
     item->setSizeHint(QSize(0, qMax(h, 1)));
     list->addItem(item);
     list->setItemWidget(item, w);
+    return item;
 }
 
 void ChatWidget::relayoutChat()
@@ -774,6 +834,8 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
     {
         connect(msgModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SLOT(onNewMessage()));
         connect(msgModel, SIGNAL(embedRemovalsChanged()), this, SLOT(onNewMessage()));
+        connect(msgModel, SIGNAL(controlsChanged()), this, SLOT(onNewMessage()));
+        connect(msgModel, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SLOT(onNewMessage()));
         refreshContacts();
     }
 
@@ -876,6 +938,14 @@ void ChatWidget::refreshContacts()
             ci.lastMine = isMine;
         }
     }
+
+    for (const QString& d : setDraftContacts)
+        if (!contacts.contains(d))
+        {
+            ContactInfo& ci = contacts[d];
+            ci.last = QDateTime::currentDateTime();
+            ci.preview = tr("New conversation");
+        }
 
     QList<QPair<QDateTime, QString>> sorted;
     for (auto it = contacts.begin(); it != contacts.end(); ++it)
@@ -983,6 +1053,8 @@ void ChatWidget::onContactSelected(int row)
     if (addr.isEmpty())
         return;
 
+    if (addr != currentContact)
+        cancelReply();
     currentContact = addr;
     setHeaderContact(currentContact);
     updateSendButton();
@@ -1084,6 +1156,8 @@ void ChatWidget::loadConversation(const QString& address)
 {
     chatView->clear();
     lastRowSender.clear();
+    mapMidItems.clear();
+    mapBaseReactMine.clear();
 
     if (!msgModel)
         return;
@@ -1098,58 +1172,146 @@ void ChatWidget::loadConversation(const QString& address)
     if (state == NYX_SENDER_REQUEST)
         addRequestBar(address);
 
-    QList<QPair<QDateTime, int>> msgIndices;
-
+    // Rows from the model plus the control records for this conversation.
+    struct Src { QDateTime dt; int modelRow; MessageTableEntry ctl; bool fMine; };
+    QList<Src> src;
+    setMyAddrs.clear();
     for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
     {
         QString from = msgModel->data(msgModel->index(i, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString();
         QString to = msgModel->data(msgModel->index(i, MessageModel::ToAddress, QModelIndex()), Qt::DisplayRole).toString();
-
-        if (from == address || to == address)
-        {
-            QDateTime dt = msgModel->data(msgModel->index(i, MessageModel::ReceivedDateTime, QModelIndex()), Qt::DisplayRole).toDateTime();
-            msgIndices.append(qMakePair(dt, i));
-        }
+        const bool fMine = msgModel->data(msgModel->index(i, 0, QModelIndex()), MessageModel::TypeRole).toInt() == MessageTableEntry::Sent;
+        if ((fMine ? to : from) != address)
+            continue;
+        setMyAddrs.insert(fMine ? from : to);
+        Src r;
+        r.dt = msgModel->data(msgModel->index(i, MessageModel::ReceivedDateTime, QModelIndex()), Qt::DisplayRole).toDateTime();
+        r.modelRow = i;
+        r.fMine = fMine;
+        src.append(r);
     }
+    const QList<MessageTableEntry> ctls = msgModel->controlEntries();
+    for (const MessageTableEntry& e : ctls)
+    {
+        const bool fMine = e.type == MessageTableEntry::Sent;
+        if ((fMine ? e.to_address : e.from_address) != address)
+            continue;
+        setMyAddrs.insert(fMine ? e.from_address : e.to_address);
+        Src r;
+        r.dt = e.received_datetime;
+        r.modelRow = -1;
+        r.ctl = e;
+        r.fMine = fMine;
+        src.append(r);
+    }
+    std::stable_sort(src.begin(), src.end(), [](const Src& x, const Src& y) { return x.dt < y.dt; });
 
-    std::sort(msgIndices.begin(), msgIndices.end());
+    std::vector<NyxThreadMsg> rows;
+    for (const Src& r : src)
+    {
+        NyxThreadMsg m;
+        if (r.modelRow >= 0)
+        {
+            m.mid = msgModel->data(msgModel->index(r.modelRow, 0, QModelIndex()), MessageModel::MidRole).toString().toStdString();
+            m.sender = msgModel->data(msgModel->index(r.modelRow, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString().toStdString();
+            m.ts = msgModel->data(msgModel->index(r.modelRow, MessageModel::SentDateTime, QModelIndex()), Qt::DisplayRole).toDateTime().toSecsSinceEpoch();
+            m.text = msgModel->data(msgModel->index(r.modelRow, MessageModel::Message, QModelIndex()), Qt::DisplayRole).toString().toStdString();
+            m.ext = extBytes(msgModel->data(msgModel->index(r.modelRow, 0, QModelIndex()), MessageModel::ExtRole).toString());
+        }
+        else
+        {
+            m.mid = r.ctl.mid.toStdString();
+            m.sender = r.ctl.from_address.toStdString();
+            m.ts = r.ctl.sent_datetime.toSecsSinceEpoch();
+            m.text = r.ctl.message.toStdString();
+            m.ext = extBytes(r.ctl.ext);
+        }
+        rows.push_back(m);
+    }
+    const std::vector<NyxMsgView> views = NyxBuildThread(rows, [this](const std::string& s) {
+        const QString q = QString::fromStdString(s);
+        return setMyAddrs.contains(q) || contactState(q) == NYX_SENDER_KNOWN;
+    });
 
-    if (msgIndices.isEmpty())
+    bool fAny = false;
+    for (const NyxMsgView& v : views)
+        fAny = fAny || !v.fControl;
+    if (!fAny)
         addCenteredNote(tr("No messages yet. Say hello."));
 
     const std::vector<std::pair<std::string, std::string> > removals = msgModel->embedRemovals();
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
     QDate lastDate;
-    for (const auto& pair : msgIndices)
+    for (size_t i = 0; i < rows.size(); i++)
     {
-        int row = pair.second;
-        int type = msgModel->data(msgModel->index(row, 0, QModelIndex()), MessageModel::TypeRole).toInt();
-        QString msg = msgModel->data(msgModel->index(row, MessageModel::Message, QModelIndex()), Qt::DisplayRole).toString();
-        QDateTime dt = pair.first;
-
+        const NyxMsgView& v = views[i];
+        if (v.fControl)
+            continue;
+        const Src& r = src[i];
+        const QDateTime dt = r.dt;
         if (dt.date() != lastDate)
         {
             addDateSeparator(dt.date());
             lastDate = dt.date();
         }
 
-        bool isMine = (type == MessageTableEntry::Sent);
-        QString owner = msgModel->data(msgModel->index(row, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString();
+        RowArgs a;
+        a.when = dt;
+        a.isMine = r.fMine;
+        a.owner = QString::fromStdString(rows[i].sender);
+        a.modelRow = r.modelRow;
+        a.mid = QString::fromStdString(rows[i].mid);
+        a.fTombstone = v.fTombstone;
+        a.fEdited = v.fEdited;
+        a.fRequest = !a.isMine && state != NYX_SENDER_KNOWN;
+        a.text = QString::fromStdString(v.text);
+        const QString msg = QString::fromStdString(rows[i].text);
 
-        QString cid, encKeyHex, filename;
-        qint64 fileSize;
-        if (parseFileMessage(msg, cid, encKeyHex, filename, fileSize))
-        {
-            addFileBubble(cid, encKeyHex, filename, fileSize, dt, isMine, owner, row);
-            continue;
-        }
-        QString ext = msgModel->data(msgModel->index(row, 0, QModelIndex()), MessageModel::ExtRole).toString();
+        if (!a.fTombstone && parseFileMessage(msg, a.cid, a.encKeyHex, a.filename, a.fileSize))
+            a.fFile = true;
+
         NyxEmbed embed;
-        bool fEmbed = !ext.isEmpty() && owner != "anon" && NyxDecodeEmbed(ext.toStdString(), embed)
-                      && !setHiddenNow.contains(QString::fromStdString(embed.id))
-                      && !NyxEmbedHidden(owner.toStdString(), embed.id, removals);
-        const bool fRequest = !isMine && state != NYX_SENDER_KNOWN;
-        addChatBubble(msg, dt, isMine, false, QString(),
-                      fEmbed && !fRequest ? &embed : 0, owner, fRequest, row);
+        if (!a.fTombstone && !a.fFile && !a.fEdited && a.owner != "anon" && !a.fRequest)
+        {
+            const std::string rec = NyxParseRecords(rows[i].ext).embedRec;
+            if (NyxDecodeEmbed(rec, embed) && !setHiddenNow.contains(QString::fromStdString(embed.id))
+                && !NyxEmbedHidden(a.owner.toStdString(), embed.id, removals))
+                a.embed = &embed;
+        }
+
+        if (v.fReply)
+        {
+            a.fReply = true;
+            a.replyMid = QString::fromStdString(v.reply.mid);
+            if (v.replyIndex >= 0)
+            {
+                a.fReplyFound = true;
+                const QString o = QString::fromStdString(rows[v.replyIndex].sender);
+                a.replyName = src[v.replyIndex].fMine ? myDisplayName() : displayNameFor(o);
+                a.replyText = QString::fromStdString(views[v.replyIndex].text);
+            }
+            else
+                a.replyText = QString::fromStdString(v.reply.quote);
+        }
+
+        for (const auto& e : v.reactions)
+        {
+            QStringList who;
+            bool fMineReact = false;
+            for (const std::string& w : e.second)
+            {
+                who << QString::fromStdString(w);
+                fMineReact = fMineReact || setMyAddrs.contains(who.last());
+            }
+            const QString emoji = QString::fromStdString(e.first);
+            a.reactions.append(qMakePair(emoji, who));
+            mapBaseReactMine[a.mid + '\n' + emoji] = fMineReact;
+        }
+
+        const bool fAnonThread = address == "anon" || a.owner == "anon";
+        a.fCanControl = a.isMine && !fAnonThread && !a.fTombstone && !a.mid.isEmpty();
+        a.fCanEdit = a.fCanControl && !a.fFile && now <= rows[i].ts + NYX_EDIT_WINDOW;
+        addMessageRow(a);
     }
 
     chatView->scrollToBottom();
@@ -1241,6 +1403,34 @@ void ChatWidget::addMessageRow(const RowArgs& a)
     bl->setSpacing(3);
     rl->addLayout(bl, 1);
 
+    if (a.fReply)
+    {
+        QString snippet = a.replyText.simplified();
+        if (snippet.length() > 90)
+            snippet = snippet.left(90) + QString::fromUtf8("\xE2\x80\xA6");
+        QLabel *q = new QLabel();
+        q->setFont(GUIUtil::emojiFont(11));
+        q->setTextFormat(Qt::RichText);
+        q->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        q->setStyleSheet("font-size: 11px; color: palette(dark); background: transparent;");
+        const QString arrow = QString::fromUtf8("\xE2\x86\xB1&nbsp;");
+        if (a.fReplyFound)
+        {
+            q->setText(arrow + "<a href=\"jump\" style=\"color: palette(dark); text-decoration: none;\"><b>"
+                       + a.replyName.toHtmlEscaped() + "</b>&nbsp;&nbsp;" + snippet.toHtmlEscaped() + "</a>");
+            q->setToolTip(tr("Jump to the original message"));
+            q->setCursor(Qt::PointingHandCursor);
+            const QString target = a.replyMid;
+            connect(q, &QLabel::linkActivated, this, [this, target]() { scrollToMid(target); });
+        }
+        else
+        {
+            q->setText(arrow + tr("Original not available. Quoted by sender: %1").arg(snippet).toHtmlEscaped());
+            q->setToolTip(tr("The original is not in this wallet. The quote is the sender's copy and may differ from what was said."));
+        }
+        bl->addWidget(q);
+    }
+
     if (!fGrouped)
     {
         QLabel *hdr = new QLabel();
@@ -1258,7 +1448,7 @@ void ChatWidget::addMessageRow(const RowArgs& a)
         bl->addWidget(hdr);
     }
 
-    if (!a.fFile && !a.isMine && NyxLooksLikeScam(a.text.toStdString()))
+    if (!a.fFile && !a.fTombstone && !a.isMine && NyxLooksLikeScam(a.text.toStdString()))
     {
         QLabel *warn = new QLabel(tr("Warning: this message asks for a recovery phrase, private key or wallet "
                                      "\"verification\". It is almost certainly a scam.") + "\n" + tr(NYX_SECRET_WARNING));
@@ -1310,16 +1500,23 @@ void ChatWidget::addMessageRow(const RowArgs& a)
         QLabel *body = new QLabel();
         body->setTextFormat(Qt::RichText);
         const std::string html = a.fRequest ? NyxEscapeText(a.text.toStdString()) : NyxLinkify(a.text.toStdString());
-        body->setText("<span style=\"white-space: pre-wrap;\">" + QString::fromStdString(html) + "</span>");
+        if (a.fTombstone)
+            body->setText("<i>" + tr("message deleted").toHtmlEscaped() + "</i>");
+        else
+            body->setText("<span style=\"white-space: pre-wrap;\">" + QString::fromStdString(html) + "</span>"
+                          + (a.fEdited ? QString("<span style=\"font-size: 10px; color: palette(dark);\">&nbsp;(%1)</span>")
+                                             .arg(tr("edited").toHtmlEscaped()) : QString()));
+        body->setContextMenuPolicy(Qt::NoContextMenu);
         body->setOpenExternalLinks(false);
         body->setWordWrap(true);
         body->setTextInteractionFlags(a.fRequest ? Qt::TextSelectableByMouse
                                                  : (Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse));
         connect(body, &QLabel::linkActivated, this, &ChatWidget::confirmOpenUrl);
-        body->setFont(GUIUtil::emojiFont(!a.fFile && isJumboEmoji(a.text) ? 42 : 14));
-        body->setStyleSheet(QString(a.fFailed ? "background: transparent; color: palette(dark);"
+        const bool fJumbo = !a.fTombstone && isJumboEmoji(a.text);
+        body->setFont(GUIUtil::emojiFont(fJumbo ? 42 : 14));
+        body->setStyleSheet(QString(a.fFailed || a.fTombstone ? "background: transparent; color: palette(dark);"
                                               : "background: transparent; color: palette(text);") +
-                            (!a.fFile && isJumboEmoji(a.text) ? " font-size: 42px;" : ""));
+                            (fJumbo ? " font-size: 42px;" : ""));
         body->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         bl->addWidget(body);
         if (a.embed)
@@ -1330,6 +1527,9 @@ void ChatWidget::addMessageRow(const RowArgs& a)
             bl->addLayout(wrap);
         }
     }
+
+    if (QWidget *rb = makeReactionBar(a))
+        bl->addWidget(rb);
 
     if (a.fFailed)
     {
@@ -1358,23 +1558,248 @@ void ChatWidget::addMessageRow(const RowArgs& a)
         return b;
     };
     const QString copyText = a.fFile ? a.filename : a.text;
-    connect(tool(tr("Copy"), tr("Copy text")), &QToolButton::clicked, [copyText]() {
-        QApplication::clipboard()->setText(copyText);
-    });
+    const bool fInteract = !a.fTombstone && !a.fFailed && !a.mid.isEmpty() && a.owner != "anon" && currentContact != "anon";
+    const QString mid = a.mid;
+    const QString snippet = a.fFile ? a.filename : a.text;
+    const QString who = name;
+    QMenu *menu = new QMenu(rowW);
+    auto act = [&](const QString& label, const QString& tip, std::function<void()> fn, bool fBar) {
+        if (fBar)
+            connect(tool(label, tip), &QToolButton::clicked, this, [this, fn]() { QTimer::singleShot(0, this, fn); });
+        connect(menu->addAction(tip), &QAction::triggered, this, [this, fn]() { QTimer::singleShot(0, this, fn); });
+    };
+    if (fInteract)
+    {
+        QToolButton *rb = tool(tr("React"), tr("Add reaction"));
+        connect(rb, &QToolButton::clicked, this, [this, mid, rb]() { openReactPicker(mid, rb); });
+        connect(menu->addAction(tr("Add reaction")), &QAction::triggered, this, [this, mid, rowW]() { openReactPicker(mid, rowW); });
+        act(tr("Reply"), tr("Reply"), [this, mid, who, snippet]() { startReply(mid, who, snippet); }, true);
+    }
+    if (a.fCanEdit)
+    {
+        const QString cur = a.text;
+        act(tr("Edit"), tr("Edit message"), [this, mid, cur]() { editMessage(mid, cur); }, true);
+    }
+    if (a.fCanControl)
+        act(tr("Unsend"), tr("Delete for everyone"), [this, mid]() { unsendMessage(mid); }, true);
+    menu->addSeparator();
+    if (!a.fTombstone)
+        act(tr("Copy"), tr("Copy text"), [copyText]() { QApplication::clipboard()->setText(copyText); }, false);
     if (!addr.isEmpty() && addr != "anon")
-        connect(tool(tr("Address"), tr("Copy sender address")), &QToolButton::clicked, [addr]() {
-            QApplication::clipboard()->setText(addr);
-        });
+        act(tr("Address"), tr("Copy sender address"), [addr]() { QApplication::clipboard()->setText(addr); }, false);
     if (a.modelRow >= 0)
     {
         const int mrow = a.modelRow;
-        connect(tool(tr("Delete"), tr("Delete from this wallet only")), &QToolButton::clicked,
-                [this, mrow]() { QTimer::singleShot(0, this, [this, mrow]() { deleteMessageRow(mrow); }); });
+        act(tr("Delete"), tr("Delete from this wallet only"), [this, mrow]() { deleteMessageRow(mrow); }, false);
     }
+    QToolButton *more = tool(QString::fromUtf8("\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2"), tr("More"));
+    connect(more, &QToolButton::clicked, this, [more, menu]() { menu->popup(more->mapToGlobal(QPoint(0, more->height()))); });
+    rowW->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(rowW, &QWidget::customContextMenuRequested, this, [rowW, menu](const QPoint& pos) {
+        menu->popup(rowW->mapToGlobal(pos));
+    });
     tb->hide();
     rowW->toolbar = tb;
 
-    addListWidget(chatView, rowW);
+    QListWidgetItem *item = addListWidget(chatView, rowW);
+    if (!a.mid.isEmpty())
+        mapMidItems[a.mid] = item;
+}
+
+QWidget* ChatWidget::makeReactionBar(const RowArgs& a)
+{
+    if (a.mid.isEmpty() || a.fTombstone)
+        return 0;
+    // Base state with this wallet's pending toggles applied.
+    QList<QPair<QString, int> > chips;
+    QSet<QString> mineSet;
+    for (const auto& e : a.reactions)
+    {
+        bool fMine = false;
+        for (const QString& w : e.second)
+            fMine = fMine || setMyAddrs.contains(w);
+        if (fMine)
+            mineSet.insert(e.first);
+        chips.append(qMakePair(e.first, (int)e.second.size()));
+    }
+    for (auto it = mapPendingReact.constBegin(); it != mapPendingReact.constEnd(); ++it)
+    {
+        const int nl = it.key().indexOf('\n');
+        if (it.key().left(nl) != a.mid)
+            continue;
+        const QString emoji = it.key().mid(nl + 1);
+        int idx = -1;
+        for (int i = 0; i < chips.size(); i++)
+            if (chips[i].first == emoji)
+                idx = i;
+        const bool fWas = mineSet.contains(emoji);
+        if (it.value() == fWas)
+            continue;
+        if (idx < 0)
+        {
+            chips.append(qMakePair(emoji, 0));
+            idx = chips.size() - 1;
+        }
+        chips[idx].second += it.value() ? 1 : -1;
+        if (it.value()) mineSet.insert(emoji); else mineSet.remove(emoji);
+    }
+    bool fAny = false;
+    for (const auto& c : chips)
+        fAny = fAny || c.second > 0;
+    if (!fAny)
+        return 0;
+
+    QWidget *bar = new QWidget();
+    bar->setAttribute(Qt::WA_TranslucentBackground);
+    QHBoxLayout *h = new QHBoxLayout(bar);
+    h->setContentsMargins(0, 2, 0, 0);
+    h->setSpacing(4);
+    const QString mid = a.mid;
+    for (const auto& c : chips)
+    {
+        if (c.second <= 0)
+            continue;
+        const bool fMine = mineSet.contains(c.first);
+        QToolButton *b = new QToolButton();
+        b->setText(c.first + " " + QString::number(c.second));
+        b->setFont(GUIUtil::emojiFont(13));
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(fMine ? tr("You reacted. Click to remove.") : tr("Click to react"));
+        b->setStyleSheet(QString("QToolButton { border-radius: 8px; padding: 1px 7px; font-size: 12px; color: palette(text);"
+                                 " background-color: %1; border: 1px solid %2; }"
+                                 "QToolButton:hover { border: 1px solid rgba(127,127,127,140); }")
+                         .arg(fMine ? "rgba(88,101,242,60)" : "rgba(127,127,127,35)",
+                              fMine ? NYX_ACCENT : "transparent"));
+        const QString emoji = c.first;
+        connect(b, &QToolButton::clicked, this, [this, mid, emoji]() { toggleReaction(mid, emoji); });
+        h->addWidget(b);
+    }
+    if (currentContact != "anon")
+    {
+        QToolButton *add = new QToolButton();
+        add->setText("+");
+        add->setToolTip(tr("Add reaction"));
+        add->setCursor(Qt::PointingHandCursor);
+        add->setStyleSheet("QToolButton { border-radius: 8px; padding: 1px 8px; font-size: 12px; color: palette(dark);"
+                           " background-color: rgba(127,127,127,35); border: 1px solid transparent; }"
+                           "QToolButton:hover { color: palette(text); }");
+        connect(add, &QToolButton::clicked, this, [this, mid, add]() { openReactPicker(mid, add); });
+        h->addWidget(add);
+    }
+    h->addStretch(1);
+    return bar;
+}
+
+void ChatWidget::openReactPicker(const QString& mid, QWidget *anchor)
+{
+    reactTargetMid = mid;
+    QPoint pos = anchor->mapToGlobal(QPoint(anchor->width() - emojiPicker->width(), anchor->height() + 4));
+    emojiPicker->move(pos);
+    emojiPicker->show();
+    emojiPicker->raise();
+}
+
+void ChatWidget::toggleReaction(const QString& mid, const QString& emoji)
+{
+    if (mid.isEmpty() || !NyxIsReactionEmoji(emoji.toStdString()))
+        return;
+    const QString key = mid + '\n' + emoji;
+    const bool fBase = mapBaseReactMine.value(key, false);
+    const bool fNow = mapPendingReact.contains(key) ? mapPendingReact.value(key) : fBase;
+    if (!fNow == fBase)
+        mapPendingReact.remove(key);
+    else
+        mapPendingReact[key] = !fNow;
+    // Rapid toggles collapse into the net change, sent after 3 s.
+    reactTimer->start();
+    if (!currentContact.isEmpty())
+    {
+        const int sv = chatView->verticalScrollBar()->value();
+        loadConversation(currentContact);
+        chatView->verticalScrollBar()->setValue(sv);
+    }
+}
+
+void ChatWidget::flushReactions()
+{
+    QMap<QString, bool> pending = mapPendingReact;
+    mapPendingReact.clear();
+    QString err;
+    for (auto it = pending.constBegin(); it != pending.constEnd(); ++it)
+    {
+        const int nl = it.key().indexOf('\n');
+        std::string sError;
+        if (SecureMsgSendReact(it.key().left(nl).toStdString(), it.key().mid(nl + 1).toStdString(), it.value(), sError) != 0)
+            err = QString::fromStdString(sError);
+    }
+    if (!err.isEmpty())
+        QMessageBox::warning(this, tr("Reaction"), err);
+}
+
+void ChatWidget::startReply(const QString& mid, const QString& name, const QString& snippet)
+{
+    replyMid = mid;
+    replyChip->setProperty("quote", snippet);
+    QString s = snippet.simplified();
+    if (s.length() > 80)
+        s = s.left(80) + QString::fromUtf8("\xE2\x80\xA6");
+    replyChipText->setText(tr("Replying to %1").arg(name) + ":  " + s);
+    replyChip->show();
+    messageInput->setFocus();
+}
+
+void ChatWidget::cancelReply()
+{
+    replyMid.clear();
+    if (replyChip)
+        replyChip->hide();
+}
+
+void ChatWidget::scrollToMid(const QString& mid)
+{
+    QListWidgetItem *item = mapMidItems.value(mid);
+    if (!item)
+        return;
+    chatView->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+    QWidget *w = chatView->itemWidget(item);
+    if (!w)
+        return;
+    w->setAttribute(Qt::WA_StyledBackground, true);
+    w->setStyleSheet("background-color: rgba(88,101,242,45);");
+    QPointer<QWidget> pw(w);
+    QTimer::singleShot(1400, this, [pw]() { if (pw) pw->setStyleSheet(QString()); });
+}
+
+void ChatWidget::editMessage(const QString& mid, const QString& current)
+{
+    bool ok = false;
+    QString text = QInputDialog::getMultiLineText(this, tr("Edit message"),
+        tr("Recipients running Nyx show the new text with an \"edited\" mark. Older clients show it as a new message."),
+        current, &ok).trimmed();
+    if (!ok || text.isEmpty() || text == current)
+        return;
+    text = EmojiPicker::replaceShortcodes(text);
+    if (NyxDetectSecret(text.toStdString()) != NYX_SECRET_NONE)
+    {
+        QMessageBox::critical(this, tr("Do not send this"), tr(NYX_SECRET_WARNING));
+        return;
+    }
+    std::string sError;
+    if (SecureMsgSendEdit(mid.toStdString(), text.toStdString(), sError) != 0)
+        QMessageBox::warning(this, tr("Edit message"), QString::fromStdString(sError));
+}
+
+void ChatWidget::unsendMessage(const QString& mid)
+{
+    if (QMessageBox::question(this, tr("Delete for everyone"),
+            tr("Delete this message for everyone?\n\nRecipients running Nyx replace it with \"message deleted\" and erase "
+               "their copy. Anyone who already read it may have kept a copy, and older clients show "
+               "\"[message deleted]\" as a new message."),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+    std::string sError;
+    if (SecureMsgSendDelete(mid.toStdString(), sError) != 0)
+        QMessageBox::warning(this, tr("Delete for everyone"), QString::fromStdString(sError));
 }
 
 void ChatWidget::deleteMessageRow(int modelRow)
@@ -1404,7 +1829,6 @@ void ChatWidget::refreshMessagingEnabled()
         : tr("Nyx Messenger is off. Enable it above or in Settings > Options > Messaging."));
 
     updateAttachState();
-    newChatButton->setEnabled(fEnabled);
     updateSendButton();
 }
 
@@ -1882,6 +2306,7 @@ void ChatWidget::onSendClicked()
     std::string msgText = message.toStdString();
     NyxEmbed sentEmbed;
     bool fSentEmbed = false;
+    std::string embedExt;
     if (!fFile && !previewUrl.isEmpty() && previewUrl != previewDismissedUrl
         && QString::fromStdString(NyxFirstHttpsUrl(msgText)) == previewUrl)
     {
@@ -1894,16 +2319,36 @@ void ChatWidget::onSendClicked()
             sentEmbed.desc = previewDesc.toStdString();
             sentEmbed.site = previewSite.toStdString();
             sentEmbed.thumb = std::string(previewThumb.constData(), previewThumb.size());
-            std::string ext = NyxFitEmbed(msgText, sentEmbed, SMSG_MAX_MSG_BYTES);
+            std::string ext = NyxFitEmbed(msgText, sentEmbed, SMSG_MAX_MSG_BYTES - 160);
             NyxEmbed check;
             if (!ext.empty() && NyxDecodeEmbed(ext, check))
             {
-                msgText = NyxComposePlain(msgText, ext);
+                embedExt = ext;
                 sentEmbed = check;
                 fSentEmbed = true;
             }
         }
     }
+    if (!replyMid.isEmpty() && !fFile)
+    {
+        NyxReply r;
+        r.mid = replyMid.toStdString();
+        r.quote = replyChip->property("quote").toString().toStdString();
+        std::string full = NyxReplyPlain(msgText, r, embedExt, SMSG_MAX_MSG_BYTES);
+        if (full.empty() && !embedExt.empty())
+        {
+            full = NyxReplyPlain(msgText, r, std::string(), SMSG_MAX_MSG_BYTES);
+            fSentEmbed = false;
+        }
+        if (full.empty())
+        {
+            QMessageBox::warning(this, tr("Reply"), tr("The reply is too long."));
+            return;
+        }
+        msgText = full;
+    }
+    else if (!embedExt.empty())
+        msgText = NyxComposePlain(msgText, embedExt);
     if (SecureMsgSend(addFrom, sendTo, msgText, sError) != 0)
     {
         QString reason = QString::fromStdString(sError);
@@ -1918,6 +2363,7 @@ void ChatWidget::onSendClicked()
 
     messageInput->clear();
     clearPreview(false);
+    cancelReply();
 
     // Model refresh rebuilds the view; paint now so the send feels immediate.
     if (fFile)
@@ -1930,16 +2376,108 @@ void ChatWidget::onSendClicked()
 
 void ChatWidget::onNewChatClicked()
 {
+    if (!fSecMsgEnabled)
+    {
+        QMessageBox box(QMessageBox::Information, tr("New conversation"),
+                        tr("Nyx Messenger is off, so messages cannot be sent or received."), QMessageBox::NoButton, this);
+        QPushButton *en = GetBoolArg("-nosmsg", false) ? 0 : box.addButton(tr("Enable messaging"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (!en || box.clickedButton() != en)
+            return;
+        onEnableMessagingClicked();
+        if (!fSecMsgEnabled)
+            return;
+    }
     if (!msgModel)
+    {
+        QMessageBox::information(this, tr("New conversation"),
+                                 tr("The message store is not loaded yet. Unlock the wallet or try again in a moment."));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("New conversation"));
+    dlg.setMinimumWidth(420);
+    QVBoxLayout *v = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+    QLineEdit *addrEdit = new QLineEdit();
+    addrEdit->setPlaceholderText(tr("Innova address"));
+    QLineEdit *nickEdit = new QLineEdit();
+    nickEdit->setPlaceholderText(tr("Optional"));
+    nickEdit->setMaxLength(48);
+    form->addRow(tr("Address"), addrEdit);
+    form->addRow(tr("Nickname"), nickEdit);
+    v->addLayout(form);
+    QLabel *hint = new QLabel(tr("Nothing is sent until you type a message. A first message to someone who has not "
+                                 "messaged you arrives in their message requests."));
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: palette(dark); font-size: 11px;");
+    v->addWidget(hint);
+    QLabel *err = new QLabel();
+    err->setStyleSheet("color: #f23f43; font-size: 11px;");
+    err->hide();
+    v->addWidget(err);
+    QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText(tr("Start conversation"));
+    v->addWidget(bb);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, [&]() {
+        const QString addr = addrEdit->text().trimmed();
+        CBitcoinAddress ba(addr.toStdString());
+        if (!ba.IsValid())
+        {
+            err->setText(tr("That is not a valid Innova address."));
+            err->show();
+            return;
+        }
+        if (pwalletMain)
+        {
+            LOCK(pwalletMain->cs_wallet);
+            if (IsMine(*pwalletMain, ba.Get()))
+            {
+                err->setText(tr("That address belongs to this wallet."));
+                err->show();
+                return;
+            }
+        }
+        dlg.accept();
+    });
+    addrEdit->setFocus();
+    if (dlg.exec() != QDialog::Accepted)
         return;
 
-    // Open the existing send messages dialog for new conversations
-    SendMessagesDialog dlg(SendMessagesDialog::Encrypted, SendMessagesDialog::Dialog, this);
-    dlg.setModel(msgModel);
-    dlg.exec();
+    const QString addr = addrEdit->text().trimmed();
+    const QString nick = nickEdit->text().trimmed();
+    if (!nick.isEmpty())
+    {
+        mapContactNicknames[addr] = nick;
+        QSettings settings;
+        settings.beginWriteArray("chatNicknames");
+        int idx = 0;
+        for (auto it = mapContactNicknames.begin(); it != mapContactNicknames.end(); ++it, ++idx)
+        {
+            settings.setArrayIndex(idx);
+            settings.setValue("address", it.key());
+            settings.setValue("name", it.value());
+        }
+        settings.endArray();
+        mapAvatarCache.clear();
+    }
+    openConversation(addr);
+}
 
-    // Refresh contacts after dialog closes
+void ChatWidget::openConversation(const QString& address)
+{
+    setDraftContacts.insert(address);
+    currentContact = address;
+    cancelReply();
+    setHeaderContact(address);
+    markRead(address);
     refreshContacts();
+    loadConversation(address);
+    updateSendButton();
+    messageInput->setFocus();
 }
 
 void ChatWidget::onFileAttachClicked()
