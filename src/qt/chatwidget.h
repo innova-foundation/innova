@@ -18,6 +18,9 @@
 #include <QSet>
 #include <QSettings>
 #include <QDate>
+#include <QDateTime>
+#include <QAction>
+#include <QPixmap>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 
@@ -71,13 +74,13 @@ private slots:
     void onFileAttachClicked();
     void onFileDownloadClicked(const QString& cid, const QString& encKeyHex, const QString& filename);
     void onFileUploadFinished();
-    void onDeleteConversationClicked();
-    void onRenameConversationClicked();
     void onTypingTimeout();
     void onSendTypingNotification();
     void onEnableMessagingClicked();
     void updateSendButton();
     void confirmOpenUrl(const QString& link);
+    void onContactMenu(const QPoint& pos);
+    void adjustComposerHeight();
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event);
@@ -89,20 +92,21 @@ private:
 
     // Left panel -- contacts
     QListWidget *contactList;
-    QPushButton *newChatButton;
-    QPushButton *deleteConversationButton;
-    QPushButton *renameConversationButton;
+    QToolButton *newChatButton;
 
     // Right panel -- conversation
-    QLabel *chatHeader;
+    QWidget *chatHeader;
+    QLabel *chatHeaderAvatar;
+    QLabel *chatHeaderName;
+    QToolButton *chatHeaderAddr;
+    QLabel *chatHeaderLock;
     QWidget *messagingDisabledBanner;  // Shown when the messaging subsystem is off
     QPushButton *enableMessagingButton;
     QLabel *contactsEmptyLabel;
-    QLabel *encryptionNote;
-    QLabel *ipfsBanner;  // Red banner when IPFS gateway unreachable
+    QWidget *ipfsNotice;
     QListWidget *chatView;
     QTextEdit *messageInput;
-    QPushButton *sendButton;
+    QAction *sendAction;
     QToolButton *emojiButton;
     QToolButton *attachButton;
     EmojiPicker *emojiPicker;
@@ -110,10 +114,38 @@ private:
 
     void refreshContacts();
     void loadConversation(const QString& address);
-    void addChatBubble(const QString& text, const QString& time, bool isMine,
+    struct RowArgs
+    {
+        QString text;
+        QDateTime when;
+        bool isMine;
+        bool fFailed;
+        QString failReason;
+        const NyxEmbed* embed;
+        QString owner;       // sender address
+        bool fRequest;
+        int modelRow;        // -1 when not backed by a model row
+        bool fFile;
+        QString cid, encKeyHex, filename;
+        qint64 fileSize;
+        RowArgs() : isMine(false), fFailed(false), embed(0), fRequest(false), modelRow(-1), fFile(false), fileSize(0) {}
+    };
+    void addMessageRow(const RowArgs& a);
+    void addChatBubble(const QString& text, const QDateTime& when, bool isMine,
                        bool fFailed = false, const QString& failReason = QString(),
                        const NyxEmbed* embed = 0, const QString& owner = QString(),
-                       bool fRequest = false);
+                       bool fRequest = false, int modelRow = -1);
+    void addListWidget(QListWidget *list, QWidget *w, bool fSelectable = false);
+    void relayoutChat();
+    QPixmap avatarFor(const QString& address, const QString& name, int px);
+    void setHeaderContact(const QString& address);
+    void clearHeaderContact();
+    void renameContact(const QString& address);
+    void deleteConversation(const QString& address);
+    void deleteMessageRow(int modelRow);
+    bool canSend() const;
+    void updateAttachState();
+    QString myDisplayName() const { return tr("You"); }
     QWidget* makeEmbedCard(const NyxEmbed& e, bool fRemovable, const QString& owner);
     void removeEmbed(const QString& id, const QString& owner);
     /** NyxSenderState for a conversation partner, from the caches below. */
@@ -133,7 +165,8 @@ private:
     void markRead(const QString& address);
     QString pickSendFromAddress() const;
     void addFileBubble(const QString& cid, const QString& encKeyHex,
-                       const QString& filename, qint64 size, const QString& time, bool isMine);
+                       const QString& filename, qint64 size, const QDateTime& when, bool isMine,
+                       const QString& owner = QString(), int modelRow = -1);
 
     /** Encrypt file with AES-256-GCM and upload to IPFS.
      *  For files > CHUNK_SIZE, uses chunked upload with manifest.
@@ -186,6 +219,13 @@ private:
     QTimer *typingSendTimer;       // rate-limit outbound typing notifications (max 1 per 3s)
     bool typingSendPending;
     qint64 cachedIPFSMaxSize;      // cached gateway check result (0 = unchecked/unavailable)
+    int ipfsState;                 // -1 unchecked, 0 unreachable, 1 reachable
+    bool fUploading;
+    QMap<QString, QString> mapBookLabels;
+    QMap<QString, QPixmap> mapAvatarCache;
+    QString lastRowSender;         // grouping state of the last message row
+    qint64 lastRowTime;
+    qint64 lastRowDay;
     QMap<QString, qint64> mapLastReadTime; // address -> msec timestamp when conversation was last opened
     QMap<QString, QString> mapContactNicknames; // address -> user-assigned nickname
 
