@@ -420,7 +420,8 @@ int SecureMsgStore(SecureMessage& smsg, bool fUpdateBucket);
 
 
 
-int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError);
+int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError,
+                  int64_t nTimestamp = 0, bool fOutbox = true);
 
 /** Dandelion++ stem relay for a single PoW'd message.
  *  Returns true if stem relay succeeded, false if should fluff immediately. */
@@ -442,8 +443,9 @@ struct SmsgStemEntry {
 extern CCriticalSection cs_smsgStem;
 extern std::map<uint256, SmsgStemEntry> mapSmsgStemState;
 
-/** Send an ephemeral typing notification via P2P. */
+/** Opt-in typing record inside an encrypted SMSG; off unless fNyxTyping. */
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo);
+extern bool fNyxTyping;
 
 /** Full decrypted plaintext, including any nyx extension after the NUL. */
 std::string SecureMsgPlaintext(const MessageData& msg);
@@ -467,7 +469,7 @@ void SecureMsgCollectConversation(const std::string& counterpart, std::vector<Ny
                                   std::vector<bool>& mine);
 struct NyxStoredRef
 {
-    std::string sender, counterpart, myAddr, text;
+    std::string sender, counterpart, myAddr, text, gid;
     int64_t timestamp;
     bool fMine;
     int maxEditSeq;     // highest edit seq this wallet sent for it
@@ -481,6 +483,34 @@ int SecureMsgSendReact(const std::string& mid, const std::string& emoji, bool fA
 int SecureMsgSendEdit(const std::string& mid, const std::string& body, std::string& sError);
 /** Sends the delete to the recipient and wipes this wallet's copy. */
 int SecureMsgSendDelete(const std::string& mid, std::string& sError);
+
+struct NyxGroupState;
+struct NyxGroupView
+{
+    std::string gid, name, owner, myAddr;
+    std::vector<std::string> members;
+    int epoch;
+    bool fMember, fRequest, fHidden;
+    int64_t lastTs;
+    NyxGroupView() : epoch(0), fMember(false), fRequest(false), fHidden(false), lastTs(0) {}
+};
+/** Groups this wallet belongs or belonged to; fRequest when the owner is not a known contact. */
+void SecureMsgCollectGroups(std::vector<NyxGroupView>& out);
+bool SecureMsgGetGroup(const std::string& gid, NyxGroupView& out);
+/** Group messages after applying roster, replies, reactions, edits and deletes; deduplicated by mid. */
+void SecureMsgCollectGroupThread(const std::string& gid, std::vector<NyxThreadMsg>& out, std::vector<bool>& mine);
+int SecureMsgGroupCreate(const std::string& from, const std::string& name, const std::vector<std::string>& members,
+                         std::string& gid, std::string& sError);
+int SecureMsgGroupSend(const std::string& gid, const std::string& body, const std::vector<std::string>& extraRecs,
+                       std::string& sError);
+int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::string& sError);
+int SecureMsgGroupRemove(const std::string& gid, const std::string& addr, std::string& sError);
+int SecureMsgGroupLeave(const std::string& gid, std::string& sError);
+int SecureMsgGroupRename(const std::string& gid, const std::string& name, std::string& sError);
+int SecureMsgGroupSetOwner(const std::string& gid, const std::string& addr, std::string& sError);
+/** Accept or hide a group invite; stored as "grp<gid>" in nyxcontacts.dat. */
+bool SecureMsgGroupAccept(const std::string& gid);
+bool SecureMsgGroupHide(const std::string& gid);
 
 
 /** Canonical v1 proof transcript: header[4..103] || payload || payload. */

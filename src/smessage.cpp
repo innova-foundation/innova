@@ -65,6 +65,9 @@ Notes:
 #include "nyxembed.h"
 #include "nyxsafety.h"
 #include "nyxext.h"
+#include "nyxgroup.h"
+
+#include <algorithm>
 
 
 namespace fs = boost::filesystem;
@@ -2434,6 +2437,8 @@ void SecureMsgCollectConversation(const std::string& counterpart, std::vector<Ny
         m.ts = msg.timestamp;
         m.mid = NyxMessageId(m.sender, m.ts, full);
         NyxSplitPlain(full, m.text, m.ext);
+        if (!m.ext.empty() && msg.sFromAddress != "anon" && NyxParseRecords(m.ext).fGroup)
+            return true;
         v.push_back(std::make_pair(m, fMine));
         return true;
     });
@@ -2473,6 +2478,15 @@ bool SecureMsgFindByMid(const std::string& mid, NyxStoredRef& ref)
             ref.text = text;
             ref.timestamp = msg.timestamp;
             ref.fMine = fMine;
+            if (msg.sFromAddress != "anon")
+            {
+                NyxRecords r = NyxParseRecords(ext);
+                if (r.fGroup)
+                {
+                    ref.gid = r.group.gid;
+                    ref.text = NyxStripGroupFallback(text);
+                }
+            }
         }
         return true;
     });
@@ -2534,6 +2548,9 @@ int SecureMsgSendReply(const std::string& mid, const std::string& body, std::str
     NyxReply r;
     r.mid = mid;
     r.quote = ref.text;
+    if (!ref.gid.empty())
+        return body.empty() ? (sError = "Reply is empty.", 1)
+                            : SecureMsgGroupSend(ref.gid, body, std::vector<std::string>(1, NyxEncodeReply(r)), sError);
     std::string plain = NyxReplyPlain(body, r, std::string(), SMSG_MAX_MSG_BYTES);
     if (body.empty() || plain.empty())
     {
@@ -2557,6 +2574,12 @@ int SecureMsgSendReact(const std::string& mid, const std::string& emoji, bool fA
     {
         sError = "Not a reaction emoji.";
         return 1;
+    }
+    if (!ref.gid.empty())
+    {
+        std::string text, rec;
+        NyxSplitPlain(plain, text, rec);
+        return SecureMsgGroupSend(ref.gid, text, std::vector<std::string>(1, rec), sError);
     }
     return SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
 }
@@ -2590,6 +2613,8 @@ int SecureMsgSendEdit(const std::string& mid, const std::string& body, std::stri
         sError = "Edit is empty or too long.";
         return 1;
     }
+    if (!ref.gid.empty())
+        return SecureMsgGroupSend(ref.gid, NYX_EDITED_PREFIX + body, std::vector<std::string>(1, NyxEncodeEdit(e)), sError);
     return SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
 }
 
@@ -2604,7 +2629,8 @@ int SecureMsgSendDelete(const std::string& mid, std::string& sError)
         return 1;
     }
     std::string plain = NyxDeletePlain(mid);
-    int rv = SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError);
+    int rv = ref.gid.empty() ? SecureMsgSend(ref.myAddr, ref.counterpart, plain, sError)
+                             : SecureMsgGroupSend(ref.gid, NYX_DELETED_TEXT, std::vector<std::string>(1, NyxEncodeDelete(mid)), sError);
     if (rv == 0)
         SecureMsgWipeMid(ref.myAddr, mid);
     return rv;
@@ -2612,33 +2638,394 @@ int SecureMsgSendDelete(const std::string& mid, std::string& sError)
 
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 {
-    // Typing notifications are not sent over the network: a flooded (addrFrom, addrTo)
-    // pair would publish the correspondence graph. The local path below still fires for
-    // an address this wallet holds.
-
-    if (!fSecMsgEnabled)
+    // Opt-in only: an extra encrypted message that reveals activity timing to the contact.
+    if (!fSecMsgEnabled || !fNyxTyping || addrFrom.empty() || addrFrom == "anon" || addrTo.empty()
+        || !pwalletMain || pwalletMain->IsLocked() || NyxIsBlocked(addrTo))
         return false;
-
-    if (addrFrom.empty() || addrTo.empty())
+    std::set<std::string> sentTo;
+    SecureMsgCollectSentTo(sentTo);
+    if (!NyxIsAccepted(addrTo) && !sentTo.count(addrTo))
         return false;
-
-    // Check if addrTo is one of our own addresses (local loopback for same-wallet testing)
-    CWallet* pwallet = pwalletMain;
-    if (pwallet)
+    static CCriticalSection cs_typing;
+    static std::map<std::string, int64_t> lastSent;
     {
-        CBitcoinAddress coinAddrTo(addrTo);
-        if (coinAddrTo.IsValid())
-        {
-            CKeyID keyID;
-            if (coinAddrTo.GetKeyID(keyID) && pwallet->HaveKey(keyID))
-            {
-                // Local loopback — fire signal directly without P2P
-                NotifySecMsgTyping(addrFrom);
-            }
-        }
+        LOCK(cs_typing);
+        int64_t& t = lastSent[addrFrom + ">" + addrTo];
+        if (GetTime() - t < NYX_TYPING_SEND_INTERVAL)
+            return false;
+        t = GetTime();
     }
+    std::string from = addrFrom, to = addrTo, err;
+    std::string plain = NyxComposePlain(std::string(), NyxEncodeTyping(true));
+    return SecureMsgSend(from, to, plain, err, 0, false) == 0;
+}
 
+struct NyxGroupRow
+{
+    NyxGroupEvent ev;
+    NyxThreadMsg msg;
+    bool fMine;
+    std::string myAddr;
+};
+
+static void NyxCollectGroupRows(std::vector<NyxGroupRow>& out)
+{
+    out.clear();
+    NyxForEachStored([&](bool fMine, const unsigned char*, const SecMsgStored& st, const MessageData& msg) {
+        if (msg.sFromAddress == "anon")
+            return true;
+        std::string full = SecureMsgPlaintext(msg), text, ext;
+        NyxSplitPlain(full, text, ext);
+        if (ext.empty())
+            return true;
+        NyxRecords r = NyxParseRecords(ext);
+        if (!r.fGroup)
+            return true;
+        NyxGroupRow row;
+        row.ev.sender = msg.sFromAddress;
+        row.ev.ts = msg.timestamp;
+        row.ev.mid = NyxMessageId(msg.sFromAddress, msg.timestamp, full);
+        row.ev.rec = r.group;
+        row.msg.sender = msg.sFromAddress;
+        row.msg.ts = msg.timestamp;
+        row.msg.mid = row.ev.mid;
+        row.msg.text = NyxStripGroupFallback(text);
+        row.msg.ext = ext;
+        row.fMine = fMine;
+        row.myAddr = fMine ? msg.sFromAddress : st.sAddrTo;
+        out.push_back(row);
+        return true;
+    });
+}
+
+static std::string GroupKey(const std::string& gid)
+{
+    return "grp" + gid;
+}
+
+static void NyxGroupViews(const std::vector<NyxGroupRow>& rows, std::map<std::string, NyxGroupState>& states,
+                          std::vector<NyxGroupView>& out)
+{
+    std::vector<NyxGroupEvent> ev;
+    std::map<std::string, std::set<std::string> > mine;
+    std::map<std::string, int64_t> last;
+    for (const NyxGroupRow& r : rows)
+    {
+        ev.push_back(r.ev);
+        mine[r.ev.rec.gid].insert(r.myAddr);
+        last[r.ev.rec.gid] = std::max(last[r.ev.rec.gid], r.ev.ts);
+    }
+    states = NyxBuildGroups(ev);
+    std::set<std::string> sentTo, book;
+    SecureMsgCollectSentTo(sentTo);
+    SecureMsgCollectAddressBook(book);
+    out.clear();
+    for (const auto& p : states)
+    {
+        const NyxGroupState& g = p.second;
+        NyxGroupView v;
+        v.gid = g.gid;
+        v.name = g.name;
+        v.owner = g.owner;
+        v.members = g.members;
+        v.epoch = g.epoch;
+        v.lastTs = last[g.gid];
+        for (const std::string& a : mine[g.gid])
+            if (g.IsMember(a))
+            {
+                v.myAddr = a;
+                v.fMember = true;
+                break;
+            }
+        if (v.myAddr.empty() && !mine[g.gid].empty())
+            v.myAddr = *mine[g.gid].begin();
+        const bool fOwnerMe = mine[g.gid].count(g.owner) != 0;
+        v.fHidden = NyxIsBlocked(GroupKey(g.gid)) || NyxIsBlocked(g.owner);
+        v.fRequest = !fOwnerMe && !NyxIsAccepted(GroupKey(g.gid))
+                     && SecureMsgSenderState(g.owner, sentTo, book) != NYX_SENDER_KNOWN;
+        out.push_back(v);
+    }
+}
+
+void SecureMsgCollectGroups(std::vector<NyxGroupView>& out)
+{
+    std::vector<NyxGroupRow> rows;
+    NyxCollectGroupRows(rows);
+    std::map<std::string, NyxGroupState> states;
+    NyxGroupViews(rows, states, out);
+}
+
+bool SecureMsgGetGroup(const std::string& gid, NyxGroupView& out)
+{
+    std::vector<NyxGroupView> v;
+    SecureMsgCollectGroups(v);
+    for (const NyxGroupView& g : v)
+        if (g.gid == gid)
+        {
+            out = g;
+            return true;
+        }
+    return false;
+}
+
+void SecureMsgCollectGroupThread(const std::string& gid, std::vector<NyxThreadMsg>& out, std::vector<bool>& mine)
+{
+    out.clear();
+    mine.clear();
+    std::vector<NyxGroupRow> rows;
+    NyxCollectGroupRows(rows);
+    std::map<std::string, NyxGroupState> states;
+    std::vector<NyxGroupView> views;
+    NyxGroupViews(rows, states, views);
+    auto st = states.find(gid);
+    if (st == states.end())
+        return;
+    for (const NyxGroupView& v : views)
+        if (v.gid == gid && (v.fRequest || v.fHidden))
+            return;
+    std::stable_sort(rows.begin(), rows.end(), [](const NyxGroupRow& a, const NyxGroupRow& b) {
+        return a.ev.ts != b.ev.ts ? a.ev.ts < b.ev.ts : a.ev.mid < b.ev.mid;
+    });
+    std::set<std::string> seen;
+    for (const NyxGroupRow& r : rows)
+    {
+        if (r.ev.rec.gid != gid || r.ev.rec.op != NYX_GOP_MSG || !seen.insert(r.ev.mid).second)
+            continue;
+        if (NyxIsBlocked(r.ev.sender) || !NyxGroupMsgAllowed(st->second, r.ev.sender, r.ev.ts, r.ev.rec.epoch))
+            continue;
+        out.push_back(r.msg);
+        mine.push_back(r.fMine);
+    }
+}
+
+static bool NyxIsOwnAddress(const std::string& a)
+{
+    CBitcoinAddress addr(a);
+    CKeyID id;
+    return addr.IsValid() && addr.GetKeyID(id) && pwalletMain && pwalletMain->HaveKey(id);
+}
+
+// One copy per recipient, all with the same timestamp so every copy has the same mid.
+static int NyxGroupFanout(const std::string& from, const std::string& name, const std::string& body,
+                          const NyxGroupRec& rec, const std::vector<std::string>& extra,
+                          const std::vector<std::string>& to, std::string& sError)
+{
+    std::string plain = NyxGroupPlain(name, body, rec, extra, SMSG_MAX_MSG_BYTES);
+    if (plain.empty())
+    {
+        sError = "Group message is empty, invalid or too long.";
+        return 1;
+    }
+    if (to.empty())
+    {
+        sError = "The group has no other members.";
+        return 1;
+    }
+    int64_t ts = GetTime();
+    int nOk = 0;
+    std::string firstErr;
+    for (const std::string& m : to)
+    {
+        std::string f = from, t = m, p = plain, err;
+        if (SecureMsgSend(f, t, p, err, ts, nOk == 0) == 0)
+            nOk++;
+        else if (firstErr.empty())
+            firstErr = m + ": " + err;
+    }
+    if (nOk == 0)
+    {
+        sError = firstErr;
+        return 1;
+    }
+    if (!firstErr.empty())
+        sError = "Not delivered to every member. " + firstErr;
+    return 0;
+}
+
+static std::vector<std::string> Others(const std::vector<std::string>& members, const std::string& me)
+{
+    std::vector<std::string> v;
+    for (const std::string& m : members)
+        if (m != me)
+            v.push_back(m);
+    return v;
+}
+
+static bool NyxLoadGroup(const std::string& gid, NyxGroupView& g, bool fOwner, std::string& sError)
+{
+    if (!NyxIsHexId(gid) || !SecureMsgGetGroup(gid, g))
+    {
+        sError = "Unknown group.";
+        return false;
+    }
+    if (!g.fMember)
+    {
+        sError = "You are not a member of this group.";
+        return false;
+    }
+    if (fOwner && g.myAddr != g.owner)
+    {
+        sError = "Only the group owner can do that.";
+        return false;
+    }
     return true;
+}
+
+int SecureMsgGroupCreate(const std::string& from, const std::string& name, const std::vector<std::string>& members,
+                         std::string& gid, std::string& sError)
+{
+    if (!NyxIsOwnAddress(from))
+    {
+        sError = "The sending address is not in this wallet.";
+        return 1;
+    }
+    NyxGroupRec rec;
+    rec.op = NYX_GOP_ROSTER;
+    rec.name = NyxCleanText(name, NYX_GROUP_NAME_MAX);
+    rec.members.push_back(from);
+    for (const std::string& m : members)
+    {
+        if (!CBitcoinAddress(m).IsValid())
+        {
+            sError = "Invalid member address " + m + ".";
+            return 1;
+        }
+        if (std::find(rec.members.begin(), rec.members.end(), m) == rec.members.end())
+            rec.members.push_back(m);
+    }
+    if (rec.members.size() < 2)
+    {
+        sError = "A group needs at least one other member.";
+        return 1;
+    }
+    if (rec.members.size() > NYX_GROUP_MAX)
+    {
+        sError = strprintf("A group holds at most %u members including you.", (unsigned)NYX_GROUP_MAX);
+        return 1;
+    }
+    unsigned char rnd[16];
+    GetRandBytes(rnd, sizeof(rnd));
+    rec.gid = NyxNewGroupId(from, GetTime(), rnd);
+    gid = rec.gid;
+    return NyxGroupFanout(from, rec.name, strprintf("created the group with %u members", (unsigned)rec.members.size()),
+                          rec, std::vector<std::string>(), Others(rec.members, from), sError);
+}
+
+int SecureMsgGroupSend(const std::string& gid, const std::string& body, const std::vector<std::string>& extraRecs,
+                       std::string& sError)
+{
+    NyxGroupView g;
+    if (!NyxLoadGroup(gid, g, false, sError))
+        return 1;
+    if (g.fRequest || g.fHidden)
+    {
+        sError = "Accept the group invite first.";
+        return 1;
+    }
+    NyxGroupRec rec;
+    rec.gid = gid;
+    rec.epoch = g.epoch;
+    rec.op = NYX_GOP_MSG;
+    return NyxGroupFanout(g.myAddr, g.name, body, rec, extraRecs, Others(g.members, g.myAddr), sError);
+}
+
+int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::string& sError)
+{
+    NyxGroupView g;
+    if (!NyxLoadGroup(gid, g, true, sError))
+        return 1;
+    if (!CBitcoinAddress(addr).IsValid() || std::find(g.members.begin(), g.members.end(), addr) != g.members.end())
+    {
+        sError = "Invalid address or already a member.";
+        return 1;
+    }
+    if (g.members.size() >= NYX_GROUP_MAX)
+    {
+        sError = strprintf("A group holds at most %u members.", (unsigned)NYX_GROUP_MAX);
+        return 1;
+    }
+    NyxGroupRec add;
+    add.gid = gid;
+    add.epoch = g.epoch + 1;
+    add.op = NYX_GOP_ADD;
+    add.addr = addr;
+    NyxGroupRec snap;
+    snap.gid = gid;
+    snap.epoch = g.epoch + 1;
+    snap.op = NYX_GOP_ROSTER;
+    snap.name = g.name;
+    snap.members = g.members;
+    snap.members.push_back(addr);
+    // The new member gets the full roster; everyone else gets the add.
+    if (NyxGroupFanout(g.myAddr, g.name, "added you to the group", snap, std::vector<std::string>(),
+                       std::vector<std::string>(1, addr), sError) != 0)
+        return 1;
+    std::vector<std::string> rest = Others(g.members, g.myAddr);
+    if (rest.empty())
+        return 0;
+    return NyxGroupFanout(g.myAddr, g.name, "added " + addr, add, std::vector<std::string>(), rest, sError);
+}
+
+static int NyxGroupOpSimple(const std::string& gid, int op, const std::string& arg, bool fOwner,
+                            const std::string& body, std::string& sError)
+{
+    NyxGroupView g;
+    if (!NyxLoadGroup(gid, g, fOwner, sError))
+        return 1;
+    NyxGroupRec rec;
+    rec.gid = gid;
+    rec.epoch = g.epoch + 1;
+    rec.op = op;
+    if (op == NYX_GOP_RENAME)
+        rec.name = NyxCleanText(arg, NYX_GROUP_NAME_MAX);
+    else
+        rec.addr = arg;
+    // Validate against the local state before sending.
+    NyxGroupState st;
+    st.fValid = true;
+    st.gid = gid;
+    st.owner = g.owner;
+    st.epoch = g.epoch;
+    st.members = g.members;
+    if (!NyxGroupApply(st, g.myAddr, GetTime(), rec))
+    {
+        sError = "That change is not allowed for this group.";
+        return 1;
+    }
+    // A removed member is still in g.members, so it receives its removal.
+    std::vector<std::string> to = Others(g.members, g.myAddr);
+    return NyxGroupFanout(g.myAddr, op == NYX_GOP_RENAME ? rec.name : g.name, body, rec,
+                          std::vector<std::string>(), to, sError);
+}
+
+int SecureMsgGroupRemove(const std::string& gid, const std::string& addr, std::string& sError)
+{
+    return NyxGroupOpSimple(gid, NYX_GOP_REMOVE, addr, true, "removed " + addr, sError);
+}
+
+int SecureMsgGroupLeave(const std::string& gid, std::string& sError)
+{
+    return NyxGroupOpSimple(gid, NYX_GOP_LEAVE, std::string(), false, "left the group", sError);
+}
+
+int SecureMsgGroupRename(const std::string& gid, const std::string& name, std::string& sError)
+{
+    return NyxGroupOpSimple(gid, NYX_GOP_RENAME, name, true, "renamed the group", sError);
+}
+
+int SecureMsgGroupSetOwner(const std::string& gid, const std::string& addr, std::string& sError)
+{
+    return NyxGroupOpSimple(gid, NYX_GOP_OWNER, addr, true, "made " + addr + " the owner", sError);
+}
+
+bool SecureMsgGroupAccept(const std::string& gid)
+{
+    return NyxIsHexId(gid) && NyxAccept(GroupKey(gid));
+}
+
+bool SecureMsgGroupHide(const std::string& gid)
+{
+    return NyxIsHexId(gid) && NyxBlock(GroupKey(gid));
 }
 
 bool SecureMsgSendData(CNode* pto, bool fSendTrickle)
@@ -3350,6 +3737,34 @@ int SecureMsgWalletKeyChanged(std::string sAddress, std::string sLabel, ChangeTy
     return 0;
 };
 
+bool fNyxTyping = false;
+
+// Typing records are never stored. True when the message was one.
+static bool NyxHandleTyping(const std::string& addressTo, unsigned char* pHeader, unsigned char* pPayload,
+                            uint32_t nPayload, bool reportToGui)
+{
+    MessageData msg;
+    std::string addr = addressTo;
+    if (SecureMsgDecrypt(false, addr, pHeader, pPayload, nPayload, msg) != 0)
+        return false;
+    std::string text, ext;
+    NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+    if (ext.empty() || ext[0] != 'T')
+        return false;
+    bool fOn = false;
+    if (!NyxDecodeTyping(ext, fOn))
+        return true;
+    int64_t age = GetTime() - msg.timestamp;
+    if (!fNyxTyping || !reportToGui || !fOn || msg.sFromAddress == "anon"
+        || age > NYX_TYPING_MAX_AGE || age < -NYX_TYPING_MAX_AGE || NyxIsBlocked(msg.sFromAddress))
+        return true;
+    std::set<std::string> sentTo;
+    SecureMsgCollectSentTo(sentTo);
+    if (NyxIsAccepted(msg.sFromAddress) || sentTo.count(msg.sFromAddress))
+        NotifySecMsgTyping(msg.sFromAddress);
+    return true;
+}
+
 int SecureMsgScanMessage(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload, bool reportToGui)
 {
     /*
@@ -3427,6 +3842,9 @@ int SecureMsgScanMessage(unsigned char *pHeader, unsigned char *pPayload, uint32
             && NyxIsBlocked(full.sFromAddress))
             return 0;
     }
+
+    if (fOwnMessage && NyxHandleTyping(addressTo, pHeader, pPayload, nPayload, reportToGui))
+        return 0;
 
     if (fOwnMessage)
     {
@@ -4690,7 +5108,8 @@ void SecureMsgCheckStemTimeouts()
 }
 
 
-int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError)
+int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError,
+                  int64_t nTimestamp, bool fOutbox)
 {
     /* Encrypt secure message, and place it on the network
         Make a copy of the message to sender's first address and place in send queue db
@@ -4731,7 +5150,7 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
     int rv;
     SecureMessage smsg;
 
-    if ((rv = SecureMsgEncrypt(smsg, addressFrom, addressTo, message)) != 0)
+    if ((rv = SecureMsgEncrypt(smsg, addressFrom, addressTo, message, nTimestamp)) != 0)
     {
         printf("SecureMsgSend(), encrypt for recipient failed.\n");
 
@@ -4800,6 +5219,9 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
 
     //  -- for outbox create a copy encrypted for owned address
     //     if the wallet is encrypted private key needed to decrypt will be unavailable
+
+    if (!fOutbox)
+        return 0;
 
     if (fDebugSmsg)
         printf("Encrypting message for outbox.\n");
