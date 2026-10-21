@@ -45,6 +45,8 @@
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QPointer>
+#include <QPlainTextEdit>
+#include <QIcon>
 #include <functional>
 
 /** Single-line label that elides its text to the available width. */
@@ -156,6 +158,11 @@ static std::string extBytes(const QString& ext)
     return std::string(b.constData(), b.size());
 }
 
+static const QString NYX_GROUP_PREFIX = "group:";
+static bool isGroupKey(const QString& a) { return a.startsWith(NYX_GROUP_PREFIX); }
+static std::string gidOf(const QString& a) { return a.mid(NYX_GROUP_PREFIX.size()).toStdString(); }
+static bool isGroupExt(const QString& ext) { return !ext.isEmpty() && NyxParseRecords(extBytes(ext)).fGroup; }
+
 static const char* NYX_ACCENT = "#5865F2";
 static const char* NYX_IPFS_NOTICE_KEY = "fNyxIpfsNoticeDismissed";
 
@@ -247,7 +254,10 @@ QPixmap ChatWidget::avatarFor(const QString& address, const QString& name, int p
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor::fromHsv(NyxAvatarHue(address.toStdString()), 140, 190));
-    p.drawEllipse(QRectF(0, 0, px, px));
+    if (isGroupKey(address))
+        p.drawRoundedRect(QRectF(0, 0, px, px), px * 0.3, px * 0.3);
+    else
+        p.drawEllipse(QRectF(0, 0, px, px));
     QFont f = GUIUtil::emojiFont(qMax(8, px * 2 / 5));
     f.setBold(true);
     p.setFont(f);
@@ -414,7 +424,12 @@ ChatWidget::ChatWidget(QWidget *parent) :
             "QToolButton { border: none; border-radius: 4px; padding: 2px 6px; font-size: 11px; color: palette(dark); background: transparent; }"
             "QToolButton:hover { background-color: rgba(127,127,127,45); color: palette(text); }");
         connect(chatHeaderAddr, &QToolButton::clicked, [this]() {
-            if (!currentContact.isEmpty())
+            if (isGroupKey(currentContact))
+            {
+                membersPanel->setVisible(!membersPanel->isVisible());
+                refreshMembersPanel();
+            }
+            else if (!currentContact.isEmpty())
                 QApplication::clipboard()->setText(currentContact);
         });
         hl->addWidget(chatHeaderAddr);
@@ -676,6 +691,73 @@ ChatWidget::ChatWidget(QWidget *parent) :
 
     mainLayout->addWidget(rightPanel, 1);
 
+    membersPanel = new QWidget();
+    membersPanel->setObjectName("nyxMembers");
+    membersPanel->setAttribute(Qt::WA_StyledBackground, true);
+    membersPanel->setFixedWidth(220);
+    membersPanel->setStyleSheet("#nyxMembers { background-color: palette(window); border-left: 1px solid rgba(127,127,127,45); }");
+    {
+        QVBoxLayout *ml = new QVBoxLayout(membersPanel);
+        ml->setContentsMargins(8, 12, 8, 12);
+        ml->setSpacing(6);
+        membersTitle = new QLabel();
+        membersTitle->setStyleSheet("font-size: 10px; font-weight: bold; color: palette(dark); padding: 0px 8px; background: transparent;");
+        ml->addWidget(membersTitle);
+        membersList = new QListWidget();
+        membersList->setStyleSheet(
+            "QListWidget { background: transparent; border: none; outline: 0; }"
+            "QListWidget::item { border-radius: 6px; padding: 2px; }"
+            "QListWidget::item:hover { background-color: rgba(127,127,127,35); }");
+        membersList->setIconSize(QSize(28, 28));
+        membersList->setContextMenuPolicy(Qt::CustomContextMenu);
+        ml->addWidget(membersList, 1);
+        membersAddButton = new QPushButton(tr("Add member"));
+        membersRenameButton = new QPushButton(tr("Rename group"));
+        membersLeaveButton = new QPushButton(tr("Leave group"));
+        membersLeaveButton->setStyleSheet("QPushButton { color: white; background-color: #c0392b; border: none; border-radius: 6px; padding: 6px; }");
+        ml->addWidget(membersAddButton);
+        ml->addWidget(membersRenameButton);
+        ml->addWidget(membersLeaveButton);
+        connect(membersAddButton, &QPushButton::clicked, this, [this]() { groupAction(currentContact, "add"); });
+        connect(membersRenameButton, &QPushButton::clicked, this, [this]() { groupAction(currentContact, "rename"); });
+        connect(membersLeaveButton, &QPushButton::clicked, this, [this]() { groupAction(currentContact, "leave"); });
+        connect(membersList, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+            QListWidgetItem *it = membersList->itemAt(pos);
+            if (!it || !isGroupKey(currentContact))
+                return;
+            const GroupInfo g = mapGroups.value(currentContact);
+            const QString a = it->data(Qt::UserRole).toString();
+            QMenu menu(this);
+            QAction *aCopy = menu.addAction(tr("Copy address"));
+            QAction *aMsg = setMyAddrs.contains(a) ? 0 : menu.addAction(tr("Message"));
+            const bool fOwner = g.fMember && g.myAddr == g.owner && a != g.owner;
+            QAction *aOwner = fOwner ? menu.addAction(tr("Make owner")) : 0;
+            QAction *aRemove = fOwner ? menu.addAction(tr("Remove from group")) : 0;
+            QAction *aBlock = setMyAddrs.contains(a) ? 0 : menu.addAction(tr("Block"));
+            QAction *c = menu.exec(membersList->viewport()->mapToGlobal(pos));
+            if (!c)
+                return;
+            if (c == aCopy)
+                QApplication::clipboard()->setText(a);
+            else if (aMsg && c == aMsg)
+                openConversation(a);
+            else if (aBlock && c == aBlock)
+                blockContact(a);
+            else
+            {
+                std::string sError;
+                int rv = (aOwner && c == aOwner) ? SecureMsgGroupSetOwner(g.gid.toStdString(), a.toStdString(), sError)
+                       : (aRemove && c == aRemove) ? SecureMsgGroupRemove(g.gid.toStdString(), a.toStdString(), sError) : 0;
+                if (rv != 0 || !sError.empty())
+                    QMessageBox::warning(this, tr("Group"), QString::fromStdString(sError));
+                refreshContacts();
+                setHeaderContact(currentContact);
+            }
+        });
+    }
+    membersPanel->hide();
+    mainLayout->addWidget(membersPanel);
+
     refreshComposerIcons();
     adjustComposerHeight();
 
@@ -714,7 +796,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
 
     typingSendTimer = new QTimer(this);
     typingSendTimer->setSingleShot(true);
-    typingSendTimer->setInterval(3000); // Rate limit: 1 typing notification per 3 seconds
+    typingSendTimer->setInterval(NYX_TYPING_SEND_INTERVAL * 1000);
 }
 
 void ChatWidget::adjustComposerHeight()
@@ -748,6 +830,22 @@ void ChatWidget::updateAttachState()
 
 void ChatWidget::setHeaderContact(const QString& address)
 {
+    if (isGroupKey(address))
+    {
+        const GroupInfo g = mapGroups.value(address);
+        chatHeaderName->setText(g.name);
+        chatHeaderName->setToolTip(tr("Group %1").arg(g.gid));
+        chatHeaderAvatar->setPixmap(avatarFor(address, g.name, 24));
+        chatHeaderAvatar->show();
+        chatHeaderAddr->setText(tr("%n members", "", g.members.size()));
+        chatHeaderAddr->setToolTip(tr("Show members"));
+        chatHeaderAddr->show();
+        chatHeaderLock->show();
+        refreshMembersPanel();
+        return;
+    }
+    chatHeaderAddr->setToolTip(tr("Copy address"));
+    membersPanel->hide();
     const QString name = displayNameFor(address);
     chatHeaderName->setText(name);
     chatHeaderName->setToolTip(address);
@@ -766,6 +864,7 @@ void ChatWidget::clearHeaderContact()
     chatHeaderAvatar->hide();
     chatHeaderAddr->hide();
     chatHeaderLock->hide();
+    membersPanel->hide();
 }
 
 QListWidgetItem* ChatWidget::addListWidget(QListWidget *list, QWidget *w, bool fSelectable)
@@ -866,6 +965,8 @@ QString ChatWidget::displayNameFor(const QString& address) const
 {
     if (address == "anon")
         return tr("Anonymous");
+    if (isGroupKey(address))
+        return mapGroups.contains(address) ? mapGroups.value(address).name : tr("Group");
     return QString::fromStdString(NyxDisplayName(address.toStdString(),
                                                  mapContactNicknames.value(address).toStdString(),
                                                  mapBookLabels.value(address).toStdString()));
@@ -915,6 +1016,8 @@ void ChatWidget::refreshContacts()
         QString contactAddr = isMine ? to : from;
         if (!isMine && contactState(contactAddr) == NYX_SENDER_BLOCKED)
             continue;
+        if (isGroupExt(msgModel->data(mi, MessageModel::ExtRole).toString()))
+            continue;
 
         ContactInfo& ci = contacts[contactAddr];
         if (!isMine && dt.toMSecsSinceEpoch() > mapLastReadTime.value(contactAddr, 0))
@@ -939,6 +1042,20 @@ void ChatWidget::refreshContacts()
         }
     }
 
+    reloadGroups();
+    for (auto it = mapGroups.constBegin(); it != mapGroups.constEnd(); ++it)
+    {
+        ContactInfo& ci = contacts[it.key()];
+        ci.last = QDateTime::fromSecsSinceEpoch(it.value().lastTs);
+        if (it.value().fRequest)
+            ci.preview = tr("Group invite from %1 (%n members)", "", it.value().members.size())
+                             .arg(displayNameFor(it.value().owner));
+        else if (!it.value().fMember)
+            ci.preview = tr("You are no longer a member");
+        else
+            ci.preview = tr("%n members", "", it.value().members.size());
+    }
+
     for (const QString& d : setDraftContacts)
         if (!contacts.contains(d))
         {
@@ -955,9 +1072,9 @@ void ChatWidget::refreshContacts()
     });
 
     // Requests first, then direct messages, each newest first.
-    QList<QString> requests, direct;
+    QList<QString> requests, direct, groups;
     for (const auto& p : sorted)
-        (contactState(p.second) == NYX_SENDER_REQUEST ? requests : direct).append(p.second);
+        (contactState(p.second) == NYX_SENDER_REQUEST ? requests : isGroupKey(p.second) ? groups : direct).append(p.second);
 
     int restoreRow = -1;
     auto addRow = [&](const QString& addr) {
@@ -972,6 +1089,7 @@ void ChatWidget::refreshContacts()
 
         int unread = (addr == currentContact) ? 0 : ci.unread;
         bool typing = mapTypingContacts.contains(addr);
+        const bool fGroupRow = isGroupKey(addr);
         const QString name = displayNameFor(addr);
 
         QWidget *row = new QWidget();
@@ -994,7 +1112,7 @@ void ChatWidget::refreshContacts()
                                .arg(unread ? "bold" : "600", unread ? "palette(text)" : cssColor(mutedColor(palette()))));
         QLabel *when = new QLabel(timeStr);
         when->setStyleSheet("font-size: 10px; color: palette(dark); background: transparent;");
-        QString prevText = typing ? tr("typing...") : ((ci.lastMine ? tr("You: ") : QString()) + ci.preview);
+        QString prevText = typing ? tr("typing...") : ((ci.lastMine && !fGroupRow ? tr("You: ") : QString()) + ci.preview);
         QLabel *prev = new NyxElideLabel(prevText);
         prev->setFont(GUIUtil::emojiFont(11));
         prev->setStyleSheet(QString("font-size: 11px; color: %1; background: transparent;")
@@ -1017,7 +1135,7 @@ void ChatWidget::refreshContacts()
 
         QListWidgetItem *item = new QListWidgetItem();
         item->setData(Qt::UserRole, addr);
-        item->setToolTip(addr);
+        item->setToolTip(fGroupRow ? tr("Group %1").arg(QString::fromStdString(gidOf(addr))) : addr);
         item->setSizeHint(QSize(0, 48));
         contactList->addItem(item);
         contactList->setItemWidget(item, row);
@@ -1031,8 +1149,15 @@ void ChatWidget::refreshContacts()
         addListWidget(contactList, makeSectionHeader(tr("Message Requests - %1").arg(requests.size())));
         for (const QString& a : requests)
             addRow(a);
-        addListWidget(contactList, makeSectionHeader(tr("Direct Messages")));
     }
+    if (!groups.isEmpty())
+    {
+        addListWidget(contactList, makeSectionHeader(tr("Groups")));
+        for (const QString& a : groups)
+            addRow(a);
+    }
+    if (!requests.isEmpty() || !groups.isEmpty())
+        addListWidget(contactList, makeSectionHeader(tr("Direct Messages")));
     for (const QString& a : direct)
         addRow(a);
 
@@ -1074,6 +1199,37 @@ void ChatWidget::onContactMenu(const QPoint& pos)
     const QString addr = item->data(Qt::UserRole).toString();
     if (addr.isEmpty())
         return;
+
+    if (isGroupKey(addr))
+    {
+        const GroupInfo g = mapGroups.value(addr);
+        QMenu menu(this);
+        QAction *aMembers = menu.addAction(tr("Members"));
+        QAction *aAccept = g.fRequest ? menu.addAction(tr("Accept invite")) : 0;
+        QAction *aRename = g.fMember && g.myAddr == g.owner ? menu.addAction(tr("Rename group...")) : 0;
+        QAction *aCopy = menu.addAction(tr("Copy group id"));
+        menu.addSeparator();
+        QAction *aLeave = g.fMember && !g.fRequest ? menu.addAction(tr("Leave group")) : 0;
+        QAction *aHide = menu.addAction(tr("Hide group"));
+        QAction *aBlock = g.myAddr != g.owner ? menu.addAction(tr("Block owner")) : 0;
+        QAction *c = menu.exec(contactList->viewport()->mapToGlobal(pos));
+        if (!c)
+            return;
+        if (c == aMembers)
+        {
+            if (currentContact != addr)
+                openConversation(addr);
+            membersPanel->show();
+            refreshMembersPanel();
+        }
+        else if (c == aCopy)
+            QApplication::clipboard()->setText(g.gid);
+        else if (aBlock && c == aBlock)
+            blockContact(g.owner);
+        else
+            groupAction(addr, c == aAccept ? "accept" : c == aRename ? "rename" : c == aLeave ? "leave" : "hide");
+        return;
+    }
 
     QMenu menu(this);
     QAction *aRename = menu.addAction(tr("Rename..."));
@@ -1163,7 +1319,14 @@ void ChatWidget::loadConversation(const QString& address)
         return;
 
     refreshSafetyCache();
+    const bool fGroup = isGroupKey(address);
+    const GroupInfo group = mapGroups.value(address);
     const int state = contactState(address);
+    if (fGroup && group.fRequest)
+    {
+        addGroupInviteBar(address);
+        return;
+    }
     if (state == NYX_SENDER_BLOCKED)
     {
         addCenteredNote(tr("You blocked this address. Its messages are discarded."));
@@ -1175,13 +1338,35 @@ void ChatWidget::loadConversation(const QString& address)
     // Rows from the model plus the control records for this conversation.
     struct Src { QDateTime dt; int modelRow; MessageTableEntry ctl; bool fMine; };
     QList<Src> src;
+    std::vector<NyxThreadMsg> rows;
     setMyAddrs.clear();
-    for (int i = 0; i < msgModel->rowCount(QModelIndex()); i++)
+    if (fGroup)
+    {
+        std::vector<bool> mine;
+        SecureMsgCollectGroupThread(gidOf(address), rows, mine);
+        if (!group.myAddr.isEmpty())
+            setMyAddrs.insert(group.myAddr);
+        for (size_t i = 0; i < rows.size(); i++)
+        {
+            Src r;
+            r.dt = QDateTime::fromSecsSinceEpoch(rows[i].ts);
+            r.modelRow = -1;
+            r.fMine = mine[i];
+            if (mine[i])
+                setMyAddrs.insert(QString::fromStdString(rows[i].sender));
+            src.append(r);
+        }
+        if (!group.fMember)
+            addCenteredNote(tr("You are no longer a member of this group."));
+    }
+    for (int i = 0; !fGroup && i < msgModel->rowCount(QModelIndex()); i++)
     {
         QString from = msgModel->data(msgModel->index(i, MessageModel::FromAddress, QModelIndex()), Qt::DisplayRole).toString();
         QString to = msgModel->data(msgModel->index(i, MessageModel::ToAddress, QModelIndex()), Qt::DisplayRole).toString();
         const bool fMine = msgModel->data(msgModel->index(i, 0, QModelIndex()), MessageModel::TypeRole).toInt() == MessageTableEntry::Sent;
         if ((fMine ? to : from) != address)
+            continue;
+        if (isGroupExt(msgModel->data(msgModel->index(i, 0, QModelIndex()), MessageModel::ExtRole).toString()))
             continue;
         setMyAddrs.insert(fMine ? from : to);
         Src r;
@@ -1190,11 +1375,11 @@ void ChatWidget::loadConversation(const QString& address)
         r.fMine = fMine;
         src.append(r);
     }
-    const QList<MessageTableEntry> ctls = msgModel->controlEntries();
+    const QList<MessageTableEntry> ctls = fGroup ? QList<MessageTableEntry>() : msgModel->controlEntries();
     for (const MessageTableEntry& e : ctls)
     {
         const bool fMine = e.type == MessageTableEntry::Sent;
-        if ((fMine ? e.to_address : e.from_address) != address)
+        if ((fMine ? e.to_address : e.from_address) != address || isGroupExt(e.ext))
             continue;
         setMyAddrs.insert(fMine ? e.from_address : e.to_address);
         Src r;
@@ -1204,11 +1389,12 @@ void ChatWidget::loadConversation(const QString& address)
         r.fMine = fMine;
         src.append(r);
     }
-    std::stable_sort(src.begin(), src.end(), [](const Src& x, const Src& y) { return x.dt < y.dt; });
+    if (!fGroup)
+        std::stable_sort(src.begin(), src.end(), [](const Src& x, const Src& y) { return x.dt < y.dt; });
 
-    std::vector<NyxThreadMsg> rows;
-    for (const Src& r : src)
+    for (int k = 0; !fGroup && k < src.size(); k++)
     {
+        const Src& r = src[k];
         NyxThreadMsg m;
         if (r.modelRow >= 0)
         {
@@ -1228,8 +1414,10 @@ void ChatWidget::loadConversation(const QString& address)
         }
         rows.push_back(m);
     }
-    const std::vector<NyxMsgView> views = NyxBuildThread(rows, [this](const std::string& s) {
+    const std::vector<NyxMsgView> views = NyxBuildThread(rows, [&](const std::string& s) {
         const QString q = QString::fromStdString(s);
+        if (fGroup)
+            return group.members.contains(q) && !NyxIsBlocked(s);
         return setMyAddrs.contains(q) || contactState(q) == NYX_SENDER_KNOWN;
     });
 
@@ -2023,6 +2211,7 @@ bool ChatWidget::setMessagingEnabled(bool fEnable, QString *pError)
 void ChatWidget::applyMessagingPreference()
 {
     QSettings settings;
+    fNyxTyping = settings.value("fNyxTypingIndicators", false).toBool();
     if (!settings.contains(NYX_PREF_KEY))
         return;
     bool fWant = settings.value(NYX_PREF_KEY).toBool();
@@ -2085,6 +2274,8 @@ void ChatWidget::confirmOpenUrl(const QString& linkIn)
 
 int ChatWidget::contactState(const QString& address) const
 {
+    if (isGroupKey(address))
+        return mapGroups.value(address).fRequest ? NYX_SENDER_REQUEST : NYX_SENDER_KNOWN;
     const std::string a = address.toStdString();
     return NyxClassifySender(a, setSentTo.contains(address), setAddressBook.contains(address),
                              NyxIsAccepted(a), NyxIsBlocked(a));
@@ -2329,6 +2520,30 @@ void ChatWidget::onSendClicked()
             }
         }
     }
+    int rv;
+    if (isGroupKey(currentContact))
+    {
+        std::vector<std::string> extra;
+        if (!replyMid.isEmpty() && !fFile)
+        {
+            NyxReply r;
+            r.mid = replyMid.toStdString();
+            r.quote = replyChip->property("quote").toString().toStdString();
+            extra.push_back(NyxEncodeReply(r));
+        }
+        if (fSentEmbed)
+            extra.push_back(embedExt);
+        rv = SecureMsgGroupSend(gidOf(currentContact), msgText, extra, sError);
+        if (rv != 0 && fSentEmbed)
+        {
+            extra.pop_back();
+            fSentEmbed = false;
+            rv = SecureMsgGroupSend(gidOf(currentContact), msgText, extra, sError);
+        }
+        addFrom = mapGroups.value(currentContact).myAddr.toStdString();
+    }
+    else
+    {
     if (!replyMid.isEmpty() && !fFile)
     {
         NyxReply r;
@@ -2349,7 +2564,9 @@ void ChatWidget::onSendClicked()
     }
     else if (!embedExt.empty())
         msgText = NyxComposePlain(msgText, embedExt);
-    if (SecureMsgSend(addFrom, sendTo, msgText, sError) != 0)
+    rv = SecureMsgSend(addFrom, sendTo, msgText, sError);
+    }
+    if (rv != 0)
     {
         QString reason = QString::fromStdString(sError);
         if (reason.contains("public key", Qt::CaseInsensitive))
@@ -2395,7 +2612,18 @@ void ChatWidget::onNewChatClicked()
                                  tr("The message store is not loaded yet. Unlock the wallet or try again in a moment."));
         return;
     }
+    QMenu menu(this);
+    QAction *aDirect = menu.addAction(tr("New direct message..."));
+    QAction *aGroup = menu.addAction(tr("New group..."));
+    QAction *c = menu.exec(newChatButton->mapToGlobal(QPoint(0, newChatButton->height())));
+    if (c == aDirect)
+        startDirectDialog();
+    else if (c == aGroup)
+        createGroupDialog();
+}
 
+void ChatWidget::startDirectDialog()
+{
     QDialog dlg(this);
     dlg.setWindowTitle(tr("New conversation"));
     dlg.setMinimumWidth(420);
@@ -2469,7 +2697,8 @@ void ChatWidget::onNewChatClicked()
 
 void ChatWidget::openConversation(const QString& address)
 {
-    setDraftContacts.insert(address);
+    if (!isGroupKey(address))
+        setDraftContacts.insert(address);
     currentContact = address;
     cancelReply();
     setHeaderContact(address);
@@ -3324,44 +3553,22 @@ void ChatWidget::deleteConversation(const QString& address)
 
 void ChatWidget::onSendTypingNotification()
 {
-    // Rate limit: only send if the cooldown timer is not active
-    if (typingSendTimer->isActive())
+    // Opt-in; only to an accepted contact in the open, focused conversation. Core rate-limits to 1 per 60 s.
+    if (!fNyxTyping || typingSendTimer->isActive() || currentContact.isEmpty() || currentContact == "anon"
+        || isGroupKey(currentContact) || !window()->isActiveWindow() || contactState(currentContact) != NYX_SENDER_KNOWN)
         return;
-
-    if (currentContact.isEmpty())
-        return;
-
-    // Get our sending address
-    std::string addFrom;
-    if (pwalletMain)
-    {
-        LOCK(pwalletMain->cs_wallet);
-        for (const auto& pair : pwalletMain->mapAddressBook)
-        {
-            if (pair.second == "receive")
-            {
-                addFrom = CBitcoinAddress(pair.first).ToString();
-                break;
-            }
-        }
-        if (addFrom.empty())
-        {
-            std::set<CKeyID> setKeyID;
-            pwalletMain->GetKeys(setKeyID);
-            if (!setKeyID.empty())
-                addFrom = CBitcoinAddress(*setKeyID.begin()).ToString();
-        }
-    }
-
-    if (!addFrom.empty())
+    const std::string addFrom = pickSendFromAddress().toStdString();
+    if (!addFrom.empty() && addFrom != "anon")
     {
         SecureMsgSendTyping(addFrom, currentContact.toStdString());
-        typingSendTimer->start(); // Start 3s cooldown
+        typingSendTimer->start();
     }
 }
 
 void ChatWidget::onTypingReceived(const QString& senderAddr)
 {
+    if (!fNyxTyping)
+        return;
     // Cap to 50 entries to prevent unbounded growth
     if (!mapTypingContacts.contains(senderAddr) && mapTypingContacts.size() >= 50)
         return; // Silently drop — unknown address and map is full
@@ -3392,7 +3599,7 @@ void ChatWidget::onTypingTimeout()
     while (it.hasNext())
     {
         it.next();
-        if (now - it.value() > 5000)
+        if (now - it.value() > NYX_TYPING_SEND_INTERVAL * 1000)
         {
             it.remove();
             changed = true;
@@ -3409,6 +3616,7 @@ void ChatWidget::updateContactTypingDisplay()
 
 void ChatWidget::onNewMessage()
 {
+    mapTypingContacts.clear();
     // Update last-read so current contact doesn't flash unread
     if (!currentContact.isEmpty() && isVisible())
         markRead(currentContact);
@@ -3416,4 +3624,243 @@ void ChatWidget::onNewMessage()
     refreshContacts();
     if (!currentContact.isEmpty())
         loadConversation(currentContact);
+}
+
+void ChatWidget::reloadGroups()
+{
+    mapGroups.clear();
+    if (!fSecMsgEnabled || !pwalletMain || pwalletMain->IsLocked())
+        return;
+    std::vector<NyxGroupView> v;
+    SecureMsgCollectGroups(v);
+    for (const NyxGroupView& g : v)
+    {
+        if (g.fHidden)
+            continue;
+        GroupInfo gi;
+        gi.gid = QString::fromStdString(g.gid);
+        gi.name = QString::fromStdString(g.name);
+        gi.owner = QString::fromStdString(g.owner);
+        gi.myAddr = QString::fromStdString(g.myAddr);
+        for (const std::string& m : g.members)
+            gi.members << QString::fromStdString(m);
+        gi.fMember = g.fMember;
+        gi.fRequest = g.fRequest;
+        gi.lastTs = g.lastTs;
+        mapGroups.insert(NYX_GROUP_PREFIX + gi.gid, gi);
+    }
+}
+
+void ChatWidget::refreshMembersPanel()
+{
+    if (!isGroupKey(currentContact))
+    {
+        membersPanel->hide();
+        return;
+    }
+    const GroupInfo g = mapGroups.value(currentContact);
+    membersTitle->setText(tr("MEMBERS - %1 / %2").arg(g.members.size()).arg((int)NYX_GROUP_MAX));
+    membersList->clear();
+    for (const QString& m : g.members)
+    {
+        const bool fMe = m == g.myAddr;
+        QString label = fMe ? myDisplayName() : displayNameFor(m);
+        if (m == g.owner)
+            label += QString::fromUtf8("  \xF0\x9F\x91\x91");   // crown
+        QListWidgetItem *it = new QListWidgetItem(QIcon(avatarFor(m, fMe ? myDisplayName() : displayNameFor(m), 28)), label);
+        it->setData(Qt::UserRole, m);
+        it->setToolTip(m);
+        membersList->addItem(it);
+    }
+    const bool fOwner = g.fMember && g.myAddr == g.owner;
+    membersAddButton->setVisible(fOwner);
+    membersAddButton->setEnabled(g.members.size() < (int)NYX_GROUP_MAX);
+    membersRenameButton->setVisible(fOwner);
+    membersLeaveButton->setVisible(g.fMember);
+}
+
+void ChatWidget::createGroupDialog()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("New group"));
+    dlg.setMinimumWidth(460);
+    QVBoxLayout *v = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+    QLineEdit *nameEdit = new QLineEdit();
+    nameEdit->setMaxLength(NYX_GROUP_NAME_MAX);
+    nameEdit->setPlaceholderText(tr("Group name"));
+    QPlainTextEdit *membersEdit = new QPlainTextEdit();
+    membersEdit->setPlaceholderText(tr("One Innova address per line (up to %1)").arg((int)NYX_GROUP_MAX - 1));
+    membersEdit->setFixedHeight(120);
+    form->addRow(tr("Name"), nameEdit);
+    form->addRow(tr("Members"), membersEdit);
+    v->addLayout(form);
+    QLabel *hint = new QLabel(tr("Up to %1 members including you. Each message is encrypted separately to every member, "
+                                 "so it costs one proof of work per member. Members see each other's addresses. "
+                                 "Invitees who do not know you see the group under message requests.")
+                              .arg((int)NYX_GROUP_MAX));
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: palette(dark); font-size: 11px;");
+    v->addWidget(hint);
+    QLabel *err = new QLabel();
+    err->setStyleSheet("color: #f23f43; font-size: 11px;");
+    err->setWordWrap(true);
+    err->hide();
+    v->addWidget(err);
+    QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText(tr("Create group"));
+    v->addWidget(bb);
+    std::vector<std::string> members;
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, [&]() {
+        members.clear();
+        if (nameEdit->text().trimmed().isEmpty())
+        {
+            err->setText(tr("Enter a group name."));
+            err->show();
+            return;
+        }
+        for (const QString& line : membersEdit->toPlainText().split(QRegularExpression("[\\s,]+"), Qt::SkipEmptyParts))
+        {
+            CBitcoinAddress ba(line.toStdString());
+            if (!ba.IsValid())
+            {
+                err->setText(tr("%1 is not a valid Innova address.").arg(line));
+                err->show();
+                return;
+            }
+            if (std::find(members.begin(), members.end(), line.toStdString()) == members.end())
+                members.push_back(line.toStdString());
+        }
+        if (members.empty() || members.size() > NYX_GROUP_MAX - 1)
+        {
+            err->setText(tr("Add between 1 and %1 members.").arg((int)NYX_GROUP_MAX - 1));
+            err->show();
+            return;
+        }
+        dlg.accept();
+    });
+    nameEdit->setFocus();
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const std::string from = pickSendFromAddress().toStdString();
+    std::string gid, sError;
+    if (from.empty() || SecureMsgGroupCreate(from, nameEdit->text().trimmed().toStdString(), members, gid, sError) != 0)
+    {
+        QMessageBox::warning(this, tr("New group"), sError.empty() ? tr("No address available to send from.")
+                                                                    : QString::fromStdString(sError));
+        return;
+    }
+    if (!sError.empty())
+        QMessageBox::warning(this, tr("New group"), QString::fromStdString(sError));
+    refreshContacts();
+    openConversation(NYX_GROUP_PREFIX + QString::fromStdString(gid));
+}
+
+void ChatWidget::addGroupInviteBar(const QString& key)
+{
+    const GroupInfo g = mapGroups.value(key);
+    QFrame *bar = new QFrame();
+    bar->setObjectName("request");
+    bar->setStyleSheet("QFrame#request { background-color: palette(alternate-base); border: 1px solid palette(mid);"
+                       " border-radius: 8px; } QLabel { background: transparent; color: palette(text); }");
+    QVBoxLayout *v = new QVBoxLayout(bar);
+    v->setContentsMargins(12, 10, 12, 10);
+    QLabel *t = new QLabel(tr("Group invite from %1 (%n members): \"%2\". You have not messaged this address. "
+                              "Group messages stay hidden until you accept.", "", g.members.size())
+                           .arg(g.owner, g.name));
+    t->setTextFormat(Qt::PlainText);
+    t->setWordWrap(true);
+    v->addWidget(t);
+    QHBoxLayout *h = new QHBoxLayout();
+    QPushButton *accept = new QPushButton(tr("Accept"));
+    QPushButton *hide = new QPushButton(tr("Ignore"));
+    QPushButton *block = new QPushButton(tr("Block owner"));
+    block->setStyleSheet("QPushButton { color: #c0392b; }");
+    h->addWidget(accept);
+    h->addWidget(hide);
+    h->addWidget(block);
+    h->addStretch();
+    v->addLayout(h);
+    connect(accept, &QPushButton::clicked, this, [this, key]() { groupAction(key, "accept"); });
+    connect(hide, &QPushButton::clicked, this, [this, key]() { groupAction(key, "hide"); });
+    connect(block, &QPushButton::clicked, this, [this, g]() { blockContact(g.owner); });
+    QWidget *wrap = new QWidget();
+    QHBoxLayout *wl = new QHBoxLayout(wrap);
+    wl->setContentsMargins(16, 10, 16, 6);
+    wl->addWidget(bar);
+    addListWidget(chatView, wrap);
+}
+
+void ChatWidget::groupAction(const QString& key, const QString& what)
+{
+    if (!mapGroups.contains(key))
+        return;
+    const GroupInfo g = mapGroups.value(key);
+    const std::string gid = g.gid.toStdString();
+    std::string sError;
+    int rv = 0;
+    if (what == "accept")
+        rv = SecureMsgGroupAccept(gid) ? 0 : (sError = "Could not save the contact list.", 1);
+    else if (what == "hide")
+    {
+        if (QMessageBox::question(this, tr("Hide group"), tr("Hide \"%1\"? Its messages are no longer shown.").arg(g.name),
+                                  QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+            return;
+        rv = SecureMsgGroupHide(gid) ? 0 : (sError = "Could not save the contact list.", 1);
+    }
+    else if (what == "leave")
+    {
+        if (QMessageBox::question(this, tr("Leave group"), tr("Leave \"%1\"? Members are told you left.").arg(g.name),
+                                  QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes)
+            return;
+        rv = SecureMsgGroupLeave(gid, sError);
+    }
+    else if (what == "rename")
+    {
+        bool ok = false;
+        const QString n = QInputDialog::getText(this, tr("Rename group"), tr("Group name"), QLineEdit::Normal, g.name, &ok).trimmed();
+        if (!ok || n.isEmpty() || n == g.name)
+            return;
+        rv = SecureMsgGroupRename(gid, n.left(NYX_GROUP_NAME_MAX).toStdString(), sError);
+    }
+    else if (what == "add")
+    {
+        bool ok = false;
+        const QString a = QInputDialog::getText(this, tr("Add member"), tr("Innova address"), QLineEdit::Normal, QString(), &ok).trimmed();
+        if (!ok || a.isEmpty())
+            return;
+        rv = SecureMsgGroupAdd(gid, a.toStdString(), sError);
+    }
+    if (rv != 0 || !sError.empty())
+        QMessageBox::warning(this, tr("Group"), QString::fromStdString(sError));
+    refreshContacts();
+    if (what == "hide" && currentContact == key)
+    {
+        currentContact.clear();
+        clearHeaderContact();
+        showEmptyConversation();
+        updateSendButton();
+        return;
+    }
+    if (currentContact == key)
+    {
+        setHeaderContact(key);
+        loadConversation(key);
+    }
+}
+
+static const char* NYX_TYPING_KEY = "fNyxTypingIndicators";
+
+bool ChatWidget::typingIndicatorsEnabled()
+{
+    QSettings settings;
+    return settings.value(NYX_TYPING_KEY, false).toBool();
+}
+
+void ChatWidget::setTypingIndicatorsEnabled(bool fEnable)
+{
+    QSettings settings;
+    settings.setValue(NYX_TYPING_KEY, fEnable);
+    fNyxTyping = fEnable;
 }

@@ -111,12 +111,23 @@ OptionsDialog::OptionsDialog(QWidget *parent) :
                                       "site. On by default."));
         pinfo->setWordWrap(true);
         ml->addWidget(pinfo);
+        typingCheck = new QCheckBox(tr("Send and show &typing indicators"));
+        typingCheck->setChecked(ChatWidget::typingIndicatorsEnabled());
+        ml->addWidget(typingCheck);
+        QLabel *tinfo = new QLabel(tr("Typing indicators send an extra encrypted message each time you start typing. They reveal "
+                                      "to your contact, and through message timing to network observers, when you are online and "
+                                      "active, and they cost proof-of-work and relay space. With this on you are less anonymous. "
+                                      "Off by default; never used for anonymous messages, message requests or groups."));
+        tinfo->setWordWrap(true);
+        tinfo->setStyleSheet("color: #c0392b;");
+        ml->addWidget(tinfo);
         ml->addStretch();
         if (GetBoolArg("-nosmsg", false))
             nyxMessengerCheck->setEnabled(false);
         ui->tabWidget->addTab(tabMsg, tr("&Messaging"));
         connect(nyxMessengerCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
         connect(linkPreviewCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
+        connect(typingCheck, SIGNAL(toggled(bool)), this, SLOT(enableApplyButton()));
     }
 
     /* Widget-to-option mapper */
@@ -220,6 +231,7 @@ void OptionsDialog::setSaveButtonState(bool fState)
 void OptionsDialog::applyMessagingToggle()
 {
     ChatWidget::setLinkPreviewsEnabled(linkPreviewCheck->isChecked());
+    ChatWidget::setTypingIndicatorsEnabled(typingCheck->isChecked());
     if (nyxMessengerCheck->isChecked() == (bool)fSecMsgEnabled)
         return;
     QString err;

@@ -58,6 +58,7 @@ private:
     bool fProxyIpValid;
     QCheckBox *nyxMessengerCheck;
     QCheckBox *linkPreviewCheck;
+    QCheckBox *typingCheck;
     void applyMessagingToggle();
 };
 

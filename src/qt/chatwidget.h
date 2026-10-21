@@ -54,6 +54,9 @@ public:
     /** Sender-side link previews (Options > Messaging); default on. */
     static bool linkPreviewsEnabled();
     static void setLinkPreviewsEnabled(bool fEnable);
+    /** Opt-in typing indicator (Options > Messaging); default off. */
+    static bool typingIndicatorsEnabled();
+    static void setTypingIndicatorsEnabled(bool fEnable);
     /** Apply the saved preference once at startup. */
     static void applyMessagingPreference();
 
@@ -269,6 +272,29 @@ private:
     void unsendMessage(const QString& mid);
     void scrollToMid(const QString& mid);
     void openConversation(const QString& address);
+
+    // Group chats (pairwise fan-out); list key is "group:<gid>"
+    struct GroupInfo
+    {
+        QString gid, name, owner, myAddr;
+        QStringList members;
+        bool fMember, fRequest;
+        qint64 lastTs;
+        GroupInfo() : fMember(false), fRequest(false), lastTs(0) {}
+    };
+    QMap<QString, GroupInfo> mapGroups;
+    QWidget *membersPanel;
+    QLabel *membersTitle;
+    QListWidget *membersList;
+    QPushButton *membersAddButton;
+    QPushButton *membersRenameButton;
+    QPushButton *membersLeaveButton;
+    void reloadGroups();
+    void refreshMembersPanel();
+    void createGroupDialog();
+    void startDirectDialog();
+    void addGroupInviteBar(const QString& key);
+    void groupAction(const QString& key, const QString& what);
 
     void updateContactTypingDisplay();
     void refreshComposerIcons();
