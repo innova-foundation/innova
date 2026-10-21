@@ -2636,6 +2636,39 @@ int SecureMsgSendDelete(const std::string& mid, std::string& sError)
     return rv;
 }
 
+// Typing goes only to peers that showed they parse Nyx records: a typing record from them this
+// session, or a stored message from them carrying a reply/reaction/edit/delete/group record.
+// v5.0 wallets send none of these, so they never receive an empty typing message.
+static CCriticalSection cs_typingPeers;
+static std::set<std::string> setTypingPeers;
+
+static bool NyxPeerReadsRecords(const std::string& addr)
+{
+    {
+        LOCK(cs_typingPeers);
+        if (setTypingPeers.count(addr))
+            return true;
+    }
+    bool fFound = false;
+    NyxForEachStored([&](bool fMine, const unsigned char*, const SecMsgStored&, const MessageData& msg) {
+        if (fMine || msg.sFromAddress != addr)
+            return true;
+        std::string text, ext;
+        NyxSplitPlain(SecureMsgPlaintext(msg), text, ext);
+        if (ext.empty())
+            return true;
+        NyxRecords r = NyxParseRecords(ext);
+        fFound = r.fReply || r.fReact || r.fEdit || r.fDelete || r.fGroup;
+        return !fFound;
+    });
+    if (fFound)
+    {
+        LOCK(cs_typingPeers);
+        setTypingPeers.insert(addr);
+    }
+    return fFound;
+}
+
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 {
     // Opt-in only: an extra encrypted message that reveals activity timing to the contact.
@@ -2645,6 +2678,8 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
     std::set<std::string> sentTo;
     SecureMsgCollectSentTo(sentTo);
     if (!NyxIsAccepted(addrTo) && !sentTo.count(addrTo))
+        return false;
+    if (!NyxPeerReadsRecords(addrTo))
         return false;
     static CCriticalSection cs_typing;
     static std::map<std::string, int64_t> lastSent;
@@ -2727,6 +2762,9 @@ static void NyxGroupViews(const std::vector<NyxGroupRow>& rows, std::map<std::st
         v.gid = g.gid;
         v.name = g.name;
         v.owner = g.owner;
+        v.creator = g.creator;
+        v.createTime = g.createTime;
+        v.rnd = g.rnd;
         v.members = g.members;
         v.epoch = g.epoch;
         v.lastTs = last[g.gid];
@@ -2905,7 +2943,10 @@ int SecureMsgGroupCreate(const std::string& from, const std::string& name, const
     }
     unsigned char rnd[16];
     GetRandBytes(rnd, sizeof(rnd));
-    rec.gid = NyxNewGroupId(from, GetTime(), rnd);
+    rec.creator = from;
+    rec.createTime = GetTime();
+    rec.rnd = HexStr(rnd, rnd + sizeof(rnd));
+    rec.gid = NyxNewGroupId(from, rec.createTime, rnd);
     gid = rec.gid;
     return NyxGroupFanout(from, rec.name, strprintf("created the group with %u members", (unsigned)rec.members.size()),
                           rec, std::vector<std::string>(), Others(rec.members, from), sError);
@@ -2944,6 +2985,12 @@ int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::stri
         sError = strprintf("A group holds at most %u members.", (unsigned)NYX_GROUP_MAX);
         return 1;
     }
+    // A new member opens the group only from a creator-signed roster.
+    if (g.myAddr != g.creator)
+    {
+        sError = "Only the group creator can add members.";
+        return 1;
+    }
     NyxGroupRec add;
     add.gid = gid;
     add.epoch = g.epoch + 1;
@@ -2956,6 +3003,9 @@ int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::stri
     snap.name = g.name;
     snap.members = g.members;
     snap.members.push_back(addr);
+    snap.creator = g.creator;
+    snap.createTime = g.createTime;
+    snap.rnd = g.rnd;
     // The new member gets the full roster; everyone else gets the add.
     if (NyxGroupFanout(g.myAddr, g.name, "added you to the group", snap, std::vector<std::string>(),
                        std::vector<std::string>(1, addr), sError) != 0)
@@ -3754,6 +3804,11 @@ static bool NyxHandleTyping(const std::string& addressTo, unsigned char* pHeader
     bool fOn = false;
     if (!NyxDecodeTyping(ext, fOn))
         return true;
+    if (msg.sFromAddress != "anon")
+    {
+        LOCK(cs_typingPeers);
+        setTypingPeers.insert(msg.sFromAddress);
+    }
     int64_t age = GetTime() - msg.timestamp;
     if (!fNyxTyping || !reportToGui || !fOn || msg.sFromAddress == "anon"
         || age > NYX_TYPING_MAX_AGE || age < -NYX_TYPING_MAX_AGE || NyxIsBlocked(msg.sFromAddress))

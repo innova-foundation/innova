@@ -13,6 +13,7 @@
 
 // Group chats by pairwise fan-out: one SMSG per member, each carrying a 'G' record.
 // Layout: 'G' 0x01 gid[16 hex] epoch[4 hex] op[2 hex] payload; strings are 2-hex length + bytes.
+// Roster payload: name, members, creator, createTime[16 hex], rnd[32 hex].
 
 static const size_t NYX_GROUP_MAX = 10;        // members including the owner
 static const size_t NYX_GROUP_NAME_MAX = 48;
@@ -38,8 +39,14 @@ struct NyxGroupRec
     std::string name;                   // roster, rename
     std::vector<std::string> members;   // roster
     std::string addr;                   // add, remove, owner
-    NyxGroupRec() : epoch(0), op(NYX_GOP_MSG) {}
+    std::string creator;                // roster: gid binding
+    int64_t createTime;
+    std::string rnd;                    // roster: 32 hex
+    NyxGroupRec() : epoch(0), op(NYX_GOP_MSG), createTime(0) {}
 };
+
+/** gid == NyxNewGroupId(creator, createTime, rnd). */
+bool NyxGroupIdBinds(const std::string& gid, const std::string& creator, int64_t createTime, const std::string& rndHex);
 
 /** 16 hex: first 8 bytes of SHA256(creator || createTime LE64 || 16 random bytes). */
 std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const unsigned char rnd[16]);
@@ -60,17 +67,20 @@ std::string NyxGroupPlain(const std::string& name, const std::string& body, cons
 struct NyxGroupState
 {
     bool fValid;
-    std::string gid, owner, name;
+    std::string gid, owner, name, creator, rnd;
+    int64_t createTime;
     int epoch;
     std::vector<std::string> members;               // owner first
     std::map<int, std::set<std::string> > history;  // epoch -> roster
     std::map<std::string, int64_t> removedAt;       // member -> ts of its removal or leave
     int64_t lastTs;
-    NyxGroupState() : fValid(false), epoch(0), lastTs(0) {}
+    NyxGroupState() : fValid(false), createTime(0), epoch(0), lastTs(0) {}
     bool IsMember(const std::string& a) const;
 };
 
-/** Apply one roster op signed by signer. False (state unchanged) when the op is not honoured. */
+/** Apply one roster op signed by signer. First sight takes only a roster signed by the gid's creator
+    (epoch 0 genesis, or a later snapshot the creator sends a new member); later ops chain epoch+1.
+    False (state unchanged) when the op is not honoured. */
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r);
 
 /** Whether a group message from signer is shown under the state. */
@@ -84,7 +94,7 @@ struct NyxGroupEvent
     NyxGroupEvent() : ts(0) {}
 };
 
-/** Replay roster ops by (epoch, ts, mid); duplicate mids count once. Anonymous senders are ignored. */
+/** Replay roster ops by (epoch, mid), never by sender timestamp; duplicate mids count once. Anonymous senders are ignored. */
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events);
 
 /** Typing record 'T' 0x01 state. */

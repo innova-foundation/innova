@@ -14,7 +14,7 @@
 static const char NYX_GRP_VER = '\x01';
 static const char* const HEXD = "0123456789abcdef";
 
-static std::string Hex(size_t v, int digits)
+static std::string Hex(uint64_t v, int digits)
 {
     std::string s(digits, '0');
     for (int i = digits - 1; i >= 0; i--, v >>= 4)
@@ -22,7 +22,7 @@ static std::string Hex(size_t v, int digits)
     return s;
 }
 
-static bool ReadHex(const std::string& s, size_t& pos, int digits, size_t& v)
+static bool ReadHex(const std::string& s, size_t& pos, int digits, uint64_t& v)
 {
     if (pos + digits > s.size())
         return false;
@@ -41,7 +41,7 @@ static bool ReadHex(const std::string& s, size_t& pos, int digits, size_t& v)
 
 static bool ReadStr(const std::string& s, size_t& pos, size_t cap, std::string& out)
 {
-    size_t n;
+    uint64_t n;
     if (!ReadHex(s, pos, 2, n) || n > cap || pos + n > s.size())
         return false;
     out = s.substr(pos, n);
@@ -91,6 +91,33 @@ std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const 
     return out;
 }
 
+static bool HexToBytes(const std::string& h, unsigned char* out, size_t n)
+{
+    if (h.size() != 2 * n)
+        return false;
+    size_t pos = 0;
+    uint64_t v;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (!ReadHex(h, pos, 2, v))
+            return false;
+        out[i] = (unsigned char)v;
+    }
+    return true;
+}
+
+bool NyxGroupIdBinds(const std::string& gid, const std::string& creator, int64_t createTime, const std::string& rndHex)
+{
+    unsigned char rnd[16];
+    return ValidAddr(creator) && HexToBytes(rndHex, rnd, 16) && NyxNewGroupId(creator, createTime, rnd) == gid;
+}
+
+static bool ValidRnd(const std::string& r)
+{
+    unsigned char b[16];
+    return HexToBytes(r, b, 16);
+}
+
 std::string NyxEncodeGroup(const NyxGroupRec& g)
 {
     if (!NyxIsHexId(g.gid) || g.epoch < 0 || g.epoch > 0xFFFF)
@@ -104,11 +131,12 @@ std::string NyxEncodeGroup(const NyxGroupRec& g)
     case NYX_GOP_LEAVE:
         break;
     case NYX_GOP_ROSTER:
-        if (!ValidName(g.name) || !ValidRoster(g.members))
+        if (!ValidName(g.name) || !ValidRoster(g.members) || !ValidAddr(g.creator) || !ValidRnd(g.rnd))
             return std::string();
         s += Hex(g.name.size(), 2) + g.name + Hex(g.members.size(), 2);
         for (const std::string& a : g.members)
             s += Hex(a.size(), 2) + a;
+        s += Hex(g.creator.size(), 2) + g.creator + Hex((uint64_t)g.createTime, 16) + g.rnd;
         break;
     case NYX_GOP_ADD:
     case NYX_GOP_REMOVE:
@@ -136,7 +164,8 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
     g.gid = rec.substr(2, 16);
     if (!NyxIsHexId(g.gid))
         return false;
-    size_t pos = 18, v;
+    size_t pos = 18;
+    uint64_t v;
     if (!ReadHex(rec, pos, 4, v))
         return false;
     g.epoch = (int)v;
@@ -150,7 +179,7 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
         break;
     case NYX_GOP_ROSTER:
     {
-        size_t n;
+        uint64_t n;
         if (!ReadStr(rec, pos, NYX_GROUP_NAME_MAX, g.name) || !ValidName(g.name)
             || !ReadHex(rec, pos, 2, n) || n == 0 || n > NYX_GROUP_MAX)
             return false;
@@ -161,7 +190,13 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
                 return false;
             g.members.push_back(a);
         }
-        if (!ValidRoster(g.members))
+        if (!ValidRoster(g.members) || !ReadStr(rec, pos, NYX_GROUP_ADDR_MAX, g.creator) || !ValidAddr(g.creator)
+            || !ReadHex(rec, pos, 16, v) || pos + 32 > rec.size())
+            return false;
+        g.createTime = (int64_t)(uint64_t)v;
+        g.rnd = rec.substr(pos, 32);
+        pos += 32;
+        if (!ValidRnd(g.rnd))
             return false;
         break;
     }
@@ -230,12 +265,16 @@ bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, cons
         return false;
     if (!s.fValid)
     {
-        // First sight: a roster snapshot from a member who becomes the owner.
-        if (r.op != NYX_GOP_ROSTER || !ValidRoster(r.members)
-            || std::find(r.members.begin(), r.members.end(), signer) == r.members.end())
+        // First sight: only the gid's creator can open a group, so no member can claim it.
+        if (r.op != NYX_GOP_ROSTER || !ValidRoster(r.members) || signer != r.creator
+            || std::find(r.members.begin(), r.members.end(), signer) == r.members.end()
+            || !NyxGroupIdBinds(r.gid, r.creator, r.createTime, r.rnd))
             return false;
         s.fValid = true;
         s.gid = r.gid;
+        s.creator = r.creator;
+        s.createTime = r.createTime;
+        s.rnd = r.rnd;
         s.owner = signer;
         s.name = r.name;
         s.epoch = r.epoch;
@@ -249,6 +288,8 @@ bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, cons
         return true;
     }
     if (r.gid != s.gid || r.epoch != s.epoch + 1)
+        return false;
+    if (r.op == NYX_GOP_ROSTER && (r.creator != s.creator || r.createTime != s.createTime || r.rnd != s.rnd))
         return false;
     const bool fOwner = signer == s.owner;
     switch (r.op)
@@ -342,8 +383,6 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
     std::stable_sort(v.begin(), v.end(), [](const NyxGroupEvent* a, const NyxGroupEvent* b) {
         if (a->rec.epoch != b->rec.epoch)
             return a->rec.epoch < b->rec.epoch;
-        if (a->ts != b->ts)
-            return a->ts < b->ts;
         return a->mid < b->mid;
     });
     std::map<std::string, NyxGroupState> out;

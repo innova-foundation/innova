@@ -487,12 +487,13 @@ int SecureMsgSendDelete(const std::string& mid, std::string& sError);
 struct NyxGroupState;
 struct NyxGroupView
 {
-    std::string gid, name, owner, myAddr;
+    std::string gid, name, owner, myAddr, creator, rnd;
     std::vector<std::string> members;
+    int64_t createTime;
     int epoch;
     bool fMember, fRequest, fHidden;
     int64_t lastTs;
-    NyxGroupView() : epoch(0), fMember(false), fRequest(false), fHidden(false), lastTs(0) {}
+    NyxGroupView() : createTime(0), epoch(0), fMember(false), fRequest(false), fHidden(false), lastTs(0) {}
 };
 /** Groups this wallet belongs or belonged to; fRequest when the owner is not a known contact. */
 void SecureMsgCollectGroups(std::vector<NyxGroupView>& out);
