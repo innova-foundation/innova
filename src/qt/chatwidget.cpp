@@ -986,7 +986,9 @@ static QWidget* makeSectionHeader(const QString& text)
 {
     QLabel *l = new QLabel(text.toUpper());
     l->setTextFormat(Qt::PlainText);
-    l->setStyleSheet("font-size: 10px; font-weight: bold; color: palette(dark); padding: 10px 8px 4px 8px; background: transparent;");
+    // palette(dark) is near the list background on macOS; use a fixed muted grey.
+    l->setStyleSheet("QLabel { font-size: 11px; font-weight: bold; color: #8e9297; padding: 10px 8px 4px 8px; background: transparent; }");
+    l->setMinimumHeight(l->sizeHint().height());
     return l;
 }
 
