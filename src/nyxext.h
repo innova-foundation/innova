@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "nyxgroup.h"
+
 // Reply, reaction, edit and delete records ride after the NUL like embeds.
 // Layout: tag, version 0x01, fields. Lengths are ASCII hex so the record never holds a NUL
 // (v5.0 and NyxSplitPlain stop at the second NUL).
@@ -57,13 +59,15 @@ std::string NyxDeletePlain(const std::string& mid);
 /** Records of a message by kind; anything unknown is ignored. */
 struct NyxRecords
 {
-    bool fReply, fReact, fEdit, fDelete;
+    bool fReply, fReact, fEdit, fDelete, fGroup, fTyping;
+    bool typingOn;
+    NyxGroupRec group;
     NyxReply reply;
     NyxReact react;
     NyxEdit edit;
     std::string delMid;
     std::string embedRec;   // raw embed/removal record, if any
-    NyxRecords() : fReply(false), fReact(false), fEdit(false), fDelete(false) {}
+    NyxRecords() : fReply(false), fReact(false), fEdit(false), fDelete(false), fGroup(false), fTyping(false), typingOn(false) {}
     bool IsControl() const { return fReact || fEdit || fDelete; }
 };
 NyxRecords NyxParseRecords(const std::string& ext);

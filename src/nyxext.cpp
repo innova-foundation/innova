@@ -254,6 +254,8 @@ NyxRecords NyxParseRecords(const std::string& ext)
         case 'K': if (!r.fReact) r.fReact = NyxDecodeReact(rec, r.react); break;
         case 'E': if (!r.fEdit) r.fEdit = NyxDecodeEdit(rec, r.edit); break;
         case 'D': if (!r.fDelete) r.fDelete = NyxDecodeDelete(rec, r.delMid); break;
+        case 'G': if (!r.fGroup) r.fGroup = NyxDecodeGroup(rec, r.group); break;
+        case 'T': if (!r.fTyping) r.fTyping = NyxDecodeTyping(rec, r.typingOn); break;
         default: if (r.embedRec.empty()) r.embedRec = rec; break;
         }
     }

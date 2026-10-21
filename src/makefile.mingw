@@ -175,6 +175,7 @@ OBJS= \
     obj/smessage.o \
     obj/nyxembed.o \
     obj/nyxext.o \
+    obj/nyxgroup.o \
     obj/nyxsafety.o \
     obj/stealth.o \
     obj/activecollateralnode.o \

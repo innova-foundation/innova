@@ -543,6 +543,7 @@ set(INNOVA_CXX_SOURCES
     src/smessage.cpp
     src/nyxembed.cpp
     src/nyxext.cpp
+    src/nyxgroup.cpp
     src/nyxsafety.cpp
     src/nyxui.cpp
     src/util.cpp
@@ -724,6 +725,7 @@ set(INNOVA_HEADERS
     src/smessage.h
     src/nyxembed.h
     src/nyxext.h
+    src/nyxgroup.h
     src/nyxsafety.h
     src/nyxui.h
     src/main.h
