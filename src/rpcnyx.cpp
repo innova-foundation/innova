@@ -12,6 +12,7 @@
 #include "nyxembed.h"
 #include "nyxsafety.h"
 #include "nyxext.h"
+#include "nyxgroup.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -410,6 +411,136 @@ static Value nyx_thread(const Array& params)
     return result;
 }
 
+static Object GroupToJson(const NyxGroupView& g)
+{
+    Object o;
+    o.push_back(Pair("gid", g.gid));
+    o.push_back(Pair("name", g.name));
+    o.push_back(Pair("owner", g.owner));
+    Array m;
+    for (const std::string& a : g.members)
+        m.push_back(a);
+    o.push_back(Pair("members", m));
+    o.push_back(Pair("epoch", g.epoch));
+    o.push_back(Pair("my_address", g.myAddr));
+    o.push_back(Pair("member", g.fMember));
+    o.push_back(Pair("request", g.fRequest));
+    o.push_back(Pair("hidden", g.fHidden));
+    return o;
+}
+
+static Value nyx_group(const Array& params, const std::string& sub)
+{
+    EnsureNyxEnabled();
+    EnsureWalletUnlocked();
+    std::string sError, gid;
+    if (sub == "groupcreate")
+    {
+        if (params.size() < 4)
+            throw runtime_error("nyx groupcreate <from> <name> <member> [member...]\n"
+                                "Create a group of up to 10 members including you. Each message is sent as one\n"
+                                "encrypted copy per member.");
+        std::vector<std::string> members;
+        for (size_t i = 3; i < params.size(); i++)
+            members.push_back(params[i].get_str());
+        int rv = SecureMsgGroupCreate(params[1].get_str(), params[2].get_str(), members, gid, sError);
+        Object r = NyxControlResult(rv, sError, "Group created.");
+        if (rv == 0)
+            r.push_back(Pair("gid", gid));
+        return r;
+    }
+    if (sub == "grouplist")
+    {
+        std::vector<NyxGroupView> v;
+        SecureMsgCollectGroups(v);
+        Array out;
+        for (const NyxGroupView& g : v)
+            out.push_back(GroupToJson(g));
+        return out;
+    }
+    if (params.size() < 2)
+        throw runtime_error("nyx " + sub + " <gid> ...");
+    gid = params[1].get_str();
+    if (sub == "groupinfo")
+    {
+        NyxGroupView g;
+        if (!SecureMsgGetGroup(gid, g))
+            throw runtime_error("Unknown group.");
+        return GroupToJson(g);
+    }
+    if (sub == "groupsend")
+    {
+        if (params.size() < 3 || params.size() > 4)
+            throw runtime_error("nyx groupsend <gid> <message> [force]");
+        const std::string body = params[2].get_str();
+        if (NyxDetectSecret(body) != NYX_SECRET_NONE && !(params.size() > 3 && NyxParseForce(params[3])))
+            throw runtime_error(std::string("Send refused. ") + NYX_SECRET_WARNING);
+        return NyxControlResult(SecureMsgGroupSend(gid, body, std::vector<std::string>(), sError), sError, "Sent.");
+    }
+    if (sub == "groupadd" || sub == "groupremove" || sub == "groupowner" || sub == "grouprename")
+    {
+        if (params.size() != 3)
+            throw runtime_error("nyx " + sub + " <gid> <" + (sub == "grouprename" ? "name" : "address") + ">");
+        const std::string a = params[2].get_str();
+        int rv = sub == "groupadd" ? SecureMsgGroupAdd(gid, a, sError)
+               : sub == "groupremove" ? SecureMsgGroupRemove(gid, a, sError)
+               : sub == "groupowner" ? SecureMsgGroupSetOwner(gid, a, sError)
+               : SecureMsgGroupRename(gid, a, sError);
+        return NyxControlResult(rv, sError, "Done.");
+    }
+    if (sub == "groupleave")
+        return NyxControlResult(SecureMsgGroupLeave(gid, sError), sError, "Left the group.");
+    if (sub == "groupaccept" || sub == "grouphide")
+    {
+        Object r;
+        bool ok = sub == "groupaccept" ? SecureMsgGroupAccept(gid) : SecureMsgGroupHide(gid);
+        r.push_back(Pair("result", ok ? "OK." : "Could not save nyxcontacts.dat."));
+        return r;
+    }
+    if (sub == "groupthread")
+    {
+        std::vector<NyxThreadMsg> rows;
+        std::vector<bool> mine;
+        SecureMsgCollectGroupThread(gid, rows, mine);
+        NyxGroupView g;
+        bool fHave = SecureMsgGetGroup(gid, g);
+        std::vector<NyxMsgView> v = NyxBuildThread(rows, [&](const std::string& s) {
+            return fHave && std::find(g.members.begin(), g.members.end(), s) != g.members.end();
+        });
+        Array out;
+        char cbuf[256];
+        for (size_t i = 0; i < rows.size(); i++)
+        {
+            if (v[i].fControl)
+                continue;
+            Object m;
+            m.push_back(Pair("mid", rows[i].mid));
+            m.push_back(Pair("from", rows[i].sender));
+            m.push_back(Pair("mine", (bool)mine[i]));
+            m.push_back(Pair("sent", getTimeString(rows[i].ts, cbuf, sizeof(cbuf))));
+            m.push_back(Pair("text", v[i].text));
+            if (v[i].fTombstone)
+                m.push_back(Pair("deleted", true));
+            if (v[i].fEdited)
+                m.push_back(Pair("edited", v[i].seq));
+            if (v[i].fReply)
+                m.push_back(Pair("reply_to", v[i].reply.mid));
+            if (!v[i].reactions.empty())
+            {
+                Object rx;
+                for (const auto& e : v[i].reactions)
+                    rx.push_back(Pair(e.first, (int)e.second.size()));
+                m.push_back(Pair("reactions", rx));
+            }
+            out.push_back(m);
+        }
+        Object result;
+        result.push_back(Pair("messages", out));
+        return result;
+    }
+    throw runtime_error("Unknown nyx subcommand: " + sub);
+}
+
 static Value nyx_sendanon(const Array& params)
 {
     if (params.size() < 3 || params.size() > 4)
@@ -788,8 +919,6 @@ static Value nyx_status(const Array& params)
     // State what the subsystem does not implement, so a caller cannot infer it
     // from the absence of a setting.
     Array unimplemented;
-    unimplemented.push_back("group messaging");
-    unimplemented.push_back("typing indicators");
     unimplemented.push_back("forward secrecy");
     unimplemented.push_back("separate messaging identity");
     unimplemented.push_back("delivery acknowledgement");
@@ -904,6 +1033,12 @@ Value nyx(const Array& params, bool fHelp)
             "  edit <mid> <newtext>        Edit a message you sent (48 h)\n"
             "  unsend <mid>                Delete a message you sent, for everyone\n"
             "  thread <address>            Conversation view with replies, reactions and edits applied\n"
+            "  groupcreate <from> <name> <member>...  Create a group (max 10 members incl. you)\n"
+            "  grouplist                   Groups, including invites (request=true)\n"
+            "  groupinfo|groupthread|groupleave|groupaccept|grouphide <gid>\n"
+            "  groupsend <gid> <message> [force]\n"
+            "  groupadd|groupremove|groupowner <gid> <address>   Owner only\n"
+            "  grouprename <gid> <name>    Owner only\n"
             "  inbox [all|unread|clear] [offset] [count]\n"
             "                              View received messages (default: unread)\n"
             "  outbox [all|clear]          View sent messages\n"
@@ -929,6 +1064,7 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "edit")        return nyx_edit(params);
     if (subcmd == "unsend")      return nyx_unsend(params);
     if (subcmd == "thread")      return nyx_thread(params);
+    if (subcmd.compare(0, 5, "group") == 0) return nyx_group(params, subcmd);
     if (subcmd == "inbox")       return nyx_inbox(params);
     if (subcmd == "accept" || subcmd == "block" || subcmd == "unblock")
         return nyx_contact(params, subcmd);
