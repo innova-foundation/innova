@@ -97,7 +97,7 @@ struct NyxGroupState
     int epoch;
     std::vector<std::string> members;               // owner first
     std::map<int, std::set<std::string> > history;  // epoch -> roster
-    std::map<std::string, int64_t> removedAt;       // member -> ts of its removal or leave
+    std::map<std::string, int> removedAt;           // member -> epoch of its removal or leave
     int64_t lastTs;
     NyxGroupState() : fValid(false), fFrozen(false), createTime(0), epoch(0), lastTs(0) {}
     bool IsMember(const std::string& a) const;

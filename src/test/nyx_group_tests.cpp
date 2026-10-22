@@ -222,6 +222,7 @@ BOOST_AUTO_TEST_CASE(group_membership_rules)
     BOOST_CHECK(!NyxGroupApply(s, O, 3, Next(s, NYX_GOP_ADD, X, O)));   // already a member
     BOOST_CHECK(!NyxGroupApply(s, O, 3, Next(s, NYX_GOP_REMOVE, O, O)));// owner cannot be removed
     BOOST_CHECK(!NyxGroupApply(s, O, 3, leave));         // owner must hand over first
+    leave.epoch = s.epoch;
     BOOST_REQUIRE(NyxGroupApply(s, X, 3, leave));        // any member leaves
     BOOST_CHECK(!s.IsMember(X));
     BOOST_REQUIRE(NyxGroupApply(s, O, 4, Next(s, NYX_GOP_RENAME, "renamed", O)));
@@ -243,8 +244,7 @@ BOOST_AUTO_TEST_CASE(group_message_authentication)
     BOOST_CHECK(!NyxGroupMsgAllowed(s, "anon", 110, 0));
     BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 110, 1));        // epoch not seen yet: held back
     BOOST_REQUIRE(NyxGroupApply(s, O, 200, Next(s, NYX_GOP_REMOVE, B, O)));
-    BOOST_CHECK(NyxGroupMsgAllowed(s, B, 150, 0));         // before removal
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 0));        // after removal
+    BOOST_CHECK(NyxGroupMsgAllowed(s, B, 150, 0));         // epoch before removal
     BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 1));
     BOOST_REQUIRE(NyxGroupApply(s, O, 300, Next(s, NYX_GOP_ADD, X, O)));
     BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 310, 1));
@@ -275,6 +275,72 @@ BOOST_AUTO_TEST_CASE(group_out_of_order_converges)
         BOOST_CHECK_EQUAL(t.members.size(), 3u);
         BOOST_CHECK_EQUAL(t.head, s.head);
     }
+}
+
+BOOST_AUTO_TEST_CASE(group_leave_then_owner_ops_rebuild)
+{
+    // Full group: B leaves, owner fills the seat, then re-adds nobody else; rebuild matches the signer.
+    std::vector<std::string> m = {O, B};
+    for (int i = 0; i < 8; i++)
+        m.push_back(Addr('c' + i));
+    NyxGroupState s;
+    NyxGroupRec g = Roster(0, m);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    NyxGroupRec leave;
+    leave.gid = s.gid;
+    leave.epoch = s.epoch;
+    leave.op = NYX_GOP_LEAVE;
+    BOOST_REQUIRE(NyxGroupApply(s, B, 2, leave));
+    NyxGroupRec fill = Next(s, NYX_GOP_ADD, X, O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 3, fill));
+    NyxGroupRec rm = Next(s, NYX_GOP_REMOVE, X, O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 4, rm));
+    NyxGroupRec back = Next(s, NYX_GOP_ADD, B, O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 5, back));
+    NyxGroupRec ren = Next(s, NYX_GOP_RENAME, "after", O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 6, ren));
+    std::vector<NyxGroupEvent> ev = {Ev(O, 1, "g", g), Ev(B, 2, "l", leave), Ev(O, 3, "f", fill),
+                                     Ev(O, 4, "r", rm), Ev(O, 5, "b", back), Ev(O, 6, "n", ren)};
+    for (int k = 0; k < 2; k++)
+    {
+        NyxGroupState t = NyxBuildGroups(ev)[g.gid];
+        BOOST_CHECK(!t.fFrozen);
+        BOOST_CHECK_EQUAL(t.epoch, 4);
+        BOOST_CHECK_EQUAL(t.head, s.head);
+        BOOST_CHECK(t.IsMember(B));
+        BOOST_CHECK(!t.IsMember(X));
+        BOOST_CHECK_EQUAL(t.members.size(), 10u);
+        std::reverse(ev.begin(), ev.end());
+    }
+    // Owner removes a member who already left unseen: the chain still advances.
+    NyxGroupRec l2 = leave;
+    l2.epoch = s.epoch;
+    BOOST_REQUIRE(NyxGroupApply(s, Addr('c'), 7, l2));
+    NyxGroupRec rm2 = Next(s, NYX_GOP_REMOVE, Addr('c'), O);
+    ev.push_back(Ev(Addr('c'), 7, "l2", l2));
+    ev.push_back(Ev(O, 8, "r2", rm2));
+    NyxGroupState t = NyxBuildGroups(ev)[g.gid];
+    BOOST_CHECK_EQUAL(t.epoch, 5);
+    BOOST_CHECK(!t.fFrozen);
+}
+
+BOOST_AUTO_TEST_CASE(group_removed_member_backdated_msg_rejected)
+{
+    NyxGroupState s;
+    BOOST_REQUIRE(NyxGroupApply(s, O, 100, Roster(0, {O, A, B})));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 200, Next(s, NYX_GOP_RENAME, "r", O)));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 300, Next(s, NYX_GOP_REMOVE, B, O)));
+    // Old epoch plus a timestamp backdated before the removal: still refused.
+    BOOST_CHECK(NyxGroupMsgAllowed(s, B, 50, 1));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 2));
+    // A leaver's messages at or after its leave epoch are refused.
+    NyxGroupRec leave;
+    leave.gid = s.gid;
+    leave.epoch = s.epoch;
+    leave.op = NYX_GOP_LEAVE;
+    BOOST_REQUIRE(NyxGroupApply(s, A, 400, leave));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 2));
+    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 50, 1));
 }
 
 BOOST_AUTO_TEST_CASE(group_plain_and_records)
