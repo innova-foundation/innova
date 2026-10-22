@@ -492,6 +492,8 @@ ChatWidget::ChatWidget(QWidget *parent) :
     chatView->setStyleSheet(
         "QListWidget { background-color: transparent; border: none; outline: 0; }"
         "QListWidget::item { background: transparent; border: none; padding: 0px; }");
+    chatView->viewport()->setAutoFillBackground(false);
+    chatView->viewport()->setStyleSheet("background: transparent;");
     chatView->setWordWrap(true);
     chatView->setSpacing(0);
     chatView->setSelectionMode(QAbstractItemView::NoSelection);
@@ -714,7 +716,10 @@ ChatWidget::ChatWidget(QWidget *parent) :
         membersAddButton = new QPushButton(tr("Add member"));
         membersRenameButton = new QPushButton(tr("Rename group"));
         membersLeaveButton = new QPushButton(tr("Leave group"));
-        membersLeaveButton->setStyleSheet("QPushButton { color: white; background-color: #c0392b; border: none; border-radius: 6px; padding: 6px; }");
+        membersLeaveButton->setStyleSheet(
+            "QPushButton { color: #e5484d; background-color: transparent; border: 1px solid #e5484d; border-radius: 6px; padding: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(229,72,77,30); }"
+            "QPushButton:pressed { background-color: rgba(229,72,77,60); }");
         ml->addWidget(membersAddButton);
         ml->addWidget(membersRenameButton);
         ml->addWidget(membersLeaveButton);
@@ -1360,6 +1365,8 @@ void ChatWidget::loadConversation(const QString& address)
         }
         if (!group.fMember)
             addCenteredNote(tr("You are no longer a member of this group."));
+        if (group.fFrozen)
+            addCenteredNote(tr("Group history conflict: the owner signed two different changes. The group is frozen."));
     }
     for (int i = 0; !fGroup && i < msgModel->rowCount(QModelIndex()); i++)
     {
@@ -3648,6 +3655,7 @@ void ChatWidget::reloadGroups()
             gi.members << QString::fromStdString(m);
         gi.fMember = g.fMember;
         gi.fRequest = g.fRequest;
+        gi.fFrozen = g.fFrozen;
         gi.lastTs = g.lastTs;
         mapGroups.insert(NYX_GROUP_PREFIX + gi.gid, gi);
     }

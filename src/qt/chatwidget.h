@@ -278,9 +278,9 @@ private:
     {
         QString gid, name, owner, myAddr;
         QStringList members;
-        bool fMember, fRequest;
+        bool fMember, fRequest, fFrozen;
         qint64 lastTs;
-        GroupInfo() : fMember(false), fRequest(false), lastTs(0) {}
+        GroupInfo() : fMember(false), fRequest(false), fFrozen(false), lastTs(0) {}
     };
     QMap<QString, GroupInfo> mapGroups;
     QWidget *membersPanel;

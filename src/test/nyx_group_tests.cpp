@@ -4,6 +4,10 @@
 #include "nyxext.h"
 #include "nyxgroup.h"
 
+#include <algorithm>
+#include <map>
+#include <stdio.h>
+
 BOOST_AUTO_TEST_SUITE(nyx_group_tests)
 
 static std::string Addr(char c)
@@ -17,19 +21,72 @@ static const std::string B = Addr('b');
 static const std::string X = Addr('x');
 static const unsigned char RND[16] = {7, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 static const std::string RNDHEX = "070102030405060708090a0b0c0d0e0f";
-static const std::string GID = NyxNewGroupId(O, 1000, RND);
 
-static NyxGroupRec Roster(int epoch, const std::vector<std::string>& m, const std::string& name = "team")
+// Fake signatures: (digest, sig) -> signer.
+static std::map<std::string, std::string> g_sigs;
+static std::string DigestHex(const unsigned char d[32])
+{
+    static const char* x = "0123456789abcdef";
+    std::string s;
+    for (int i = 0; i < 32; i++)
+    {
+        s.push_back(x[d[i] >> 4]);
+        s.push_back(x[d[i] & 15]);
+    }
+    return s;
+}
+static std::string FakeRecover(const unsigned char d[32], const std::string& sig)
+{
+    std::map<std::string, std::string>::const_iterator it = g_sigs.find(DigestHex(d) + sig);
+    return it == g_sigs.end() ? std::string() : it->second;
+}
+struct FakeSigs
+{
+    FakeSigs() { NyxGroupSetRecover(FakeRecover); }
+    ~FakeSigs() { NyxGroupSetRecover(0); }
+};
+static void Sign(NyxGroupRec& g, const std::string& who)
+{
+    static int n = 0;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%08x", ++n);
+    g.sig = std::string(122, '0') + buf;
+    unsigned char d[32];
+    NyxGroupDigest(g, d);
+    g_sigs[DigestHex(d) + g.sig] = who;
+}
+
+static NyxGroupRec Roster(int epoch, const std::vector<std::string>& m, const std::string& name = "team",
+                          const std::string& creator = O)
 {
     NyxGroupRec g;
-    g.gid = GID;
-    g.creator = O;
+    g.creator = creator;
     g.createTime = 1000;
     g.rnd = RNDHEX;
     g.epoch = epoch;
     g.op = NYX_GOP_ROSTER;
     g.name = name;
     g.members = m;
+    g.gid = NyxNewGroupId(creator, 1000, RND, name, m);
+    return g;
+}
+
+static const NyxGroupRec G0 = Roster(0, {O, A});
+static const std::string GID = G0.gid;
+
+// Chained op on top of a state, signed by who.
+static NyxGroupRec Next(const NyxGroupState& s, int op, const std::string& arg, const std::string& who)
+{
+    NyxGroupRec g;
+    g.gid = s.gid;
+    g.epoch = s.epoch + 1;
+    g.op = op;
+    g.prev = s.head;
+    if (op == NYX_GOP_RENAME)
+        g.name = arg;
+    else
+        g.addr = arg;
+    Sign(g, who);
     return g;
 }
 
@@ -42,8 +99,25 @@ static NyxGroupRec Op(int epoch, int op, const std::string& addr = std::string()
     g.addr = addr;
     if (op == NYX_GOP_RENAME)
         g.name = addr;
+    if (NyxGroupOpChained(op))
+    {
+        g.prev = std::string(32, 'a');
+        Sign(g, O);
+    }
     return g;
 }
+
+static NyxGroupEvent Ev(const std::string& sender, int64_t ts, const std::string& mid, const NyxGroupRec& r)
+{
+    NyxGroupEvent e;
+    e.sender = sender;
+    e.ts = ts;
+    e.mid = mid;
+    e.rec = r;
+    return e;
+}
+
+BOOST_GLOBAL_FIXTURE(FakeSigs);
 
 BOOST_AUTO_TEST_CASE(group_codec_roundtrip)
 {
@@ -114,11 +188,11 @@ BOOST_AUTO_TEST_CASE(group_max_ten_members)
     NyxGroupRec d;
     BOOST_CHECK(!NyxDecodeGroup(s, d));
 
-    // An add past ten is not honoured.
-    NyxGroupState st;
+    // An 11th member via add is not honoured.
     m[0] = O;
+    NyxGroupState st;
     BOOST_REQUIRE(NyxGroupApply(st, O, 1, Roster(0, m)));
-    BOOST_CHECK(!NyxGroupApply(st, O, 2, Op(1, NYX_GOP_ADD, Addr('z'))));
+    BOOST_CHECK(!NyxGroupApply(st, O, 2, Next(st, NYX_GOP_ADD, Addr('z'), O)));
     BOOST_CHECK_EQUAL(st.members.size(), 10u);
 }
 
@@ -126,31 +200,38 @@ BOOST_AUTO_TEST_CASE(group_membership_rules)
 {
     NyxGroupState s;
     BOOST_CHECK(!NyxGroupApply(s, O, 1, Op(1, NYX_GOP_ADD, X)));    // no state yet
-    BOOST_CHECK(!NyxGroupApply(s, X, 1, Roster(0, {O, A})));        // signer not in roster
     BOOST_REQUIRE(NyxGroupApply(s, O, 1, Roster(0, {A, O})));
+    NyxGroupRec leave = Op(2, NYX_GOP_LEAVE);
+    leave.gid = s.gid;
     BOOST_CHECK_EQUAL(s.owner, O);
     BOOST_CHECK_EQUAL(s.members[0], O);                             // owner first
 
-    BOOST_CHECK(!NyxGroupApply(s, A, 2, Op(1, NYX_GOP_ADD, X)));     // only the owner adds
-    BOOST_CHECK(!NyxGroupApply(s, O, 2, Op(2, NYX_GOP_ADD, X)));     // epoch gap
-    BOOST_CHECK(!NyxGroupApply(s, O, 2, Op(0, NYX_GOP_ADD, X)));     // replayed epoch
-    BOOST_REQUIRE(NyxGroupApply(s, O, 2, Op(1, NYX_GOP_ADD, X)));
-    BOOST_CHECK(!NyxGroupApply(s, O, 3, Op(2, NYX_GOP_ADD, X)));     // already a member
-    BOOST_CHECK(!NyxGroupApply(s, A, 3, Op(2, NYX_GOP_REMOVE, X)));  // only the owner removes
-    BOOST_CHECK(!NyxGroupApply(s, O, 3, Op(2, NYX_GOP_REMOVE, O)));  // owner cannot be removed
-    BOOST_CHECK(!NyxGroupApply(s, O, 3, Op(2, NYX_GOP_LEAVE)));      // owner must hand over first
-    BOOST_REQUIRE(NyxGroupApply(s, X, 3, Op(2, NYX_GOP_LEAVE)));     // any member leaves
+    BOOST_CHECK(!NyxGroupApply(s, A, 2, Next(s, NYX_GOP_ADD, X, A)));   // non-owner op
+    NyxGroupRec gap = Next(s, NYX_GOP_ADD, X, O);
+    gap.epoch = 2;
+    Sign(gap, O);
+    BOOST_CHECK(!NyxGroupApply(s, O, 2, gap));                          // epoch gap
+    NyxGroupRec badPrev = Next(s, NYX_GOP_ADD, X, O);
+    badPrev.prev = std::string(32, 'b');
+    Sign(badPrev, O);
+    BOOST_CHECK(!NyxGroupApply(s, O, 2, badPrev));                      // does not extend the head
+    NyxGroupRec unsigned_ = Next(s, NYX_GOP_ADD, X, O);
+    unsigned_.sig = std::string(130, 'f');
+    BOOST_CHECK(!NyxGroupApply(s, O, 2, unsigned_));                    // bad signature
+    BOOST_REQUIRE(NyxGroupApply(s, O, 2, Next(s, NYX_GOP_ADD, X, O)));
+    BOOST_CHECK(!NyxGroupApply(s, O, 3, Next(s, NYX_GOP_ADD, X, O)));   // already a member
+    BOOST_CHECK(!NyxGroupApply(s, O, 3, Next(s, NYX_GOP_REMOVE, O, O)));// owner cannot be removed
+    BOOST_CHECK(!NyxGroupApply(s, O, 3, leave));         // owner must hand over first
+    BOOST_REQUIRE(NyxGroupApply(s, X, 3, leave));        // any member leaves
     BOOST_CHECK(!s.IsMember(X));
-    BOOST_CHECK(!NyxGroupApply(s, A, 4, Op(3, NYX_GOP_RENAME, "x"))); // only the owner renames
-    BOOST_REQUIRE(NyxGroupApply(s, O, 4, Op(3, NYX_GOP_RENAME, "renamed")));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 4, Next(s, NYX_GOP_RENAME, "renamed", O)));
     BOOST_CHECK_EQUAL(s.name, "renamed");
-    BOOST_CHECK(!NyxGroupApply(s, O, 5, Op(4, NYX_GOP_OWNER, X)));   // new owner must be a member
-    BOOST_REQUIRE(NyxGroupApply(s, O, 5, Op(4, NYX_GOP_OWNER, A)));
+    BOOST_CHECK(!NyxGroupApply(s, O, 5, Next(s, NYX_GOP_OWNER, Addr('q'), O)));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 5, Next(s, NYX_GOP_OWNER, A, O)));
     BOOST_CHECK_EQUAL(s.owner, A);
-    BOOST_CHECK(!NyxGroupApply(s, O, 6, Op(5, NYX_GOP_REMOVE, A)));  // old owner lost authority
-    BOOST_REQUIRE(NyxGroupApply(s, A, 6, Op(5, NYX_GOP_REMOVE, O)));
+    BOOST_CHECK(!NyxGroupApply(s, O, 6, Next(s, NYX_GOP_REMOVE, A, O)));   // old owner lost authority
+    BOOST_REQUIRE(NyxGroupApply(s, A, 6, Next(s, NYX_GOP_REMOVE, O, A)));
     BOOST_CHECK_EQUAL(s.members.size(), 1u);
-    BOOST_CHECK_EQUAL(s.epoch, 5);
 }
 
 BOOST_AUTO_TEST_CASE(group_message_authentication)
@@ -158,40 +239,42 @@ BOOST_AUTO_TEST_CASE(group_message_authentication)
     NyxGroupState s;
     BOOST_REQUIRE(NyxGroupApply(s, O, 100, Roster(0, {O, A, B})));
     BOOST_CHECK(NyxGroupMsgAllowed(s, A, 110, 0));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 110, 0));        // outside the roster
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 110, 0));
     BOOST_CHECK(!NyxGroupMsgAllowed(s, "anon", 110, 0));
     BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 110, 1));        // epoch not seen yet: held back
-    BOOST_REQUIRE(NyxGroupApply(s, O, 200, Op(1, NYX_GOP_REMOVE, B)));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 200, Next(s, NYX_GOP_REMOVE, B, O)));
     BOOST_CHECK(NyxGroupMsgAllowed(s, B, 150, 0));         // before removal
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 0));        // after removal, stale epoch
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 0));        // after removal
     BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 1));
-    BOOST_REQUIRE(NyxGroupApply(s, O, 300, Op(2, NYX_GOP_ADD, X)));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 310, 1));        // not a member at epoch 1
+    BOOST_REQUIRE(NyxGroupApply(s, O, 300, Next(s, NYX_GOP_ADD, X, O)));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 310, 1));
     BOOST_CHECK(NyxGroupMsgAllowed(s, X, 310, 2));
 }
 
-BOOST_AUTO_TEST_CASE(group_build_replays_in_epoch_order)
+BOOST_AUTO_TEST_CASE(group_out_of_order_converges)
 {
-    std::vector<NyxGroupEvent> ev;
-    NyxGroupEvent e;
-    e.sender = O; e.ts = 300; e.mid = "m3"; e.rec = Op(2, NYX_GOP_RENAME, "late");
-    ev.push_back(e);
-    e.sender = O; e.ts = 200; e.mid = "m2"; e.rec = Op(1, NYX_GOP_ADD, X);
-    ev.push_back(e);
-    ev.push_back(e);                                       // outbox duplicate
-    e.sender = A; e.ts = 250; e.mid = "m9"; e.rec = Op(2, NYX_GOP_RENAME, "forged");
-    ev.push_back(e);                                       // non-owner, same epoch
-    e.sender = O; e.ts = 100; e.mid = "m1"; e.rec = Roster(0, {O, A});
-    ev.push_back(e);
-    e.sender = "anon"; e.ts = 50; e.mid = "m0"; e.rec = Roster(0, {A});
-    ev.push_back(e);
-    std::map<std::string, NyxGroupState> g = NyxBuildGroups(ev);
-    BOOST_REQUIRE_EQUAL(g.size(), 1u);
-    const NyxGroupState& s = g[GID];
-    BOOST_CHECK_EQUAL(s.owner, O);
-    BOOST_CHECK_EQUAL(s.name, "late");
-    BOOST_CHECK_EQUAL(s.epoch, 2);
-    BOOST_CHECK_EQUAL(s.members.size(), 3u);
+    NyxGroupState s;
+    NyxGroupRec g = Roster(0, {O, A});
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    NyxGroupRec o1 = Next(s, NYX_GOP_ADD, X, O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 2, o1));
+    NyxGroupRec o2 = Next(s, NYX_GOP_RENAME, "late", O);
+    BOOST_REQUIRE(NyxGroupApply(s, O, 3, o2));
+    NyxGroupRec forged = Next(s, NYX_GOP_RENAME, "forged", A);   // non-owner at the head
+    std::vector<NyxGroupEvent> ev = {Ev(O, 3, "m3", o2), Ev(A, 4, "m9", forged), Ev(O, 2, "m2", o1),
+                                     Ev(O, 2, "m2", o1), Ev(O, 1, "m1", g), Ev("anon", 0, "m0", Roster(0, {A}))};
+    std::map<std::string, NyxGroupState> r1 = NyxBuildGroups(ev);
+    std::reverse(ev.begin(), ev.end());
+    std::map<std::string, NyxGroupState> r2 = NyxBuildGroups(ev);
+    for (std::map<std::string, NyxGroupState>* r : {&r1, &r2})
+    {
+        const NyxGroupState& t = (*r)[g.gid];
+        BOOST_CHECK(!t.fFrozen);
+        BOOST_CHECK_EQUAL(t.name, "late");
+        BOOST_CHECK_EQUAL(t.epoch, 2);
+        BOOST_CHECK_EQUAL(t.members.size(), 3u);
+        BOOST_CHECK_EQUAL(t.head, s.head);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(group_plain_and_records)
@@ -215,93 +298,124 @@ BOOST_AUTO_TEST_CASE(group_plain_and_records)
     BOOST_CHECK_EQUAL(NyxStripGroupFallback("[group: x no close"), "[group: x no close");
 }
 
-BOOST_AUTO_TEST_CASE(group_hijack_earlier_timestamp_rejected)
+BOOST_AUTO_TEST_CASE(group_forged_second_genesis_rejected)
 {
-    // A member replays the gid with an earlier timestamp and a lower mid to claim ownership.
-    std::vector<NyxGroupEvent> ev;
-    NyxGroupEvent e;
-    e.sender = O; e.ts = 1000; e.mid = "m5"; e.rec = Roster(0, {O, A, B});
-    ev.push_back(e);
-    NyxGroupRec forged = Roster(0, {A, O, B}, "mine");
-    forged.creator = A;
-    e.sender = A; e.ts = 1; e.mid = "m0"; e.rec = forged;
-    ev.push_back(e);
-    NyxGroupRec claim = Roster(0, {A, O, B}, "mine");   // claims O as creator, signed by A
-    e.sender = A; e.ts = 2; e.mid = "m1"; e.rec = claim;
-    ev.push_back(e);
+    // Same creator, time and rnd, different members: the gid binds content, so only one genesis matches.
+    NyxGroupRec real = Roster(0, {O, A, B});
+    NyxGroupRec forged = Roster(0, {O, A, X});
+    forged.gid = real.gid;
+    BOOST_CHECK(NyxGroupIdBinds(real));
+    BOOST_CHECK(!NyxGroupIdBinds(forged));
+    NyxGroupRec renamed = real;
+    renamed.name = "mine";
+    BOOST_CHECK(!NyxGroupIdBinds(renamed));
+    NyxGroupState s;
+    BOOST_CHECK(!NyxGroupApply(s, O, 1, forged));
+    std::vector<NyxGroupEvent> ev = {Ev(O, 1, "a0", forged), Ev(O, 2, "z9", real), Ev(A, 0, "00", renamed)};
     std::map<std::string, NyxGroupState> g = NyxBuildGroups(ev);
     BOOST_REQUIRE_EQUAL(g.size(), 1u);
-    BOOST_CHECK_EQUAL(g[GID].owner, O);
-    BOOST_CHECK_EQUAL(g[GID].name, "team");
-
-    // Without the genesis, the member's rosters alone open nothing.
-    ev.erase(ev.begin());
-    BOOST_CHECK(NyxBuildGroups(ev).empty());
-
-    // A member cannot push a later roster either.
-    NyxGroupState s;
-    BOOST_REQUIRE(NyxGroupApply(s, O, 1000, Roster(0, {O, A})));
-    BOOST_CHECK(!NyxGroupApply(s, A, 1, Roster(1, {A, O})));
-    BOOST_CHECK_EQUAL(s.owner, O);
+    BOOST_CHECK(g[real.gid].IsMember(B));
+    BOOST_CHECK(!g[real.gid].IsMember(X));
+    BOOST_CHECK_EQUAL(g[real.gid].name, "team");
+    // A later-epoch roster is no longer an op.
+    NyxGroupRec late = real;
+    late.epoch = 3;
+    BOOST_CHECK(NyxEncodeGroup(late).empty());
+    BOOST_CHECK(!NyxGroupApply(s, O, 1, late));
 }
 
-BOOST_AUTO_TEST_CASE(group_forged_genesis_rejected)
+BOOST_AUTO_TEST_CASE(group_ex_owner_cannot_rewrite)
 {
     NyxGroupState s;
-    NyxGroupRec r = Roster(0, {O, A});
-    r.gid = "0123456789abcdef";                           // not bound to O
-    BOOST_CHECK(!NyxGroupApply(s, O, 1, r));
-    r = Roster(0, {O, A});
-    r.createTime = 999;
-    BOOST_CHECK(!NyxGroupApply(s, O, 1, r));
-    r = Roster(0, {O, A});
-    r.rnd[1] = '8';
-    BOOST_CHECK(!NyxGroupApply(s, O, 1, r));
-    r = Roster(0, {A, X});                                // creator outside the roster
-    BOOST_CHECK(!NyxGroupApply(s, O, 1, r));
-    BOOST_CHECK(!s.fValid);
-    BOOST_CHECK(NyxGroupIdBinds(GID, O, 1000, RNDHEX));
-    BOOST_CHECK(!NyxGroupIdBinds(GID, A, 1000, RNDHEX));
-    BOOST_CHECK(!NyxGroupIdBinds(GID, O, 1000, "07"));
+    NyxGroupRec g = Roster(0, {O, A, B});
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    NyxGroupRec h = Next(s, NYX_GOP_OWNER, A, O);
+    NyxGroupState before = s;
+    BOOST_REQUIRE(NyxGroupApply(s, O, 2, h));
+    // The creator signs an alternative at the handover's position and on the new head.
+    NyxGroupRec alt = Next(before, NYX_GOP_REMOVE, A, O);
+    NyxGroupRec onHead = Next(s, NYX_GOP_REMOVE, A, O);
+    NyxGroupRec legit = Next(s, NYX_GOP_RENAME, "by A", A);
+    BOOST_CHECK(!NyxGroupApply(s, O, 3, onHead));
+    std::vector<NyxGroupEvent> ev = {Ev(O, 1, "1", g), Ev(O, 2, "2", h), Ev(O, 3, "3", onHead), Ev(A, 4, "4", legit)};
+    std::map<std::string, NyxGroupState> r = NyxBuildGroups(ev);
+    BOOST_CHECK_EQUAL(r[g.gid].owner, A);
+    BOOST_CHECK_EQUAL(r[g.gid].name, "by A");
+    BOOST_CHECK(r[g.gid].IsMember(A));
+    BOOST_CHECK(!r[g.gid].fFrozen);
+    // An alternative at the handover's own position is the creator equivocating while still owner.
+    ev.push_back(Ev(O, 5, "5", alt));
+    r = NyxBuildGroups(ev);
+    BOOST_CHECK(r[g.gid].fFrozen);
+    BOOST_CHECK_EQUAL(r[g.gid].owner, O);
 }
 
-BOOST_AUTO_TEST_CASE(group_legit_flow_and_handover)
+BOOST_AUTO_TEST_CASE(group_owner_equivocation_freezes)
 {
+    NyxGroupState s;
+    NyxGroupRec g = Roster(0, {O, A, B});
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    NyxGroupRec r1 = Next(s, NYX_GOP_RENAME, "one", O);
+    NyxGroupRec r2 = Next(s, NYX_GOP_REMOVE, B, O);
+    NyxGroupRec nonOwner = Next(s, NYX_GOP_RENAME, "two", A);
+    std::vector<NyxGroupEvent> ev = {Ev(O, 1, "1", g), Ev(O, 2, "2", r1), Ev(A, 2, "3", nonOwner)};
+    BOOST_CHECK(!NyxBuildGroups(ev)[g.gid].fFrozen);           // non-owner ops never fork
+    BOOST_CHECK_EQUAL(NyxBuildGroups(ev)[g.gid].name, "one");
+    ev.push_back(Ev(O, 3, "4", r2));
+    std::map<std::string, NyxGroupState> r = NyxBuildGroups(ev);
+    BOOST_CHECK(r[g.gid].fFrozen);
+    BOOST_CHECK_EQUAL(r[g.gid].epoch, 0);
+    NyxGroupState f = r[g.gid];
+    BOOST_CHECK(!NyxGroupApply(f, O, 4, r1));
+}
+
+BOOST_AUTO_TEST_CASE(group_new_owner_adds_member_with_full_chain)
+{
+    NyxGroupState s;
+    NyxGroupRec g = Roster(0, {O, A});
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 2, Next(s, NYX_GOP_RENAME, "first", O)));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 3, Next(s, NYX_GOP_OWNER, A, O)));
+    BOOST_REQUIRE(NyxGroupApply(s, A, 4, Next(s, NYX_GOP_ADD, B, A)));
+    BOOST_REQUIRE(NyxGroupApply(s, A, 5, Next(s, NYX_GOP_ADD, X, A)));
+    BOOST_REQUIRE_EQUAL(s.chain.size(), 5u);
+    // Tight budget forces several bundles; each fits.
+    std::vector<NyxGroupRec> bundles = NyxGroupChainBundles(s.gid, s.chain, 400);
+    BOOST_CHECK(bundles.size() > 1);
     std::vector<NyxGroupEvent> ev;
-    NyxGroupEvent e;
-    e.sender = O; e.ts = 1000; e.mid = "z1"; e.rec = Roster(0, {O, A});
-    ev.push_back(e);
-    e.sender = O; e.ts = 900; e.mid = "a2"; e.rec = Op(1, NYX_GOP_ADD, B);  // skewed clock
-    ev.push_back(e);
-    e.sender = O; e.ts = 1100; e.mid = "a3"; e.rec = Op(2, NYX_GOP_OWNER, A);
-    ev.push_back(e);
-    e.sender = A; e.ts = 1200; e.mid = "a4"; e.rec = Op(3, NYX_GOP_RENAME, "by A");
-    ev.push_back(e);
-    e.sender = O; e.ts = 1300; e.mid = "a5"; e.rec = Op(4, NYX_GOP_RENAME, "by O");
-    ev.push_back(e);                                     // old owner, no authority
-    std::map<std::string, NyxGroupState> g = NyxBuildGroups(ev);
-    BOOST_REQUIRE_EQUAL(g.size(), 1u);
-    const NyxGroupState& s = g[GID];
-    BOOST_CHECK_EQUAL(s.owner, A);
-    BOOST_CHECK_EQUAL(s.creator, O);
-    BOOST_CHECK_EQUAL(s.name, "by A");
-    BOOST_CHECK_EQUAL(s.epoch, 3);
-    BOOST_CHECK_EQUAL(s.members.size(), 3u);
-
-    // A new member opens the group from the creator's later snapshot.
-    NyxGroupState j;
-    BOOST_CHECK(!NyxGroupApply(j, A, 1, Roster(4, {O, A, B, X})));
-    BOOST_REQUIRE(NyxGroupApply(j, O, 1, Roster(4, {O, A, B, X})));
+    for (size_t i = 0; i < bundles.size(); i++)
+    {
+        std::string enc = NyxEncodeGroup(bundles[i]);
+        BOOST_REQUIRE(!enc.empty());
+        BOOST_CHECK(enc.size() <= 400);
+        NyxGroupRec d;
+        BOOST_REQUIRE(NyxDecodeGroup(enc, d));
+        ev.insert(ev.begin(), Ev(A, 10, "b" + std::to_string(i), d));   // reversed delivery
+    }
+    std::map<std::string, NyxGroupState> r = NyxBuildGroups(ev);
+    const NyxGroupState& j = r[s.gid];
+    BOOST_CHECK_EQUAL(j.owner, A);
+    BOOST_CHECK_EQUAL(j.name, "first");
     BOOST_CHECK_EQUAL(j.epoch, 4);
+    BOOST_CHECK(j.IsMember(X) && j.IsMember(B) && j.IsMember(O));
+    BOOST_CHECK_EQUAL(j.head, s.head);
+    // A tampered bundle entry breaks the chain at that op.
+    NyxGroupRec bad = bundles[0];
+    NyxGroupRec op1;
+    BOOST_REQUIRE(NyxDecodeGroup(s.chain[1], op1));
+    op1.name = "other";
+    bad.chain = {s.chain[0], NyxEncodeGroup(op1)};
+    BOOST_CHECK_EQUAL(NyxBuildGroups({Ev(A, 1, "x", bad)})[s.gid].epoch, 0);
 }
 
 BOOST_AUTO_TEST_CASE(group_id_and_typing)
 {
     unsigned char r1[16] = {1}, r2[16] = {2};
-    std::string a = NyxNewGroupId(O, 1000, r1);
+    std::string a = NyxNewGroupId(O, 1000, r1, "t", {O, A});
     BOOST_CHECK(NyxIsHexId(a));
-    BOOST_CHECK(a != NyxNewGroupId(O, 1000, r2));
-    BOOST_CHECK(a != NyxNewGroupId(A, 1000, r1));
+    BOOST_CHECK(a != NyxNewGroupId(O, 1000, r2, "t", {O, A}));
+    BOOST_CHECK(a != NyxNewGroupId(O, 1000, r1, "t", {O, B}));
+    BOOST_CHECK(a != NyxNewGroupId(A, 1000, r1, "t", {O, A}));
     bool on = false;
     BOOST_CHECK(NyxDecodeTyping(NyxEncodeTyping(true), on) && on);
     BOOST_CHECK(NyxDecodeTyping(NyxEncodeTyping(false), on) && !on);

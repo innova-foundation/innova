@@ -12,13 +12,15 @@
 #include <vector>
 
 // Group chats by pairwise fan-out: one SMSG per member, each carrying a 'G' record.
-// Layout: 'G' 0x01 gid[16 hex] epoch[4 hex] op[2 hex] payload; strings are 2-hex length + bytes.
-// Roster payload: name, members, creator, createTime[16 hex], rnd[32 hex].
+// Layout: 'G' 0x01 gid[16 hex] epoch[4 hex] op[2 hex] [prev[32 hex]] payload [sig[130 hex]]; strings are 2-hex length + bytes.
+// The roster is an op log: genesis (ROSTER, epoch 0) whose content the gid binds, then ADD/REMOVE/RENAME/OWNER
+// ops chained by prev and compact-signed by the owner as of the previous op. MSG/LEAVE are unchained.
 
 static const size_t NYX_GROUP_MAX = 10;        // members including the owner
 static const size_t NYX_GROUP_NAME_MAX = 48;
 static const size_t NYX_GROUP_ADDR_MAX = 64;
 static const size_t NYX_TYPING_GROUP_MAX = 3;
+static const int NYX_GROUP_OPS_MAX = 64;       // chained ops after genesis
 
 enum NyxGroupOp
 {
@@ -29,7 +31,11 @@ enum NyxGroupOp
     NYX_GOP_LEAVE = 4,
     NYX_GOP_RENAME = 5,
     NYX_GOP_OWNER = 6,
+    NYX_GOP_CHAIN = 7,                  // bundle of encoded chain records for a new member
 };
+
+/** Chained ops: carry prev and an owner signature. */
+bool NyxGroupOpChained(int op);
 
 struct NyxGroupRec
 {
@@ -42,14 +48,32 @@ struct NyxGroupRec
     std::string creator;                // roster: gid binding
     int64_t createTime;
     std::string rnd;                    // roster: 32 hex
+    std::string prev;                   // chained: 32 hex, hash of the previous op
+    std::string sig;                    // chained: 130 hex compact signature
+    std::vector<std::string> chain;     // chain bundle
     NyxGroupRec() : epoch(0), op(NYX_GOP_MSG), createTime(0) {}
 };
 
-/** gid == NyxNewGroupId(creator, createTime, rnd). */
-bool NyxGroupIdBinds(const std::string& gid, const std::string& creator, int64_t createTime, const std::string& rndHex);
+/** gid of a genesis record equals NyxNewGroupId over its content. */
+bool NyxGroupIdBinds(const NyxGroupRec& genesis);
 
-/** 16 hex: first 8 bytes of SHA256(creator || createTime LE64 || 16 random bytes). */
-std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const unsigned char rnd[16]);
+/** 16 hex: first 8 bytes of SHA256(creator || createTime LE64 || rnd || SHA256(name, members)). */
+std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const unsigned char rnd[16],
+                          const std::string& name, const std::vector<std::string>& members);
+
+/** Bytes a chained op's signature covers (the encoding without sig). */
+std::string NyxGroupSigningBytes(const NyxGroupRec& g);
+/** 32 hex: first 16 bytes of SHA256(signing bytes); the next op's prev. */
+std::string NyxGroupOpHash(const NyxGroupRec& g);
+void NyxGroupDigest(const NyxGroupRec& g, unsigned char out[32]);
+
+/** Recovers the signer address of a compact signature; empty on failure. Replaceable for tests. */
+typedef std::string (*NyxGroupRecoverFn)(const unsigned char digest[32], const std::string& sigHex);
+void NyxGroupSetRecover(NyxGroupRecoverFn fn);
+std::string NyxGroupRecover(const NyxGroupRec& g);
+
+/** Chain bundles each within maxBytes of encoded records. */
+std::vector<NyxGroupRec> NyxGroupChainBundles(const std::string& gid, const std::vector<std::string>& chain, size_t maxBytes);
 
 std::string NyxEncodeGroup(const NyxGroupRec& g);
 /** Strict: unknown op, bad length, bad hex, over-cap roster or duplicate members fail. */
@@ -66,21 +90,21 @@ std::string NyxGroupPlain(const std::string& name, const std::string& body, cons
 
 struct NyxGroupState
 {
-    bool fValid;
-    std::string gid, owner, name, creator, rnd;
+    bool fValid, fFrozen;               // fFrozen: owner signed two ops at one position
+    std::string gid, owner, name, creator, rnd, head;
+    std::vector<std::string> chain;     // encoded genesis + ops
     int64_t createTime;
     int epoch;
     std::vector<std::string> members;               // owner first
     std::map<int, std::set<std::string> > history;  // epoch -> roster
     std::map<std::string, int64_t> removedAt;       // member -> ts of its removal or leave
     int64_t lastTs;
-    NyxGroupState() : fValid(false), createTime(0), epoch(0), lastTs(0) {}
+    NyxGroupState() : fValid(false), fFrozen(false), createTime(0), epoch(0), lastTs(0) {}
     bool IsMember(const std::string& a) const;
 };
 
-/** Apply one roster op signed by signer. First sight takes only a roster signed by the gid's creator
-    (epoch 0 genesis, or a later snapshot the creator sends a new member); later ops chain epoch+1.
-    False (state unchanged) when the op is not honoured. */
+/** Apply one record. First sight takes only a genesis that binds the gid. Chained ops must extend the head
+    and be signed by the current owner; LEAVE is taken from signer. False (state unchanged) when not honoured. */
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r);
 
 /** Whether a group message from signer is shown under the state. */
@@ -94,7 +118,8 @@ struct NyxGroupEvent
     NyxGroupEvent() : ts(0) {}
 };
 
-/** Replay roster ops by (epoch, mid), never by sender timestamp; duplicate mids count once. Anonymous senders are ignored. */
+/** Build each group from the set of records, independent of delivery order: walk the chain from genesis;
+    two distinct owner-signed ops at one position freeze the group. Leaves apply unless a later add. */
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events);
 
 /** Typing record 'T' 0x01 state. */

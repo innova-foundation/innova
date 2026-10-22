@@ -491,9 +491,9 @@ struct NyxGroupView
     std::vector<std::string> members;
     int64_t createTime;
     int epoch;
-    bool fMember, fRequest, fHidden;
+    bool fMember, fRequest, fHidden, fFrozen;
     int64_t lastTs;
-    NyxGroupView() : createTime(0), epoch(0), fMember(false), fRequest(false), fHidden(false), lastTs(0) {}
+    NyxGroupView() : createTime(0), epoch(0), fMember(false), fRequest(false), fHidden(false), fFrozen(false), lastTs(0) {}
 };
 /** Groups this wallet belongs or belonged to; fRequest when the owner is not a known contact. */
 void SecureMsgCollectGroups(std::vector<NyxGroupView>& out);
