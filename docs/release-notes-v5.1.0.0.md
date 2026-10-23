@@ -32,3 +32,5 @@ Hard fork at block 10,703,940. Every node, pool, exchange and wallet must upgrad
 - Nyx Messenger: conversation list, unread counts, send on Enter, messaging toggle in Options.
 - Nyx Messenger: emoji picker, clickable links with a confirm, link cards fetched by the sender over Tor and carried inside the encrypted message, sender-only card removal.
 - Nyx Messenger safety: recovery-phrase and key send guard, scam warning banner, message requests with accept/block, tracking-parameter stripping, lookalike-domain warnings.
+- Nyx Messenger: replies, reactions, edit and delete for everyone, threads.
+- Nyx Messenger groups of up to 10: owner-signed roster, invite requests, members panel, leave, optional typing indicator.
