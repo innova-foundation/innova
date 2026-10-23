@@ -12,15 +12,17 @@
 #include <vector>
 
 // Group chats by pairwise fan-out: one SMSG per member, each carrying a 'G' record.
-// Layout: 'G' 0x01 gid[16 hex] epoch[4 hex] op[2 hex] [prev[32 hex]] payload [sig[130 hex]]; strings are 2-hex length + bytes.
+// Layout: 'G' 0x01 gid[64 hex] epoch[4 hex] op[2 hex] [prev[32 hex]] payload [sig[130 hex]]; strings are 2-hex length + bytes.
 // The roster is an op log: genesis (ROSTER, epoch 0) whose content the gid binds, then ADD/REMOVE/RENAME/OWNER
-// ops chained by prev and compact-signed by the owner as of the previous op. MSG/LEAVE are unchained.
+// ops chained by prev and compact-signed by the owner as of the previous op. LEAVE is signed by the leaver and
+// pinned to a chain position; MSG is unsigned.
 
 static const size_t NYX_GROUP_MAX = 10;        // members including the owner
 static const size_t NYX_GROUP_NAME_MAX = 48;
 static const size_t NYX_GROUP_ADDR_MAX = 64;
 static const size_t NYX_TYPING_GROUP_MAX = 3;
 static const int NYX_GROUP_OPS_MAX = 64;       // chained ops after genesis
+static const size_t NYX_GID_HEX = 64;
 
 enum NyxGroupOp
 {
@@ -36,6 +38,10 @@ enum NyxGroupOp
 
 /** Chained ops: carry prev and an owner signature. */
 bool NyxGroupOpChained(int op);
+/** Chained ops and LEAVE: carry prev and a signature. */
+bool NyxGroupOpSigned(int op);
+/** 64 lowercase hex. */
+bool NyxIsGroupId(const std::string& id);
 
 struct NyxGroupRec
 {
@@ -57,7 +63,7 @@ struct NyxGroupRec
 /** gid of a genesis record equals NyxNewGroupId over its content. */
 bool NyxGroupIdBinds(const NyxGroupRec& genesis);
 
-/** 16 hex: first 8 bytes of SHA256(creator || createTime LE64 || rnd || SHA256(name, members)). */
+/** 64 hex: SHA256(creator || createTime LE64 || rnd || SHA256(name, members)). */
 std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const unsigned char rnd[16],
                           const std::string& name, const std::vector<std::string>& members);
 
@@ -93,6 +99,7 @@ struct NyxGroupState
     bool fValid, fFrozen;               // fFrozen: owner signed two ops at one position
     std::string gid, owner, name, creator, rnd, head;
     std::vector<std::string> chain;     // encoded genesis + ops
+    std::vector<std::string> leaves;    // encoded applied leaves
     int64_t createTime;
     int epoch;
     std::vector<std::string> members;               // owner first
@@ -104,10 +111,10 @@ struct NyxGroupState
 };
 
 /** Apply one record. First sight takes only a genesis that binds the gid. Chained ops must extend the head
-    and be signed by the current owner; LEAVE is taken from signer. False (state unchanged) when not honoured. */
+    and be signed by the current owner; LEAVE must be signed by a member and pinned to the head. False (state unchanged) when not honoured. */
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r);
 
-/** Whether a group message from signer is shown under the state. */
+/** Whether a group message from signer is shown: current members only, in the roster at the message epoch. */
 bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64_t ts, int epoch);
 
 struct NyxGroupEvent
@@ -119,7 +126,7 @@ struct NyxGroupEvent
 };
 
 /** Build each group from the set of records, independent of delivery order: walk the chain from genesis;
-    two distinct owner-signed ops at one position freeze the group. Leaves apply unless a later add. */
+    two distinct owner-signed ops at one position, or two binding geneses, freeze the group. Leaves apply at their position. */
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events);
 
 /** Typing record 'T' 0x01 state. */

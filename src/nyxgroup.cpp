@@ -110,7 +110,17 @@ std::string NyxNewGroupId(const std::string& creator, int64_t createTime, const 
     SHA256_Update(&ctx, rh, 32);
     unsigned char h[32];
     SHA256_Final(h, &ctx);
-    return BytesHex(h, 8);
+    return BytesHex(h, 32);
+}
+
+bool NyxIsGroupId(const std::string& id)
+{
+    if (id.size() != NYX_GID_HEX)
+        return false;
+    for (char c : id)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    return true;
 }
 
 static bool HexToBytes(const std::string& h, unsigned char* out, size_t n)
@@ -158,15 +168,25 @@ bool NyxGroupOpChained(int op)
     return op == NYX_GOP_ADD || op == NYX_GOP_REMOVE || op == NYX_GOP_RENAME || op == NYX_GOP_OWNER;
 }
 
+bool NyxGroupOpSigned(int op)
+{
+    return NyxGroupOpChained(op) || op == NYX_GOP_LEAVE;
+}
+
+static bool ChainInner(int op)
+{
+    return op == NYX_GOP_ROSTER || NyxGroupOpSigned(op);
+}
+
 static const size_t NYX_SIG_HEX = 130;
 static const size_t NYX_CHAIN_RECS_MAX = NYX_GROUP_OPS_MAX + 1;
 
 static std::string EncodeBody(const NyxGroupRec& g)
 {
-    if (!NyxIsHexId(g.gid) || g.epoch < 0 || g.epoch > 0xFFFF)
+    if (!NyxIsGroupId(g.gid) || g.epoch < 0 || g.epoch > 0xFFFF)
         return std::string();
-    const bool fChained = NyxGroupOpChained(g.op);
-    if (fChained && (g.epoch < 1 || !IsHexN(g.prev, 32)))
+    const bool fChained = NyxGroupOpSigned(g.op);
+    if (fChained && ((NyxGroupOpChained(g.op) && g.epoch < 1) || !IsHexN(g.prev, 32)))
         return std::string();
     std::string s(1, 'G');
     s.push_back(NYX_GRP_VER);
@@ -203,7 +223,7 @@ static std::string EncodeBody(const NyxGroupRec& g)
         for (const std::string& r : g.chain)
         {
             NyxGroupRec n;
-            if (!NyxDecodeGroup(r, n) || n.gid != g.gid || (n.op != NYX_GOP_ROSTER && !NyxGroupOpChained(n.op)))
+            if (!NyxDecodeGroup(r, n) || n.gid != g.gid || !ChainInner(n.op))
                 return std::string();
             s += Hex(r.size(), 4) + r;
         }
@@ -222,7 +242,7 @@ std::string NyxGroupSigningBytes(const NyxGroupRec& g)
 std::string NyxEncodeGroup(const NyxGroupRec& g)
 {
     std::string s = EncodeBody(g);
-    if (s.empty() || !NyxGroupOpChained(g.op))
+    if (s.empty() || !NyxGroupOpSigned(g.op))
         return s;
     return IsHexN(g.sig, NYX_SIG_HEX) ? s + g.sig : std::string();
 }
@@ -262,7 +282,7 @@ void NyxGroupSetRecover(NyxGroupRecoverFn fn)
 
 std::string NyxGroupRecover(const NyxGroupRec& g)
 {
-    if (!NyxGroupOpChained(g.op) || !IsHexN(g.sig, NYX_SIG_HEX))
+    if (!NyxGroupOpSigned(g.op) || !IsHexN(g.sig, NYX_SIG_HEX))
         return std::string();
     unsigned char h[32];
     NyxGroupDigest(g, h);
@@ -276,7 +296,7 @@ std::vector<NyxGroupRec> NyxGroupChainBundles(const std::string& gid, const std:
     size_t sz = 0;
     for (const std::string& r : chain)
     {
-        if (!cur.chain.empty() && sz + r.size() + 4 > maxBytes)
+        if (!cur.chain.empty() && (sz + r.size() + 4 > maxBytes || cur.chain.size() >= NYX_CHAIN_RECS_MAX))
         {
             out.push_back(cur);
             cur.chain.clear();
@@ -286,7 +306,7 @@ std::vector<NyxGroupRec> NyxGroupChainBundles(const std::string& gid, const std:
         {
             cur.gid = gid;
             cur.op = NYX_GOP_CHAIN;
-            sz = 26;
+            sz = 10 + NYX_GID_HEX;
         }
         cur.chain.push_back(r);
         sz += r.size() + 4;
@@ -299,12 +319,12 @@ std::vector<NyxGroupRec> NyxGroupChainBundles(const std::string& gid, const std:
 bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
 {
     g = NyxGroupRec();
-    if (rec.size() < 24 || rec[0] != 'G' || rec[1] != NYX_GRP_VER)
+    if (rec.size() < 8 + NYX_GID_HEX || rec[0] != 'G' || rec[1] != NYX_GRP_VER)
         return false;
-    g.gid = rec.substr(2, 16);
-    if (!NyxIsHexId(g.gid))
+    g.gid = rec.substr(2, NYX_GID_HEX);
+    if (!NyxIsGroupId(g.gid))
         return false;
-    size_t pos = 18;
+    size_t pos = 2 + NYX_GID_HEX;
     uint64_t v;
     if (!ReadHex(rec, pos, 4, v))
         return false;
@@ -312,9 +332,9 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
     if (!ReadHex(rec, pos, 2, v))
         return false;
     g.op = (int)v;
-    if (NyxGroupOpChained(g.op))
+    if (NyxGroupOpSigned(g.op))
     {
-        if (g.epoch < 1 || pos + 32 > rec.size())
+        if ((NyxGroupOpChained(g.op) && g.epoch < 1) || pos + 32 > rec.size())
             return false;
         g.prev = rec.substr(pos, 32);
         pos += 32;
@@ -371,8 +391,7 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
             std::string r = rec.substr(pos, len);
             pos += len;
             NyxGroupRec inner;
-            if (!NyxDecodeGroup(r, inner) || inner.gid != g.gid
-                || (inner.op != NYX_GOP_ROSTER && !NyxGroupOpChained(inner.op)))
+            if (!NyxDecodeGroup(r, inner) || inner.gid != g.gid || !ChainInner(inner.op))
                 return false;
             g.chain.push_back(r);
         }
@@ -381,7 +400,7 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
     default:
         return false;
     }
-    if (NyxGroupOpChained(g.op))
+    if (NyxGroupOpSigned(g.op))
     {
         if (pos + NYX_SIG_HEX != rec.size())
             return false;
@@ -517,14 +536,26 @@ static bool Extends(const NyxGroupState& s, const NyxGroupRec& r)
            && r.epoch <= NYX_GROUP_OPS_MAX && r.prev == s.head && NyxGroupRecover(r) == s.owner;
 }
 
-static bool ApplyLeave(NyxGroupState& s, const std::string& signer, int epoch)
+// A leave is signed by the leaver and pinned to one chain position (epoch, prev = head there).
+static bool ApplyLeaveAs(NyxGroupState& s, const NyxGroupRec& r, const std::string& signer)
 {
+    if (r.op != NYX_GOP_LEAVE || r.gid != s.gid || r.epoch != s.epoch || r.prev != s.head)
+        return false;
     // The owner hands over first; a sole owner may close the group.
-    if (epoch < 0 || epoch > s.epoch || !s.IsMember(signer) || (signer == s.owner && s.members.size() > 1))
+    if (signer.empty() || !s.IsMember(signer) || (signer == s.owner && s.members.size() > 1))
         return false;
     s.members.erase(std::find(s.members.begin(), s.members.end(), signer));
-    s.removedAt[signer] = epoch;
+    s.removedAt[signer] = r.epoch;
+    s.leaves.push_back(NyxEncodeGroup(r));
+    Snapshot(s);
     return true;
+}
+
+static bool ApplyLeave(NyxGroupState& s, const NyxGroupRec& r)
+{
+    if (r.op != NYX_GOP_LEAVE || r.gid != s.gid || r.epoch != s.epoch || r.prev != s.head)
+        return false;
+    return ApplyLeaveAs(s, r, NyxGroupRecover(r));
 }
 
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r)
@@ -534,7 +565,7 @@ bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, cons
     if (!s.fValid)
         return r.op == NYX_GOP_ROSTER && ApplyGenesis(s, ts, r);
     if (r.op == NYX_GOP_LEAVE)
-        return !signer.empty() && signer != "anon" && r.gid == s.gid && ApplyLeave(s, signer, r.epoch);
+        return ApplyLeave(s, r);
     if (!Extends(s, r))
         return false;
     NyxGroupState t = s;
@@ -553,22 +584,17 @@ bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64
     if (it == s.history.begin())
         return false;
     --it;
-    if (!it->second.count(signer))
-        return false;
-    if (s.IsMember(signer))
-        return true;
-    // A former member's messages count only at epochs before its removal or leave.
-    std::map<std::string, int>::const_iterator r = s.removedAt.find(signer);
-    return r != s.removedAt.end() && epoch < r->second;
+    // The message epoch is sender-chosen, so a former member is refused outright.
+    return it->second.count(signer) && s.IsMember(signer);
 }
 
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events)
 {
     struct Op { NyxGroupRec rec; int64_t ts; };
-    std::map<std::string, NyxGroupRec> genesis;                          // gid -> binding genesis
+    std::map<std::string, std::map<std::string, NyxGroupRec> > genesis; // gid -> hash -> binding genesis
     std::map<std::string, std::map<std::string, Op> > ops;               // gid -> op hash -> op
-    std::map<std::string, std::vector<const NyxGroupEvent*> > leaves;    // gid -> leaves
-    std::set<std::string> seen;
+    typedef std::pair<int, std::string> Pos;                             // (epoch, prev)
+    std::map<std::string, std::map<Pos, std::map<std::string, NyxGroupRec> > > leaves; // gid -> pos -> encoding -> leave
     std::vector<std::pair<NyxGroupRec, int64_t> > flat;
     for (const NyxGroupEvent& e : events)
     {
@@ -584,12 +610,6 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
             }
             continue;
         }
-        if (e.rec.op == NYX_GOP_LEAVE)
-        {
-            if (!e.sender.empty() && e.sender != "anon" && (e.mid.empty() || seen.insert(e.mid).second))
-                leaves[e.rec.gid].push_back(&e);
-            continue;
-        }
         flat.push_back(std::make_pair(e.rec, e.ts));
     }
     for (const auto& p : flat)
@@ -598,7 +618,13 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
         if (r.op == NYX_GOP_ROSTER)
         {
             if (NyxGroupIdBinds(r))
-                genesis.insert(std::make_pair(r.gid, r));
+                genesis[r.gid].insert(std::make_pair(NyxGroupOpHash(r), r));
+        }
+        else if (r.op == NYX_GOP_LEAVE)
+        {
+            // Uncapped: a cap lets junk crowd out a member's leave. Recovered only at chain positions.
+            // Keyed by encoding: the digest omits the signer, so every leave at one position shares a hash.
+            leaves[r.gid][Pos(r.epoch, r.prev)].insert(std::make_pair(NyxEncodeGroup(r), r));
         }
         else if (NyxGroupOpChained(r.op))
         {
@@ -610,21 +636,30 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
     for (const auto& g : genesis)
     {
         NyxGroupState s;
-        int64_t ts0 = 0;
-        if (!ApplyGenesis(s, ts0, g.second))
+        if (!ApplyGenesis(s, 0, g.second.begin()->second))
             continue;
+        if (g.second.size() > 1)
+        {
+            s.fFrozen = true;               // two binding geneses for one gid
+            out[g.first] = s;
+            continue;
+        }
         std::map<std::string, Op>& pool = ops[g.first];
-        std::vector<const NyxGroupEvent*>& lv = leaves[g.first];
-        std::set<const NyxGroupEvent*> used;
+        const std::map<Pos, std::map<std::string, NyxGroupRec> >& lv = leaves[g.first];
         for (;;)
         {
-            // Leaves take effect at their epoch, before the next op, as the signer saw them.
-            for (const NyxGroupEvent* e : lv)
-                if (!used.count(e) && e->rec.epoch <= s.epoch)
-                {
-                    used.insert(e);
-                    ApplyLeave(s, e->sender, e->rec.epoch);
-                }
+            // Leaves pinned to this position, each recovered once; members first so a sole owner's leave can follow.
+            std::map<Pos, std::map<std::string, NyxGroupRec> >::const_iterator b = lv.find(Pos(s.epoch, s.head));
+            if (b != lv.end())
+            {
+                std::vector<std::pair<const NyxGroupRec*, std::string> > here;
+                for (const auto& l : b->second)
+                    here.push_back(std::make_pair(&l.second, NyxGroupRecover(l.second)));
+                for (int pass = 0; pass < 2; pass++)
+                    for (const auto& l : here)
+                        if ((l.second == s.owner) == (pass == 1))
+                            ApplyLeaveAs(s, *l.first, l.second);
+            }
             std::vector<const Op*> next;
             for (const auto& o : pool)
                 if (Extends(s, o.second.rec))
@@ -633,8 +668,27 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
                 break;
             if (next.size() > 1)
             {
-                s.fFrozen = true;
-                break;
+                // A fork is settled by a member other than the forking signer building on one side:
+                // after a handover the old owner can still sign at its last position.
+                std::vector<const Op*> confirmed;
+                for (const Op* c : next)
+                {
+                    NyxGroupState t = s;
+                    if (!ApplyChained(t, c->ts, c->rec) || t.owner == s.owner || !s.IsMember(t.owner))
+                        continue;
+                    for (const auto& o : pool)
+                        if (Extends(t, o.second.rec))
+                        {
+                            confirmed.push_back(c);
+                            break;
+                        }
+                }
+                if (confirmed.size() != 1)
+                {
+                    s.fFrozen = true;
+                    break;
+                }
+                next = confirmed;
             }
             if (!ApplyChained(s, next[0]->ts, next[0]->rec))
                 break;

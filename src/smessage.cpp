@@ -2906,7 +2906,7 @@ static std::vector<std::string> Others(const std::vector<std::string>& members, 
 
 static bool NyxLoadGroup(const std::string& gid, NyxGroupView& g, bool fOwner, std::string& sError)
 {
-    if (!NyxIsHexId(gid) || !SecureMsgGetGroup(gid, g))
+    if (!NyxIsGroupId(gid) || !SecureMsgGetGroup(gid, g))
     {
         sError = "Unknown group.";
         return false;
@@ -2929,34 +2929,13 @@ static bool NyxLoadGroup(const std::string& gid, NyxGroupView& g, bool fOwner, s
     return true;
 }
 
-// Next chained op from the owner: extends the head, signed with the owner key, checked against the state.
-static bool NyxGroupSignNext(const std::string& gid, int op, const std::string& arg, NyxGroupState& st,
-                             NyxGroupRec& rec, std::string& sError)
+static bool NyxGroupSignAs(const std::string& addr, NyxGroupRec& rec, std::string& sError)
 {
-    if (!NyxLoadGroupState(gid, st))
-    {
-        sError = "Unknown group.";
-        return false;
-    }
-    if (st.epoch >= NYX_GROUP_OPS_MAX)
-    {
-        sError = "This group has reached its change limit; create a new group.";
-        return false;
-    }
-    rec = NyxGroupRec();
-    rec.gid = gid;
-    rec.epoch = st.epoch + 1;
-    rec.op = op;
-    rec.prev = st.head;
-    if (op == NYX_GOP_RENAME)
-        rec.name = NyxCleanText(arg, NYX_GROUP_NAME_MAX);
-    else
-        rec.addr = arg;
     CKeyID id;
     CKey key;
-    if (!pwalletMain || pwalletMain->IsLocked() || !CBitcoinAddress(st.owner).GetKeyID(id) || !pwalletMain->GetKey(id, key))
+    if (!pwalletMain || pwalletMain->IsLocked() || !CBitcoinAddress(addr).GetKeyID(id) || !pwalletMain->GetKey(id, key))
     {
-        sError = "The owner key is not available; unlock the wallet.";
+        sError = "The signing key is not available; unlock the wallet.";
         return false;
     }
     unsigned char d[32];
@@ -2970,6 +2949,34 @@ static bool NyxGroupSignNext(const std::string& gid, int op, const std::string& 
         return false;
     }
     rec.sig = HexStr(sig.begin(), sig.end());
+    return true;
+}
+
+// Next chained op from the owner, or a leave from signer: pinned to the head, signed, checked against the state.
+static bool NyxGroupSignNext(const std::string& gid, int op, const std::string& arg, NyxGroupState& st,
+                             NyxGroupRec& rec, std::string& sError, const std::string& signer = std::string())
+{
+    if (!NyxLoadGroupState(gid, st))
+    {
+        sError = "Unknown group.";
+        return false;
+    }
+    if (op != NYX_GOP_LEAVE && st.epoch >= NYX_GROUP_OPS_MAX)
+    {
+        sError = "This group has reached its change limit; create a new group.";
+        return false;
+    }
+    rec = NyxGroupRec();
+    rec.gid = gid;
+    rec.epoch = op == NYX_GOP_LEAVE ? st.epoch : st.epoch + 1;
+    rec.op = op;
+    rec.prev = st.head;
+    if (op == NYX_GOP_RENAME)
+        rec.name = NyxCleanText(arg, NYX_GROUP_NAME_MAX);
+    else if (op != NYX_GOP_LEAVE)
+        rec.addr = arg;
+    if (!NyxGroupSignAs(op == NYX_GOP_LEAVE ? signer : st.owner, rec, sError))
+        return false;
     NyxGroupState t = st;
     if (!NyxGroupApply(t, st.owner, GetTime(), rec))
     {
@@ -3041,6 +3048,25 @@ int SecureMsgGroupSend(const std::string& gid, const std::string& body, const st
     return NyxGroupFanout(g.myAddr, g.name, body, rec, extraRecs, Others(g.members, g.myAddr), sError);
 }
 
+// A chained op travels with every leave the owner knows, so recipients that missed a leave still converge.
+static int NyxGroupSendOp(const std::string& from, const std::string& name, const std::string& body,
+                          const NyxGroupState& st, const NyxGroupRec& op, const std::vector<std::string>& to,
+                          std::string& sError)
+{
+    if (to.empty())
+        return 0;
+    if (st.leaves.empty())
+        return NyxGroupFanout(from, name, body, op, std::vector<std::string>(), to, sError);
+    std::vector<std::string> recs = st.leaves;
+    recs.push_back(NyxEncodeGroup(op));
+    std::vector<NyxGroupRec> bundles = NyxGroupChainBundles(op.gid, recs, SMSG_MAX_MSG_BYTES - 400);
+    for (size_t i = 0; i < bundles.size(); i++)
+        if (NyxGroupFanout(from, name, i + 1 == bundles.size() ? body : "", bundles[i], std::vector<std::string>(), to,
+                           sError) != 0)
+            return 1;
+    return 0;
+}
+
 int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::string& sError)
 {
     NyxGroupView g;
@@ -3062,15 +3088,14 @@ int SecureMsgGroupAdd(const std::string& gid, const std::string& addr, std::stri
         return 1;
     // The new member gets the whole signed chain; everyone else gets the add.
     const size_t budget = SMSG_MAX_MSG_BYTES - 400;
-    std::vector<NyxGroupRec> bundles = NyxGroupChainBundles(gid, st.chain, budget);
+    std::vector<std::string> recs = st.chain;
+    recs.insert(recs.end(), st.leaves.begin(), st.leaves.end());
+    std::vector<NyxGroupRec> bundles = NyxGroupChainBundles(gid, recs, budget);
     for (size_t i = 0; i < bundles.size(); i++)
         if (NyxGroupFanout(g.myAddr, st.name, i == 0 ? "added you to the group" : "", bundles[i],
                            std::vector<std::string>(), std::vector<std::string>(1, addr), sError) != 0)
             return 1;
-    std::vector<std::string> rest = Others(g.members, g.myAddr);
-    if (rest.empty())
-        return 0;
-    return NyxGroupFanout(g.myAddr, g.name, "added " + addr, add, std::vector<std::string>(), rest, sError);
+    return NyxGroupSendOp(g.myAddr, g.name, "added " + addr, st, add, Others(g.members, g.myAddr), sError);
 }
 
 static int NyxGroupOpSimple(const std::string& gid, int op, const std::string& arg, bool fOwner,
@@ -3080,27 +3105,20 @@ static int NyxGroupOpSimple(const std::string& gid, int op, const std::string& a
     if (!NyxLoadGroup(gid, g, fOwner, sError))
         return 1;
     NyxGroupRec rec;
-    if (op == NYX_GOP_LEAVE)
+    NyxGroupState st;
+    if (op == NYX_GOP_LEAVE && g.myAddr == g.owner && g.members.size() > 1)
     {
-        rec.gid = gid;
-        rec.epoch = g.epoch;
-        rec.op = op;
-        if (g.myAddr == g.owner && g.members.size() > 1)
-        {
-            sError = "Hand ownership to another member before leaving.";
-            return 1;
-        }
+        sError = "Hand ownership to another member before leaving.";
+        return 1;
     }
-    else
-    {
-        NyxGroupState st;
-        if (!NyxGroupSignNext(gid, op, arg, st, rec, sError))
-            return 1;
-    }
+    if (!NyxGroupSignNext(gid, op, arg, st, rec, sError, g.myAddr))
+        return 1;
     // A removed member is still in g.members, so it receives its removal.
     std::vector<std::string> to = Others(g.members, g.myAddr);
-    return NyxGroupFanout(g.myAddr, op == NYX_GOP_RENAME ? rec.name : g.name, body, rec,
-                          std::vector<std::string>(), to, sError);
+    const std::string name = op == NYX_GOP_RENAME ? rec.name : g.name;
+    if (op == NYX_GOP_LEAVE)
+        return to.empty() ? 0 : NyxGroupFanout(g.myAddr, name, body, rec, std::vector<std::string>(), to, sError);
+    return NyxGroupSendOp(g.myAddr, name, body, st, rec, to, sError);
 }
 
 int SecureMsgGroupRemove(const std::string& gid, const std::string& addr, std::string& sError)
@@ -3125,12 +3143,12 @@ int SecureMsgGroupSetOwner(const std::string& gid, const std::string& addr, std:
 
 bool SecureMsgGroupAccept(const std::string& gid)
 {
-    return NyxIsHexId(gid) && NyxAccept(GroupKey(gid));
+    return NyxIsGroupId(gid) && NyxAccept(GroupKey(gid));
 }
 
 bool SecureMsgGroupHide(const std::string& gid)
 {
-    return NyxIsHexId(gid) && NyxBlock(GroupKey(gid));
+    return NyxIsGroupId(gid) && NyxBlock(GroupKey(gid));
 }
 
 bool SecureMsgSendData(CNode* pto, bool fSendTrickle)
