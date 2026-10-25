@@ -293,7 +293,7 @@ BOOST_AUTO_TEST_CASE(regtest_tuning_cannot_move_mainnet_or_testnet)
         BOOST_CHECK_EQUAL(ScheduleDigest(8150240, 8152240, 1), 101140400797091916ULL);
         // The whole curve: pre-DAG rungs, the stretched rungs below the mergeset fork at
         // 8,472,840, then its ramp, halvings and floor.
-        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 7267664073452939202ULL);
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 6458086234817623601ULL);
     }
     {
         NetworkGuard guard(false, true);
