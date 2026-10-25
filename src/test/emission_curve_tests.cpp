@@ -441,9 +441,9 @@ BOOST_AUTO_TEST_CASE(mergeset_era_curve_is_pinned)
 {
     MainnetEmissionGuard guard;
     const int F = FORK_HEIGHT_MERGESET;
-    BOOST_REQUIRE_EQUAL(F, 10703940);
-    // Continuous with the ladder at the fork, then the ramp, the halvings and the floor.
-    BOOST_CHECK_EQUAL(GetPostDagLadderSubsidy(F - 1), 1000000);
+    BOOST_REQUIRE_EQUAL(F, 8472840);
+    // The ladder up to the fork, then the ramp, the halvings and the floor.
+    BOOST_CHECK_EQUAL(GetPostDagLadderSubsidy(F - 1), 1333333);
     BOOST_CHECK_EQUAL(GetProofOfWorkReward(F, 0, NULL, 0), 1000000);
     BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800 / 2, 0, NULL, 0), 1000000 + (2662037 - 1000000) / 2);
     BOOST_CHECK_EQUAL(GetProofOfWorkReward(F + 15724800, 0, NULL, 0), 2662037);

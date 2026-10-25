@@ -690,7 +690,7 @@ extern int nRegtestMergesetHeight;
 extern bool fRegtestMergesetEmission;   // regtest: run the mainnet emission curve from the fork
 static const int MERGESET_MAX_BLOCKS = 64;
 static const int MERGESET_FINALITY_DEPTH = 86400;
-static const int MAINNET_MERGESET_HEIGHT = 10703940;
+static const int MAINNET_MERGESET_HEIGHT = 8472840;
 
 inline int GetForkHeightMergeset()
 {

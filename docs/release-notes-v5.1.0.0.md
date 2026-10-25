@@ -1,4 +1,4 @@
-Hard fork at block 10,703,940. Every node, pool, exchange and wallet must upgrade before that block; after it, v5.1 nodes drop older peers.
+Hard fork at block 8,472,840. Every node, pool, exchange and wallet must upgrade before that block; after it, v5.1 nodes drop older peers.
 
 - Side blocks count: transactions in merged side blocks are applied by the block that merges them, and blue side blocks' miners are paid. Pools add an `IPAY` payee commitment (`-mergesetpayee`) to be paid for side blocks.
 - New emission from the fork: a 6-month ramp from 864 to 2,300 INN a day, then halving every 2 years down to 700 INN a day, until the 18M cap.
@@ -20,7 +20,7 @@ Hard fork at block 10,703,940. Every node, pool, exchange and wallet must upgrad
 - The staking tooltip shows vote status and how to unlock.
 - Assume-valid moved to block 8,300,000 for faster sync.
 - Peers are found via seed.innova-foundation.com; dead VPS seeds removed.
-- Finality hardening at block 10,703,940: a 120-block vote window, equivocating voters excluded from settlement, a stake quorum for HARD finality, and voters grouped by controlling key.
+- Finality hardening at block 8,472,840: a 120-block vote window, equivocating voters excluded from settlement, a stake quorum for HARD finality, and voters grouped by controlling key.
 - The wallet shows finality status labels, a finality reward transaction type, and a warning when finality stalls.
 - Several nodes can share one IP on different ports.
 - Tor v3 addresses (BIP155 addrv2).

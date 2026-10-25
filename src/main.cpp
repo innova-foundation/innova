@@ -7354,7 +7354,7 @@ static const PoWPostDagTier* GetPoWPostDagLadder(size_t& nCount, int64_t& nTail)
 // spacing ratio (PRE_DAG_TARGET_SPACING / GetTargetSpacingForHeight) and rung
 // boundaries stretched by the same ratio, preserving wall-clock issuance.
 // Mergeset era: 6-month ramp 864 -> 2,300 INN/day, halving every 2 years, 700/day floor.
-static const int64_t MERGESET_ERA_START = 1000000;        //   864 INN a day, the ladder at the fork
+static const int64_t MERGESET_ERA_START = 1000000;        //   864 INN a day
 static const int64_t MERGESET_ERA_PEAK = 2662037;         // 2,300 INN a day
 static const int64_t MERGESET_ERA_FLOOR = 810185;         //   700 INN a day
 static const int64_t MERGESET_ERA_RAMP_BLOCKS = 15724800;     // 182 days
