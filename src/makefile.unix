@@ -882,6 +882,7 @@ PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_
 # covered neither and linked a stale consensus decoder. A no-op build leaves the
 # archive's timestamp alone, so this does not force a relink.
 $(PRIVACY_VNEXT_RUST_LIB): FORCE
+	@test -d $(PRIVACY_VNEXT_RUST_DIR)/vendor || { echo "error: $(PRIVACY_VNEXT_RUST_DIR)/vendor is missing; restore it with: cd $(PRIVACY_VNEXT_RUST_DIR) && CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml > /dev/null (or unpack the release's rust-vendor archive, see docs/BUILD.md)"; exit 1; }
 	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
 
 fuzz-privacy-payload-libfuzzer: $(PRIVACY_VNEXT_RUST_LIB)

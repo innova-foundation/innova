@@ -98,6 +98,7 @@ contains(IV5_RUST_DEBUG, 1) {
 }
 win32-msvc:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/innova_privacy_vnext.lib
 else:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/libinnova_privacy_vnext.a
+!exists($$IV5_RUST_DIR/vendor): error("$$IV5_RUST_DIR/vendor is missing; restore it as described in docs/BUILD.md (cargo vendor --locked --versioned-dirs --sync upstream/Cargo.toml)")
 privacy_vnext_rust.target = $$IV5_RUST_LIB
 # Without a dependency the archive is up to date once it exists and cargo never
 # runs again, linking whatever decoder was built first. Cargo tracks the real
