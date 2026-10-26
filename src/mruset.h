@@ -31,6 +31,13 @@ public:
     iterator find(const key_type& k) const { return set.find(k); }
     size_type count(const key_type& k) const { return set.count(k); }
     void clear() { set.clear(); queue.clear(); }
+    void erase(const key_type& k)
+    {
+        if (!set.erase(k))
+            return;
+        for (typename std::deque<T>::iterator it = queue.begin(); it != queue.end(); ++it)
+            if (!(*it < k) && !(k < *it)) { queue.erase(it); break; }
+    }
     bool inline friend operator==(const mruset<T>& a, const mruset<T>& b) { return a.set == b.set; }
     bool inline friend operator==(const mruset<T>& a, const std::set<T>& b) { return a.set == b; }
     bool inline friend operator<(const mruset<T>& a, const mruset<T>& b) { return a.set < b.set; }

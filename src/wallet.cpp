@@ -2976,8 +2976,37 @@ void CWalletTx::RelayWalletTransaction(bool fForceRelay)
    RelayWalletTransaction(txdb, fForceRelay);
 }
 
+void CWallet::ResendPendingMigrations()
+{
+    static int64_t nNextTime;
+    if (GetTime() < nNextTime)
+        return;
+    nNextTime = GetTime() + 60;
+
+    LOCK2(cs_main, cs_wallet);
+    CTxDB txdb("r");
+    std::vector<uint256> vAbandon;
+    for (map<uint256, CWalletTx>::iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+    {
+        CWalletTx& wtx = it->second;
+        if (wtx.isAbandoned() || wtx.IsCoinBase() || wtx.IsCoinStake() ||
+            wtx.GetDepthInMainChain() > 0 || !MigrationDeclaresZeroFee(wtx))
+            continue;
+        if (mempool.exists(it->first))
+            wtx.RelayWalletTransaction(txdb, true);
+        else if (!IsMigrationActiveAtHeight(nBestHeight + 1) || !wtx.AcceptToMemoryPool(txdb))
+            vAbandon.push_back(it->first);
+        else
+            wtx.RelayWalletTransaction(txdb, true);
+    }
+    for (size_t i = 0; i < vAbandon.size(); ++i)
+        printf("ResendPendingMigrations: free migration %s no longer exempt, abandon=%d\n",
+               vAbandon[i].ToString().c_str(), AbandonTransaction(vAbandon[i]));
+}
+
 void CWallet::ResendWalletTransactions(bool fForce)
 {
+    ResendPendingMigrations();
     if (!fForce)
     {
         // Do this infrequently and randomly to avoid giving away
@@ -11420,6 +11449,47 @@ void GroupPoolMigrationOutputs(const std::vector<std::pair<CScript, int64_t> >& 
     }
 }
 
+bool PoolMigrationCoinIsFree(const CScript& scriptPubKey, int nConfirmedHeight, int nNextHeight)
+{
+    if (!IsMigrationActiveAtHeight(nNextHeight) ||
+        nNextHeight >= GetMigrationEndHeight() - MIGRATION_WALLET_END_MARGIN ||
+        nConfirmedHeight <= 0 ||
+        nConfirmedHeight > GetMigrationSnapshotHeight())
+        return false;
+    CScript scriptOwner;
+    CTxDestination dest;
+    if (!PoolMigrationOwnerScript(scriptPubKey, scriptOwner) ||
+        !ExtractDestination(scriptPubKey, dest))
+        return false;
+    CScript scriptConsensus;
+    scriptConsensus.SetDestination(dest);
+    return !scriptConsensus.empty() && scriptConsensus == scriptOwner;
+}
+
+CMigrationRelayBudget g_migrationRelayBudget;
+
+void CMigrationRelayBudget::Expire(int64_t nNow)
+{
+    while (!vSent.empty() && (nNow - vSent.front() >= 60 || vSent.front() > nNow))
+        vSent.pop_front();
+}
+
+int64_t CMigrationRelayBudget::RetryAfter(int64_t nNow)
+{
+    LOCK(cs);
+    Expire(nNow);
+    if (vSent.size() < MIGRATION_RELAY_PER_MINUTE)
+        return 0;
+    return std::max<int64_t>(1, vSent.front() + 60 - nNow);
+}
+
+void CMigrationRelayBudget::Record(int64_t nNow)
+{
+    LOCK(cs);
+    Expire(nNow);
+    vSent.push_back(nNow);
+}
+
 bool CWallet::CreatePrivacyVNextShield(
     const std::string& strFromAddress,
     size_t nMaxInputs,
@@ -11427,8 +11497,15 @@ bool CWallet::CreatePrivacyVNextShield(
     CWalletTx& wtxNew,
     int64_t& nValueShieldedOut,
     size_t& nInputsUsedOut,
-    std::string& strErrorOut)
+    std::string& strErrorOut,
+    bool fAllowFree,
+    int64_t* pnFeeOut,
+    bool* pfFreeOut)
 {
+    if (pnFeeOut)
+        *pnFeeOut = 0;
+    if (pfFreeOut)
+        *pfFreeOut = false;
     extern uint8_t PrivacyVNextNetworkIdForWallet();
     wtxNew.SetNull();
     nValueShieldedOut = 0;
@@ -11494,16 +11571,34 @@ bool CWallet::CreatePrivacyVNextShield(
     std::vector<COutput> vCoins;
     AvailableCoins(vCoins, true);
     std::vector<const COutput*> vSelected;
+    std::vector<const COutput*> vFree;
     int64_t nSelected = 0;
-    for (size_t i = 0; i < vCoins.size(); ++i)
+    int nNextHeight = 0;
     {
-        if (!vCoins[i].fSpendable)
-            continue;
-        CScript scriptOwner;
-        if (!PoolMigrationOwnerScript(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey, scriptOwner) ||
-            scriptOwner != scriptFrom)
-            continue;
-        vSelected.push_back(&vCoins[i]);
+        LOCK(cs_main);
+        nNextHeight = nBestHeight + 1;
+        for (size_t i = 0; i < vCoins.size(); ++i)
+        {
+            if (!vCoins[i].fSpendable)
+                continue;
+            const CScript& scriptCoin = vCoins[i].tx->vout[vCoins[i].i].scriptPubKey;
+            CScript scriptOwner;
+            if (!PoolMigrationOwnerScript(scriptCoin, scriptOwner) || scriptOwner != scriptFrom)
+                continue;
+            vSelected.push_back(&vCoins[i]);
+            if (fAllowFree && vCoins[i].nDepth > 0 &&
+                PoolMigrationCoinIsFree(scriptCoin, nBestHeight - vCoins[i].nDepth + 1,
+                                        nNextHeight))
+                vFree.push_back(&vCoins[i]);
+        }
+    }
+    // Snapshot coins go free on their own; later coins wait for a fee-paying shield.
+    const bool fFree = !vFree.empty();
+    if (fFree)
+    {
+        vSelected.swap(vFree);
+        if (nMaxInputs > MIGRATION_MAX_INPUTS)
+            nMaxInputs = MIGRATION_MAX_INPUTS;
     }
     std::sort(vSelected.begin(), vSelected.end(),
               [](const COutput* a, const COutput* b) {
@@ -11522,7 +11617,7 @@ bool CWallet::CreatePrivacyVNextShield(
 
     // The fee is flat, so every selected output is worth including once a shield exists at
     // all; only the group as a whole has to clear it.
-    const int64_t nFee = MIN_TX_FEE_SHIELDED;
+    const int64_t nFee = fFree ? 0 : MIN_TX_FEE_SHIELDED;
     if (nSelected <= nFee)
     {
         strErrorOut = strprintf(
@@ -11563,7 +11658,8 @@ bool CWallet::CreatePrivacyVNextShield(
                                       keys, strErrorOut))
         return false;
 
-    std::vector<PrivacyVNextNewOutput> vOutputs(2);
+    // A free migration must be exactly one pool output.
+    std::vector<PrivacyVNextNewOutput> vOutputs(fFree ? 1 : 2);
     for (size_t i = 0; i < vOutputs.size(); ++i)
     {
         vOutputs[i].recipient.nNetwork = nNetwork;
@@ -11571,7 +11667,10 @@ bool CWallet::CreatePrivacyVNextShield(
         vOutputs[i].recipient.spendPublic = keys.spendPublic;
         vOutputs[i].recipient.viewPublic = keys.viewPublic;
     }
-    SplitPrivacyVNextValue(nShielded, vOutputs[0].nAmount, vOutputs[1].nAmount);
+    if (fFree)
+        vOutputs[0].nAmount = nShielded;
+    else
+        SplitPrivacyVNextValue(nShielded, vOutputs[0].nAmount, vOutputs[1].nAmount);
 
     PrivacyVNextDigest finalizedRoot;
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
@@ -11619,6 +11718,10 @@ bool CWallet::CreatePrivacyVNextShield(
     wtxNew.fTimeReceivedIsTxTime = true;
     nValueShieldedOut = nShielded;
     nInputsUsedOut = vSelected.size();
+    if (pnFeeOut)
+        *pnFeeOut = nFee;
+    if (pfFreeOut)
+        *pfFreeOut = fFree;
 
     if (fCommit)
     {
@@ -11628,6 +11731,8 @@ bool CWallet::CreatePrivacyVNextShield(
             strErrorOut = "the shield was built but could not be committed";
             return false;
         }
+        if (fFree)
+            g_migrationRelayBudget.Record(GetTime());
     }
     return true;
 }

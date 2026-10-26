@@ -5,6 +5,7 @@
 #ifndef BITCOIN_WALLET_H
 #define BITCOIN_WALLET_H
 
+#include <deque>
 #include <limits>
 #include <string>
 #include <vector>
@@ -114,6 +115,26 @@ void GroupPoolMigrationOutputs(const std::vector<std::pair<CScript, int64_t> >& 
                                std::map<CScript, std::vector<int64_t> >& mapByOwnerOut,
                                int64_t& nUnaddressedOutputsOut,
                                int64_t& nUnaddressedValueOut);
+
+// True if this output may enter a zero-fee migration mined at nNextHeight: window open,
+// confirmed at or below the snapshot, and consensus sees the same owner the wallet does.
+// The wallet stops building free txs this many blocks before the window closes.
+static const int MIGRATION_WALLET_END_MARGIN = 10000;
+bool PoolMigrationCoinIsFree(const CScript& scriptPubKey, int nConfirmedHeight, int nNextHeight);
+
+// Wallet-side pacing of zero-fee migrations to the per-peer relay limit.
+class CMigrationRelayBudget
+{
+public:
+    // Seconds until another free send fits; 0 if one fits now.
+    int64_t RetryAfter(int64_t nNow);
+    void Record(int64_t nNow);
+private:
+    void Expire(int64_t nNow);
+    CCriticalSection cs;
+    std::deque<int64_t> vSent;
+};
+extern CMigrationRelayBudget g_migrationRelayBudget;
 
 // Pre-retirement build policy; past FORK_HEIGHT_IV5_FEE_NOTE unshield is refused in
 // consensus. Before it, released value is bound by GetPrivacyVNextTransparentBinding.
@@ -845,6 +866,8 @@ public:
     int ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate = false);
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
+    // Re-push pending zero-fee migrations; abandon those no longer exempt.
+    void ResendPendingMigrations();
     int64_t GetBalance() const;
     struct Balances {
         int64_t nBalance = 0, nAnon = 0, nUnconfirmed = 0, nImmature = 0, nStake = 0, nNewMint = 0;
@@ -953,6 +976,7 @@ public:
         uint32_t& indexOut, std::string& strError);
     // Build, sign and optionally broadcast a shield. Sweeps only UTXOs paying `strFromAddress`
     // so no new address grouping is published; moves the whole value, so no transparent change.
+    // fAllowFree: inside the migration window, sweep only snapshot coins into one note at fee 0.
     bool CreatePrivacyVNextShield(
         const std::string& strFromAddress,
         size_t nMaxInputs,
@@ -960,7 +984,10 @@ public:
         CWalletTx& wtxNew,
         int64_t& nValueShieldedOut,
         size_t& nInputsUsedOut,
-        std::string& strErrorOut);
+        std::string& strErrorOut,
+        bool fAllowFree = false,
+        int64_t* pnFeeOut = NULL,
+        bool* pfFreeOut = NULL);
 
     // Build a post-fork coinbase's fee-note payload; consensus fixes everything but the
     // recipient. `txCoinbase` must already carry its final outputs, which the payload binds.

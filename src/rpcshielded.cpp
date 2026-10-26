@@ -2066,6 +2066,28 @@ Value z_importviewingkey(const Array& params, bool fHelp)
     return ShieldedAddressToString(addr);
 }
 
+static bool PoolMigrationAddressHasFreeCoins(const std::string& strAddress)
+{
+    CBitcoinAddress addr(strAddress);
+    if (!addr.IsValid())
+        return false;
+    CScript scriptFrom;
+    scriptFrom.SetDestination(addr.Get());
+    std::vector<COutput> vCoins;
+    pwalletMain->AvailableCoins(vCoins, true);
+    LOCK(cs_main);
+    for (size_t i = 0; i < vCoins.size(); ++i)
+    {
+        const CScript& script = vCoins[i].tx->vout[vCoins[i].i].scriptPubKey;
+        CScript scriptOwner;
+        if (vCoins[i].fSpendable && vCoins[i].nDepth > 0 &&
+            PoolMigrationOwnerScript(script, scriptOwner) && scriptOwner == scriptFrom &&
+            PoolMigrationCoinIsFree(script, nBestHeight - vCoins[i].nDepth + 1, nBestHeight + 1))
+            return true;
+    }
+    return false;
+}
+
 Value z_shieldall(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 2)
@@ -2076,12 +2098,21 @@ Value z_shieldall(const Array& params, bool fHelp)
             "groups addresses the chain has not already grouped. Omit fromaddress to shield\n"
             "the address holding the most value. The whole selected value moves: there is no\n"
             "transparent change output.\n"
+            "\nInside the fee-exempt migration window, outputs confirmed at or below the\n"
+            "snapshot height move at fee 0 into one note, at most 50 per transaction; later\n"
+            "outputs at the address are left for a following fee-paying call. Peers relay a\n"
+            "few free migrations per minute per peer, so a send over that budget is refused here.\n"
+            "The window is open until block window_end_height; the wallet stops building free\n"
+            "shields 10000 blocks before it.\n"
             "\nResult:\n"
             "{\n"
             "  \"txid\": \"...\",        (string) the shield transaction\n"
             "  \"address\": \"...\",     (string) the transparent address swept\n"
             "  \"inputs\": n,          (numeric) outputs consumed\n"
             "  \"shielded\": x.xxx,    (numeric) value moved into the pool\n"
+            "  \"fee\": x.xxx,         (numeric) fee paid\n"
+            "  \"free\": true|false,   (boolean) a fee-exempt migration\n"
+            "  \"window_end_height\": n, (numeric) first height the free window is closed\n"
             "  \"remaining\": n        (numeric) outputs still unshielded at that address\n"
             "}\n");
 
@@ -2139,12 +2170,23 @@ Value z_shieldall(const Array& params, bool fHelp)
                                "no spendable transparent outputs to shield");
     }
 
+    // A free shield over the relay budget would be dropped by peers; never pay instead.
+    const int64_t nRetry = g_migrationRelayBudget.RetryAfter(GetTime());
+    if (nRetry > 0 && PoolMigrationAddressHasFreeCoins(strFrom))
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           strprintf("free migration relay limit (%u per minute) reached; "
+                                     "retry in %d seconds",
+                                     MIGRATION_RELAY_PER_MINUTE, (int)nRetry));
+
     CWalletTx wtx;
     int64_t nShielded = 0;
     size_t nInputs = 0;
+    int64_t nFeePaid = 0;
+    bool fFree = false;
     std::string strError;
     if (!pwalletMain->CreatePrivacyVNextShield(strFrom, nMaxInputs, true, wtx,
-                                               nShielded, nInputs, strError))
+                                               nShielded, nInputs, strError,
+                                               true, &nFeePaid, &fFree))
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     // Report what is left at that address so a caller can loop until it reaches zero.
@@ -2171,6 +2213,10 @@ Value z_shieldall(const Array& params, bool fHelp)
     result.push_back(Pair("address", strFrom));
     result.push_back(Pair("inputs", (int64_t)nInputs));
     result.push_back(Pair("shielded", ValueFromAmount(nShielded)));
+    result.push_back(Pair("fee", ValueFromAmount(nFeePaid)));
+    result.push_back(Pair("free", fFree));
+    if (IsMigrationConfigured())
+        result.push_back(Pair("window_end_height", GetMigrationEndHeight()));
     result.push_back(Pair("remaining", (int64_t)nRemaining));
     return result;
 }
@@ -2179,9 +2225,11 @@ Value z_shieldall(const Array& params, bool fHelp)
 struct PoolMigrationCandidate
 {
     std::string strAddress;
-    int64_t nSelectable;   // value the next shield from this address would carry
+    int64_t nSelectable;   // value the next fee-paying shield would carry
     int64_t nTotal;        // spendable value sitting at the address
     int64_t nOutputs;
+    int64_t nFreeOutputs;  // outputs a free migration can take now
+    int64_t nFreeValue;
 };
 
 // Grouped by owner address script, as the shield builder selects. Re-derived from spendable
@@ -2198,23 +2246,40 @@ static void SurveyPoolMigration(size_t nMaxInputs,
     nWatchOnlyValueOut = 0;
 
     std::vector<std::pair<CScript, int64_t> > vOutputs;
+    std::map<CScript, std::pair<int64_t, int64_t> > mapFree;
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins, true);
-    for (size_t i = 0; i < vCoins.size(); ++i)
     {
-        const CTxOut& out = vCoins[i].tx->vout[vCoins[i].i];
-        // Watch-only, or cold-stake held only by this wallet's staker key.
-        if (!vCoins[i].fSpendable)
+        LOCK(cs_main);
+        for (size_t i = 0; i < vCoins.size(); ++i)
         {
-            ++nWatchOnlyOutputsOut;
-            nWatchOnlyValueOut += out.nValue;
-            continue;
+            const CTxOut& out = vCoins[i].tx->vout[vCoins[i].i];
+            // Watch-only, or cold-stake held only by this wallet's staker key.
+            if (!vCoins[i].fSpendable)
+            {
+                ++nWatchOnlyOutputsOut;
+                nWatchOnlyValueOut += out.nValue;
+                continue;
+            }
+            CScript scriptOwner;
+            if (vCoins[i].nDepth > 0 &&
+                PoolMigrationCoinIsFree(out.scriptPubKey, nBestHeight - vCoins[i].nDepth + 1,
+                                        nBestHeight + 1) &&
+                PoolMigrationOwnerScript(out.scriptPubKey, scriptOwner))
+            {
+                ++mapFree[scriptOwner].first;
+                mapFree[scriptOwner].second += out.nValue;
+                continue;
+            }
+            vOutputs.push_back(std::make_pair(out.scriptPubKey, out.nValue));
         }
-        vOutputs.push_back(std::make_pair(out.scriptPubKey, out.nValue));
     }
 
     std::map<CScript, std::vector<int64_t> > mapByScript;
     GroupPoolMigrationOutputs(vOutputs, mapByScript, nUnaddressedOutputsOut, nUnaddressedValueOut);
+    for (std::map<CScript, std::pair<int64_t, int64_t> >::const_iterator it = mapFree.begin();
+         it != mapFree.end(); ++it)
+        mapByScript[it->first];
 
     for (std::map<CScript, std::vector<int64_t> >::iterator it = mapByScript.begin();
          it != mapByScript.end(); ++it)
@@ -2237,8 +2302,17 @@ static void SurveyPoolMigration(size_t nMaxInputs,
         c.nSelectable = 0;
         for (size_t i = 0; i < vValues.size(); ++i)
             c.nSelectable += vValues[i];
-        c.nTotal = nTotal;
-        c.nOutputs = (int64_t)it->second.size();
+        c.nFreeOutputs = 0;
+        c.nFreeValue = 0;
+        std::map<CScript, std::pair<int64_t, int64_t> >::const_iterator itFree =
+            mapFree.find(it->first);
+        if (itFree != mapFree.end())
+        {
+            c.nFreeOutputs = itFree->second.first;
+            c.nFreeValue = itFree->second.second;
+        }
+        c.nTotal = nTotal + c.nFreeValue;
+        c.nOutputs = (int64_t)it->second.size() + c.nFreeOutputs;
         vCandidatesOut.push_back(c);
     }
 }
@@ -2292,17 +2366,30 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "the wallet's own unspent outputs -- so calling again continues, and an\n"
             "interrupted run resumes with no recovery step. Drive it from a loop while\n"
             "\"more\" is true.\n"
-            "\nAn address whose value does not cover the flat shield fee cannot be moved at\n"
-            "all. It is skipped and reported under \"skipped\", never retried within a call,\n"
-            "so a loop on \"more\" terminates instead of spinning on it.\n"
+            "\nInside the fee-exempt migration window, an address's outputs confirmed at or\n"
+            "below the snapshot height move at fee 0 into one note, whatever their value;\n"
+            "its later outputs follow in a fee-paying shield. Peers rate-limit free\n"
+            "migrations per minute and a block confirms only a few, so this call paces free\n"
+            "sends to the relay limit and reports the rest as deferred with\n"
+            "\"free_retry_after\"; call again after that many seconds. Free shields are built\n"
+            "until 10000 blocks before window_end_height.\n"
+            "\nOutside a free migration, an address whose value does not cover the flat\n"
+            "shield fee cannot be moved. It is skipped and reported under \"skipped\", never\n"
+            "retried within a call, so a loop on \"more\" terminates instead of spinning on it.\n"
             "\nA bare-pubkey output (a stake reward) and a cold-stake output this wallet owns\n"
             "are swept with the address of the same key: they already name that owner.\n"
             "\nResult:\n"
             "{\n"
             "  \"sent\": n,                    (numeric) transactions sent by this call\n"
             "  \"transactions\": [             (array) one entry per transaction sent\n"
-            "    {\"txid\":\"...\", \"address\":\"...\", \"inputs\":n, \"shielded\":x.xxx, \"fee\":x.xxx}\n"
+            "    {\"txid\":\"...\", \"address\":\"...\", \"inputs\":n, \"shielded\":x.xxx, \"fee\":x.xxx,\n"
+            "     \"free\":true|false}\n"
             "  ],\n"
+            "  \"window_open\": true|false,     (boolean) free migrations are accepted at the next block\n"
+            "  \"window_end_height\": n,        (numeric) first height the free window is closed\n"
+            "  \"free_sent\": n,               (numeric) free transactions sent by this call\n"
+            "  \"free_deferred_addresses\": n, (numeric) addresses waiting on the relay limit\n"
+            "  \"free_retry_after\": n,        (numeric) seconds until another free send fits\n"
             "  \"shielded\": x.xxx,            (numeric) value moved into the pool\n"
             "  \"fees\": x.xxx,                (numeric) fees paid\n"
             "  \"addresses_remaining\": n,     (numeric) addresses another call would sweep\n"
@@ -2368,6 +2455,7 @@ Value z_migratetopool(const Array& params, bool fHelp)
     Array arrSent;
     int64_t nMovedTotal = 0;
     int64_t nFeesTotal = 0;
+    int64_t nFreeSent = 0;
     // A failed address is never retried in this call, so the loop terminates.
     std::map<std::string, std::string> mapGaveUp;
 
@@ -2381,17 +2469,31 @@ Value z_migratetopool(const Array& params, bool fHelp)
         SurveyPoolMigration(nMaxInputs, vCandidates, nUnaddressedOutputs, nUnaddressedValue,
                             nWatchOnlyOutputs, nWatchOnlyValue);
 
-        // Largest selectable value first.
+        const bool fFreeBudget = g_migrationRelayBudget.RetryAfter(GetTime()) == 0;
+        // Largest value first; an address with free outputs waits for the relay budget.
         const PoolMigrationCandidate* pNext = NULL;
+        int64_t nNextValue = 0;
         for (size_t i = 0; i < vCandidates.size(); ++i)
         {
-            // Strictly greater, matching the builder: a group worth exactly the fee is refused.
-            if (vCandidates[i].nSelectable <= nFee)
-                continue;
             if (mapGaveUp.count(vCandidates[i].strAddress))
                 continue;
-            if (!pNext || vCandidates[i].nSelectable > pNext->nSelectable)
+            int64_t nValue = 0;
+            if (vCandidates[i].nFreeOutputs > 0)
+            {
+                if (!fFreeBudget)
+                    continue;
+                nValue = vCandidates[i].nFreeValue;
+            }
+            // Strictly greater, matching the builder: a group worth exactly the fee is refused.
+            else if (vCandidates[i].nSelectable > nFee)
+                nValue = vCandidates[i].nSelectable;
+            else
+                continue;
+            if (!pNext || nValue > nNextValue)
+            {
                 pNext = &vCandidates[i];
+                nNextValue = nValue;
+            }
         }
         if (!pNext)
             break;
@@ -2400,9 +2502,12 @@ Value z_migratetopool(const Array& params, bool fHelp)
         CWalletTx wtx;
         int64_t nShielded = 0;
         size_t nInputs = 0;
+        int64_t nFeePaid = 0;
+        bool fFree = false;
         std::string strError;
         if (!pwalletMain->CreatePrivacyVNextShield(strFrom, nMaxInputs, true, wtx,
-                                                   nShielded, nInputs, strError))
+                                                   nShielded, nInputs, strError,
+                                                   true, &nFeePaid, &fFree))
         {
             // A build failure skips the address without aborting the run.
             mapGaveUp[strFrom] = strError;
@@ -2410,14 +2515,17 @@ Value z_migratetopool(const Array& params, bool fHelp)
         }
 
         nMovedTotal += nShielded;
-        nFeesTotal += nFee;
+        nFeesTotal += nFeePaid;
+        if (fFree)
+            ++nFreeSent;
 
         Object objTx;
         objTx.push_back(Pair("txid", wtx.GetHash().GetHex()));
         objTx.push_back(Pair("address", strFrom));
         objTx.push_back(Pair("inputs", (int64_t)nInputs));
         objTx.push_back(Pair("shielded", ValueFromAmount(nShielded)));
-        objTx.push_back(Pair("fee", ValueFromAmount(nFee)));
+        objTx.push_back(Pair("fee", ValueFromAmount(nFeePaid)));
+        objTx.push_back(Pair("free", fFree));
         arrSent.push_back(objTx);
     }
 
@@ -2433,6 +2541,8 @@ Value z_migratetopool(const Array& params, bool fHelp)
     SurveyPoolMigrationPending(nImmatureValue, nUnconfirmedValue, nLockedValue);
 
     int64_t nAddrRemaining = 0, nOutRemaining = 0, nValueRemaining = 0;
+    const int64_t nFreeRetry = g_migrationRelayBudget.RetryAfter(GetTime());
+    int64_t nFreeDeferred = 0;
     int64_t nStuckAddrs = 0, nStuckOutputs = 0, nStuckValue = 0;
     Array arrSkipped;
     std::set<std::string> setReported;
@@ -2441,9 +2551,12 @@ Value z_migratetopool(const Array& params, bool fHelp)
         const PoolMigrationCandidate& c = vFinal[i];
         std::map<std::string, std::string>::const_iterator itGaveUp =
             mapGaveUp.find(c.strAddress);
-        const bool fSweepable = c.nSelectable > nFee && itGaveUp == mapGaveUp.end();
+        const bool fSweepable = (c.nFreeOutputs > 0 || c.nSelectable > nFee) &&
+                                itGaveUp == mapGaveUp.end();
         if (fSweepable)
         {
+            if (c.nFreeOutputs > 0 && nFreeRetry > 0)
+                ++nFreeDeferred;
             ++nAddrRemaining;
             nOutRemaining += c.nOutputs;
             nValueRemaining += c.nTotal;
@@ -2488,6 +2601,12 @@ Value z_migratetopool(const Array& params, bool fHelp)
     result.push_back(Pair("transactions", arrSent));
     result.push_back(Pair("shielded", ValueFromAmount(nMovedTotal)));
     result.push_back(Pair("fees", ValueFromAmount(nFeesTotal)));
+    result.push_back(Pair("window_open", IsMigrationActiveAtHeight(nBestHeight + 1)));
+    if (IsMigrationConfigured())
+        result.push_back(Pair("window_end_height", GetMigrationEndHeight()));
+    result.push_back(Pair("free_sent", nFreeSent));
+    result.push_back(Pair("free_deferred_addresses", nFreeDeferred));
+    result.push_back(Pair("free_retry_after", nFreeDeferred > 0 ? nFreeRetry : (int64_t)0));
     result.push_back(Pair("addresses_remaining", nAddrRemaining));
     result.push_back(Pair("outputs_remaining", nOutRemaining));
     result.push_back(Pair("value_remaining", ValueFromAmount(nValueRemaining)));
@@ -2832,6 +2951,11 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                                ? ValueFromAmount(nVNextPool) : Value::null));
     }
     obj.push_back(Pair("privacy_vnext_fee_note_height", FORK_HEIGHT_IV5_FEE_NOTE));
+    obj.push_back(Pair("migration_height", FORK_HEIGHT_MIGRATION));
+    obj.push_back(Pair("migration_end_height", GetMigrationEndHeight()));
+    obj.push_back(Pair("migration_snapshot_height", GetMigrationSnapshotHeight()));
+    obj.push_back(Pair("migration_window_open", IsMigrationActiveAtHeight(nBestHeight + 1)));
+    obj.push_back(Pair("migration_max_per_block", (int)MIGRATION_MAX_PER_BLOCK));
     obj.push_back(Pair("privacy_vnext_fee_note_active",
                        IsIV5FeeNoteActiveAtHeight(nBestHeight)));
     obj.push_back(Pair("privacy_vnext_max_anchor_age_epochs",

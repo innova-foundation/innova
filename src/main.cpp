@@ -19378,6 +19378,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     printf("TXRELAY migration rate limit tx=%s peer=%s\n",
                            inv.hash.ToString().substr(0,10).c_str(),
                            pfrom->addr.ToString().c_str());
+                // Forget it so a later inv from this peer is fetched again.
+                {
+                    LOCK(pfrom->cs_inventory);
+                    pfrom->setInventoryKnown.erase(inv);
+                }
+                {
+                    LOCK(cs_mapAlreadyAskedFor);
+                    mapAlreadyAskedFor.erase(inv);
+                }
                 return true;
             }
             ++pfrom->nMigrationInWindow;
