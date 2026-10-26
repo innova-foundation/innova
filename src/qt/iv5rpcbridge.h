@@ -263,6 +263,36 @@ bool FetchPool(PoolSnapshot& out, QString& errorOut);
 bool FetchColdStaking(ColdStakingInfo& out, QString& errorOut);
 bool FetchColdUtxos(QList<ColdUtxo>& out, QString& errorOut);
 
+// One z_migratetopool reply, as the migrate-all loop needs it.
+struct MigrateSkip
+{
+    MigrateSkip() : dValue(0) {}
+
+    QString strAddress;
+    double dValue;
+    QString strReason;
+};
+
+struct MigrateReport
+{
+    MigrateReport() : nSent(0), dShielded(0), fMore(false), fComplete(false),
+                      dUnaddressedValue(0), dWatchOnlyValue(0), dImmatureValue(0),
+                      dUnconfirmedValue(0), dLockedValue(0) {}
+
+    int nSent;
+    double dShielded;
+    bool fMore;
+    bool fComplete;
+    QList<MigrateSkip> vSkipped;
+    double dUnaddressedValue;
+    double dWatchOnlyValue;
+    double dImmatureValue;
+    double dUnconfirmedValue;
+    double dLockedValue;
+};
+
+bool ParseMigrateReport(const QString& jsonObject, MigrateReport& out);
+
 // Whitelisted call. On success resultOut holds the pretty-printed reply.
 bool Call(const QString& method, const QStringList& params,
           QString& resultOut, QString& errorOut);

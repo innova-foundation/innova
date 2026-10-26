@@ -20,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -583,16 +584,68 @@ void PrivacyPage::onMigrateModeChanged()
         migrateAdvancedBox->setVisible(!fSimple);
 }
 
+// Value the survey left behind and why, grouped by reason so one cause reads once.
+static QString DescribeMigrateLeftovers(const Iv5Rpc::MigrateReport& report)
+{
+    QStringList lines;
+    QMap<QString, QStringList> mapByReason;
+    QMap<QString, double> mapValue;
+    for (int i = 0; i < report.vSkipped.size(); ++i)
+    {
+        const Iv5Rpc::MigrateSkip& skip = report.vSkipped[i];
+        QString reason = skip.strReason;
+        if (reason.contains("does not cover the"))
+            reason = QObject::tr("value does not cover the shield fee");
+        mapByReason[reason] << skip.strAddress;
+        mapValue[reason] += skip.dValue;
+    }
+    for (QMap<QString, QStringList>::const_iterator it = mapByReason.constBegin();
+         it != mapByReason.constEnd(); ++it)
+    {
+        QStringList addrs = it.value();
+        const int nMore = addrs.size() - 3;
+        if (nMore > 0)
+            addrs = addrs.mid(0, 3) << QObject::tr("and %1 more").arg(nMore);
+        lines << QObject::tr("%1 address(es), %2 INN: %3 (%4)")
+                     .arg(it.value().size()).arg(mapValue[it.key()], 0, 'f', 8)
+                     .arg(it.key()).arg(addrs.join(", "));
+    }
+    if (report.dImmatureValue > 0)
+        lines << QObject::tr("%1 INN is still maturing and will be movable later.")
+                     .arg(report.dImmatureValue, 0, 'f', 8);
+    if (report.dUnconfirmedValue > 0)
+        lines << QObject::tr("%1 INN is not confirmed yet and will be movable later.")
+                     .arg(report.dUnconfirmedValue, 0, 'f', 8);
+    if (report.dLockedValue > 0)
+        lines << QObject::tr("%1 INN is in locked coins; unlock them to move it.")
+                     .arg(report.dLockedValue, 0, 'f', 8);
+    if (report.dWatchOnlyValue > 0)
+        lines << QObject::tr("%1 INN is watch-only or delegated to this wallet's staker "
+                             "key; this wallet cannot sign for it.")
+                     .arg(report.dWatchOnlyValue, 0, 'f', 8);
+    if (report.dUnaddressedValue > 0)
+        lines << QObject::tr("%1 INN sits in outputs no address owns and cannot be swept.")
+                     .arg(report.dUnaddressedValue, 0, 'f', 8);
+    return lines.join("\n");
+}
+
 void PrivacyPage::onMigrateAllClicked()
 {
     if (model == 0)
         return;
 
     const qint64 nStart = model->getBalance();
+    const qint64 nPending = model->getImmatureBalance() + model->getUnconfirmedBalance();
     if (nStart <= 0)
     {
+        const int unitPending = model->getOptionsModel()
+                                    ? model->getOptionsModel()->getDisplayUnit()
+                                    : 0;
         QMessageBox::information(this, tr("Migrate everything"),
-            tr("There is no transparent balance left to migrate."));
+            nPending > 0
+                ? tr("Nothing is movable yet: %1 is still maturing or unconfirmed and will "
+                     "be movable later.").arg(BitcoinUnits::formatWithUnit(unitPending, nPending))
+                : tr("There is no transparent balance left to migrate."));
         return;
     }
 
@@ -618,6 +671,32 @@ void PrivacyPage::onMigrateAllClicked()
     if (!ctx.isValid())
         return;
 
+    // Every shield needs the IV5 seed; without it each address would fail the same way.
+    {
+        Iv5Rpc::PoolSnapshot pool;
+        QString poolError;
+        if (Iv5Rpc::FetchPool(pool, poolError) && !pool.fSeedUnlocked)
+        {
+            if (!pool.fSeedPresent)
+            {
+                if (QMessageBox::question(this, tr("Migrate everything"),
+                        tr("This wallet has no IV5 seed, so it has nowhere in the pool to "
+                           "receive the value. Create one now?"),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) ==
+                    QMessageBox::Yes)
+                    onManageSeedClicked();
+            }
+            else
+            {
+                QMessageBox::warning(this, tr("Migrate everything"),
+                    tr("The IV5 seed is locked. Unlock the wallet fully (not for staking "
+                       "only) and try again."));
+            }
+            if (!Iv5Rpc::FetchPool(pool, poolError) || !pool.fSeedUnlocked)
+                return;
+        }
+    }
+
     // z_migratetopool sweeps one address per transaction and skips addresses below the
     // fee; its bound is per call, so keep calling while it reports more work.
     migrateAllButton->setEnabled(false);
@@ -628,6 +707,7 @@ void PrivacyPage::onMigrateAllClicked()
     double dShielded = 0.0;
     int nSent = 0;
     bool fComplete = false;
+    Iv5Rpc::MigrateReport last;
     QString error;
 
     for (int nCall = 0; nCall < nMaxCalls; ++nCall)
@@ -639,19 +719,21 @@ void PrivacyPage::onMigrateAllClicked()
         if (!Iv5Rpc::Call("z_migratetopool", QStringList(), result, error))
             break;
 
-        QString field;
-        if (Iv5Rpc::ReadField(result, "shielded", field))
-            dShielded += field.toDouble();
-        if (Iv5Rpc::ReadField(result, "sent", field))
-            nSent += field.toInt();
-        if (Iv5Rpc::ReadField(result, "complete", field) && field == "true")
-            fComplete = true;
+        Iv5Rpc::MigrateReport report;
+        if (!Iv5Rpc::ParseMigrateReport(result, report))
+        {
+            error = tr("z_migratetopool returned an unreadable reply");
+            break;
+        }
+        dShielded += report.dShielded;
+        nSent += report.nSent;
+        fComplete = report.fComplete;
+        last = report;
 
         migrateAllSummary->setText(tr("Sent %1 transaction(s), %2 moved.")
                                        .arg(nSent).arg(dShielded, 0, 'f', 8));
 
-        QString more;
-        if (!Iv5Rpc::ReadField(result, "more", more) || more != "true")
+        if (!report.fMore)
             break;
     }
 
@@ -672,8 +754,9 @@ void PrivacyPage::onMigrateAllClicked()
         return;
     }
 
+    const QString leftovers = DescribeMigrateLeftovers(last);
     statusLabel->setText(fComplete ? tr("Migrated") : tr("Migration incomplete"));
-    if (fComplete)
+    if (fComplete && leftovers.isEmpty())
     {
         QMessageBox::information(this, tr("Migrate everything"),
             tr("%1\n\nNothing transparent is left.").arg(moved));
@@ -681,10 +764,12 @@ void PrivacyPage::onMigrateAllClicked()
     else
     {
         QMessageBox::information(this, tr("Migrate everything"),
-            tr("%1\n\nSome value could not be moved. An address whose value does not "
-               "cover the shield fee cannot be swept at all; run 'z_migratetopool' in "
-               "the debug console to see which addresses were skipped and why.")
-                .arg(moved));
+            tr("%1\n\nNot moved:\n%2")
+                .arg(moved)
+                .arg(leftovers.isEmpty()
+                         ? tr("the reason was not reported; run 'z_migratetopool' in the "
+                              "debug console for details.")
+                         : leftovers));
     }
 }
 

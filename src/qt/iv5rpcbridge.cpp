@@ -769,6 +769,42 @@ bool Call(const QString& method, const QStringList& params,
     return true;
 }
 
+bool ParseMigrateReport(const QString& jsonObject, MigrateReport& out)
+{
+    out = MigrateReport();
+    json_spirit::Value value;
+    if (!json_spirit::read_string(jsonObject.toStdString(), value) ||
+        value.type() != json_spirit::obj_type)
+        return false;
+    const json_spirit::Object& obj = value.get_obj();
+    bool fHave = false;
+    ReadInt(obj, "sent", out.nSent);
+    ReadReal(obj, "shielded", out.dShielded, fHave);
+    ReadBool(obj, "more", out.fMore);
+    ReadBool(obj, "complete", out.fComplete);
+    ReadReal(obj, "unaddressed_value", out.dUnaddressedValue, fHave);
+    ReadReal(obj, "watchonly_value", out.dWatchOnlyValue, fHave);
+    ReadReal(obj, "immature_value", out.dImmatureValue, fHave);
+    ReadReal(obj, "unconfirmed_value", out.dUnconfirmedValue, fHave);
+    ReadReal(obj, "locked_value", out.dLockedValue, fHave);
+    const json_spirit::Value* v = Find(obj, "skipped");
+    if (v != NULL && v->type() == json_spirit::array_type)
+    {
+        const json_spirit::Array& arr = v->get_array();
+        for (size_t i = 0; i < arr.size(); i++)
+        {
+            if (arr[i].type() != json_spirit::obj_type)
+                continue;
+            MigrateSkip skip;
+            ReadStr(arr[i].get_obj(), "address", skip.strAddress);
+            ReadReal(arr[i].get_obj(), "value", skip.dValue, fHave);
+            ReadStr(arr[i].get_obj(), "reason", skip.strReason);
+            out.vSkipped << skip;
+        }
+    }
+    return true;
+}
+
 bool ReadField(const QString& jsonObject, const QString& key, QString& valueOut)
 {
     const std::string strJson = jsonObject.toStdString();
