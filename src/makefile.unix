@@ -243,6 +243,7 @@ OBJS= \
     obj/rpcnyx.o \
 	obj/rpchyperfile.o \
     obj/rpcshielded.o \
+    obj/rpcmigration.o \
     obj/nullsend.o \
     obj/nullsend_v2008.o \
     obj/nullsend_driver.o \
@@ -468,6 +469,7 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/assume_valid_gate_tests.o \
     obj/test/mergeset_accept_tests.o \
     obj/test/mempool_rbf_tests.o \
+    obj/test/migration_exempt_tests.o \
     obj/test/dagheaders_tests.o
 
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute

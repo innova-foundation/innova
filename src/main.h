@@ -712,6 +712,49 @@ inline bool IsMergesetActiveAtHeight(int nHeight)
     return IsMergesetConfigured() && nHeight >= FORK_HEIGHT_MERGESET;
 }
 
+// Fee-exempt migration: a zero-fee shield of pre-fork transparent coins, for one year.
+extern int nRegtestMigrationHeight;
+static const int MAINNET_MIGRATION_HEIGHT = PRIVACY_VNEXT_HEIGHT_UNSET;
+static const int MIGRATION_DURATION = 31536000;
+static const unsigned int MIGRATION_MAX_INPUTS = 50;
+static const unsigned int MIGRATION_MAX_PER_BLOCK = 4;
+static const size_t MIGRATION_MEMPOOL_MAX_TXS = 200;
+static const size_t MIGRATION_MEMPOOL_MAX_BYTES = 2000000;
+static const unsigned int MIGRATION_RELAY_PER_MINUTE = 2;
+
+inline int GetForkHeightMigration()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest)
+        return nRegtestMigrationHeight;
+    return fTestNet ? PRIVACY_VNEXT_HEIGHT_UNSET : MAINNET_MIGRATION_HEIGHT;
+}
+#define FORK_HEIGHT_MIGRATION (GetForkHeightMigration())
+
+inline bool IsMigrationConfigured()
+{
+    return FORK_HEIGHT_MIGRATION != PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+
+inline int GetMigrationEndHeight()
+{
+    const int nFork = FORK_HEIGHT_MIGRATION;
+    return nFork > PRIVACY_VNEXT_HEIGHT_UNSET - MIGRATION_DURATION
+               ? PRIVACY_VNEXT_HEIGHT_UNSET : nFork + MIGRATION_DURATION;
+}
+
+inline int GetMigrationSnapshotHeight()
+{
+    return FORK_HEIGHT_MIGRATION - 1;
+}
+
+inline bool IsMigrationActiveAtHeight(int nHeight)
+{
+    return IsMigrationConfigured() && nHeight >= FORK_HEIGHT_MIGRATION &&
+           nHeight < GetMigrationEndHeight();
+}
+
 inline bool IsIV5FeeNoteConfigured()
 {
     return FORK_HEIGHT_IV5_FEE_NOTE != PRIVACY_VNEXT_HEIGHT_UNSET;
@@ -1548,6 +1591,13 @@ bool GetPrivacyVNextNoteVoteMintTotal(const CBlockIndex* pindexWindowTop,
  *  finality vote (op 10, fee pinned to zero). Callers must still require a zero fee. */
 bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx);
 
+/** Header-level migration shape: IV5 shield, 1..MIGRATION_MAX_INPUTS transparent inputs,
+ *  no transparent outputs. Cheap; no decode. */
+bool IsMigrationShape(const CTransaction& tx);
+
+/** Decoded migration shape: one pool output, no key images, declared fee zero. */
+bool CheckMigrationEffects(const CTransaction& tx, std::string& strReason);
+
 /** Whether a transaction declares a note finality vote: a payload whose header names
  *  operation 10 and no transparent side. A header read, not a decoder: block assembly
  *  counts with it, consensus acts on the decoded effects. */
@@ -1810,6 +1860,21 @@ public:
 };
 
 typedef std::map<uint256, std::pair<CTxIndex, CTransaction> > MapPrevTx;
+
+/** Every prevout confirmed on pindexChain's chain at or below the snapshot height, all
+ *  paying one destination. Mempool parents are never eligible. */
+bool CheckMigrationInputs(const CTransaction& tx, const MapPrevTx& inputs,
+                          const CBlockIndex* pindexChain, std::string& strReason);
+
+/** Full exemption rule: active window, shape, nTxFee == 0, snapshot inputs, one owner. */
+bool IsFeeExemptMigration(const CTransaction& tx, int nInclusionHeight, int64_t nTxFee,
+                          const MapPrevTx& inputs, const CBlockIndex* pindexChain,
+                          std::string* pstrReason = NULL);
+
+/** Lowest main-chain height among the inputs; INT_MAX when none resolve. Miner order. */
+int GetMigrationOldestInputHeight(CTxDB& txdb, const CTransaction& tx,
+                                  const CBlockIndex* pindexChain);
+
 
 // Exact chain effects of validating one historical ANON transaction, in the legacy
 // on-disk encoding, persisted inside the enclosing best-chain LevelDB transaction.
@@ -2414,7 +2479,8 @@ public:
                        bool fAnonPrevalidated = false,
                        int nAnonCandidateHeight = -1,
                        int64_t nPrevalidatedAnonValueIn = 0,
-                       bool fForceSigs = false);
+                       bool fForceSigs = false,
+                       bool* pfFeeExemptMigration = NULL);
     bool CheckTransaction() const;
     bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge, int nEvalHeight) const;  // ppcoin: get transaction coin age; nEvalHeight = height of the carrying block
@@ -3621,11 +3687,14 @@ private:
     double dRollingMinFeeRate;
     int64_t nLastRollingFeeUpdate;
     std::set<std::pair<int64_t, uint256> > setFeeRateIndex;
+    // Fee-exempt migrations in arrival order, and their total size.
+    std::list<std::pair<uint256, unsigned int> > lstMigrationExempt;
+    size_t nMigrationExemptBytes;
     void TrackAdded(const uint256& hash, const CTransaction& tx, int64_t nFee, bool fReplaceable);
     void TrackRemoved(const uint256& hash);
 public:
     CTxMemPool() : nTransactionsUpdated(0), nTotalTxSize(0), dRollingMinFeeRate(0),
-                   nLastRollingFeeUpdate(0) {}
+                   nLastRollingFeeUpdate(0), nMigrationExemptBytes(0) {}
 
     mutable CCriticalSection cs;
     std::map<uint256, CTxMemPoolFeeInfo> mapTxFeeInfo;
@@ -3671,6 +3740,10 @@ public:
                        std::set<uint256>& setReplaced, std::set<uint256>& setEvicted,
                        int64_t& nEvictedFeeRate, std::string& strReason) const;
     void RemoveSet(const std::set<uint256>& setHashes);
+    // Record an admitted fee-exempt migration and evict the oldest past the sub-cap.
+    void TrackMigrationExempt(const uint256& hash, unsigned int nSize);
+    size_t MigrationExemptCount() const { LOCK(cs); return lstMigrationExempt.size(); }
+    bool IsMigrationExempt(const uint256& hash) const;
     void TrackEviction(int64_t nEvictedFeeRate);
     int64_t GetRollingMinFeeRate(size_t nLimit);
 
