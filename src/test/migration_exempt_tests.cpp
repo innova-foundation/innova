@@ -11,6 +11,8 @@
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
+#include "../wallet.h"
+#include "../key.h"
 
 #include <cstring>
 #include <limits>
@@ -119,9 +121,10 @@ BOOST_AUTO_TEST_CASE(window_is_one_year_from_the_fork)
     BOOST_CHECK_EQUAL(GetMigrationEndHeight(), PRIVACY_VNEXT_HEIGHT_UNSET);
 }
 
-BOOST_AUTO_TEST_CASE(mainnet_and_testnet_heights_are_unset)
+BOOST_AUTO_TEST_CASE(mainnet_height_is_pinned)
 {
-    BOOST_CHECK_EQUAL(MAINNET_MIGRATION_HEIGHT, PRIVACY_VNEXT_HEIGHT_UNSET);
+    BOOST_CHECK_EQUAL(MAINNET_MIGRATION_HEIGHT, 8472840);
+    BOOST_CHECK_EQUAL(MAINNET_MIGRATION_HEIGHT, MAINNET_MERGESET_HEIGHT);
     BOOST_CHECK_EQUAL(MIGRATION_MAX_PER_BLOCK, 4u);
     BOOST_CHECK_EQUAL(MIGRATION_MAX_INPUTS, 50u);
     BOOST_CHECK_EQUAL(MIGRATION_DURATION, 31536000);
@@ -301,6 +304,52 @@ BOOST_AUTO_TEST_CASE(reorg_prunes_ineligible)
     }
     BOOST_CHECK(!mempool.IsMigrationExempt(tx.GetHash()));
     BOOST_CHECK(!mempool.exists(tx.GetHash()));
+}
+
+BOOST_AUTO_TEST_CASE(wallet_free_coin_rule)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CPubKey pub = key.GetPubKey();
+    CScript p2pkh;
+    p2pkh.SetDestination(pub.GetID());
+    CScript p2pk;
+    p2pk << pub.Raw() << OP_CHECKSIG;
+    CScript bare;
+    bare << OP_RETURN;
+
+    MigrationHeight set(1000);
+    // Window open at the next block; snapshot is 999.
+    BOOST_CHECK(PoolMigrationCoinIsFree(p2pkh, 999, 1000));
+    BOOST_CHECK(PoolMigrationCoinIsFree(p2pk, 1, 1000));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 1000, 1001));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 0, 1000));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 500, 999));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 500, 1000 + MIGRATION_DURATION));
+    const int nLastFree = 1000 + MIGRATION_DURATION - MIGRATION_WALLET_END_MARGIN - 1;
+    BOOST_CHECK(PoolMigrationCoinIsFree(p2pkh, 500, nLastFree));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 500, nLastFree + 1));
+    BOOST_CHECK(!PoolMigrationCoinIsFree(bare, 500, 1000));
+
+    MigrationHeight unset(PRIVACY_VNEXT_HEIGHT_UNSET);
+    BOOST_CHECK(!PoolMigrationCoinIsFree(p2pkh, 500, 1000));
+}
+
+BOOST_AUTO_TEST_CASE(wallet_free_relay_budget)
+{
+    CMigrationRelayBudget budget;
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1000), 0);
+    budget.Record(1000);
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1010), 0);
+    budget.Record(1010);
+    BOOST_CHECK_EQUAL(MIGRATION_RELAY_PER_MINUTE, 2u);
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1020), 40);
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1059), 1);
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1060), 0);
+    budget.Record(1060);
+    BOOST_CHECK_EQUAL(budget.RetryAfter(1065), 5);
+    // A clock step back does not wedge the budget.
+    BOOST_CHECK_EQUAL(budget.RetryAfter(900), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

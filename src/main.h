@@ -712,10 +712,10 @@ inline bool IsMergesetActiveAtHeight(int nHeight)
     return IsMergesetConfigured() && nHeight >= FORK_HEIGHT_MERGESET;
 }
 
-// Fee-exempt migration: a zero-fee shield of pre-fork transparent coins, for one year.
+// Fee-exempt migration: a zero-fee shield of pre-fork transparent coins.
 extern int nRegtestMigrationHeight;
-static const int MAINNET_MIGRATION_HEIGHT = PRIVACY_VNEXT_HEIGHT_UNSET;
-static const int MIGRATION_DURATION = 31536000;
+static const int MAINNET_MIGRATION_HEIGHT = 8472840;
+static const int MIGRATION_DURATION = 31536000; // blocks
 static const unsigned int MIGRATION_MAX_INPUTS = 50;
 static const unsigned int MIGRATION_MAX_PER_BLOCK = 4;
 static const size_t MIGRATION_MEMPOOL_MAX_TXS = 200;
