@@ -7404,6 +7404,15 @@ void CWallet::FixSpentCoins(int& nMismatchFound, int64_t& nBalanceInQuestion, bo
     nMismatchFound = 0;
     nBalanceInQuestion = 0;
 
+    // A spender still in the mempool has no txindex entry yet; the coin is not lost.
+    std::set<COutPoint> setMempoolSpent;
+    {
+        LOCK(mempool.cs);
+        for (std::map<COutPoint, CInPoint>::const_iterator it = mempool.mapNextTx.begin();
+             it != mempool.mapNextTx.end(); ++it)
+            setMempoolSpent.insert(it->first);
+    }
+
     LOCK(cs_wallet);
     vector<CWalletTx*> vCoins;
     vCoins.reserve(mapWallet.size());
@@ -7419,7 +7428,8 @@ void CWallet::FixSpentCoins(int& nMismatchFound, int64_t& nBalanceInQuestion, bo
             continue;
         for (unsigned int n=0; n < pcoin->vout.size(); n++)
         {
-            if (IsMine(pcoin->vout[n]) && pcoin->IsSpent(n) && (txindex.vSpent.size() <= n || txindex.vSpent[n].IsNull()))
+            if (IsMine(pcoin->vout[n]) && pcoin->IsSpent(n) && (txindex.vSpent.size() <= n || txindex.vSpent[n].IsNull())
+                && !setMempoolSpent.count(COutPoint(pcoin->GetHash(), n)))
             {
                 printf("FixSpentCoins found lost coin %s INN %s[%d], %s\n",
                     FormatMoney(pcoin->vout[n].nValue).c_str(), pcoin->GetHash().ToString().c_str(), n, fCheckOnly? "repair not attempted" : "repairing");
