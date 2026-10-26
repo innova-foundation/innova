@@ -205,7 +205,9 @@ void LinkPreviewFetcher::finishImage()
     QBuffer buf(&body);
     buf.open(QIODevice::ReadOnly);
     QImageReader rd(&buf);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     rd.setAllocationLimit(64);
+#endif
     QSize sz = rd.size();
     if (!sz.isValid() || sz.width() > 8192 || sz.height() > 8192)
     {

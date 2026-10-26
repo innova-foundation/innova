@@ -353,6 +353,12 @@ OBJS= \
     obj/scrypt.o \
     obj/scrypt-arm.o \
     obj/smessage.o \
+    obj/dagreach.o \
+    obj/nyxembed.o \
+    obj/nyxext.o \
+    obj/nyxgroup.o \
+    obj/nyxsafety.o \
+    obj/nyxui.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
     obj/collateralnodeconfig.o \
@@ -446,6 +452,12 @@ OBJS= \
     obj/scrypt.o \
     obj/scrypt-arm.o \
     obj/smessage.o \
+    obj/dagreach.o \
+    obj/nyxembed.o \
+    obj/nyxext.o \
+    obj/nyxgroup.o \
+    obj/nyxsafety.o \
+    obj/nyxui.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
     obj/collateralnodeconfig.o \

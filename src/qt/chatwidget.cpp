@@ -2145,7 +2145,9 @@ QWidget* ChatWidget::makeEmbedCard(const NyxEmbed& e, bool fRemovable, const QSt
         QBuffer buf(&data);
         buf.open(QIODevice::ReadOnly);
         QImageReader rd(&buf, "jpeg");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         rd.setAllocationLimit(1);
+#endif
         QSize sz = rd.size();
         if (sz.isValid() && sz.width() <= 256 && sz.height() <= 256)
         {
