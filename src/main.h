@@ -1594,6 +1594,9 @@ bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx);
 /** Header-level migration shape: IV5 shield, 1..MIGRATION_MAX_INPUTS transparent inputs,
  *  no transparent outputs. Cheap; no decode. */
 bool IsMigrationShape(const CTransaction& tx);
+// Migration shape whose payload declares a zero fee; structural decode, no proofs.
+bool MigrationDeclaresZeroFee(const CTransaction& tx);
+void PruneIneligibleMigrationExempt();
 
 /** Decoded migration shape: one pool output, no key images, declared fee zero. */
 bool CheckMigrationEffects(const CTransaction& tx, std::string& strReason);
@@ -3742,8 +3745,11 @@ public:
     void RemoveSet(const std::set<uint256>& setHashes);
     // Record an admitted fee-exempt migration and evict the oldest past the sub-cap.
     void TrackMigrationExempt(const uint256& hash, unsigned int nSize);
+    // Drop every tracked migration once the window is closed at nNextHeight.
+    void PruneMigrationExempt(int nNextHeight);
     size_t MigrationExemptCount() const { LOCK(cs); return lstMigrationExempt.size(); }
     bool IsMigrationExempt(const uint256& hash) const;
+    void GetMigrationExemptHashes(std::vector<uint256>& vHashes) const;
     void TrackEviction(int64_t nEvictedFeeRate);
     int64_t GetRollingMinFeeRate(size_t nLimit);
 

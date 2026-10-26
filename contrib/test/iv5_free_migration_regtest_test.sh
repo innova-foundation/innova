@@ -2,7 +2,8 @@
 # Copyright (c) 2026 The Innova developers
 # Fee-exempt migration regtest: a zero-fee shield of pre-snapshot coins confirms inside
 # the window, at most 4 per block; a post-snapshot coin or a mixed-owner shield still
-# needs a fee. Two nodes must agree on the chain.
+# needs a fee. Fee-paying shields of migration shape are not relay limited, and the
+# exempt entries leave the mempool when a reorg closes the window. Two nodes must agree.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -70,6 +71,7 @@ except Exception:
 height()     { rpc "$1" getblockcount 2>/dev/null | tr -d '"[:space:]'; }
 block_hash() { rpc "$1" getblockhash "$2" 2>/dev/null | tr -d '"[:space:]'; }
 best_hash()  { rpc "$1" getbestblockhash 2>/dev/null | tr -d '"[:space:]'; }
+in_mempool() { rpc "$1" getrawmempool 2>/dev/null | grep -q "$2"; }
 mempool_count() {
     rpc "$1" getrawmempool 2>/dev/null | python3 -c '
 import json, sys
@@ -249,7 +251,7 @@ DUST_TX="$(rpc 0 sendtoaddress "$DUST_ADDR" 0.01 2>&1 | tr -d '"[:space:]')"
 # A P2PK output (the stake script form) of the coinbase key, next to that key's P2PKH.
 CB=()
 while IFS= read -r line; do CB+=("$line"); done < <(utxos_at_or_below 300 | awk 'substr($4, 1, 6) == "76a914"')
-[ "${#CB[@]}" -ge $((FLOOD + 3)) ] || { fail "only ${#CB[@]} coinbases available"; exit 1; }
+[ "${#CB[@]}" -ge $((FLOOD + 9)) ] || { fail "only ${#CB[@]} coinbases available"; exit 1; }
 read -r P2PK_SRC_TXID P2PK_SRC_N PAIR_ADDR PAIR_SCRIPT PAIR_AMT <<< "${CB[0]}"
 read -r PAIR_TXID PAIR_N _ <<< "${CB[1]}"
 PUBKEY="$(jget "$(rpc 0 validateaddress "$PAIR_ADDR")" pubkey)"
@@ -359,6 +361,65 @@ if [ ${#S} -eq 64 ]; then
     echo "$(block_txs "$(height 0)")" | grep -q "$S" && success "fee-paying shield confirmed" || fail "fee-paying shield not mined"
 else
     fail "fee-paying shield refused: $S"
+fi
+
+# ============================================================
+header "5b. Fee-paying migration-shaped shields are not relay limited"
+# ============================================================
+unlock
+declare -a PAID
+for ((k=FLOOD+3; k<FLOOD+5; k++)); do
+    read -r Z_TXID Z_N _ <<< "${CB[$k]}"
+    R="$(build 0 "$Z_TXID:$Z_N")"; submit "$(jget "$R" hex)" >/dev/null
+done
+for ((k=FLOOD+5; k<FLOOD+8; k++)); do
+    read -r P_TXID P_N _ <<< "${CB[$k]}"
+    R="$(build "$PAID_FEE" "$P_TXID:$P_N")"; S="$(submit "$(jget "$R" hex)")"
+    if [ ${#S} -eq 64 ]; then PAID+=("$S"); else fail "paid migration-shaped shield $k: $S"; fi
+done
+SEEN=0
+for _ in $(seq 1 60); do
+    SEEN=0
+    for t in "${PAID[@]}"; do in_mempool 1 "$t" && SEEN=$((SEEN + 1)); done
+    [ "$SEEN" -eq "${#PAID[@]}" ] && break
+    sleep 1
+done
+if [ "${#PAID[@]}" -eq 3 ] && [ "$SEEN" -eq 3 ]; then
+    success "node1 took all 3 fee-paying shields after the zero-fee budget was spent"
+else
+    fail "node1 holds $SEEN of ${#PAID[@]} fee-paying shields"
+fi
+mine_to 0 $(( $(height 0) + 2 )) || fail "could not mine the paid shields"
+wait_same_tip || fail "nodes disagree after the paid shields"
+
+# ============================================================
+header "5c. A reorg below the fork purges pending exempt migrations"
+# ============================================================
+unlock
+read -r W_TXID W_N _ <<< "${CB[$((FLOOD + 8))]}"
+R="$(build 0 "$W_TXID:$W_N")"; WAIT_TX="$(submit "$(jget "$R" hex)")"
+if [ ${#WAIT_TX} -eq 64 ] && in_mempool 0 "$WAIT_TX"; then
+    success "pending zero-fee migration ${WAIT_TX:0:12} in the mempool"
+    TIP_BEFORE="$(height 0)"
+    rpc 0 invalidateblock "$(block_hash 0 "$SNAPSHOT")" >/dev/null 2>&1
+    H="$(height 0)"
+    if is_int "$H" && [ "$H" -lt "$SNAPSHOT" ]; then
+        if in_mempool 0 "$WAIT_TX"; then
+            fail "exempt migration still pooled at tip $H, window closed"
+        else
+            success "exempt migration purged after the reorg to $H"
+        fi
+    else
+        fail "invalidateblock left tip at $H"
+    fi
+    rpc 0 reconsiderblock "$(block_hash 1 "$SNAPSHOT")" >/dev/null 2>&1
+    for _ in $(seq 1 120); do
+        H="$(height 0)"; is_int "$H" && [ "$H" -ge "$TIP_BEFORE" ] && break
+        sleep 1
+    done
+    [ "$(height 0)" -ge "$TIP_BEFORE" ] && success "node0 restored to $(height 0)" || fail "node0 did not restore ($(height 0) < $TIP_BEFORE)"
+else
+    fail "pending migration not accepted: $WAIT_TX"
 fi
 
 # ============================================================

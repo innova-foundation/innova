@@ -3774,6 +3774,18 @@ bool IsMigrationShape(const CTransaction& tx)
     return nOperation == iv5::NOTE_SHIELD;
 }
 
+bool MigrationDeclaresZeroFee(const CTransaction& tx)
+{
+    if (!IsMigrationShape(tx))
+        return false;
+    // Structure only, no proofs, and nothing is cached.
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffectsAssumeValid(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    return validation.IsValid() && effects.nFee == 0;
+}
+
 bool CheckMigrationEffects(const CTransaction& tx, std::string& strReason)
 {
     if (!IsMigrationShape(tx))
@@ -3954,6 +3966,29 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
     if (!tx.CheckTransaction())
         return error("CTxMemPool::accept() : CheckTransaction failed");
+
+    // Cheap migration checks before any proof is verified.
+    if (MigrationDeclaresZeroFee(tx))
+    {
+        if (!IsMigrationActiveAtHeight(nEffectiveMempoolHeight))
+            return tx.DoS(1, error("CTxMemPool::accept() : zero-fee migration outside the window"));
+        MapPrevTx mapMigrationInputs;
+        std::map<uint256, CTxIndex> mapMigrationUnused;
+        bool fMigrationInvalid = false;
+        if (!tx.FetchInputs(txdb, mapMigrationUnused, false, false, mapMigrationInputs,
+                            fMigrationInvalid))
+        {
+            if (fMigrationInvalid)
+                return tx.DoS(10, error("CTxMemPool::accept() : zero-fee migration has invalid inputs"));
+            if (pfMissingInputs)
+                *pfMissingInputs = true;
+            return false;
+        }
+        std::string strMigrationReason;
+        if (!CheckMigrationInputs(tx, mapMigrationInputs, pindexBest, strMigrationReason))
+            return tx.DoS(10, error("CTxMemPool::accept() : zero-fee migration refused: %s",
+                                    strMigrationReason.c_str()));
+    }
 
     if (tx.IsPrivacyVNext())
     {
@@ -5138,6 +5173,34 @@ void CTxMemPool::TrackMigrationExempt(const uint256& hash, unsigned int nSize)
             lstMigrationExempt.pop_front();
         }
     }
+}
+
+void CTxMemPool::PruneMigrationExempt(int nNextHeight)
+{
+    if (IsMigrationActiveAtHeight(nNextHeight))
+        return;
+    std::set<uint256> setAll;
+    {
+        LOCK(cs);
+        for (std::list<std::pair<uint256, unsigned int> >::const_iterator mi =
+                 lstMigrationExempt.begin(); mi != lstMigrationExempt.end(); ++mi)
+            setAll.insert(mi->first);
+    }
+    if (setAll.empty())
+        return;
+    RemoveSet(setAll);
+    LOCK(cs);
+    lstMigrationExempt.clear();
+    nMigrationExemptBytes = 0;
+}
+
+void CTxMemPool::GetMigrationExemptHashes(std::vector<uint256>& vHashes) const
+{
+    LOCK(cs);
+    vHashes.clear();
+    for (std::list<std::pair<uint256, unsigned int> >::const_iterator mi =
+             lstMigrationExempt.begin(); mi != lstMigrationExempt.end(); ++mi)
+        vHashes.push_back(mi->first);
 }
 
 bool CTxMemPool::IsMigrationExempt(const uint256& hash) const
@@ -13693,6 +13756,30 @@ static bool StageEpochStateAtBoundary(CTxDB& txdb, CBlockIndex* pBoundary, int n
     return true;
 }
 
+// After a reorg, drop tracked migrations whose inputs no longer qualify on the new chain.
+void PruneIneligibleMigrationExempt()
+{
+    std::vector<uint256> vHashes;
+    mempool.GetMigrationExemptHashes(vHashes);
+    std::set<uint256> setDrop;
+    CTxDB txdb("r");
+    for (size_t i = 0; i < vHashes.size(); ++i)
+    {
+        CTransaction tx;
+        if (!mempool.lookup(vHashes[i], tx))
+            continue;
+        MapPrevTx mapInputs;
+        std::map<uint256, CTxIndex> mapUnused;
+        bool fInvalid = false;
+        std::string strReason;
+        if (!tx.FetchInputs(txdb, mapUnused, false, false, mapInputs, fInvalid) ||
+            !CheckMigrationInputs(tx, mapInputs, pindexBest, strReason))
+            setDrop.insert(vHashes[i]);
+    }
+    if (!setDrop.empty())
+        mempool.RemoveSet(setDrop);
+}
+
 static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
 {
     if (!pindexCommitted || !pindexCommitted->phashBlock)
@@ -13708,6 +13795,13 @@ static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
     // paths publish, so no epoch boundary goes unobserved.
     NotifyFinalityTipChanged(pindexCommitted->nHeight);
     g_finalityTracker.PrunePendingTallyCertificates(pindexCommitted->nHeight + 1);
+    static const CBlockIndex* pindexMigrationLast = NULL;
+    const bool fReorg = pindexMigrationLast != NULL &&
+                        pindexCommitted->pprev != pindexMigrationLast;
+    pindexMigrationLast = pindexCommitted;
+    mempool.PruneMigrationExempt(pindexCommitted->nHeight + 1);
+    if (fReorg && mempool.MigrationExemptCount() > 0)
+        PruneIneligibleMigrationExempt();
 }
 
 static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
@@ -19266,8 +19360,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                    (unsigned)tx.vin.size(),
                    (unsigned)tx.vout.size());
 
-        // Per-peer limit on fee-exempt migrations, applied before proof verification.
-        const bool fMigrationShape = IsMigrationShape(tx);
+        // Per-peer limit on zero-fee migrations, before proof verification. Every
+        // attempt counts, accepted or not; fee-paying shields are not limited.
+        const bool fMigrationShape = IsMigrationActiveAtHeight(nBestHeight + 1) &&
+                                     MigrationDeclaresZeroFee(tx);
         if (fMigrationShape)
         {
             const int64_t nNow = GetTime();
@@ -19284,13 +19380,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                            pfrom->addr.ToString().c_str());
                 return true;
             }
+            ++pfrom->nMigrationInWindow;
         }
 
         bool fMissingInputs = false;
         if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))
         {
-            if (fMigrationShape && mempool.IsMigrationExempt(inv.hash))
-                ++pfrom->nMigrationInWindow;
             if (fTxRelayDebug)
                 printf("TXRELAY accept tx=%s peer=%s\n",
                        inv.hash.ToString().substr(0,10).c_str(),

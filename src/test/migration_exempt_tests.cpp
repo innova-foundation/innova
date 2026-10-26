@@ -242,4 +242,65 @@ BOOST_AUTO_TEST_CASE(mempool_subcap_is_fifo)
     BOOST_CHECK_EQUAL(small.MigrationExemptCount(), 2u);
 }
 
+BOOST_AUTO_TEST_CASE(mempool_prunes_when_window_closes)
+{
+    MigrationHeight set(1000);
+    CTxMemPool pool;
+    std::vector<uint256> vHashes;
+    for (unsigned int i = 0; i < 3; ++i)
+    {
+        CTransaction tx;
+        tx.nTime = 1700000000 + i;
+        tx.vin.push_back(CTxIn(COutPoint(uint256(9000 + i), 0)));
+        {
+            LOCK(pool.cs);
+            pool.addUnchecked(tx.GetHash(), tx, 0, true);
+        }
+        pool.TrackMigrationExempt(tx.GetHash(), 100);
+        vHashes.push_back(tx.GetHash());
+    }
+    pool.PruneMigrationExempt(1000);
+    BOOST_CHECK_EQUAL(pool.MigrationExemptCount(), 3u);
+    pool.PruneMigrationExempt(1000 + 31536000);
+    BOOST_CHECK_EQUAL(pool.MigrationExemptCount(), 0u);
+    for (unsigned int i = 0; i < 3; ++i)
+        BOOST_CHECK(!pool.mapTx.count(vHashes[i]));
+}
+
+BOOST_AUTO_TEST_CASE(declares_zero_fee_without_proofs)
+{
+    std::string error;
+    std::vector<unsigned char> one, paid;
+    BOOST_REQUIRE_MESSAGE(BuildShield(50000, 0, 1, one, error), error);
+    BOOST_REQUIRE_MESSAGE(BuildShield(50000, 100, 1, paid, error), error);
+    const size_t nCache = PrivacyVNextEffectsCacheSize();
+    BOOST_CHECK(MigrationDeclaresZeroFee(Carrier(one, 1)));
+    // A fee-paying shield of migration shape is not rate limited or pre-checked.
+    BOOST_CHECK(IsMigrationShape(Carrier(paid, 1)));
+    BOOST_CHECK(!MigrationDeclaresZeroFee(Carrier(paid, 1)));
+    BOOST_CHECK(!MigrationDeclaresZeroFee(Carrier(HeaderOnly(iv5::NOTE_SHIELD), 1)));
+    BOOST_CHECK(!MigrationDeclaresZeroFee(Carrier(one, MIGRATION_MAX_INPUTS + 1)));
+    BOOST_CHECK_EQUAL(PrivacyVNextEffectsCacheSize(), nCache);
+}
+
+BOOST_AUTO_TEST_CASE(reorg_prunes_ineligible)
+{
+    MigrationHeight set(1000);
+    CTransaction tx;
+    tx.nTime = 1700000100;
+    tx.vin.push_back(CTxIn(COutPoint(uint256(9100), 0)));
+    {
+        LOCK2(cs_main, mempool.cs);
+        mempool.addUnchecked(tx.GetHash(), tx, 0, true);
+    }
+    mempool.TrackMigrationExempt(tx.GetHash(), 100);
+    BOOST_CHECK(mempool.IsMigrationExempt(tx.GetHash()));
+    {
+        LOCK(cs_main);
+        PruneIneligibleMigrationExempt();
+    }
+    BOOST_CHECK(!mempool.IsMigrationExempt(tx.GetHash()));
+    BOOST_CHECK(!mempool.exists(tx.GetHash()));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
