@@ -244,7 +244,10 @@ PoolSnapshot::PoolSnapshot() :
     nUnshieldRetirementHeight(PRIVACY_VNEXT_HEIGHT_UNSET),
     fSeedPresent(false),
     fTransparentHd(false),
-    nTransparentKeysNotCovered(-1)
+    nTransparentKeysNotCovered(-1),
+    fMigrationWindowOpen(false),
+    nMigrationEndHeight(0),
+    nMigrationMaxPerBlock(0)
 {
 }
 
@@ -374,6 +377,9 @@ bool FetchPool(PoolSnapshot& out, QString& errorOut)
     ReadBool(obj, "privacy_vnext_wallet_transparent_hd", out.fTransparentHd);
     ReadInt(obj, "privacy_vnext_wallet_transparent_keys_not_covered",
             out.nTransparentKeysNotCovered);
+    ReadBool(obj, "migration_window_open", out.fMigrationWindowOpen);
+    ReadInt(obj, "migration_end_height", out.nMigrationEndHeight);
+    ReadInt(obj, "migration_max_per_block", out.nMigrationMaxPerBlock);
     return true;
 }
 
@@ -787,6 +793,8 @@ bool ParseMigrateReport(const QString& jsonObject, MigrateReport& out)
     ReadReal(obj, "immature_value", out.dImmatureValue, fHave);
     ReadReal(obj, "unconfirmed_value", out.dUnconfirmedValue, fHave);
     ReadReal(obj, "locked_value", out.dLockedValue, fHave);
+    ReadInt(obj, "free_sent", out.nFreeSent);
+    ReadInt(obj, "free_retry_after", out.nFreeRetryAfter);
     const json_spirit::Value* v = Find(obj, "skipped");
     if (v != NULL && v->type() == json_spirit::array_type)
     {

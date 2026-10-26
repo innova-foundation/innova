@@ -7,12 +7,16 @@
 #include "iv5holdswidget.h"
 #include "iv5rpcbridge.h"
 #include "iv5seeddialog.h"
+#include "main.h"
 #include "nullsendmixwidget.h"
 #include "optionsmodel.h"
 #include "privatecollateralwidget.h"
 #include "walletmodel.h"
 
 #include <QApplication>
+#include <QEventLoop>
+#include <QPointer>
+#include <QTimer>
 #include <QClipboard>
 #include <QFormLayout>
 #include <QFrame>
@@ -224,6 +228,12 @@ QWidget* PrivacyPage::buildMigrateTab()
     migrateNoticeLabel->setStyleSheet("color: #d98c00; font-weight: bold;");
     layout->addWidget(migrateNoticeLabel);
 
+    migrateFreeLabel = new QLabel();
+    migrateFreeLabel->setWordWrap(true);
+    migrateFreeLabel->setStyleSheet("color: #4CAF50; font-weight: bold;");
+    migrateFreeLabel->setVisible(false);
+    layout->addWidget(migrateFreeLabel);
+
     QGroupBox *simpleGroup = new QGroupBox(tr("Migrate everything"));
     QVBoxLayout *simpleLayout = new QVBoxLayout(simpleGroup);
     migrateAllSummary = new QLabel(tr("Reads the transparent balance when you start."));
@@ -360,6 +370,21 @@ void PrivacyPage::refreshBalances()
                 "No retirement height is set on this network, so consensus would "
                 "still accept value leaving the pool. This wallet offers no way out "
                 "regardless, so treat migration as one-way."));
+
+        if (pool.fMigrationWindowOpen)
+        {
+            migrateFreeLabel->setText(tr(
+                "Free migration window open until block %1. Coins confirmed before the "
+                "window opened migrate at no fee; free migrations confirm at most %2 per "
+                "block and are sent at most %3 per minute.")
+                .arg(pool.nMigrationEndHeight).arg(pool.nMigrationMaxPerBlock)
+                .arg(MIGRATION_RELAY_PER_MINUTE));
+            migrateFreeLabel->setVisible(true);
+        }
+        else
+        {
+            migrateFreeLabel->setVisible(false);
+        }
 
         labelPoolBalance->setText(pool.fHaveBalance
                                       ? tr("%1 INN").arg(pool.dBalance, 0, 'f', 8)
@@ -706,6 +731,7 @@ void PrivacyPage::onMigrateAllClicked()
     const int nMaxCalls = 100;
     double dShielded = 0.0;
     int nSent = 0;
+    int nFreeSent = 0;
     bool fComplete = false;
     Iv5Rpc::MigrateReport last;
     QString error;
@@ -730,11 +756,25 @@ void PrivacyPage::onMigrateAllClicked()
         fComplete = report.fComplete;
         last = report;
 
-        migrateAllSummary->setText(tr("Sent %1 transaction(s), %2 moved.")
-                                       .arg(nSent).arg(dShielded, 0, 'f', 8));
+        nFreeSent += report.nFreeSent;
+        migrateAllSummary->setText(tr("Sent %1 transaction(s) (%2 free), %3 moved.")
+                                       .arg(nSent).arg(nFreeSent).arg(dShielded, 0, 'f', 8));
 
         if (!report.fMore)
             break;
+        // Free sends are paced to the relay limit; wait out the reported delay.
+        if (report.nSent == 0 && report.nFreeRetryAfter > 0)
+        {
+            statusLabel->setText(tr("Waiting %1 s for the free migration relay limit...")
+                                     .arg(report.nFreeRetryAfter));
+            QPointer<PrivacyPage> self(this);
+            QEventLoop wait;
+            QTimer::singleShot(report.nFreeRetryAfter * 1000, &wait, SLOT(quit()));
+            connect(this, SIGNAL(destroyed()), &wait, SLOT(quit()));
+            wait.exec();
+            if (!self)
+                return;
+        }
     }
 
     migrateAllButton->setEnabled(true);
@@ -742,8 +782,9 @@ void PrivacyPage::onMigrateAllClicked()
     migrateAdvancedRadio->setEnabled(true);
     refreshBalances();
 
-    const QString moved = tr("Moved %1 into the pool across %2 transaction(s).")
-                              .arg(dShielded, 0, 'f', 8).arg(nSent);
+    const QString moved = tr("Moved %1 into the pool across %2 transaction(s), %3 of them "
+                             "free.")
+                              .arg(dShielded, 0, 'f', 8).arg(nSent).arg(nFreeSent);
     migrateAllSummary->setText(moved);
 
     if (!error.isEmpty())

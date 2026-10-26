@@ -64,6 +64,7 @@ private:
     QPushButton *sendButton;
 
     QLabel *migrateNoticeLabel;
+    QLabel *migrateFreeLabel;
     QRadioButton *migrateSimpleRadio;
     QRadioButton *migrateAdvancedRadio;
     QWidget *migrateAdvancedBox;

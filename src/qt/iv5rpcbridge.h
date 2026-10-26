@@ -86,6 +86,10 @@ struct PoolSnapshot
     QString strKeyState;
     bool fTransparentHd;
     int nTransparentKeysNotCovered;
+    // Fee-exempt migration window.
+    bool fMigrationWindowOpen;
+    int nMigrationEndHeight;
+    int nMigrationMaxPerBlock;
 
     bool UnshieldRetirementScheduled() const;
 };
@@ -277,7 +281,8 @@ struct MigrateReport
 {
     MigrateReport() : nSent(0), dShielded(0), fMore(false), fComplete(false),
                       dUnaddressedValue(0), dWatchOnlyValue(0), dImmatureValue(0),
-                      dUnconfirmedValue(0), dLockedValue(0) {}
+                      dUnconfirmedValue(0), dLockedValue(0), nFreeSent(0),
+                      nFreeRetryAfter(0) {}
 
     int nSent;
     double dShielded;
@@ -289,6 +294,8 @@ struct MigrateReport
     double dImmatureValue;
     double dUnconfirmedValue;
     double dLockedValue;
+    int nFreeSent;
+    int nFreeRetryAfter;
 };
 
 bool ParseMigrateReport(const QString& jsonObject, MigrateReport& out);
