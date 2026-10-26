@@ -1,4 +1,4 @@
-Hard fork at block 8,472,840. Every node, pool, exchange and wallet must upgrade before that block; after it, v5.1 nodes drop older peers.
+Hard fork at block 8,472,840. Every node, pool, exchange and wallet must upgrade before that block; after it, v5.2 nodes drop older peers. v5.1 was never released; everything below ships in v5.2.
 
 - Side blocks count: transactions in merged side blocks are applied by the block that merges them, and blue side blocks' miners are paid. Pools add an `IPAY` payee commitment (`-mergesetpayee`) to be paid for side blocks.
 - New emission from the fork: a 6-month ramp from 864 to 2,300 INN a day, then halving every 2 years down to 700 INN a day, until the 18M cap.
@@ -34,3 +34,8 @@ Hard fork at block 8,472,840. Every node, pool, exchange and wallet must upgrade
 - Nyx Messenger safety: recovery-phrase and key send guard, scam warning banner, message requests with accept/block, tracking-parameter stripping, lookalike-domain warnings.
 - Nyx Messenger: replies, reactions, edit and delete for everyone, threads.
 - Nyx Messenger groups of up to 10: owner-signed roster, invite requests, members panel, leave, optional typing indicator.
+- Free migration into the private pool from block 8,472,840 until block 40,008,840: coins confirmed before the fork move at zero fee, one address per transaction, any amount; up to 4 free migrations per block. Coins received after the fork pay the normal fee.
+- Migrate everything also sweeps staking rewards (bare-pubkey outputs) and owned cold-stake outputs, checks for the IV5 seed first, and shows why any value was not moved, including maturing, unconfirmed, locked and watch-only amounts.
+- Fixed: the wallet released coins spent by a still-unconfirmed transaction, so a second migration could try to spend them again.
+- Builds: ARM links the Nyx sources; Qt 5 builds compile again; a missing Rust vendor directory stops the build with the restore command.
+- Downloads are not code-signed. macOS: right-click Innova and choose Open, then Open again. Windows: on the SmartScreen prompt choose More info, then Run anyway. Check downloads against SHA256SUMS.txt.
