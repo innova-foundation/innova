@@ -644,6 +644,7 @@ set(INNOVA_CXX_SOURCES
     src/nullsend_v2008.cpp
     src/nullsend_driver.cpp
     src/rpcshielded.cpp
+    src/rpcmigration.cpp
     src/zkproof.cpp
     src/verifycache.cpp
     src/lelantus.cpp

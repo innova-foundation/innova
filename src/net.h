@@ -485,6 +485,9 @@ public:
 
     // inventory based relay
     mruset<CInv> setInventoryKnown;
+    // Migration-shaped txs received in the current one-minute window.
+    int64_t nMigrationWindowStart;
+    unsigned int nMigrationInWindow;
     std::vector<CInv> vInventoryToSend;
     std::set<CInv> setInventoryForce;
     CCriticalSection cs_inventory;
@@ -591,6 +594,8 @@ public:
         nMisbehavior = 0;
         hashCheckpointKnown = 0;
         setInventoryKnown.max_size(SendBufferSize() / 1000);
+        nMigrationWindowStart = 0;
+        nMigrationInWindow = 0;
         nPingNonceSent = 0;
         nPingUsecStart = 0;
         nPingUsecTime = 0;

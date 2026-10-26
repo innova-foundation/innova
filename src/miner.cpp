@@ -1281,16 +1281,48 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
         TxPriorityCompare comparer(fSortedByFee);
         std::make_heap(vecPriority.begin(), vecPriority.end(), comparer);
 
-        while (!vecPriority.empty())
-        {
-            // Take highest priority transaction off the priority queue:
-            double dPriority = vecPriority.front().get<0>();
-            double dFeePerKb = vecPriority.front().get<1>();
-            int64_t nFee = vecPriority.front().get<2>();
-            CTransaction& tx = *(vecPriority.front().get<3>());
+        // Zero-fee migrations wait for the fee-paying queue, then go oldest input first.
+        const bool fMigrationWindow = IsMigrationActiveAtHeight(nCandidateHeight);
+        std::vector<std::pair<int, TxPriority> > vMigrationDeferred;
+        size_t nMigrationNext = 0;
+        bool fMigrationPhase = false;
+        unsigned int nBlockMigrations = 0;
 
-            std::pop_heap(vecPriority.begin(), vecPriority.end(), comparer);
-            vecPriority.pop_back();
+        while (true)
+        {
+            if (!fMigrationPhase && vecPriority.empty())
+            {
+                fMigrationPhase = true;
+                std::stable_sort(vMigrationDeferred.begin(), vMigrationDeferred.end(),
+                                 [](const std::pair<int, TxPriority>& a,
+                                    const std::pair<int, TxPriority>& b)
+                                 { return a.first < b.first; });
+            }
+            if (fMigrationPhase &&
+                (nMigrationNext >= vMigrationDeferred.size() ||
+                 nBlockMigrations >= MIGRATION_MAX_PER_BLOCK))
+                break;
+
+            TxPriority item;
+            if (fMigrationPhase)
+                item = vMigrationDeferred[nMigrationNext++].second;
+            else
+            {
+                item = vecPriority.front();
+                std::pop_heap(vecPriority.begin(), vecPriority.end(), comparer);
+                vecPriority.pop_back();
+            }
+            double dPriority = item.get<0>();
+            double dFeePerKb = item.get<1>();
+            int64_t nFee = item.get<2>();
+            CTransaction& tx = *(item.get<3>());
+
+            if (!fMigrationPhase && fMigrationWindow && nFee == 0 && IsMigrationShape(tx))
+            {
+                vMigrationDeferred.push_back(std::make_pair(
+                    GetMigrationOldestInputHeight(txdb, tx, pindexPrev), item));
+                continue;
+            }
 
             // Size limits
             unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
@@ -1317,7 +1349,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             // An IV5 attestation carries no value to pay a fee from, so the size-based
             // floor and the free-transaction skip below would leave it unmineable for
             // good. Relay makes the same exemption.
-            const bool fFeeExempt = IsPrivacyVNextFeeExemptShape(tx);
+            const bool fFeeExempt = IsPrivacyVNextFeeExemptShape(tx) || fMigrationPhase;
 
             // Skip free transactions if we're past the minimum block size:
             if (fSortedByFee && (dFeePerKb < nMinTxFee) &&
@@ -1475,8 +1507,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
                 }
             }
 
-            if (!tx.ConnectInputs(txdb, mapInputs, mapTestPoolTmp, CDiskTxPos(1,1,1), pindexPrev, false, true, MANDATORY_SCRIPT_VERIFY_FLAGS))
+            bool fTxMigrationExempt = false;
+            if (!tx.ConnectInputs(txdb, mapInputs, mapTestPoolTmp, CDiskTxPos(1,1,1), pindexPrev, false, true, MANDATORY_SCRIPT_VERIFY_FLAGS,
+                                  true, false, false, -1, 0, false, &fTxMigrationExempt))
                 continue;
+            if (fTxMigrationExempt)
+                ++nBlockMigrations;
             mapTestPoolTmp[tx.GetHash()] = CTxIndex(CDiskTxPos(1,1,1), tx.vout.size());
             swap(mapTestPool, mapTestPoolTmp);
 

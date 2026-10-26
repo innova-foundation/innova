@@ -349,6 +349,7 @@ inline std::string GetActivationLadderJSON()
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
     ss << "    \"nRegtestMergesetHeight\": " << nRegtestMergesetHeight << ",\n";
+    ss << "    \"nRegtestMigrationHeight\": " << nRegtestMigrationHeight << ",\n";
     ss << "    \"nRegtestMsTimestampHeight\": " << nRegtestMsTimestampHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";
     ss << "    \"fRegtestHoldPrivacyVNextLeafIndex\": " << ActivationJsonBool(fRegtestHoldPrivacyVNextLeafIndex) << ",\n";

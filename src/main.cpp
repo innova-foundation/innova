@@ -271,6 +271,7 @@ int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestMergesetHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestMigrationHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestMergesetEmission = false;
 int nRegtestIDNSResetHeight = 0;
 // Regtest millisecond-timestamp gate (-regtestmstimestamp). Defaults to the
@@ -3758,6 +3759,172 @@ bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx)
            iv5::IsNoteFinalityVoteOperation(nOperation);
 }
 
+bool IsMigrationShape(const CTransaction& tx)
+{
+    if (!tx.IsPrivacyVNext() || tx.privacyVNext.vchPayload.empty())
+        return false;
+    if (tx.vin.empty() || tx.vin.size() > MIGRATION_MAX_INPUTS || !tx.vout.empty())
+        return false;
+    uint8_t nOperation = 0;
+    uint8_t nDisclosureMask = 0;
+    if (!iv5::ReadDeclaredEnvelope(&tx.privacyVNext.vchPayload[0],
+                                   tx.privacyVNext.vchPayload.size(),
+                                   nOperation, nDisclosureMask))
+        return false;
+    return nOperation == iv5::NOTE_SHIELD;
+}
+
+bool MigrationDeclaresZeroFee(const CTransaction& tx)
+{
+    if (!IsMigrationShape(tx))
+        return false;
+    // Structure only, no proofs, and nothing is cached.
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffectsAssumeValid(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    return validation.IsValid() && effects.nFee == 0;
+}
+
+bool CheckMigrationEffects(const CTransaction& tx, std::string& strReason)
+{
+    if (!IsMigrationShape(tx))
+    {
+        strReason = "not a migration shape";
+        return false;
+    }
+    // Callers run the pool flow first, so this is a cache hit.
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation = ExtractPrivacyVNextPayloadEffects(
+        static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload, effects);
+    if (!validation.IsValid())
+    {
+        strReason = "payload effects unavailable";
+        return false;
+    }
+    if (effects.outputLeaves.size() != 1 || !effects.keyImages.empty() ||
+        !effects.attestationKeyImages.empty() || effects.HasVoteBoundary() ||
+        effects.HasMemberKey())
+    {
+        strReason = "migration must be one pool output and nothing else";
+        return false;
+    }
+    if (effects.nFee != 0 || effects.nTransparentValueBalance <= 0)
+    {
+        strReason = "migration must declare a zero fee and a positive shield";
+        return false;
+    }
+    return true;
+}
+
+// Height of the main-chain block holding pos, via its header; false for a mempool or
+// side-chain position.
+static bool GetMigrationInputHeight(const CDiskTxPos& pos, const CBlockIndex* pindexChain,
+                                    int& nHeightOut)
+{
+    if (pos.IsNull() || pos == CDiskTxPos(1,1,1) || pindexChain == NULL)
+        return false;
+    CBlock block;
+    if (!block.ReadFromDisk(pos.nFile, pos.nBlockPos, false, false))
+        return false;
+    std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(block.GetHash());
+    if (mi == mapBlockIndex.end() || mi->second == NULL)
+        return false;
+    const CBlockIndex* pindex = mi->second;
+    if (pindex->nFile != pos.nFile || pindex->nBlockPos != pos.nBlockPos)
+        return false;
+    if (pindex->nHeight > pindexChain->nHeight ||
+        pindexChain->GetAncestor(pindex->nHeight) != pindex)
+        return false;
+    nHeightOut = pindex->nHeight;
+    return true;
+}
+
+bool CheckMigrationInputs(const CTransaction& tx, const MapPrevTx& inputs,
+                          const CBlockIndex* pindexChain, std::string& strReason)
+{
+    const int nSnapshot = GetMigrationSnapshotHeight();
+    bool fHaveDest = false;
+    CScript scriptFirst;
+    for (size_t i = 0; i < tx.vin.size(); ++i)
+    {
+        const COutPoint& prevout = tx.vin[i].prevout;
+        MapPrevTx::const_iterator it = inputs.find(prevout.hash);
+        if (it == inputs.end() || prevout.n >= it->second.second.vout.size())
+        {
+            strReason = "missing input";
+            return false;
+        }
+        int nHeight = 0;
+        if (!GetMigrationInputHeight(it->second.first.pos, pindexChain, nHeight) ||
+            nHeight > nSnapshot)
+        {
+            strReason = "input not confirmed at or below the snapshot height";
+            return false;
+        }
+        CTxDestination dest;
+        if (!ExtractDestination(it->second.second.vout[prevout.n].scriptPubKey, dest))
+        {
+            strReason = "input has no single destination";
+            return false;
+        }
+        // P2PK and P2PKH of one key normalize to the same P2PKH script.
+        CScript scriptDest;
+        scriptDest.SetDestination(dest);
+        if (scriptDest.empty())
+        {
+            strReason = "input has no single destination";
+            return false;
+        }
+        if (!fHaveDest)
+        {
+            scriptFirst = scriptDest;
+            fHaveDest = true;
+        }
+        else if (scriptDest != scriptFirst)
+        {
+            strReason = "inputs pay more than one destination";
+            return false;
+        }
+    }
+    return fHaveDest;
+}
+
+bool IsFeeExemptMigration(const CTransaction& tx, int nInclusionHeight, int64_t nTxFee,
+                          const MapPrevTx& inputs, const CBlockIndex* pindexChain,
+                          std::string* pstrReason)
+{
+    std::string strReason;
+    bool fOk = false;
+    if (!IsMigrationActiveAtHeight(nInclusionHeight))
+        strReason = "migration window closed";
+    else if (nTxFee != 0)
+        strReason = "migration fee is not zero";
+    else if (!IsMigrationShape(tx))
+        strReason = "not a migration shape";
+    else if (CheckMigrationInputs(tx, inputs, pindexChain, strReason) &&
+             CheckMigrationEffects(tx, strReason))
+        fOk = true;
+    if (pstrReason)
+        *pstrReason = strReason;
+    return fOk;
+}
+
+int GetMigrationOldestInputHeight(CTxDB& txdb, const CTransaction& tx,
+                                  const CBlockIndex* pindexChain)
+{
+    int nOldest = std::numeric_limits<int>::max();
+    for (size_t i = 0; i < tx.vin.size(); ++i)
+    {
+        CTxIndex txindex;
+        int nHeight = 0;
+        if (txdb.ReadTxIndex(tx.vin[i].prevout.hash, txindex) &&
+            GetMigrationInputHeight(txindex.pos, pindexChain, nHeight))
+            nOldest = std::min(nOldest, nHeight);
+    }
+    return nOldest;
+}
+
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs, bool fOnlyCheckWithoutAdding)
 {
@@ -3799,6 +3966,29 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
     if (!tx.CheckTransaction())
         return error("CTxMemPool::accept() : CheckTransaction failed");
+
+    // Cheap migration checks before any proof is verified.
+    if (MigrationDeclaresZeroFee(tx))
+    {
+        if (!IsMigrationActiveAtHeight(nEffectiveMempoolHeight))
+            return tx.DoS(1, error("CTxMemPool::accept() : zero-fee migration outside the window"));
+        MapPrevTx mapMigrationInputs;
+        std::map<uint256, CTxIndex> mapMigrationUnused;
+        bool fMigrationInvalid = false;
+        if (!tx.FetchInputs(txdb, mapMigrationUnused, false, false, mapMigrationInputs,
+                            fMigrationInvalid))
+        {
+            if (fMigrationInvalid)
+                return tx.DoS(10, error("CTxMemPool::accept() : zero-fee migration has invalid inputs"));
+            if (pfMissingInputs)
+                *pfMissingInputs = true;
+            return false;
+        }
+        std::string strMigrationReason;
+        if (!CheckMigrationInputs(tx, mapMigrationInputs, pindexBest, strMigrationReason))
+            return tx.DoS(10, error("CTxMemPool::accept() : zero-fee migration refused: %s",
+                                    strMigrationReason.c_str()));
+    }
 
     if (tx.IsPrivacyVNext())
     {
@@ -3964,6 +4154,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     std::string strKeyConflict;
     int64_t nAcceptedFee = -1;
     unsigned int nAcceptedSize = 0;
+    bool fMigrationExempt = false;
 
     // Do we already have it?
     uint256 hash = tx.GetHash();
@@ -4376,7 +4567,14 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             int64_t txMinFee = tx.GetMinFee(1000, feeMode, nSize);
 
-            const bool fFeeExempt = nFees == 0 && IsPrivacyVNextFeeExemptShape(tx);
+            const bool fAttestationExempt = nFees == 0 && IsPrivacyVNextFeeExemptShape(tx);
+            fMigrationExempt =
+                !fAttestationExempt && nFees == 0 && IsMigrationShape(tx) &&
+                IsFeeExemptMigration(tx, nEffectiveMempoolHeight, 0, mapInputs, pindexBest);
+            if (fMigrationExempt && !setConflicts.empty())
+                return error("CTxMemPool::accept() : fee-exempt migration %s may not replace",
+                             hash.ToString().substr(0,10).c_str());
+            const bool fFeeExempt = fAttestationExempt || fMigrationExempt;
 
             // The name rate replaces the ordinary minimum only for the ops that
             // owe it, and only once the tx is shown to have paid it.
@@ -4421,7 +4619,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             // Continuously rate-limit free transactions
             // This mitigates 'penny-flooding' -- sending thousands of free transactions just to
             // be annoying or make others' transactions take longer to confirm.
-            if (nFees < MIN_RELAY_TX_FEE)
+            if (nFees < MIN_RELAY_TX_FEE && !fMigrationExempt)
             {
                 static CCriticalSection cs;
                 static double dFreeCount;
@@ -4489,6 +4687,8 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 EvictPrivacyVNextAttestationsSpentBy(vPrivacyVNextKeyImages, hash);
 
             addUnchecked(hash, tx, nAcceptedFee, fReplaceableClass);
+            if (fMigrationExempt)
+                TrackMigrationExempt(hash, nAcceptedSize);
 
             if (tx.IsPrivacyVNext())
             {
@@ -4766,6 +4966,14 @@ void CTxMemPool::TrackAdded(const uint256& hash, const CTransaction& tx, int64_t
 
 void CTxMemPool::TrackRemoved(const uint256& hash)
 {
+    for (std::list<std::pair<uint256, unsigned int> >::iterator mi = lstMigrationExempt.begin();
+         mi != lstMigrationExempt.end(); ++mi)
+        if (mi->first == hash)
+        {
+            nMigrationExemptBytes -= std::min<size_t>(nMigrationExemptBytes, mi->second);
+            lstMigrationExempt.erase(mi);
+            break;
+        }
     std::map<uint256, CTxMemPoolFeeInfo>::iterator it = mapTxFeeInfo.find(hash);
     if (it == mapTxFeeInfo.end())
         return;
@@ -4943,6 +5151,66 @@ bool CTxMemPool::PlanAdmission(const CTransaction& tx, int64_t nFee, unsigned in
         return false;
     }
     return true;
+}
+
+void CTxMemPool::TrackMigrationExempt(const uint256& hash, unsigned int nSize)
+{
+    LOCK(cs);
+    lstMigrationExempt.push_back(std::make_pair(hash, nSize));
+    nMigrationExemptBytes += nSize;
+    while (lstMigrationExempt.size() > 1 &&
+           (lstMigrationExempt.size() > MIGRATION_MEMPOOL_MAX_TXS ||
+            nMigrationExemptBytes > MIGRATION_MEMPOOL_MAX_BYTES))
+    {
+        std::set<uint256> setOldest;
+        setOldest.insert(lstMigrationExempt.front().first);
+        const size_t nBefore = lstMigrationExempt.size();
+        RemoveSet(setOldest);
+        if (lstMigrationExempt.size() == nBefore)
+        {
+            nMigrationExemptBytes -= std::min<size_t>(nMigrationExemptBytes,
+                                                       lstMigrationExempt.front().second);
+            lstMigrationExempt.pop_front();
+        }
+    }
+}
+
+void CTxMemPool::PruneMigrationExempt(int nNextHeight)
+{
+    if (IsMigrationActiveAtHeight(nNextHeight))
+        return;
+    std::set<uint256> setAll;
+    {
+        LOCK(cs);
+        for (std::list<std::pair<uint256, unsigned int> >::const_iterator mi =
+                 lstMigrationExempt.begin(); mi != lstMigrationExempt.end(); ++mi)
+            setAll.insert(mi->first);
+    }
+    if (setAll.empty())
+        return;
+    RemoveSet(setAll);
+    LOCK(cs);
+    lstMigrationExempt.clear();
+    nMigrationExemptBytes = 0;
+}
+
+void CTxMemPool::GetMigrationExemptHashes(std::vector<uint256>& vHashes) const
+{
+    LOCK(cs);
+    vHashes.clear();
+    for (std::list<std::pair<uint256, unsigned int> >::const_iterator mi =
+             lstMigrationExempt.begin(); mi != lstMigrationExempt.end(); ++mi)
+        vHashes.push_back(mi->first);
+}
+
+bool CTxMemPool::IsMigrationExempt(const uint256& hash) const
+{
+    LOCK(cs);
+    for (std::list<std::pair<uint256, unsigned int> >::const_iterator mi =
+             lstMigrationExempt.begin(); mi != lstMigrationExempt.end(); ++mi)
+        if (mi->first == hash)
+            return true;
+    return false;
 }
 
 void CTxMemPool::RemoveSet(const std::set<uint256>& setHashes)
@@ -5342,6 +5610,8 @@ void CTxMemPool::clear()
     mapTxFeeInfo.clear();
     setFeeRateIndex.clear();
     nTotalTxSize = 0;
+    lstMigrationExempt.clear();
+    nMigrationExemptBytes = 0;
     dRollingMinFeeRate = 0;
     nLastRollingFeeUpdate = GetTime();
     mapNextTx.clear();
@@ -8958,8 +9228,11 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
     const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig,
     bool fValidatedCoinstake, bool fAnonPrevalidated,
-    int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn, bool fForceSigs)
+    int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn, bool fForceSigs,
+    bool* pfFeeExemptMigration)
 {
+    if (pfFeeExemptMigration)
+        *pfFeeExemptMigration = false;
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
     // fMiner is true when called from the internal bitcoin miner
@@ -9548,7 +9821,12 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             // An IV5 attestation has no transparent side or pool flow, so it pays no fee.
             const bool fAttestationNoFee =
                 nTxFee == 0 && IsPrivacyVNextFeeExemptShape(*this);
-            if (nTxFee < GetMinFee() && !fAttestationNoFee)
+            const bool fMigrationNoFee =
+                !fAttestationNoFee && nTxFee == 0 && IsMigrationShape(*this) &&
+                IsFeeExemptMigration(*this, nInclusionHeight, nTxFee, inputs, pindexBlock);
+            if (pfFeeExemptMigration)
+                *pfFeeExemptMigration = fMigrationNoFee;
+            if (nTxFee < GetMinFee() && !fAttestationNoFee && !fMigrationNoFee)
                 return fBlock? DoS(100, error("ConnectInputs() : %s not paying required fee=%s, paid=%s", GetHash().ToString().substr(0,10).c_str(), FormatMoney(GetMinFee()).c_str(), FormatMoney(nTxFee).c_str())) : false;
 
             nFees += nTxFee;
@@ -10543,8 +10821,11 @@ MergedTxResult AcceptMergedTx(CTxDB& txdb, CTransaction tx, const CDiskTxPos& po
                                            : std::make_pair(false, CTxIndex())));
     }
     // A merged tx failing ConnectInputs is skipped, never a local error.
+    // A merged migration is never fee-exempt; it waits for a canonical block.
+    bool fMigrationExempt = false;
     if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posTx, pindex, true, false, flags,
-                          true, false, false, -1, 0, true))
+                          true, false, false, -1, 0, true, &fMigrationExempt) ||
+        fMigrationExempt)
     {
         for (size_t i = vUndo.size(); i-- > 0; )
         {
@@ -11116,6 +11397,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     int64_t nNoteVoteMintBlock = 0;
     int64_t nAmountBurned = 0;
     int64_t nStakeReward = 0;
+    unsigned int nBlockMigrations = 0;
     // Declared IV5 fees of this block's active transactions. From the fee-note fork
     // on this sum leaves the transparent coinbase allowance and is the exact value a
     // coinbase note may credit to the pool. One derivation feeds both.
@@ -11553,11 +11835,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             bool fConnectOk;
             {
                 BLOCK_PHASE(BP_CONNECTINPUTS);
+                bool fTxMigrationExempt = false;
                 fConnectOk = tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges,
                                               posThisTx, pindex, true, false, flags, true,
                                               fValidatedCoinstake,
                                               fHaveAnonEffectPlan, pindex->nHeight,
-                                              anonEffectPlan.nValueIn);
+                                              anonEffectPlan.nValueIn, false,
+                                              &fTxMigrationExempt);
+                if (fConnectOk && fTxMigrationExempt &&
+                    ++nBlockMigrations > MIGRATION_MAX_PER_BLOCK)
+                    return DoS(100, error("ConnectBlock() : more than %u fee-exempt migrations",
+                                          MIGRATION_MAX_PER_BLOCK));
             }
             if (!fConnectOk)
             {
@@ -13468,6 +13756,30 @@ static bool StageEpochStateAtBoundary(CTxDB& txdb, CBlockIndex* pBoundary, int n
     return true;
 }
 
+// After a reorg, drop tracked migrations whose inputs no longer qualify on the new chain.
+void PruneIneligibleMigrationExempt()
+{
+    std::vector<uint256> vHashes;
+    mempool.GetMigrationExemptHashes(vHashes);
+    std::set<uint256> setDrop;
+    CTxDB txdb("r");
+    for (size_t i = 0; i < vHashes.size(); ++i)
+    {
+        CTransaction tx;
+        if (!mempool.lookup(vHashes[i], tx))
+            continue;
+        MapPrevTx mapInputs;
+        std::map<uint256, CTxIndex> mapUnused;
+        bool fInvalid = false;
+        std::string strReason;
+        if (!tx.FetchInputs(txdb, mapUnused, false, false, mapInputs, fInvalid) ||
+            !CheckMigrationInputs(tx, mapInputs, pindexBest, strReason))
+            setDrop.insert(vHashes[i]);
+    }
+    if (!setDrop.empty())
+        mempool.RemoveSet(setDrop);
+}
+
 static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
 {
     if (!pindexCommitted || !pindexCommitted->phashBlock)
@@ -13483,6 +13795,13 @@ static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
     // paths publish, so no epoch boundary goes unobserved.
     NotifyFinalityTipChanged(pindexCommitted->nHeight);
     g_finalityTracker.PrunePendingTallyCertificates(pindexCommitted->nHeight + 1);
+    static const CBlockIndex* pindexMigrationLast = NULL;
+    const bool fReorg = pindexMigrationLast != NULL &&
+                        pindexCommitted->pprev != pindexMigrationLast;
+    pindexMigrationLast = pindexCommitted;
+    mempool.PruneMigrationExempt(pindexCommitted->nHeight + 1);
+    if (fReorg && mempool.MigrationExemptCount() > 0)
+        PruneIneligibleMigrationExempt();
 }
 
 static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
@@ -19040,6 +19359,29 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                    pfrom->addr.ToString().c_str(),
                    (unsigned)tx.vin.size(),
                    (unsigned)tx.vout.size());
+
+        // Per-peer limit on zero-fee migrations, before proof verification. Every
+        // attempt counts, accepted or not; fee-paying shields are not limited.
+        const bool fMigrationShape = IsMigrationActiveAtHeight(nBestHeight + 1) &&
+                                     MigrationDeclaresZeroFee(tx);
+        if (fMigrationShape)
+        {
+            const int64_t nNow = GetTime();
+            if (nNow - pfrom->nMigrationWindowStart >= 60)
+            {
+                pfrom->nMigrationWindowStart = nNow;
+                pfrom->nMigrationInWindow = 0;
+            }
+            if (pfrom->nMigrationInWindow >= MIGRATION_RELAY_PER_MINUTE)
+            {
+                if (fTxRelayDebug)
+                    printf("TXRELAY migration rate limit tx=%s peer=%s\n",
+                           inv.hash.ToString().substr(0,10).c_str(),
+                           pfrom->addr.ToString().c_str());
+                return true;
+            }
+            ++pfrom->nMigrationInWindow;
+        }
 
         bool fMissingInputs = false;
         if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))

@@ -711,6 +711,7 @@ std::string HelpMessage()
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestmergeset=<n>     " + _("Regtest only: mergeset acceptance activation height (an epoch's first height)") + "\n" +
+        "  -regtestmigration=<n>    " + _("Regtest only: fee-exempt migration activation height") + "\n" +
         "  -mergesetpayee=<address> " + _("Address a merged copy of this node's blocks is paid to (default: the block's payout)") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
         "  -regtestiv5holdleafindex " + _("Regtest only: hold IV5 wallet leaf-index assignment, leaving received notes unspendable") + "\n" +
@@ -1451,6 +1452,17 @@ bool AppInit2()
         fRegtestMergesetEmission = GetBoolArg("-regtestmergesetemission", false);
         printf("Mergeset acceptance fork height: %d (regtest only)%s\n", nRegtestMergesetHeight,
                fRegtestMergesetEmission ? ", mainnet emission curve" : "");
+    }
+
+    if (mapArgs.count("-regtestmigration"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestmigration requires -regtest"));
+        const int64_t nF = GetArg("-regtestmigration", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
+        if (nF < 1 || nF > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+            return InitError(_("-regtestmigration is out of range"));
+        nRegtestMigrationHeight = (int)nF;
+        printf("Fee-exempt migration fork height: %d (regtest only)\n", nRegtestMigrationHeight);
     }
 
     // Backstop for the whole ladder: Boundary B below A would run the privacy encodings A

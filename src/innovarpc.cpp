@@ -490,6 +490,7 @@ static const CRPCCommand vRPCCommands[] =
     { "z_rescaniv5",            &z_rescaniv5,            false,  true },
     { "z_getnewiv5address",     &z_getnewiv5address,     false,  true },
     { "z_shieldall",            &z_shieldall,            false,  true },
+    { "iv5migrationshield",     &iv5migrationshield,     false,  true },
     { "z_migratetopool",        &z_migratetopool,        false,  true },
     { "z_iv5transfer",          &z_iv5transfer,          false,  true },
     { "z_holdiv5note",          &z_holdiv5note,          false,  true },
@@ -1696,6 +1697,9 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "listsinceblock"         && n > 1) ConvertTo<int64_t>(params[1]);
 
     if (strMethod == "z_shieldall"           && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "iv5migrationshield"    && n > 0) ConvertTo<Array>(params[0]);
+    if (strMethod == "iv5migrationshield"    && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "iv5migrationshield"    && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "z_migratetopool"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "z_migratetopool"       && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "z_shield"              && n > 1) ConvertTo<double>(params[1]);
