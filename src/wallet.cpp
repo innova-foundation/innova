@@ -2994,9 +2994,10 @@ void CWallet::ResendPendingMigrations()
             continue;
         if (mempool.exists(it->first))
             wtx.RelayWalletTransaction(txdb, true);
-        else if (!IsMigrationActiveAtHeight(nBestHeight + 1) || !wtx.AcceptToMemoryPool(txdb))
+        else if (!IsMigrationActiveAtHeight(nBestHeight + 1))
             vAbandon.push_back(it->first);
-        else
+        // A refused re-accept may be temporary (sub-cap full); peers can still mine it, so retry.
+        else if (wtx.AcceptToMemoryPool(txdb))
             wtx.RelayWalletTransaction(txdb, true);
     }
     for (size_t i = 0; i < vAbandon.size(); ++i)
