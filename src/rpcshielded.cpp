@@ -2115,8 +2115,11 @@ Value z_shieldall(const Array& params, bool fHelp)
         {
             if (!vCoins[i].fSpendable)
                 continue;
+            CScript scriptOwner;
             CTxDestination dest;
-            if (!ExtractDestination(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey, dest))
+            if (!PoolMigrationOwnerScript(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey,
+                                          scriptOwner) ||
+                !ExtractDestination(scriptOwner, dest))
                 continue;
             mapByAddress[CBitcoinAddress(dest).ToString()] +=
                 vCoins[i].tx->vout[vCoins[i].i].nValue;
@@ -2154,8 +2157,11 @@ Value z_shieldall(const Array& params, bool fHelp)
         pwalletMain->AvailableCoins(vCoins, true);
         for (size_t i = 0; i < vCoins.size(); ++i)
         {
+            CScript scriptOwner;
             if (vCoins[i].fSpendable &&
-                vCoins[i].tx->vout[vCoins[i].i].scriptPubKey == scriptFrom)
+                PoolMigrationOwnerScript(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey,
+                                         scriptOwner) &&
+                scriptOwner == scriptFrom)
                 ++nRemaining;
         }
     }
@@ -2178,27 +2184,37 @@ struct PoolMigrationCandidate
     int64_t nOutputs;
 };
 
-// Grouped by script, since the shield builder selects on script equality. Re-derived from
-// spendable outputs before every transaction, so an interrupted run resumes without a cursor.
+// Grouped by owner address script, as the shield builder selects. Re-derived from spendable
+// outputs before every transaction, so an interrupted run resumes without a cursor.
 static void SurveyPoolMigration(size_t nMaxInputs,
                                 std::vector<PoolMigrationCandidate>& vCandidatesOut,
                                 int64_t& nUnaddressedOutputsOut,
-                                int64_t& nUnaddressedValueOut)
+                                int64_t& nUnaddressedValueOut,
+                                int64_t& nWatchOnlyOutputsOut,
+                                int64_t& nWatchOnlyValueOut)
 {
     vCandidatesOut.clear();
-    nUnaddressedOutputsOut = 0;
-    nUnaddressedValueOut = 0;
+    nWatchOnlyOutputsOut = 0;
+    nWatchOnlyValueOut = 0;
 
-    std::map<CScript, std::vector<int64_t> > mapByScript;
+    std::vector<std::pair<CScript, int64_t> > vOutputs;
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins, true);
     for (size_t i = 0; i < vCoins.size(); ++i)
     {
-        if (!vCoins[i].fSpendable)
-            continue;
         const CTxOut& out = vCoins[i].tx->vout[vCoins[i].i];
-        mapByScript[out.scriptPubKey].push_back(out.nValue);
+        // Watch-only, or cold-stake held only by this wallet's staker key.
+        if (!vCoins[i].fSpendable)
+        {
+            ++nWatchOnlyOutputsOut;
+            nWatchOnlyValueOut += out.nValue;
+            continue;
+        }
+        vOutputs.push_back(std::make_pair(out.scriptPubKey, out.nValue));
     }
+
+    std::map<CScript, std::vector<int64_t> > mapByScript;
+    GroupPoolMigrationOutputs(vOutputs, mapByScript, nUnaddressedOutputsOut, nUnaddressedValueOut);
 
     for (std::map<CScript, std::vector<int64_t> >::iterator it = mapByScript.begin();
          it != mapByScript.end(); ++it)
@@ -2206,19 +2222,8 @@ static void SurveyPoolMigration(size_t nMaxInputs,
         int64_t nTotal = 0;
         for (size_t i = 0; i < it->second.size(); ++i)
             nTotal += it->second[i];
-
-        // Scripts that do not round-trip through an address (cold-stake, bare pubkey) cannot be
-        // built from; counted and reported, not dropped.
         CTxDestination dest;
-        CScript scriptRoundTrip;
-        if (ExtractDestination(it->first, dest))
-            scriptRoundTrip.SetDestination(dest);
-        if (scriptRoundTrip != it->first)
-        {
-            nUnaddressedOutputsOut += (int64_t)it->second.size();
-            nUnaddressedValueOut += nTotal;
-            continue;
-        }
+        ExtractDestination(it->first, dest);
 
         // Largest first, matching the builder's selection.
         std::vector<int64_t> vValues = it->second;
@@ -2235,6 +2240,40 @@ static void SurveyPoolMigration(size_t nMaxInputs,
         c.nTotal = nTotal;
         c.nOutputs = (int64_t)it->second.size();
         vCandidatesOut.push_back(c);
+    }
+}
+
+// Owned value the survey cannot see yet: immature rewards, unconfirmed and user-locked outputs.
+static void SurveyPoolMigrationPending(int64_t& nImmatureOut, int64_t& nUnconfirmedOut,
+                                       int64_t& nLockedOut)
+{
+    nImmatureOut = nUnconfirmedOut = nLockedOut = 0;
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    for (std::map<uint256, CWalletTx>::const_iterator it = pwalletMain->mapWallet.begin();
+         it != pwalletMain->mapWallet.end(); ++it)
+    {
+        const CWalletTx& wtx = it->second;
+        if (!wtx.IsFinal() || wtx.isAbandoned())
+            continue;
+        const int nDepth = wtx.GetDepthInMainChain();
+        const bool fReward = wtx.IsCoinBase() || wtx.IsCoinStake();
+        // An unconnected reward is orphaned, not maturing.
+        if (nDepth < 0 || (fReward && nDepth == 0))
+            continue;
+        const bool fImmature = fReward && wtx.GetBlocksToMaturity() > 0;
+        const bool fUnconfirmed = !fImmature && !wtx.IsTrusted();
+        for (unsigned int i = 0; i < wtx.vout.size(); ++i)
+        {
+            if (wtx.IsSpent(i) || !(pwalletMain->IsMine(wtx.vout[i]) & ISMINE_SPENDABLE))
+                continue;
+            const int64_t nValue = wtx.vout[i].nValue;
+            if (fImmature)
+                nImmatureOut += nValue;
+            else if (fUnconfirmed)
+                nUnconfirmedOut += nValue;
+            else if (pwalletMain->IsLockedCoin(it->first, i))
+                nLockedOut += nValue;
+        }
     }
 }
 
@@ -2256,6 +2295,8 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "\nAn address whose value does not cover the flat shield fee cannot be moved at\n"
             "all. It is skipped and reported under \"skipped\", never retried within a call,\n"
             "so a loop on \"more\" terminates instead of spinning on it.\n"
+            "\nA bare-pubkey output (a stake reward) and a cold-stake output this wallet owns\n"
+            "are swept with the address of the same key: they already name that owner.\n"
             "\nResult:\n"
             "{\n"
             "  \"sent\": n,                    (numeric) transactions sent by this call\n"
@@ -2275,6 +2316,11 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "  \"skipped\": [                  (array) why each unsweepable address stayed\n"
             "    {\"address\":\"...\", \"outputs\":n, \"value\":x.xxx, \"reason\":\"...\"}\n"
             "  ],\n"
+            "  \"watchonly_outputs\": n,       (numeric) outputs this wallet cannot sign for\n"
+            "  \"watchonly_value\": x.xxx,     (numeric) their value\n"
+            "  \"immature_value\": x.xxx,      (numeric) rewards still maturing, movable later\n"
+            "  \"unconfirmed_value\": x.xxx,   (numeric) owned value not yet confirmed\n"
+            "  \"locked_value\": x.xxx,        (numeric) value held by lockunspent\n"
             "  \"more\": true|false,           (boolean) another call would send more\n"
             "  \"complete\": true|false        (boolean) nothing transparent is left at all\n"
             "}\n");
@@ -2330,7 +2376,10 @@ Value z_migratetopool(const Array& params, bool fHelp)
         std::vector<PoolMigrationCandidate> vCandidates;
         int64_t nUnaddressedOutputs = 0;
         int64_t nUnaddressedValue = 0;
-        SurveyPoolMigration(nMaxInputs, vCandidates, nUnaddressedOutputs, nUnaddressedValue);
+        int64_t nWatchOnlyOutputs = 0;
+        int64_t nWatchOnlyValue = 0;
+        SurveyPoolMigration(nMaxInputs, vCandidates, nUnaddressedOutputs, nUnaddressedValue,
+                            nWatchOnlyOutputs, nWatchOnlyValue);
 
         // Largest selectable value first.
         const PoolMigrationCandidate* pNext = NULL;
@@ -2376,7 +2425,12 @@ Value z_migratetopool(const Array& params, bool fHelp)
     std::vector<PoolMigrationCandidate> vFinal;
     int64_t nUnaddressedOutputs = 0;
     int64_t nUnaddressedValue = 0;
-    SurveyPoolMigration(nMaxInputs, vFinal, nUnaddressedOutputs, nUnaddressedValue);
+    int64_t nWatchOnlyOutputs = 0;
+    int64_t nWatchOnlyValue = 0;
+    SurveyPoolMigration(nMaxInputs, vFinal, nUnaddressedOutputs, nUnaddressedValue,
+                        nWatchOnlyOutputs, nWatchOnlyValue);
+    int64_t nImmatureValue = 0, nUnconfirmedValue = 0, nLockedValue = 0;
+    SurveyPoolMigrationPending(nImmatureValue, nUnconfirmedValue, nLockedValue);
 
     int64_t nAddrRemaining = 0, nOutRemaining = 0, nValueRemaining = 0;
     int64_t nStuckAddrs = 0, nStuckOutputs = 0, nStuckValue = 0;
@@ -2443,6 +2497,11 @@ Value z_migratetopool(const Array& params, bool fHelp)
     result.push_back(Pair("unaddressed_outputs", nUnaddressedOutputs));
     result.push_back(Pair("unaddressed_value", ValueFromAmount(nUnaddressedValue)));
     result.push_back(Pair("skipped", arrSkipped));
+    result.push_back(Pair("watchonly_outputs", nWatchOnlyOutputs));
+    result.push_back(Pair("watchonly_value", ValueFromAmount(nWatchOnlyValue)));
+    result.push_back(Pair("immature_value", ValueFromAmount(nImmatureValue)));
+    result.push_back(Pair("unconfirmed_value", ValueFromAmount(nUnconfirmedValue)));
+    result.push_back(Pair("locked_value", ValueFromAmount(nLockedValue)));
     // "more": call again; "complete": nothing left, including fee-limited residue.
     result.push_back(Pair("more", nAddrRemaining > 0));
     result.push_back(Pair("complete",

@@ -405,6 +405,7 @@ TEST_OBJS= \
     obj/test/bip32_tests.o \
     obj/test/stealth_retirement_tests.o \
     obj/test/bip39_tests.o \
+    obj/test/pool_migration_tests.o \
     obj/test/hdroot_tests.o \
     obj/test/hmac_sha512_tests.o \
     obj/test/bignum_tests.o \

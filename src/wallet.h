@@ -104,6 +104,17 @@ static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
 static const size_t PRIVACY_VNEXT_MIGRATE_DEFAULT_TXNS = 10;
 static const size_t PRIVACY_VNEXT_MIGRATE_MAX_TXNS = 100;
 
+// The address script a migration sweeps an output under: the script itself when it
+// round-trips through an address, the key's P2PKH for a bare pubkey, the owner's P2PKH
+// for a cold-stake output. False when no address owns it.
+bool PoolMigrationOwnerScript(const CScript& scriptPubKey, CScript& scriptOwnerOut);
+
+// Groups (script, value) outputs by owner address script; the rest is counted unaddressed.
+void GroupPoolMigrationOutputs(const std::vector<std::pair<CScript, int64_t> >& vOutputs,
+                               std::map<CScript, std::vector<int64_t> >& mapByOwnerOut,
+                               int64_t& nUnaddressedOutputsOut,
+                               int64_t& nUnaddressedValueOut);
+
 // Pre-retirement build policy; past FORK_HEIGHT_IV5_FEE_NOTE unshield is refused in
 // consensus. Before it, released value is bound by GetPrivacyVNextTransparentBinding.
 static const bool PRIVACY_VNEXT_UNSHIELD_ENABLED = true;

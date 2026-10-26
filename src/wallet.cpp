@@ -11360,6 +11360,56 @@ bool CWallet::BuildPrivacyVNextFeeNote(
                                           &vchParameterDigest);
 }
 
+bool PoolMigrationOwnerScript(const CScript& scriptPubKey, CScript& scriptOwnerOut)
+{
+    scriptOwnerOut.clear();
+    txnouttype whichType;
+    std::vector<valtype> vSolutions;
+    if (Solver(scriptPubKey, whichType, vSolutions))
+    {
+        if (whichType == TX_PUBKEY)
+        {
+            scriptOwnerOut.SetDestination(CPubKey(vSolutions[0]).GetID());
+            return true;
+        }
+        if (whichType == TX_COLDSTAKE)
+        {
+            scriptOwnerOut.SetDestination(CKeyID(uint160(vSolutions[1])));
+            return true;
+        }
+    }
+    CTxDestination dest;
+    if (!ExtractDestination(scriptPubKey, dest))
+        return false;
+    CScript scriptRoundTrip;
+    scriptRoundTrip.SetDestination(dest);
+    if (scriptRoundTrip != scriptPubKey)
+        return false;
+    scriptOwnerOut = scriptRoundTrip;
+    return true;
+}
+
+void GroupPoolMigrationOutputs(const std::vector<std::pair<CScript, int64_t> >& vOutputs,
+                               std::map<CScript, std::vector<int64_t> >& mapByOwnerOut,
+                               int64_t& nUnaddressedOutputsOut,
+                               int64_t& nUnaddressedValueOut)
+{
+    mapByOwnerOut.clear();
+    nUnaddressedOutputsOut = 0;
+    nUnaddressedValueOut = 0;
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        CScript scriptOwner;
+        if (!PoolMigrationOwnerScript(vOutputs[i].first, scriptOwner))
+        {
+            ++nUnaddressedOutputsOut;
+            nUnaddressedValueOut += vOutputs[i].second;
+            continue;
+        }
+        mapByOwnerOut[scriptOwner].push_back(vOutputs[i].second);
+    }
+}
+
 bool CWallet::CreatePrivacyVNextShield(
     const std::string& strFromAddress,
     size_t nMaxInputs,
@@ -11439,7 +11489,9 @@ bool CWallet::CreatePrivacyVNextShield(
     {
         if (!vCoins[i].fSpendable)
             continue;
-        if (vCoins[i].tx->vout[vCoins[i].i].scriptPubKey != scriptFrom)
+        CScript scriptOwner;
+        if (!PoolMigrationOwnerScript(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey, scriptOwner) ||
+            scriptOwner != scriptFrom)
             continue;
         vSelected.push_back(&vCoins[i]);
     }
