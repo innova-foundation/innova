@@ -441,7 +441,7 @@ BOOST_AUTO_TEST_CASE(mergeset_era_curve_is_pinned)
 {
     MainnetEmissionGuard guard;
     const int F = FORK_HEIGHT_MERGESET;
-    BOOST_REQUIRE_EQUAL(F, 8472840);
+    BOOST_REQUIRE_EQUAL(F, 8547840);
     BOOST_CHECK(IsEpochBoundaryHeight(F));
     // The ladder up to the fork, then the ramp, the halvings and the floor.
     BOOST_CHECK_EQUAL(GetPostDagLadderSubsidy(F - 1), 1333333);

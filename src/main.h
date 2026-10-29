@@ -690,7 +690,7 @@ extern int nRegtestMergesetHeight;
 extern bool fRegtestMergesetEmission;   // regtest: run the mainnet emission curve from the fork
 static const int MERGESET_MAX_BLOCKS = 64;
 static const int MERGESET_FINALITY_DEPTH = 86400;
-static const int MAINNET_MERGESET_HEIGHT = 8472840;
+static const int MAINNET_MERGESET_HEIGHT = 8547840;
 
 inline int GetForkHeightMergeset()
 {
@@ -714,7 +714,7 @@ inline bool IsMergesetActiveAtHeight(int nHeight)
 
 // Fee-exempt migration: a zero-fee shield of pre-fork transparent coins.
 extern int nRegtestMigrationHeight;
-static const int MAINNET_MIGRATION_HEIGHT = 8472840;
+static const int MAINNET_MIGRATION_HEIGHT = 8547840;
 static const int MIGRATION_DURATION = 31536000; // blocks
 static const unsigned int MIGRATION_MAX_INPUTS = 50;
 static const unsigned int MIGRATION_MAX_PER_BLOCK = 4;

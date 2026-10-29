@@ -292,8 +292,8 @@ BOOST_AUTO_TEST_CASE(regtest_tuning_cannot_move_mainnet_or_testnet)
         // is invariant to shifting both within the same 0.2 rung.
         BOOST_CHECK_EQUAL(ScheduleDigest(8150240, 8152240, 1), 101140400797091916ULL);
         // The whole curve: pre-DAG rungs, the stretched rungs below the mergeset fork at
-        // 8,472,840, then its ramp, halvings and floor.
-        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 6458086234817623601ULL);
+        // 8,547,840, then its ramp, halvings and floor.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 14968358489054040951ULL);
     }
     {
         NetworkGuard guard(false, true);
