@@ -123,8 +123,6 @@ void locking_callback(int mode, int i, const char* file, int line)
     }
 }
 
-LockedPageManager LockedPageManager::instance;
-
 // Init
 class CInit
 {
@@ -1217,7 +1215,8 @@ boost::filesystem::path GetDefaultDataDir()
 #ifdef MAC_OSX
     // Mac
     pathRet /= "Library/Application Support";
-    fs::create_directory(pathRet);
+    boost::system::error_code ec;
+    fs::create_directory(pathRet, ec);
     return pathRet / "Innova";
 #else
     // Unix
@@ -1413,7 +1412,8 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
             path /= "testnet";
     }
 
-    fs::create_directory(path);
+    boost::system::error_code ec;
+    fs::create_directory(path, ec);
 
     cachedPath[fNetSpecific]=true;
     return path;

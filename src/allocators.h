@@ -169,7 +169,12 @@ public:
 class LockedPageManager: public LockedPageManagerBase<MemoryPageLocker>
 {
 public:
-    static LockedPageManager instance; // instantiated in util.cpp
+    // Built on first use so key objects constructed during static init cannot run before it.
+    static LockedPageManager& Instance()
+    {
+        static LockedPageManager instance;
+        return instance;
+    }
 private:
     LockedPageManager():
         LockedPageManagerBase<MemoryPageLocker>(GetSystemPageSize())
@@ -181,12 +186,12 @@ private:
 // Intended for non-dynamically allocated structures.
 //
 template<typename T> void LockObject(const T &t) {
-    LockedPageManager::instance.LockRange((void*)(&t), sizeof(T));
+    LockedPageManager::Instance().LockRange((void*)(&t), sizeof(T));
 }
 
 template<typename T> void UnlockObject(const T &t) {
     OPENSSL_cleanse((void*)(&t), sizeof(T));
-    LockedPageManager::instance.UnlockRange((void*)(&t), sizeof(T));
+    LockedPageManager::Instance().UnlockRange((void*)(&t), sizeof(T));
 }
 
 //
@@ -218,7 +223,7 @@ struct secure_allocator : public std::allocator<T>
         T *p;
         p = std::allocator<T>::allocate(n, hint);
         if (p != NULL)
-            LockedPageManager::instance.LockRange(p, sizeof(T) * n);
+            LockedPageManager::Instance().LockRange(p, sizeof(T) * n);
         return p;
     }
 
@@ -227,7 +232,7 @@ struct secure_allocator : public std::allocator<T>
         if (p != NULL)
         {
             OPENSSL_cleanse(p, sizeof(T) * n);
-            LockedPageManager::instance.UnlockRange(p, sizeof(T) * n);
+            LockedPageManager::Instance().UnlockRange(p, sizeof(T) * n);
         }
         std::allocator<T>::deallocate(p, n);
     }
