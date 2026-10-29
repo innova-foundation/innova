@@ -181,7 +181,7 @@ PriceData OverviewPage::fetchPricesWorker()
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, ("Innova-Wallet/" + FormatFullVersion()).c_str());
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -226,7 +226,7 @@ PriceData OverviewPage::fetchPricesWorker()
         curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(ghCurl, CURLOPT_TIMEOUT, 10L);
         curl_easy_setopt(ghCurl, CURLOPT_CONNECTTIMEOUT, 5L);
-        curl_easy_setopt(ghCurl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
+        curl_easy_setopt(ghCurl, CURLOPT_USERAGENT, ("Innova-Wallet/" + FormatFullVersion()).c_str());
 
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "Accept: application/vnd.github.v3+json");
@@ -421,7 +421,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelRUBTotal->setText("₽" + loc.toString(rubleg.toDouble() * inn, 'f', 2) + " RUB");
     ui->labelJPYTotal->setText("¥" + loc.toString(yeng.toDouble() * inn, 'f', 0) + " JPY");
 
-    ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
+    ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     // Trade link hidden - No exchanges for now
     // ui->labelTradeLink->setTextFormat(Qt::RichText);
     // ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);

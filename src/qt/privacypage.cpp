@@ -447,6 +447,7 @@ void PrivacyPage::onSendClicked()
         return;
 
     statusLabel->setText(tr("Building the payment..."));
+    sendButton->setEnabled(false);
     QApplication::processEvents();
 
     QStringList params;
@@ -458,10 +459,12 @@ void PrivacyPage::onSendClicked()
     QString error;
     if (!Iv5Rpc::Call("z_iv5transfer", params, result, error))
     {
+        sendButton->setEnabled(true);
         statusLabel->setText(tr("Payment refused"));
         QMessageBox::warning(this, tr("Send"), error);
         return;
     }
+    sendButton->setEnabled(true);
 
     QString txid;
     if (!Iv5Rpc::ReadField(result, "txid", txid))
@@ -469,7 +472,10 @@ void PrivacyPage::onSendClicked()
     statusLabel->setText(tr("Sent: %1").arg(txid));
     sendAmountEdit->clear();
     refreshBalances();
-    QMessageBox::information(this, tr("Send"), result);
+    QMessageBox box(QMessageBox::Information, tr("Send"),
+                    tr("Payment sent.\n\nTransaction ID: %1").arg(txid), QMessageBox::Ok, this);
+    box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    box.exec();
 }
 
 void PrivacyPage::onSendManyClicked()
@@ -854,7 +860,15 @@ void PrivacyPage::onMigrateClicked()
 
     statusLabel->setText(tr("Migrated"));
     refreshBalances();
-    QMessageBox::information(this, tr("Migrate to the pool"), result);
+    QString txid, shielded, inputs;
+    Iv5Rpc::ReadField(result, "txid", txid);
+    Iv5Rpc::ReadField(result, "shielded", shielded);
+    Iv5Rpc::ReadField(result, "inputs", inputs);
+    QMessageBox box(QMessageBox::Information, tr("Migrate to the pool"),
+                    tr("Moved %1 INN from %2 output(s) into the pool.\n\nTransaction ID: %3")
+                        .arg(shielded).arg(inputs).arg(txid), QMessageBox::Ok, this);
+    box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    box.exec();
 }
 
 void PrivacyPage::onNewAddressClicked()

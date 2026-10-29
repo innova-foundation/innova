@@ -1882,7 +1882,7 @@ void BitcoinGUI::updateStakingIcon()
     if (nWeight && GetBoolArg("-staking", true) && pwalletMain && !pwalletMain->IsLocked() && fHasPeers && !IsInitialBlockDownload())
     {
         uint64_t nNetworkWeight = GetPoSKernelPS();
-        unsigned nEstimateTime = (10 * nTargetSpacing) * nNetworkWeight / nWeight;
+        uint64_t nEstimateTime = (10 * nTargetSpacing) * nNetworkWeight / nWeight;
 
         QString text;
         if (nEstimateTime < 60)
@@ -1897,9 +1897,13 @@ void BitcoinGUI::updateStakingIcon()
         {
             text = tr("%n hour(s)", "", nEstimateTime/(60*60));
         }
-        else
+        else if (nEstimateTime < 365*24*60*60)
         {
             text = tr("%n day(s)", "", nEstimateTime/(60*60*24));
+        }
+        else
+        {
+            text = tr("more than a year");
         }
 
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_on").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
@@ -1910,7 +1914,7 @@ void BitcoinGUI::updateStakingIcon()
             QString strVote = nVoted == nEpoch ? tr("Voted this epoch (%1).").arg(nEpoch)
                             : nVoted >= 0 ? tr("Last vote: epoch %1 (now %2).").arg(nVoted).arg(nEpoch)
                                           : tr("Waiting for the next epoch boundary to vote.");
-            labelStakingIcon->setToolTip(tr("Voting on finality.<br>%1<br>Your weight is %2").arg(strVote).arg(nWeight));
+            labelStakingIcon->setToolTip(tr("Voting on finality.<br>%1<br>Your weight is %2<br>Network weight is %3<br>Expected time to earn reward is %4").arg(strVote).arg(nWeight / COIN).arg(nNetworkWeight / COIN).arg(text));
         }
         else
             labelStakingIcon->setToolTip(tr("Staking.<br>Your weight is %1<br>Network weight is %2<br>Expected time to earn reward is %3").arg(nWeight).arg(nNetworkWeight).arg(text));
@@ -1918,7 +1922,9 @@ void BitcoinGUI::updateStakingIcon()
     else
     {
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_off").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-        if (pwalletMain && pwalletMain->IsLocked())
+        if (!GetBoolArg("-staking", true))
+            labelStakingIcon->setToolTip(tr("Not staking because staking is disabled"));
+        else if (pwalletMain && pwalletMain->IsLocked())
             labelStakingIcon->setToolTip(tr("Wallet is locked. Unlock it for staking (Settings > Unlock Wallet) to vote and earn rewards."));
         else if (!fHasPeers)
             labelStakingIcon->setToolTip(tr("Not staking because wallet is offline"));
@@ -1926,8 +1932,6 @@ void BitcoinGUI::updateStakingIcon()
             labelStakingIcon->setToolTip(tr("Not staking because wallet is syncing"));
         else if (!nWeight)
             labelStakingIcon->setToolTip(tr("Not staking because you don't have mature coins"));
-        else if (!GetBoolArg("-staking", true))
-            labelStakingIcon->setToolTip(tr("Not staking because staking is disabled"));
         else
             labelStakingIcon->setToolTip(tr("Not staking"));
     }
