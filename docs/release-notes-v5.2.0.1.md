@@ -9,3 +9,4 @@ Hard fork moved to block 8,547,840 to give more time to upgrade. Everyone who in
 - An unknown `-stakingmode` stops startup with an error instead of silently staking transparently; a bad `collateralnode.conf` is reported as a warning.
 - `getinfo` no longer prints a stray line or returns an empty `ip` when the Tor hostname file is missing.
 - Help text: `getstakinginfo` lists its fields; `z_shieldall` documents the 50-input cap; free-migration help reads its end margin from the code.
+- Crash fixes: the wallet no longer aborts at launch from a static-initialization order bug, or when it cannot create its data folder; Nyx file download/upload no longer crash on failure or when the window closes mid-transfer; the block explorer no longer crashes during sync, on missing blocks, or on some transactions.
