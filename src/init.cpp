@@ -1594,7 +1594,7 @@ bool AppInit2()
     std::string err;
     collateralnodeConfig.read(err);
     if (!err.empty())
-        InitError("error while parsing collateralnode.conf Error: " + err);
+        InitWarning("error while parsing collateralnode.conf Error: " + err);
 
     if (mapArgs.count("-connect") && mapMultiArgs["-connect"].size() > 0) {
         // when only connecting to trusted nodes, do not seed via DNS, or listen by default
@@ -1719,7 +1719,7 @@ bool AppInit2()
         else if (strStakingMode == "coldprivate" || strStakingMode == "nullstakecold" || strStakingMode == "3")
             eRequestedStakingMode = STAKE_NULLSTAKE_COLD;
         else if (strStakingMode != "transparent" && strStakingMode != "0")
-            printf("WARNING: Unknown -stakingmode '%s', using transparent\n", strStakingMode.c_str());
+            return InitError(strprintf(_("Unknown -stakingmode '%s' (use transparent or cold)"), strStakingMode.c_str()));
 
         if (IsLegacyPrivateStakingMode(eRequestedStakingMode) &&
             IsLegacyPrivacyPolicyDisabled())

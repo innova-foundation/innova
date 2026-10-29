@@ -99,7 +99,7 @@ void EnsureWalletIsUnlocked()
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
     if (fWalletUnlockStakingOnly)
-        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Wallet is unlocked for staking only.");
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Wallet is unlocked for staking only. Run walletlock, then walletpassphrase <passphrase> <timeout> false to send.");
 }
 
 // Extract passphrase to SecureString and cleanse the source Value
@@ -199,13 +199,11 @@ Value getinfo(const Array& params, bool fHelp)
         string automatic_onion;
         fs::path const hostname_path = GetOnionHostnameFile();
 
-        if (!fs::exists(hostname_path)) {
-            printf("No external address found.");
+        if (fs::exists(hostname_path)) {
+            ifstream file(hostname_path.string().c_str());
+            file >> automatic_onion;
         }
-
-        ifstream file(hostname_path.string().c_str());
-        file >> automatic_onion;
-        obj.push_back(Pair("ip",       (automatic_onion)));
+        obj.push_back(Pair("ip",       (automatic_onion.empty() ? addrSeenByPeer.ToStringIP() : automatic_onion)));
     }
     if(!fNativeTor)
         obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
@@ -2666,7 +2664,7 @@ Value walletpassphrase(const Array& params, bool fHelp)
     if (pwalletMain->IsCrypted() && (fHelp || params.size() < 2 || params.size() > 3))
         throw runtime_error(
             "walletpassphrase <passphrase> <timeout> [stakingonly]\n"
-            "Stores the wallet decryption key in memory for <timeout> seconds.\n"
+            "Stores the wallet decryption key in memory for <timeout> seconds (1 to 100000000).\n"
             "if [stakingonly] is true sending functions are disabled.");
     if (fHelp)
         return true;
@@ -2694,6 +2692,8 @@ Value walletpassphrase(const Array& params, bool fHelp)
     // Arguments are read before any side effect, so a malformed timeout cannot leave
     // half an unlock behind. get_int64() throws on a non-integer.
     const int64_t nSleepTime = params[1].get_int64();
+    if (nSleepTime <= 0 || nSleepTime > 100000000)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "timeout must be between 1 and 100000000 seconds");
     const bool fStakingOnly = (params.size() > 2) ? params[2].get_bool() : false;
 
     // The recorded scan gap is queued for reprocessing by CWallet::Unlock above, not

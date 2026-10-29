@@ -2091,9 +2091,10 @@ static bool PoolMigrationAddressHasFreeCoins(const std::string& strAddress)
 Value z_shieldall(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 2)
-        throw runtime_error(
+        throw runtime_error(strprintf(
             "z_shieldall [fromaddress] [maxinputs]\n"
             "Moves transparent coins into the IV5 private pool.\n"
+            "maxinputs is capped at %u inputs per transaction.\n"
             "\nSweeps only one transparent address per call, so a single transaction never\n"
             "groups addresses the chain has not already grouped. Omit fromaddress to shield\n"
             "the address holding the most value. The whole selected value moves: there is no\n"
@@ -2103,7 +2104,7 @@ Value z_shieldall(const Array& params, bool fHelp)
             "outputs at the address are left for a following fee-paying call. Peers relay a\n"
             "few free migrations per minute per peer, so a send over that budget is refused here.\n"
             "The window is open until block window_end_height; the wallet stops building free\n"
-            "shields 10000 blocks before it.\n"
+            "shields %d blocks before it.\n"
             "\nResult:\n"
             "{\n"
             "  \"txid\": \"...\",        (string) the shield transaction\n"
@@ -2114,7 +2115,7 @@ Value z_shieldall(const Array& params, bool fHelp)
             "  \"free\": true|false,   (boolean) a fee-exempt migration\n"
             "  \"window_end_height\": n, (numeric) first height the free window is closed\n"
             "  \"remaining\": n        (numeric) outputs still unshielded at that address\n"
-            "}\n");
+            "}\n", (unsigned)PRIVACY_VNEXT_SHIELD_MAX_INPUTS, (int)MIGRATION_WALLET_END_MARGIN));
 
     // Gate on the next block's height, not the tip.
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||
@@ -2354,7 +2355,7 @@ static void SurveyPoolMigrationPending(int64_t& nImmatureOut, int64_t& nUnconfir
 Value z_migratetopool(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 2)
-        throw runtime_error(
+        throw runtime_error(strprintf(
             "z_migratetopool [maxtransactions] [maxinputspertx]\n"
             "Moves this wallet's transparent coins into the IV5 private pool.\n"
             "\nSends one transaction per transparent address, never one that spends from\n"
@@ -2372,7 +2373,7 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "migrations per minute and a block confirms only a few, so this call paces free\n"
             "sends to the relay limit and reports the rest as deferred with\n"
             "\"free_retry_after\"; call again after that many seconds. Free shields are built\n"
-            "until 10000 blocks before window_end_height.\n"
+            "until %d blocks before window_end_height.\n"
             "\nOutside a free migration, an address whose value does not cover the flat\n"
             "shield fee cannot be moved. It is skipped and reported under \"skipped\", never\n"
             "retried within a call, so a loop on \"more\" terminates instead of spinning on it.\n"
@@ -2410,7 +2411,7 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "  \"locked_value\": x.xxx,        (numeric) value held by lockunspent\n"
             "  \"more\": true|false,           (boolean) another call would send more\n"
             "  \"complete\": true|false        (boolean) nothing transparent is left at all\n"
-            "}\n");
+            "}\n", (int)MIGRATION_WALLET_END_MARGIN));
 
     // Gate on the next block's height, not the tip.
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0) ||

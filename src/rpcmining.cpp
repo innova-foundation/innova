@@ -102,7 +102,21 @@ Value getstakinginfo(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "getstakinginfo\n"
-            "Returns an object containing staking-related information.");
+            "Returns an object containing staking-related information.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"enabled\": true|false,             (boolean) -staking is on\n"
+            "  \"staking\": true|false,             (boolean) a PoS block search is running\n"
+            "  \"pos_block_production\": true|false, (boolean) PoS blocks are still produced at the next height\n"
+            "  \"finality_voting\": true|false,     (boolean) finality voting is active\n"
+            "  \"errors\": \"...\",                 (string) warnings\n"
+            "  \"currentblocksize\": n, \"currentblocktx\": n, \"pooledtx\": n,\n"
+            "  \"difficulty\": x.xxx,               (numeric) proof-of-stake difficulty\n"
+            "  \"search-interval\": n,              (numeric) last coinstake search interval\n"
+            "  \"weight\": n,                       (numeric) this wallet's stake weight\n"
+            "  \"netstakeweight\": n,               (numeric) network stake weight\n"
+            "  \"expectedtime\": n                  (numeric) expected seconds to a reward, -1 if not staking\n"
+            "}\n");
 
     uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
     pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);

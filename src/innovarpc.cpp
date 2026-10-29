@@ -1552,8 +1552,10 @@ Object CallRPC(const string& strMethod, const Array& params)
     asio::ssl::stream<asio::ip::tcp::socket> sslStream(io_service, context);
     SSLIOStreamDevice<asio::ip::tcp> d(sslStream, fUseSSL);
     iostreams::stream< SSLIOStreamDevice<asio::ip::tcp> > stream(d);
-    if (!d.connect(GetArg("-rpcconnect", "127.0.0.1"), GetArg("-rpcport", itostr(GetDefaultRPCPort()))))
-        throw runtime_error("couldn't connect to server");
+    const string strRpcHost = GetArg("-rpcconnect", "127.0.0.1");
+    const string strRpcPort = GetArg("-rpcport", itostr(GetDefaultRPCPort()));
+    if (!d.connect(strRpcHost, strRpcPort))
+        throw runtime_error(strprintf("couldn't connect to server at %s:%s (is innovad running? RPC is available only after startup finishes; see debug.log)", strRpcHost.c_str(), strRpcPort.c_str()));
 
     // HTTP basic authentication
     string strUserPass64 = EncodeBase64(mapArgs["-rpcuser"] + ":" + mapArgs["-rpcpassword"]);
