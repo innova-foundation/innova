@@ -954,15 +954,18 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
     g_typingConnection = NotifySecMsgTyping.connect(boost::bind(&NotifyTypingCallbackImpl, _1));
 
     // Check IPFS gateway connectivity on startup (async, caches result)
-    QtConcurrent::run([this]() {
+    QPointer<ChatWidget> self(this);
+    QtConcurrent::run([self]() {
         qint64 maxSize = checkIPFSGateway();
-        QMetaObject::invokeMethod(this, [this, maxSize]() {
-            cachedIPFSMaxSize = maxSize;
-            ipfsState = maxSize > 0 ? 1 : 0;
+        QMetaObject::invokeMethod(qApp, [self, maxSize]() {
+            if (!self) return;
+            ChatWidget *w = self.data();
+            w->cachedIPFSMaxSize = maxSize;
+            w->ipfsState = maxSize > 0 ? 1 : 0;
             QSettings settings;
-            ipfsNotice->setVisible(maxSize == 0 && !settings.value(NYX_IPFS_NOTICE_KEY, false).toBool());
-            updateAttachState();
-        });
+            w->ipfsNotice->setVisible(maxSize == 0 && !settings.value(NYX_IPFS_NOTICE_KEY, false).toBool());
+            w->updateAttachState();
+        }, Qt::QueuedConnection);
     });
 }
 
@@ -2774,7 +2777,7 @@ void ChatWidget::onFileAttachClicked()
     uploadWatcher = new QFutureWatcher<QPair<QString, QString>>(this);
     connect(uploadWatcher, SIGNAL(finished()), this, SLOT(onFileUploadFinished()));
 
-    QFuture<QPair<QString, QString>> future = QtConcurrent::run([this, filePath]() -> QPair<QString, QString> {
+    QFuture<QPair<QString, QString>> future = QtConcurrent::run([filePath]() -> QPair<QString, QString> {
         QString outCID, outKeyHex, outError;
         if (encryptAndUploadFile(filePath, outCID, outKeyHex, outError))
             return qMakePair(outCID, outKeyHex);
@@ -3268,34 +3271,41 @@ void ChatWidget::onFileDownloadClicked(const QString& cid, const QString& encKey
 
     // Capture by value for the worker thread
     QString capCid = cid, capKey = encKeyHex, capSavePath = savePath;
-    QtConcurrent::run([this, capCid, capKey, capSavePath]() {
+    QPointer<ChatWidget> self(this);
+    QtConcurrent::run([self, capCid, capKey, capSavePath]() {
         QByteArray decryptedData;
-        bool ok = downloadAndDecryptFile(capCid, capKey, decryptedData);
+        QString err;
+        bool ok = downloadAndDecryptFile(capCid, capKey, decryptedData, err);
 
-        QMetaObject::invokeMethod(this, [this, ok, capSavePath, decryptedData]() {
-            attachButton->setEnabled(true);
-            attachButton->setToolTip(tr("Attach file (encrypted, uploaded via IPFS)"));
+        QMetaObject::invokeMethod(qApp, [self, ok, err, capSavePath, decryptedData]() {
+            if (!self) return;
+            ChatWidget *w = self.data();
+            w->attachButton->setEnabled(true);
+            w->attachButton->setToolTip(tr("Attach file (encrypted, uploaded via IPFS)"));
 
             if (!ok)
-                return; // Error already shown by downloadAndDecryptFile
+            {
+                QMessageBox::warning(w, tr("Error"), err.isEmpty() ? tr("Download failed.") : err);
+                return;
+            }
 
             QFile outFile(capSavePath);
             if (!outFile.open(QIODevice::WriteOnly))
             {
-                QMessageBox::warning(this, tr("Error"), tr("Cannot write file: %1").arg(outFile.errorString()));
+                QMessageBox::warning(w, tr("Error"), tr("Cannot write file: %1").arg(outFile.errorString()));
                 return;
             }
             outFile.write(decryptedData);
             outFile.close();
 
-            QMessageBox::information(this, tr("File Saved"),
+            QMessageBox::information(w, tr("File Saved"),
                 tr("File saved:\n%1\n\nSize: %2 bytes").arg(capSavePath).arg(decryptedData.size()));
-        });
+        }, Qt::QueuedConnection);
     });
 #endif
 }
 
-bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKeyHex, QByteArray& outData)
+bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKeyHex, QByteArray& outData, QString& outError)
 {
 #ifndef USE_IPFS
     return false;
@@ -3304,7 +3314,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
     QByteArray keyAndNonce = QByteArray::fromHex(encKeyHex.toLatin1());
     if (keyAndNonce.size() != 44)
     {
-        QMessageBox::warning(this, tr("Error"), tr("Invalid encryption key (expected 88 hex characters)."));
+        outError = tr("Invalid encryption key (expected 88 hex characters).");
         return false;
     }
 
@@ -3339,7 +3349,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Error"), tr("Downloaded data exceeds the 500 MB limit."));
+            outError = tr("Downloaded data exceeds the 500 MB limit.");
             return false;
         }
 
@@ -3350,8 +3360,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
     {
         OPENSSL_cleanse(aesKey, 32);
         OPENSSL_cleanse(aesNonce, 12);
-        QMessageBox::warning(this, tr("IPFS Error"),
-            tr("Failed to download from IPFS: %1").arg(QString::fromStdString(e.what())));
+        outError = tr("Failed to download from IPFS: %1").arg(QString::fromStdString(e.what()));
         return false;
     }
 
@@ -3373,7 +3382,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Error"), tr("Invalid chunk manifest format."));
+            outError = tr("Invalid chunk manifest format.");
             return false;
         }
 
@@ -3392,7 +3401,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Error"), tr("Manifest contains no chunk CIDs."));
+            outError = tr("Manifest contains no chunk CIDs.");
             return false;
         }
 
@@ -3402,8 +3411,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Error"),
-                tr("Manifest has %1 chunks (max %2). File may be malicious.").arg(chunkCIDs.size()).arg(maxChunks));
+            outError = tr("Manifest has %1 chunks (max %2). File may be malicious.").arg(chunkCIDs.size()).arg(maxChunks);
             return false;
         }
 
@@ -3423,8 +3431,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
             {
                 OPENSSL_cleanse(aesKey, 32);
                 OPENSSL_cleanse(aesNonce, 12);
-                QMessageBox::warning(this, tr("IPFS Error"),
-                    tr("Failed to download chunk %1/%2: %3").arg(i + 1).arg(chunkCIDs.size()).arg(e.what()));
+                outError = tr("Failed to download chunk %1/%2: %3").arg(i + 1).arg(chunkCIDs.size()).arg(e.what());
                 return false;
             }
 
@@ -3433,8 +3440,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
             {
                 OPENSSL_cleanse(aesKey, 32);
                 OPENSSL_cleanse(aesNonce, 12);
-                QMessageBox::warning(this, tr("Authentication Failed"),
-                    tr("Chunk %1/%2 failed authentication. File may be tampered.").arg(i + 1).arg(chunkCIDs.size()));
+                outError = tr("Chunk %1/%2 failed authentication. File may be tampered.").arg(i + 1).arg(chunkCIDs.size());
                 return false;
             }
 
@@ -3444,7 +3450,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
                 OPENSSL_cleanse(aesKey, 32);
                 OPENSSL_cleanse(aesNonce, 12);
                 OPENSSL_cleanse(plainChunk.data(), plainChunk.size());
-                QMessageBox::warning(this, tr("Error"), tr("Decrypted data exceeds size limit."));
+                outError = tr("Decrypted data exceeds size limit.");
                 return false;
             }
             outData.append(plainChunk);
@@ -3458,7 +3464,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Error"), tr("Downloaded file is too small or empty."));
+            outError = tr("Downloaded file is too small or empty.");
             return false;
         }
 
@@ -3467,8 +3473,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         {
             OPENSSL_cleanse(aesKey, 32);
             OPENSSL_cleanse(aesNonce, 12);
-            QMessageBox::warning(this, tr("Authentication Failed"),
-                tr("File authentication failed. Wrong key or tampered data."));
+            outError = tr("File authentication failed. Wrong key or tampered data.");
             return false;
         }
         outData = plainChunk;

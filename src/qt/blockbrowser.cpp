@@ -7,11 +7,21 @@
 #include "innovarpc.h"
 #include "transactionrecord.h"
 
+#include <cmath>
 #include <sstream>
 #include <string>
+static const CBlockIndex* lookupBlockIndex(int Height)
+{
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(uint256(getBlockHash(Height)));
+    return mi == mapBlockIndex.end() ? NULL : mi->second;
+}
+
 double getBlockHardness(int height)
 {
+    LOCK(cs_main);
     const CBlockIndex* blockindex = getBlockIndex(height);
+    if (!blockindex)
+        return 0;
 
     int nShift = (blockindex->nBits >> 24) & 0xff;
 
@@ -34,26 +44,28 @@ double getBlockHardness(int height)
 
 int getBlockHashrate(int height)
 {
-    int lookup = height;
+    if (height <= 1)
+        return 0;
 
+    LOCK(cs_main);
     double timeDiff = getBlockTime(height) - getBlockTime(1);
-    double timePerBlock = timeDiff / lookup;
+    double timePerBlock = timeDiff / height;
+    if (!std::isfinite(timePerBlock) || timePerBlock <= 0)
+        return 0;
 
     return (boost::int64_t)(((double)getBlockHardness(height) * pow(2.0, 32)) / timePerBlock);
 }
 
 const CBlockIndex* getBlockIndex(int height)
 {
-    std::string hex = getBlockHash(height);
-    uint256 hash(hex);
-    if (mapBlockIndex.count(hash) == 0)
-        return NULL;
-    return mapBlockIndex[hash];
+    LOCK(cs_main);
+    return lookupBlockIndex(height);
 }
 
 std::string getBlockHash(int Height)
 {
-    if(Height > pindexBest->nHeight) { return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd"; }
+    LOCK(cs_main);
+    if (!pindexBest || Height > pindexBest->nHeight) { return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd"; }
     if(Height < 0) { return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd"; }
     if (Height > nBestHeight)
         return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd";
@@ -67,71 +79,42 @@ std::string getBlockHash(int Height)
 
 int getBlockTime(int Height)
 {
-    std::string strHash = getBlockHash(Height);
-    uint256 hash(strHash);
-
-    if (mapBlockIndex.count(hash) == 0)
-        return 0;
-
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hash];
-    return pblockindex->nTime;
+    LOCK(cs_main);
+    const CBlockIndex* pblockindex = lookupBlockIndex(Height);
+    return pblockindex ? pblockindex->nTime : 0;
 }
 
 std::string getBlockMerkle(int Height)
 {
-    std::string strHash = getBlockHash(Height);
-    uint256 hash(strHash);
-
-    if (mapBlockIndex.count(hash) == 0)
-        return 0;
-
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hash];
-    return pblockindex->hashMerkleRoot.ToString().substr(0,10).c_str();
+    LOCK(cs_main);
+    const CBlockIndex* pblockindex = lookupBlockIndex(Height);
+    return pblockindex ? pblockindex->hashMerkleRoot.ToString().substr(0,10) : std::string();
 }
 
 int getBlocknBits(int Height)
 {
-    std::string strHash = getBlockHash(Height);
-    uint256 hash(strHash);
-
-    if (mapBlockIndex.count(hash) == 0)
-        return 0;
-
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hash];
-    return pblockindex->nBits;
+    LOCK(cs_main);
+    const CBlockIndex* pblockindex = lookupBlockIndex(Height);
+    return pblockindex ? pblockindex->nBits : 0;
 }
 
 int getBlockNonce(int Height)
 {
-    std::string strHash = getBlockHash(Height);
-    uint256 hash(strHash);
-
-    if (mapBlockIndex.count(hash) == 0)
-        return 0;
-
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hash];
-    return pblockindex->nNonce;
+    LOCK(cs_main);
+    const CBlockIndex* pblockindex = lookupBlockIndex(Height);
+    return pblockindex ? pblockindex->nNonce : 0;
 }
 
 std::string getBlockDebug(int Height)
 {
-    std::string strHash = getBlockHash(Height);
-    uint256 hash(strHash);
-
-    if (mapBlockIndex.count(hash) == 0)
-        return 0;
-
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hash];
-    return pblockindex->ToString();
+    LOCK(cs_main);
+    const CBlockIndex* pblockindex = lookupBlockIndex(Height);
+    return pblockindex ? pblockindex->ToString() : std::string();
 }
 
 int blocksInPastHours(int hours)
 {
+    LOCK(cs_main);
     if (!pindexBest)
         return 0;
 
@@ -243,6 +226,9 @@ std::string getInputs(std::string txid)
         if (!GetTransaction(hash, wtxPrev, hashBlock))
              return "None";
 
+        if (vin.prevout.n >= wtxPrev.vout.size())
+            continue;
+
         CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
         ssTx << wtxPrev;
 
@@ -265,7 +251,7 @@ std::string getInputs(std::string txid)
 
 int64_t getInputValue(CTransaction tx, CScript target)
 {
-    for (unsigned int i = 0; i < tx.vin.size(); i++)
+    for (unsigned int i = 0; i < tx.vout.size(); i++)
     {
         const CTxOut& txout = tx.vout[i];
         if(txout.scriptPubKey == target)
@@ -312,9 +298,10 @@ double getTxFees(std::string txid)
         if (!GetTransaction(hash0, wtxPrev, hashBlock0))
              return 0;
         CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+        if (vin.prevout.n >= wtxPrev.vout.size())
+            continue;
         ssTx << wtxPrev;
-        const CScript target = wtxPrev.vout[vin.prevout.n].scriptPubKey;
-        buffer0 = value0 + convertCoins(getInputValue(wtxPrev, target));
+        buffer0 = value0 + convertCoins(wtxPrev.vout[vin.prevout.n].nValue);
         value0 = buffer0;
     }
 
@@ -354,6 +341,9 @@ void BlockBrowser::updateExplorer(bool block)
         ui->hardBox->show();;
         ui->pawLabel->show();
         ui->pawBox->show();
+        LOCK(cs_main);
+        if (!pindexBest)
+            return;
         int height = ui->heightBox->value();
         if (height > pindexBest->nHeight)
         {

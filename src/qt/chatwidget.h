@@ -180,12 +180,12 @@ private:
     /** Encrypt file with AES-256-GCM and upload to IPFS.
      *  For files > CHUNK_SIZE, uses chunked upload with manifest.
      *  Thread-safe: no QMessageBox calls. Returns true on success. Error in outError. */
-    bool encryptAndUploadFile(const QString& filePath, QString& outCID, QString& outKeyHex, QString& outError);
+    static bool encryptAndUploadFile(const QString& filePath, QString& outCID, QString& outKeyHex, QString& outError);
 
     /** Download from IPFS and decrypt file with AES-256-GCM key.
      *  Supports both single-blob and chunked manifest formats.
-     *  Returns true on success, fills outData. */
-    bool downloadAndDecryptFile(const QString& cid, const QString& encKeyHex, QByteArray& outData);
+     *  Thread-safe: no widget use. Returns true on success, fills outData; error in outError. */
+    static bool downloadAndDecryptFile(const QString& cid, const QString& encKeyHex, QByteArray& outData, QString& outError);
 
     /** Check IPFS gateway connectivity. Returns max file size in bytes (0 = unavailable). */
     static qint64 checkIPFSGateway();
