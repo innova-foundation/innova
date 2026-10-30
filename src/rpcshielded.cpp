@@ -2352,11 +2352,160 @@ static void SurveyPoolMigrationPending(int64_t& nImmatureOut, int64_t& nUnconfir
     }
 }
 
+static Object PoolMigrationOutputEntry(const uint256& hashTx, unsigned int n, int64_t nValue)
+{
+    Object o;
+    o.push_back(Pair("txid", hashTx.GetHex()));
+    o.push_back(Pair("vout", (int64_t)n));
+    o.push_back(Pair("value", ValueFromAmount(nValue)));
+    return o;
+}
+
+static void PoolMigrationSkip(Array& arr, const uint256& hashTx, unsigned int n, int64_t nValue,
+                              const std::string& strReason)
+{
+    Object o = PoolMigrationOutputEntry(hashTx, n, nValue);
+    o.push_back(Pair("reason", strReason));
+    arr.push_back(o);
+}
+
+struct PoolMigrationDryOutput
+{
+    uint256 hashTx;
+    unsigned int n;
+    int64_t nValue;
+    bool fFree;
+};
+
+// Per-output view of what z_migratetopool would move, using the survey's grouping and rules.
+static void DryRunPoolMigration(size_t nMaxInputs, int64_t nFee, Array& arrGroupsOut,
+                                Array& arrSkippedOut)
+{
+    std::map<CScript, std::vector<PoolMigrationDryOutput> > mapByOwner;
+    std::vector<COutput> vCoins;
+    pwalletMain->AvailableCoins(vCoins, true);
+    {
+        LOCK(cs_main);
+        for (size_t i = 0; i < vCoins.size(); ++i)
+        {
+            const CTxOut& out = vCoins[i].tx->vout[vCoins[i].i];
+            const uint256 hashTx = vCoins[i].tx->GetHash();
+            if (!vCoins[i].fSpendable)
+            {
+                PoolMigrationSkip(arrSkippedOut, hashTx, vCoins[i].i, out.nValue, "watch-only");
+                continue;
+            }
+            CScript scriptOwner;
+            if (!PoolMigrationOwnerScript(out.scriptPubKey, scriptOwner))
+            {
+                PoolMigrationSkip(arrSkippedOut, hashTx, vCoins[i].i, out.nValue, "unaddressed");
+                continue;
+            }
+            PoolMigrationDryOutput d;
+            d.hashTx = hashTx;
+            d.n = vCoins[i].i;
+            d.nValue = out.nValue;
+            d.fFree = vCoins[i].nDepth > 0 &&
+                      PoolMigrationCoinIsFree(out.scriptPubKey, nBestHeight - vCoins[i].nDepth + 1,
+                                              nBestHeight + 1);
+            mapByOwner[scriptOwner].push_back(d);
+        }
+    }
+
+    for (std::map<CScript, std::vector<PoolMigrationDryOutput> >::iterator it = mapByOwner.begin();
+         it != mapByOwner.end(); ++it)
+    {
+        CTxDestination dest;
+        ExtractDestination(it->first, dest);
+        const std::string strAddress = CBitcoinAddress(dest).ToString();
+
+        std::vector<PoolMigrationDryOutput> vFree, vPaid;
+        for (size_t i = 0; i < it->second.size(); ++i)
+            (it->second[i].fFree ? vFree : vPaid).push_back(it->second[i]);
+        std::sort(vPaid.begin(), vPaid.end(),
+                  [](const PoolMigrationDryOutput& a, const PoolMigrationDryOutput& b)
+                  { return a.nValue > b.nValue; });
+
+        int64_t nSelectable = 0;
+        for (size_t i = 0; i < vPaid.size() && i < nMaxInputs; ++i)
+            nSelectable += vPaid[i].nValue;
+        // Strictly greater, matching the builder.
+        const bool fPaidMoves = nSelectable > nFee;
+
+        Array arrOutputs;
+        int64_t nValue = 0, nFreeValue = 0;
+        for (size_t i = 0; i < vFree.size(); ++i)
+        {
+            Object o = PoolMigrationOutputEntry(vFree[i].hashTx, vFree[i].n, vFree[i].nValue);
+            o.push_back(Pair("free", true));
+            arrOutputs.push_back(o);
+            nValue += vFree[i].nValue;
+            nFreeValue += vFree[i].nValue;
+        }
+        for (size_t i = 0; i < vPaid.size(); ++i)
+        {
+            if (!fPaidMoves)
+                PoolMigrationSkip(arrSkippedOut, vPaid[i].hashTx, vPaid[i].n, vPaid[i].nValue,
+                                  strprintf("dust: %s does not cover the %s shield fee",
+                                            FormatMoney(nSelectable).c_str(),
+                                            FormatMoney(nFee).c_str()));
+            else if (i >= nMaxInputs)
+                PoolMigrationSkip(arrSkippedOut, vPaid[i].hashTx, vPaid[i].n, vPaid[i].nValue,
+                                  "over input cap; a later transaction takes it");
+            else
+            {
+                Object o = PoolMigrationOutputEntry(vPaid[i].hashTx, vPaid[i].n, vPaid[i].nValue);
+                o.push_back(Pair("free", false));
+                arrOutputs.push_back(o);
+                nValue += vPaid[i].nValue;
+            }
+        }
+        if (arrOutputs.empty())
+            continue;
+
+        Object objGroup;
+        objGroup.push_back(Pair("address", strAddress));
+        objGroup.push_back(Pair("outputs", arrOutputs));
+        objGroup.push_back(Pair("value", ValueFromAmount(nValue)));
+        objGroup.push_back(Pair("free_value", ValueFromAmount(nFreeValue)));
+        objGroup.push_back(Pair("fee", ValueFromAmount(fPaidMoves ? nFee : 0)));
+        arrGroupsOut.push_back(objGroup);
+    }
+
+    // Owned outputs AvailableCoins leaves out.
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    for (std::map<uint256, CWalletTx>::const_iterator it = pwalletMain->mapWallet.begin();
+         it != pwalletMain->mapWallet.end(); ++it)
+    {
+        const CWalletTx& wtx = it->second;
+        if (!wtx.IsFinal() || wtx.isAbandoned())
+            continue;
+        const int nDepth = wtx.GetDepthInMainChain();
+        const bool fReward = wtx.IsCoinBase() || wtx.IsCoinStake();
+        if (nDepth < 0 || (fReward && nDepth == 0))
+            continue;
+        const bool fImmature = fReward && wtx.GetBlocksToMaturity() > 0;
+        const bool fUnconfirmed = !fImmature && !wtx.IsTrusted();
+        for (unsigned int i = 0; i < wtx.vout.size(); ++i)
+        {
+            if (wtx.IsSpent(i) || !(pwalletMain->IsMine(wtx.vout[i]) & ISMINE_SPENDABLE))
+                continue;
+            const int64_t nValue = wtx.vout[i].nValue;
+            if (fImmature)
+                PoolMigrationSkip(arrSkippedOut, it->first, i, nValue, "immature");
+            else if (fUnconfirmed)
+                PoolMigrationSkip(arrSkippedOut, it->first, i, nValue, "unconfirmed");
+            else if (pwalletMain->IsLockedCoin(it->first, i))
+                PoolMigrationSkip(arrSkippedOut, it->first, i, nValue, "locked");
+        }
+    }
+}
+
 Value z_migratetopool(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() > 2)
+    if (fHelp || params.size() > 3)
         throw runtime_error(strprintf(
-            "z_migratetopool [maxtransactions] [maxinputspertx]\n"
+            "z_migratetopool [maxtransactions] [maxinputspertx] [dryrun=false]\n"
             "Moves this wallet's transparent coins into the IV5 private pool.\n"
             "\nSends one transaction per transparent address, never one that spends from\n"
             "two, so the migration does not tell the chain which addresses share an owner.\n"
@@ -2379,6 +2528,9 @@ Value z_migratetopool(const Array& params, bool fHelp)
             "retried within a call, so a loop on \"more\" terminates instead of spinning on it.\n"
             "\nA bare-pubkey output (a stake reward) and a cold-stake output this wallet owns\n"
             "are swept with the address of the same key: they already name that owner.\n"
+            "\ndryrun true builds and sends nothing and returns {\"dryrun\":true, \"groups\":[{\"address\",\n"
+            "\"outputs\":[{\"txid\",\"vout\",\"value\",\"free\"}], \"value\", \"free_value\", \"fee\"}],\n"
+            "\"skipped_outputs\":[{\"txid\",\"vout\",\"value\",\"reason\"}]} plus the totals below.\n"
             "\nResult:\n"
             "{\n"
             "  \"sent\": n,                    (numeric) transactions sent by this call\n"
@@ -2419,10 +2571,12 @@ Value z_migratetopool(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
-    EnsureWalletIsUnlocked();
+    const bool fDryRun = params.size() > 2 && params[2].get_bool();
+    if (!fDryRun)
+        EnsureWalletIsUnlocked();
 
     // Builder precondition, checked once rather than failing per address.
-    if (!pwalletMain->IsPrivacyVNextSeedUnlocked())
+    if (!fDryRun && !pwalletMain->IsPrivacyVNextSeedUnlocked())
         throw JSONRPCError(RPC_WALLET_ERROR,
                            "this wallet holds no unlocked IV5 seed; run z_createiv5seed first");
 
@@ -2460,7 +2614,7 @@ Value z_migratetopool(const Array& params, bool fHelp)
     // A failed address is never retried in this call, so the loop terminates.
     std::map<std::string, std::string> mapGaveUp;
 
-    while (arrSent.size() < nMaxTxns)
+    while (!fDryRun && arrSent.size() < nMaxTxns)
     {
         std::vector<PoolMigrationCandidate> vCandidates;
         int64_t nUnaddressedOutputs = 0;
@@ -2598,6 +2752,14 @@ Value z_migratetopool(const Array& params, bool fHelp)
     }
 
     Object result;
+    if (fDryRun)
+    {
+        Array arrGroups, arrSkippedOutputs;
+        DryRunPoolMigration(nMaxInputs, nFee, arrGroups, arrSkippedOutputs);
+        result.push_back(Pair("dryrun", true));
+        result.push_back(Pair("groups", arrGroups));
+        result.push_back(Pair("skipped_outputs", arrSkippedOutputs));
+    }
     result.push_back(Pair("sent", (int64_t)arrSent.size()));
     result.push_back(Pair("transactions", arrSent));
     result.push_back(Pair("shielded", ValueFromAmount(nMovedTotal)));
