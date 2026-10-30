@@ -7,6 +7,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
+class QProgressBar;
 class QRadioButton;
 class QPushButton;
 class QTabWidget;
@@ -70,6 +71,7 @@ private:
     QWidget *migrateAdvancedBox;
     QPushButton *migrateAllButton;
     QLabel *migrateAllSummary;
+    QProgressBar *migrateAllProgress;
     QLineEdit *migrateFromEdit;
     QLineEdit *migrateMaxInputsEdit;
     QPushButton *migrateButton;

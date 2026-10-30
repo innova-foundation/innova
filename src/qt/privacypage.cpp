@@ -11,6 +11,7 @@
 #include "nullsendmixwidget.h"
 #include "optionsmodel.h"
 #include "privatecollateralwidget.h"
+#include "wallet.h"
 #include "walletmodel.h"
 
 #include <QApplication>
@@ -28,6 +29,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QRegularExpression>
@@ -240,6 +242,10 @@ QWidget* PrivacyPage::buildMigrateTab()
     migrateAllSummary->setWordWrap(true);
     migrateAllSummary->setStyleSheet("color: #888;");
     simpleLayout->addWidget(migrateAllSummary);
+    migrateAllProgress = new QProgressBar();
+    migrateAllProgress->setTextVisible(true);
+    migrateAllProgress->setVisible(false);
+    simpleLayout->addWidget(migrateAllProgress);
     migrateAllButton = new QPushButton(tr("Migrate all transparent coins"));
     migrateAllButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; "
                                     "padding: 8px 16px; font-weight: bold; }");
@@ -371,14 +377,39 @@ void PrivacyPage::refreshBalances()
                 "still accept value leaving the pool. This wallet offers no way out "
                 "regardless, so treat migration as one-way."));
 
-        if (pool.fMigrationWindowOpen)
+        const int nNextHeight = nBestHeight + 1;
+        const int nWindowEnd = GetMigrationEndHeight();
+        const int nWalletStop = nWindowEnd - MIGRATION_WALLET_END_MARGIN;
+        if (!IsMigrationConfigured())
+        {
+            migrateFreeLabel->setVisible(false);
+        }
+        else if (nNextHeight < FORK_HEIGHT_MIGRATION)
+        {
+            migrateFreeLabel->setText(tr("Free migration starts at block %1 (about %2 blocks "
+                                         "from now).")
+                                          .arg(FORK_HEIGHT_MIGRATION)
+                                          .arg(FORK_HEIGHT_MIGRATION - nNextHeight));
+            migrateFreeLabel->setVisible(true);
+        }
+        else if (IsMigrationActiveAtHeight(nNextHeight) && nNextHeight < nWalletStop)
         {
             migrateFreeLabel->setText(tr(
-                "Free migration window open until block %1. Coins confirmed before the "
-                "window opened migrate at no fee; free migrations confirm at most %2 per "
-                "block and are sent at most %3 per minute.")
-                .arg(pool.nMigrationEndHeight).arg(pool.nMigrationMaxPerBlock)
-                .arg(MIGRATION_RELAY_PER_MINUTE));
+                "Free migration until block %1 (about %2 blocks left). This wallet stops "
+                "building free migrations %3 blocks before the end, at block %4. Coins "
+                "confirmed before the window opened migrate at no fee; free migrations "
+                "confirm at most %5 per block and are sent at most %6 per minute.")
+                .arg(nWindowEnd).arg(nWalletStop - nNextHeight)
+                .arg(MIGRATION_WALLET_END_MARGIN).arg(nWalletStop)
+                .arg(pool.nMigrationMaxPerBlock).arg(MIGRATION_RELAY_PER_MINUTE));
+            migrateFreeLabel->setVisible(true);
+        }
+        else if (IsMigrationActiveAtHeight(nNextHeight))
+        {
+            migrateFreeLabel->setText(tr(
+                "Free migration ends at block %1. This wallet stopped building free "
+                "migrations at block %2, %3 blocks before the end; migrations now pay the fee.")
+                .arg(nWindowEnd).arg(nWalletStop).arg(MIGRATION_WALLET_END_MARGIN));
             migrateFreeLabel->setVisible(true);
         }
         else
@@ -733,6 +764,9 @@ void PrivacyPage::onMigrateAllClicked()
     migrateAllButton->setEnabled(false);
     migrateSimpleRadio->setEnabled(false);
     migrateAdvancedRadio->setEnabled(false);
+    migrateAllProgress->setRange(0, 0);
+    migrateAllProgress->setFormat(tr("Starting..."));
+    migrateAllProgress->setVisible(true);
 
     const int nMaxCalls = 100;
     double dShielded = 0.0;
@@ -766,6 +800,15 @@ void PrivacyPage::onMigrateAllClicked()
         migrateAllSummary->setText(tr("Sent %1 transaction(s) (%2 free), %3 moved.")
                                        .arg(nSent).arg(nFreeSent).arg(dShielded, 0, 'f', 8));
 
+        // One transaction per remaining address is a lower bound; large addresses take more.
+        QString remaining;
+        const int nRemaining = Iv5Rpc::ReadField(result, "addresses_remaining", remaining)
+                                   ? qMax(0, remaining.toInt()) : 0;
+        const int nTotal = qMax(1, nSent + nRemaining);
+        migrateAllProgress->setRange(0, nTotal);
+        migrateAllProgress->setValue(qMin(nSent, nTotal));
+        migrateAllProgress->setFormat(tr("%1 of %2 transactions").arg(nSent).arg(nTotal));
+
         if (!report.fMore)
             break;
         // Free sends are paced to the relay limit; wait out the reported delay.
@@ -784,6 +827,7 @@ void PrivacyPage::onMigrateAllClicked()
     }
 
     migrateAllButton->setEnabled(true);
+    migrateAllProgress->setVisible(false);
     migrateSimpleRadio->setEnabled(true);
     migrateAdvancedRadio->setEnabled(true);
     refreshBalances();
