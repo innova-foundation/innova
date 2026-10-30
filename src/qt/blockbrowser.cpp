@@ -236,8 +236,7 @@ std::string getInputs(std::string txid)
         ExtractDestination(wtxPrev.vout[vin.prevout.n].scriptPubKey, source);
         CBitcoinAddress addressSource(source);
         std::string lol6 = addressSource.ToString();
-        const CScript target = wtxPrev.vout[vin.prevout.n].scriptPubKey;
-        double buffer = convertCoins(getInputValue(wtxPrev, target));
+        double buffer = convertCoins(wtxPrev.vout[vin.prevout.n].nValue);
         std::string amount = boost::to_string(buffer);
         str.append(lol6);
         str.append(": ");
@@ -247,19 +246,6 @@ std::string getInputs(std::string txid)
     }
 
     return str;
-}
-
-int64_t getInputValue(CTransaction tx, CScript target)
-{
-    for (unsigned int i = 0; i < tx.vout.size(); i++)
-    {
-        const CTxOut& txout = tx.vout[i];
-        if(txout.scriptPubKey == target)
-        {
-            return txout.nValue;
-        }
-    }
-    return 0;
 }
 
 double getTxFees(std::string txid)
