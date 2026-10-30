@@ -6,6 +6,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "init.h"
+#include "clientversion.h"
 #include "nullsend_driver.h"
 #include "blockprofile.h"
 #include "main.h"
@@ -21,7 +22,6 @@
 #include "collateralnodeconfig.h"
 #include "spork.h"
 #include "smessage.h"
-#include "innova_spinner_frames.h"
 #include "ringsig.h"
 #include "nullsend.h"
 #include "idns.h"
@@ -58,11 +58,19 @@
 #include <vector>
 #include <cstring>
 #include <limits>
+#include <cstdlib>
 
 #ifndef WIN32
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#else
+#include <windows.h>
+#include <io.h>
+#include <process.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 #endif
 
 
@@ -253,170 +261,268 @@ void HandleSIGHUP(int)
 #if !defined(QT_GUI)
 namespace
 {
-class CStartupSpinner
+class CStartupBanner
 {
 public:
-    CStartupSpinner() : fEnabled(false), fStop(false), nPrintedLines(0)
+    CStartupBanner() : fEnabled(false), fAscii(false), fColour(false), fVT(true), fLineOpen(false), fOwnerSet(false), nLastLen(0), nPid(0) {}
+
+    void Init()
     {
-#ifndef WIN32
-        if (fDaemon)
+        if (fDaemon || !Allowed())
             return;
-        if (!isatty(STDERR_FILENO))
-            return;
-#endif
-        fEnabled = true;
-        spinnerThread = std::thread(&CStartupSpinner::Run, this);
+        Setup();
     }
 
-    ~CStartupSpinner()
+    // Parent of a forked daemon: show the banner once, then hand over to the background process.
+    void Detached(int pid)
     {
-        Stop();
+        if (!Allowed())
+            return;
+        Setup();
+        if (!fEnabled)
+            return;
+        nPid = pid;
+        LOCK(cs);
+        PrintBannerOnce();
+        WriteLine((fAscii ? "  #=#=# " : "  ■━■━■ ") + std::string(fAscii ? "running in the background - stop with innova-cli stop" : "running in the background · stop with innova-cli stop"));
+        EndLine();
     }
 
 private:
-    static const int kSpinnerLineCount = INNOVA_SPINNER_LINE_COUNT;
-
-    int GetFrameWidth(int frame) const
+    static bool Allowed()
     {
-        int width = 0;
-        for (int i = 0; i < kSpinnerLineCount; ++i)
-        {
-            int lineWidth = static_cast<int>(strlen(INNOVA_SPINNER_FRAMES[frame][i]));
-            if (lineWidth > width)
-                width = lineWidth;
-        }
-        return width;
+        return GetBoolArg("-banner", true) && !GetBoolArg("-printtoconsole", false);
     }
 
-    void GetTerminalSize(int& rows, int& cols) const
+    void Setup()
     {
-        rows = 0;
-        cols = 0;
-#ifndef WIN32
-        struct winsize ws;
-        if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0)
-        {
-            if (ws.ws_row > 0)
-                rows = ws.ws_row;
-            if (ws.ws_col > 0)
-                cols = ws.ws_col;
-        }
-#endif
-    }
-
-    void BuildScaledFrame(int frame, int targetWidth, int targetHeight, std::vector<std::string>& out) const
-    {
-        int srcHeight = kSpinnerLineCount;
-        int srcWidth = GetFrameWidth(frame);
-        if (targetWidth < 1)
-            targetWidth = 1;
-        if (targetHeight < 1)
-            targetHeight = 1;
-        out.clear();
-        out.reserve(targetHeight);
-        for (int y = 0; y < targetHeight; ++y)
-        {
-            int srcY = (y * srcHeight) / targetHeight;
-            const char* srcLine = INNOVA_SPINNER_FRAMES[frame][srcY];
-            int srcLineWidth = static_cast<int>(strlen(srcLine));
-            std::string line;
-            line.reserve(targetWidth);
-            for (int x = 0; x < targetWidth; ++x)
-            {
-                int srcX = (x * srcWidth) / targetWidth;
-                char ch = ' ';
-                if (srcX < srcLineWidth)
-                    ch = srcLine[srcX];
-                line.push_back(ch);
-            }
-            out.push_back(line);
-        }
-    }
-
-    void Stop()
-    {
-        if (!fEnabled)
+#ifdef WIN32
+        if (!_isatty(_fileno(stderr)))
             return;
-
-        fStop = true;
-        if (spinnerThread.joinable())
-            spinnerThread.join();
-        Clear();
+        HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+        DWORD mode = 0;
+        if (h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode) ||
+            !SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+        {
+            fVT = false;
+            fAscii = true;
+        }
+#else
+        if (!isatty(STDERR_FILENO))
+            return;
+#endif
+        const char* term = getenv("TERM");
+        fColour = fVT && getenv("NO_COLOR") == NULL && !(term && strcmp(term, "dumb") == 0);
+        fEnabled = true;
     }
 
-    void Clear()
+public:
+    void Status(const std::string& msg)
     {
-        int lines = nPrintedLines > 0 ? nPrintedLines : kSpinnerLineCount;
-        for (int i = 0; i < lines; ++i)
+        LOCK(cs);
+        if (!fEnabled || !OwnerThread())
+            return;
+        PrintBannerOnce();
+        WriteLine((fAscii ? "  #=#=. " : "  ■━■━□ ") + msg);
+    }
+
+    void Ready()
+    {
+        LOCK(cs);
+        if (!fEnabled || !OwnerThread())
+            return;
+        PrintBannerOnce();
+        int nPeers = 0;
         {
-            fprintf(stderr, "\r\033[2K");
-            if (i + 1 < lines)
-                fprintf(stderr, "\n");
+            LOCK(cs_vNodes);
+            nPeers = (int)vNodes.size();
         }
-        if (lines > 1)
-            fprintf(stderr, "\033[%dA", lines - 1);
-        fprintf(stderr, "\r");
+        const std::string dot = fAscii ? " - " : " · ";
+        std::string s = (fAscii ? "  #=#=# " : "  ■━■━■ ") + std::string("ready") + dot +
+            strprintf("height %d", nBestHeight) + dot + strprintf("%d peers", nPeers);
+        if (IsMergesetConfigured() && nBestHeight < FORK_HEIGHT_MERGESET)
+            s += dot + strprintf("fork in %d blocks", FORK_HEIGHT_MERGESET - nBestHeight);
+        WriteLine(s);
+        EndLine();
+        fEnabled = false;
+    }
+
+    void End()
+    {
+        LOCK(cs);
+        EndLine();
+    }
+
+private:
+    static int DisplayWidth(const std::string& s)
+    {
+        int n = 0;
+        for (unsigned char c : s)
+            if ((c & 0xC0) != 0x80)
+                ++n;
+        return n;
+    }
+
+    static std::string Truncate(const std::string& s, int cols)
+    {
+        int n = 0;
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            if (((unsigned char)s[i] & 0xC0) != 0x80 && ++n > cols)
+                return s.substr(0, i);
+        }
+        return s;
+    }
+
+    static std::string ToAscii(const std::string& s)
+    {
+        static const char* const map[][2] = {
+            {"■", "#"}, {"─", "-"}, {"┐", "+"}, {"┘", "+"}, {"├", "+"},
+            {"━", "="}, {"□", "."}, {"·", "-"}};
+        std::string out = s;
+        for (const auto& m : map)
+        {
+            size_t pos = 0;
+            const size_t len = strlen(m[0]);
+            while ((pos = out.find(m[0], pos)) != std::string::npos)
+            {
+                out.replace(pos, len, m[1]);
+                pos += 1;
+            }
+        }
+        return out;
+    }
+
+    bool OwnerThread()
+    {
+        if (!fOwnerSet)
+        {
+            owner = std::this_thread::get_id();
+            fOwnerSet = true;
+        }
+        return owner == std::this_thread::get_id();
+    }
+
+    int Columns() const
+    {
+#ifdef WIN32
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        if (GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &info))
+            return info.srWindow.Right - info.srWindow.Left + 1;
+#else
+        struct winsize ws;
+        if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+            return ws.ws_col;
+#endif
+        return 80;
+    }
+
+    std::string C(const char* code, const std::string& s) const
+    {
+        return fColour ? std::string("\033[") + code + "m" + s + "\033[0m" : s;
+    }
+
+    void PrintBannerOnce()
+    {
+        if (fBannerDone)
+            return;
+        fBannerDone = true;
+
+        std::string net = GetBoolArg("-regtest", false) ? "regtest" : (GetBoolArg("-testnet", false) ? "testnet" : "mainnet");
+        std::string ver = strprintf("v%d.%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_REVISION, CLIENT_VERSION_BUILD);
+        std::string datadir = GetDataDir().string();
+        const int cols = Columns();
+
+        if (fAscii || cols < 40)
+        {
+            std::string line = "INNOVA IDAG " + ver + " · " + net + " · " + datadir;
+            fprintf(stderr, "%s\n", (fAscii ? ToAscii(line) : line).c_str());
+            return;
+        }
+
+        const int p2p = (int)GetArg("-port", (int64_t)GetDefaultPort());
+        const int rpc = (int)GetArg("-rpcport", (int64_t)(GetBoolArg("-testnet", false) ? 15531 : 14531));
+        const char* build =
+#ifdef __OPTIMIZE__
+            "release";
+#else
+            "debug";
+#endif
+        const char* teal = "38;5;37";
+        std::vector<std::string> mark = {
+            "  ■─┐",
+            "     ├─■─┐",
+            "  ■─┘    ├─■──■",
+            "  ■──────┘",
+            "",
+            "  I N N O V A · IDAG"};
+        std::vector<std::string> data = {
+            C("1", "Innova " + ver) + " · " + net + " · " + build,
+            C("2", "datadir") + "  " + datadir,
+            C("2", "config ") + "  " + GetConfigFile().string(),
+            C("2", "log    ") + "  " + (GetDataDir() / "debug.log").string(),
+            C("2", "ports  ") + "  " + strprintf("p2p %d · rpc %d · pid %d", p2p, rpc, (nPid ? nPid : (int)getpid())),
+            C("2", "help   ") + "  innova-cli help · lists all commands"};
+
+        if (cols < 64)
+        {
+            for (const std::string& m : mark)
+                fprintf(stderr, "%s\n", C(teal, m).c_str());
+            for (const std::string& d : data)
+                fprintf(stderr, "%s\n", d.c_str());
+        }
+        else
+        {
+            for (size_t i = 0; i < mark.size(); ++i)
+            {
+                std::string pad(22 - DisplayWidth(mark[i]), ' ');
+                fprintf(stderr, "%s%s%s\n", C(teal, mark[i]).c_str(), pad.c_str(), data[i].c_str());
+            }
+        }
         fflush(stderr);
     }
 
-    void PrintFrame(int frame)
+    void WriteLine(const std::string& raw)
     {
-        int rows = 0;
-        int cols = 0;
-        GetTerminalSize(rows, cols);
-        int srcHeight = kSpinnerLineCount;
-        int srcWidth = GetFrameWidth(frame);
-        int maxRows = rows > 1 ? rows - 1 : rows;
-        int maxCols = cols > 0 ? cols : srcWidth;
-        double scale = 1.0;
-        if ((maxRows > 0 && srcHeight > maxRows) || (maxCols > 0 && srcWidth > maxCols))
+        std::string s = Truncate(fAscii ? ToAscii(raw) : raw, Columns() - 1);
+        if (fVT)
         {
-            double scaleH = maxRows > 0 ? static_cast<double>(maxRows) / srcHeight : 1.0;
-            double scaleW = maxCols > 0 ? static_cast<double>(maxCols) / srcWidth : 1.0;
-            scale = scaleH < scaleW ? scaleH : scaleW;
-            if (scale > 1.0)
-                scale = 1.0;
+            fprintf(stderr, "\r\033[2K%s", s.c_str());
         }
-        int targetHeight = static_cast<int>(srcHeight * scale + 0.5);
-        int targetWidth = static_cast<int>(srcWidth * scale + 0.5);
-        if (targetHeight < 2)
-            targetHeight = 2;
-        if (targetWidth < 2)
-            targetWidth = 2;
-        if (nPrintedLines > 0 && nPrintedLines != targetHeight)
-            Clear();
-        if (targetHeight != srcHeight || targetWidth != srcWidth)
+        else
         {
-            std::vector<std::string> scaled;
-            BuildScaledFrame(frame, targetWidth, targetHeight, scaled);
-            for (int i = 0; i < targetHeight; ++i)
-                fprintf(stderr, "\r\033[2K%s\n", scaled[i].c_str());
-        } else
-        {
-            for (int i = 0; i < kSpinnerLineCount; ++i)
-                fprintf(stderr, "\r\033[2K%s\n", INNOVA_SPINNER_FRAMES[frame][i]);
+            const int w = DisplayWidth(s);
+            fprintf(stderr, "\r%s%s", s.c_str(), std::string(nLastLen > w ? nLastLen - w : 0, ' ').c_str());
+            nLastLen = w;
         }
-        nPrintedLines = targetHeight;
-        fprintf(stderr, "\033[%dA", targetHeight);
+        fLineOpen = true;
         fflush(stderr);
     }
 
-    void Run()
+    void EndLine()
     {
-        int frame = 0;
-        while (!fStop)
-        {
-            PrintFrame(frame);
-            frame = (frame + 1) % INNOVA_SPINNER_FRAME_COUNT;
-            MilliSleep(97);
-        }
+        if (!fLineOpen)
+            return;
+        fprintf(stderr, "\n");
+        fflush(stderr);
+        fLineOpen = false;
+        nLastLen = 0;
     }
 
+    CCriticalSection cs;
+    int nPid;
     bool fEnabled;
-    std::atomic<bool> fStop;
-    std::thread spinnerThread;
-    int nPrintedLines;
+    bool fAscii;
+    bool fColour;
+    bool fVT;
+    bool fLineOpen;
+    bool fOwnerSet;
+    bool fBannerDone = false;
+    int nLastLen;
+    std::thread::id owner;
 };
+
+CStartupBanner startupBanner;
 }
 
 bool AppInit(int argc, char* argv[])
@@ -498,6 +604,7 @@ bool AppInit(int argc, char* argv[])
         if (pid > 0)
         {
             CreatePidFile(GetPidFile(), pid);
+            startupBanner.Detached(pid);
             return true;
         }
 
@@ -513,13 +620,19 @@ bool AppInit(int argc, char* argv[])
     }
 #endif
 
-        CStartupSpinner startupSpinner;
+        startupBanner.Init();
+        uiInterface.InitMessage.connect([](const std::string& msg) { startupBanner.Status(msg); });
+        uiInterface.ThreadSafeMessageBox.connect(
+            [](const std::string&, const std::string&, int) { startupBanner.End(); }, boost::signals2::at_front);
         fRet = AppInit2();
+        startupBanner.End();
     } catch (std::exception& e)
     {
+        startupBanner.End();
         PrintException(&e, "AppInit()");
     } catch (...)
     {
+        startupBanner.End();
         PrintException(NULL, "AppInit()");
     };
     if (!fRet)
@@ -664,6 +777,9 @@ std::string HelpMessage()
 #endif
 #if !defined(WIN32) && !defined(QT_GUI)
         "  -daemon                " + _("Run in the background as a daemon and accept commands") + "\n" +
+#endif
+#if !defined(QT_GUI)
+        "  -banner                " + _("Show the startup banner and status line on an interactive terminal (default: 1)") + "\n" +
 #endif
         "  -testnet               " + _("Use the test network") + "\n" +
         "  -regtest               " + _("Enter regression test mode (instant blocks, no stake age)") + "\n" +
@@ -3176,6 +3292,7 @@ bool AppInit2()
     fSuccessfullyLoaded = true;
 
 #if !defined(QT_GUI)
+    startupBanner.Ready();
     // Loop until process is exit()ed from shutdown() function,
     // called from ThreadRPCServer thread when a "stop" command is received.
     if(idns) {
