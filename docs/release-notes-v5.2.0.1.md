@@ -10,3 +10,8 @@ Hard fork moved to block 8,547,840 to give more time to upgrade. Everyone who in
 - `getinfo` no longer prints a stray line or returns an empty `ip` when the Tor hostname file is missing.
 - Help text: `getstakinginfo` lists its fields; `z_shieldall` documents the 50-input cap; free-migration help reads its end margin from the code.
 - Crash fixes: the wallet no longer aborts at launch from a static-initialization order bug, or when it cannot create its data folder; Nyx file download/upload no longer crash on failure or when the window closes mid-transfer; the block explorer no longer crashes during sync, on missing blocks, or on some transactions.
+- Secure messaging: a malformed peer message could crash the node; it is now rejected. Shutdown no longer frees message storage while a background thread uses it.
+- Daemon stability: no wallet use-after-free when an RPC call races shutdown; safer peer handling in `spvrescan` and `addnode ... ban`; `sweepburnoutputs` checks its start height.
+- Qt: the RPC console stops before shutdown; send errors show the real reason; migrate-all shows progress; the Privacy page shows the free-migration countdown; the status bar shows the hard fork countdown and how many peers run an older protocol.
+- Startup shows what it is doing during block index load, repair and rescan.
+- New `getforkinfo` RPC; `z_migratetopool ... dryrun` shows what would move, what is free and why outputs are skipped.
