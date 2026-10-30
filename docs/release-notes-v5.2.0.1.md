@@ -15,3 +15,4 @@ Hard fork moved to block 8,547,840 to give more time to upgrade. Everyone who in
 - Qt: the RPC console stops before shutdown; send errors show the real reason; migrate-all shows progress; the Privacy page shows the free-migration countdown; the status bar shows the hard fork countdown and how many peers run an older protocol.
 - Startup shows what it is doing during block index load, repair and rescan.
 - New `getforkinfo` RPC; `z_migratetopool ... dryrun` shows what would move, what is free and why outputs are skipped.
+- Terminal: the spinning coin is replaced by a one-time IDAG banner with version, data folder, config, log, ports and `innova-cli help`, plus a single startup status line; `-banner=0` turns it off. Builds show the same banner and a result summary.
