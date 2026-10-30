@@ -326,6 +326,10 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
         progressBar->setStyleSheet("QProgressBar { background-color: #66a0c3; border: 1px solid light-blue; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
     }
 
+    labelForkBanner = new QLabel();
+    labelForkBanner->setStyleSheet("QLabel { color: #ffffff; background-color: #b35c00; padding: 2px 6px; border-radius: 3px; }");
+    labelForkBanner->setVisible(false);
+    statusBar()->addWidget(labelForkBanner);
     statusBar()->addWidget(progressBarLabel);
     statusBar()->addWidget(progressBar);
     statusBar()->addPermanentWidget(frameBlocks);
@@ -998,8 +1002,43 @@ void BitcoinGUI::setNumConnections(int count)
     }
 }
 
+void BitcoinGUI::updateForkBanner()
+{
+    int nFork = 0;
+    if (IsMergesetConfigured() && nBestHeight < FORK_HEIGHT_MERGESET)
+        nFork = FORK_HEIGHT_MERGESET;
+    if (IsMigrationConfigured() && nBestHeight < FORK_HEIGHT_MIGRATION && (nFork == 0 || FORK_HEIGHT_MIGRATION < nFork))
+        nFork = FORK_HEIGHT_MIGRATION;
+    if (nFork == 0)
+    {
+        labelForkBanner->setVisible(false);
+        return;
+    }
+
+    QString text = tr("Hard fork at block %1 - %2 blocks left. Make sure you run v5.2.0.1 or later.")
+        .arg(nFork).arg(nFork - nBestHeight);
+
+    int nOutdated = 0;
+    {
+        TRY_LOCK(cs_vNodes, lockNodes);
+        if (lockNodes)
+        {
+            BOOST_FOREACH(CNode* pnode, vNodes)
+                if (pnode->nVersion != 0 && pnode->nVersion < PROTOCOL_VERSION)
+                    nOutdated++;
+        }
+    }
+    if (nOutdated > 0)
+        text += " " + tr("%n connected peer(s) run an older protocol version.", "", nOutdated);
+
+    labelForkBanner->setText(text);
+    labelForkBanner->setVisible(true);
+}
+
 void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
 {
+    updateForkBanner();
+
     // don't bother showing anything if we have no connection to the network
     if (!clientModel || clientModel->getNumConnections() == 0)
     {

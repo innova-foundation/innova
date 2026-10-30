@@ -126,6 +126,7 @@ private:
     QLabel *labelConnectTypeIcon;
     QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
+    QLabel *labelForkBanner;
     QLabel *mainIcon;
     QAction *mainIconAction;
     void fitSidebar();
@@ -220,6 +221,8 @@ public slots:
     void setNumConnections(int count);
     /** Set number of blocks shown in the UI */
     void setNumBlocks(int count, int nTotalBlocks);
+    /** Show the upcoming hard fork countdown and outdated peer count */
+    void updateForkBanner();
     /** Set the encryption status as shown in the UI.
        @param[in] status            current encryption status
        @see WalletModel::EncryptionStatus
