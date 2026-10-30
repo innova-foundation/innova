@@ -157,3 +157,41 @@ Value iv5migrationshield(const Array& params, bool fHelp)
     result.push_back(Pair("shielded", ValueFromAmount(nShielded)));
     return result;
 }
+
+Value getforkinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getforkinfo\n"
+            "Returns the mergeset fork and transparent migration window heights.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"height\": n,                       (numeric) current block height\n"
+            "  \"mergeset_fork_height\": n,         (numeric) mergeset activation height\n"
+            "  \"mergeset_blocks_left\": n,         (numeric) blocks until activation, 0 once active\n"
+            "  \"mergeset_active\": true|false,\n"
+            "  \"migration_start_height\": n,       (numeric) first height of the free migration window\n"
+            "  \"migration_end_height\": n,         (numeric) first height the window is closed\n"
+            "  \"migration_active\": true|false,\n"
+            "  \"migration_wallet_end_height\": n,  (numeric) last height wallets build free migrations\n"
+            "  \"migration_free_per_block\": n,     (numeric) free migrations one block confirms\n"
+            "  \"client_version\": \"...\"\n"
+            "}\n");
+
+    const int nHeight = nBestHeight;
+    const int nMergeset = FORK_HEIGHT_MERGESET;
+    const int nMigrationEnd = GetMigrationEndHeight();
+    Object result;
+    result.push_back(Pair("height", nHeight));
+    result.push_back(Pair("mergeset_fork_height", nMergeset));
+    result.push_back(Pair("mergeset_blocks_left",
+                          IsMergesetConfigured() && nHeight < nMergeset ? nMergeset - nHeight : 0));
+    result.push_back(Pair("mergeset_active", IsMergesetActiveAtHeight(nHeight)));
+    result.push_back(Pair("migration_start_height", FORK_HEIGHT_MIGRATION));
+    result.push_back(Pair("migration_end_height", nMigrationEnd));
+    result.push_back(Pair("migration_active", IsMigrationActiveAtHeight(nHeight)));
+    result.push_back(Pair("migration_wallet_end_height", nMigrationEnd - MIGRATION_WALLET_END_MARGIN));
+    result.push_back(Pair("migration_free_per_block", (int)MIGRATION_MAX_PER_BLOCK));
+    result.push_back(Pair("client_version", FormatFullVersion()));
+    return result;
+}

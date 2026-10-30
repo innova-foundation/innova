@@ -405,6 +405,7 @@ extern json_spirit::Value z_shield(const json_spirit::Array& params, bool fHelp)
 extern json_spirit::Value z_shieldall(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value iv5migrationshield(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_migratetopool(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getforkinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_iv5transfer(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_holdiv5note(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listiv5holds(const json_spirit::Array& params, bool fHelp);

@@ -492,6 +492,7 @@ static const CRPCCommand vRPCCommands[] =
     { "z_shieldall",            &z_shieldall,            false,  true },
     { "iv5migrationshield",     &iv5migrationshield,     false,  true },
     { "z_migratetopool",        &z_migratetopool,        false,  true },
+    { "getforkinfo",            &getforkinfo,            true,   false },
     { "z_iv5transfer",          &z_iv5transfer,          false,  true },
     { "z_holdiv5note",          &z_holdiv5note,          false,  true },
     { "z_listiv5holds",         &z_listiv5holds,         true,   true },
