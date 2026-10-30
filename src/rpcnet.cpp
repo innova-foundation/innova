@@ -120,11 +120,20 @@ Value addnode(const Array& params, bool fHelp)
     }
     else if(strCommand == "ban")
     {
-        CNode* pnode = FindNode(strNode);
-        if(pnode) {
-            CNode::Ban(pnode->addr, BanReasonManuallyAdded);
-            pnode->CloseSocketDisconnect();
-        } else {
+        bool fFound = false;
+        CAddress addrBan;
+        {
+            LOCK(cs_vNodes);
+            CNode* pnode = FindNode(strNode);
+            if (pnode) {
+                addrBan = pnode->addr;
+                pnode->fDisconnect = true;
+                fFound = true;
+            }
+        }
+        if (fFound)
+            CNode::Ban(addrBan, BanReasonManuallyAdded);
+        else {
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Error: Node is not connected.");
         }
         return Value::null;

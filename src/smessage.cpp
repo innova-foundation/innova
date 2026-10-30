@@ -1173,7 +1173,7 @@ void ThreadSecureMsgPow(void* parg)
         };
 
         {
-            LOCK(cs_smsg);
+            LOCK(cs_smsgDB);
             delete it;
         }
 
@@ -1615,6 +1615,9 @@ bool SecureMsgShutdown()
 
     fSecMsgEnabled = false;
 
+    if (!WaitForSmsgThreads(SMSG_THREAD_STOP_WAIT_MS))
+        printf("SecureMsgShutdown: smsg threads did not stop in time.\n");
+
     if (smsgDB)
     {
         LOCK(cs_smsgDB);
@@ -1904,7 +1907,10 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             uint32_t nBuckets;
             memcpy(&nBuckets, &vchData[0], 4);
 
-            if (vchData.size() < 4 + nBuckets * 8)
+            if (nBuckets > (SMSG_RETENTION / SMSG_BUCKET_LEN) + 1)
+                return false;
+
+            if ((uint64_t)vchData.size() < 4 + (uint64_t)nBuckets * 8)
                 return false;
 
             if (fDebugSmsg)

@@ -1127,8 +1127,10 @@ bool Finalise()
     // A start refused the lock is looking at the running node's pid file, not its own.
     if (fDataDirLockHeld)
         fs::remove(GetPidFile());
-    UnregisterWallet(pwalletMain);
-    delete pwalletMain;
+    CWallet* pwalletDel = pwalletMain;
+    pwalletMain = NULL;
+    UnregisterWallet(pwalletDel);
+    delete pwalletDel;
 
     finaliseRingSigs();
 

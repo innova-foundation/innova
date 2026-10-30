@@ -1507,7 +1507,10 @@ json_spirit::Value CRPCTable::execute(const std::string &strMethod, const json_s
             if (pcmd->unlocked)
                 result = pcmd->actor(params, false);
             else {
-                LOCK2(cs_main, pwalletMain->cs_wallet);
+                LOCK(cs_main);
+                if (fShutdown || !pwalletMain)
+                    throw JSONRPCError(RPC_MISC_ERROR, "Server is shutting down");
+                CCriticalBlock lockWallet(pwalletMain->cs_wallet, "pwalletMain->cs_wallet", __FILE__, __LINE__);
                 result = pcmd->actor(params, false);
             }
         }

@@ -704,6 +704,8 @@ Value sweepburnoutputs(const Array& params, bool fHelp)
         int nFrom = params.size() > 0 ? params[0].get_int() : pindexBest->nHeight - 5000;
         if (nFrom < 1)
             nFrom = 1;
+        if (nFrom > pindexBest->nHeight)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "startheight is above the chain tip");
         for (CBlockIndex* pindex = FindBlockByHeight(nFrom);
              pindex && pindex->nHeight <= nLast && (int)tx.vin.size() < nMaxInputs;
              pindex = pindex->pnext)

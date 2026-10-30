@@ -1908,6 +1908,7 @@ Value spvrescan(const Array& params, bool fHelp)
             if (pn->fSuccessfullyConnected && !pn->fDisconnect)
             {
                 pnode = pn;
+                pnode->AddRef();
                 break;
             }
         }
@@ -1916,12 +1917,22 @@ Value spvrescan(const Array& params, bool fHelp)
     if (!pnode)
         throw runtime_error("No connected peers available for SPV rescan");
 
-    pwalletMain->RequestSPVTransactions(pnode, nStartHeight);
+    std::string strPeer = pnode->addr.ToString();
+    try
+    {
+        pwalletMain->RequestSPVTransactions(pnode, nStartHeight);
+    }
+    catch (...)
+    {
+        pnode->Release();
+        throw;
+    }
+    pnode->Release();
 
     Object obj;
     obj.push_back(Pair("status", "started"));
     obj.push_back(Pair("start_height", nStartHeight));
-    obj.push_back(Pair("peer", pnode->addr.ToString()));
+    obj.push_back(Pair("peer", strPeer));
 
     return obj;
 }
