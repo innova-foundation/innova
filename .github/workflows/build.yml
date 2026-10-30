@@ -662,7 +662,6 @@ jobs:
             LDFLAGS="-static -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va" \
             USE_NATIVETOR=- \
             USE_IPFS=1 \
-            INNOVA_SPINNER=0 \
             -j$(nproc)
 
       # Starts the daemon so the IV5 startup contract check runs on the shipped binary;

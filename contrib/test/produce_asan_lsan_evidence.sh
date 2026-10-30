@@ -16,7 +16,7 @@ evidence_toolchain "$(${CXX:-g++} --version 2>/dev/null | head -1)"
 evidence_workdir
 
 JOBS="${V5_EVIDENCE_JOBS:-$(nproc)}"
-MAKE_ARGS="USE_NATIVETOR=- USE_IPFS=- INNOVA_SPINNER=0 -f makefile.unix"
+MAKE_ARGS="USE_NATIVETOR=- USE_IPFS=- INNOVA_BANNER=0 -f makefile.unix"
 SAN_ARGS="SANITIZE=address CXXFLAGS=\"-O1 -Werror=return-type -Werror=format\" CFLAGS=\"-O1 -Werror=return-type -Werror=format\""
 # halt_on_error/abort_on_error make a finding kill the run instead of being
 # reported and survived, which is the only way `make` sees it.

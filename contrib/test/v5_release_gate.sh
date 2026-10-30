@@ -349,10 +349,10 @@ run_unit() {
             log "starting clean macOS daemon/test build"
             (
                 cd "$ROOT/src"
-                make STRICT_WARNINGS=1 INNOVA_SPINNER=0 -f makefile.osx clean
-                make STRICT_WARNINGS=1 INNOVA_SPINNER=0 -f makefile.osx \
+                make STRICT_WARNINGS=1 INNOVA_BANNER=0 -f makefile.osx clean
+                make STRICT_WARNINGS=1 INNOVA_BANNER=0 -f makefile.osx \
                     -j"$jobs" innovad test_innova
-                make STRICT_WARNINGS=1 INNOVA_SPINNER=0 -f makefile.osx \
+                make STRICT_WARNINGS=1 INNOVA_BANNER=0 -f makefile.osx \
                     release-check
             )
             ;;
@@ -361,13 +361,13 @@ run_unit() {
             log "starting clean Linux daemon/test build"
             (
                 cd "$ROOT/src"
-                make USE_NATIVETOR=- INNOVA_SPINNER=0 \
+                make USE_NATIVETOR=- INNOVA_BANNER=0 \
                     -f makefile.unix clean
-                make USE_NATIVETOR=- INNOVA_SPINNER=0 \
+                make USE_NATIVETOR=- INNOVA_BANNER=0 \
                     CXXFLAGS="-Werror=return-type -Werror=format" \
                     CFLAGS="-Werror=return-type -Werror=format" \
                     -f makefile.unix -j"$jobs" innovad test_innova
-                make USE_NATIVETOR=- INNOVA_SPINNER=0 \
+                make USE_NATIVETOR=- INNOVA_BANNER=0 \
                     CXXFLAGS="-Werror=return-type -Werror=format" \
                     CFLAGS="-Werror=return-type -Werror=format" \
                     -f makefile.unix release-check

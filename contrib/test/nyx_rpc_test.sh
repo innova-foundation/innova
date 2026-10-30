@@ -11,7 +11,7 @@ INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Build first
 cd "$INNOVA_ROOT/src"
-make -f makefile.osx INNOVA_SPINNER=0 -j$(sysctl -n hw.ncpu) 2>&1 | tail -1
+make -f makefile.osx INNOVA_BANNER=0 -j$(sysctl -n hw.ncpu) 2>&1 | tail -1
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 if [ ! -f "$INNOVAD" ]; then

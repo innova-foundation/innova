@@ -21,7 +21,6 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
 QMAKE_CXXFLAGS += -Wno-literal-suffix
 QMAKE_CFLAGS += -std=c99 -Wno-incompatible-pointer-types
-unix|macx:QMAKE_MAKE = $$PWD/contrib/innova_make.sh
 
 greaterThan(QT_MAJOR_VERSION, 4) {
     QT += widgets printsupport

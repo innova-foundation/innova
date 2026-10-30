@@ -21,11 +21,11 @@ JOBS="${V5_EVIDENCE_JOBS:-$(sysctl -n hw.ncpu)}"
 # reads the warning gate and the clean tree out of this text, here and in the
 # release workflow, and a variable would hide both from it.
 evidence_run "clean tree" \
-    "cd src && make INNOVA_SPINNER=0 STRICT_WARNINGS=1 -f makefile.osx clean"
+    "cd src && make INNOVA_BANNER=0 STRICT_WARNINGS=1 -f makefile.osx clean"
 evidence_run "daemon and test build" \
-    "cd src && make INNOVA_SPINNER=0 STRICT_WARNINGS=1 -f makefile.osx -j$JOBS innovad test_innova"
+    "cd src && make INNOVA_BANNER=0 STRICT_WARNINGS=1 -f makefile.osx -j$JOBS innovad test_innova"
 evidence_run "release-check aggregate" \
-    "cd src && make INNOVA_SPINNER=0 STRICT_WARNINGS=1 -f makefile.osx release-check"
+    "cd src && make INNOVA_BANNER=0 STRICT_WARNINGS=1 -f makefile.osx release-check"
 
 CASES="$(grep -oE 'Running [0-9]+ test case' "$EV_LOG" | grep -oE '[0-9]+' | awk '{t+=$1} END{print t+0}')"
 evidence_observe test_cases "$CASES"

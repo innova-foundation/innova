@@ -24,9 +24,9 @@ rm -rf "$CAMPAIGN"
 # The fuzz targets compile version.cpp without depending on obj/build.h, so
 # generate it (and its directory) first.
 evidence_run "stamp the build identifier" \
-    "cd src && mkdir -p obj && make USE_NATIVETOR=- USE_IPFS=- INNOVA_SPINNER=0 -f makefile.unix obj/build.h"
+    "cd src && mkdir -p obj && make USE_NATIVETOR=- USE_IPFS=- INNOVA_BANNER=0 -f makefile.unix obj/build.h"
 evidence_run "build the libFuzzer targets" \
-    "cd src && make USE_NATIVETOR=- USE_IPFS=- INNOVA_SPINNER=0 -f makefile.unix fuzz-all-libfuzzer"
+    "cd src && make USE_NATIVETOR=- USE_IPFS=- INNOVA_BANNER=0 -f makefile.unix fuzz-all-libfuzzer"
 evidence_run "run the campaign" \
     "FUZZ_OUT='$CAMPAIGN' contrib/test/run_fuzz_campaign.sh $SECONDS_PER_TARGET $WORKERS"
 

@@ -452,8 +452,8 @@ compile the feature out entirely. Defaults differ per makefile, as noted.
 
 Additional makefile knobs: `PIE` (position-independent executable + `-pie`),
 `SANITIZE=<checks>` (build with `-fsanitize=...`), `STRICT_WARNINGS=1` on macOS
-(fail on return-type/format warnings), `INNOVA_SPINNER=0` (disable the
-build-progress spinner), and the `BOOST_*` / `BDB_*` / `OPENSSL_*` /
+(fail on return-type/format warnings), `INNOVA_BANNER=0` (makefile.unix/osx: disable the
+build start/summary banner), and the `BOOST_*` / `BDB_*` / `OPENSSL_*` /
 `*_ROOT` / `*_PATH` / `*_LIB_SUFFIX` variables for pointing at
 non-standard dependency locations.
 
