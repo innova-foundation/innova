@@ -246,7 +246,9 @@ void SendCoinsDialog::on_sendButton_clicked()
         break;
     case WalletModel::TransactionCreationFailed:
         QMessageBox::warning(this, tr("Send Coins"),
-            tr("Error: Transaction creation failed. Some inputs may be immature or locked, or there are too many small inputs (try coin control)."),
+            sendstatus.reason.isEmpty()
+                ? tr("Error: Transaction creation failed. Some inputs may be immature or locked, or there are too many small inputs (try coin control).")
+                : tr("Error: Transaction creation failed: %1").arg(sendstatus.reason),
             QMessageBox::Ok, QMessageBox::Ok);
         break;
     case WalletModel::TransactionCommitFailed:
