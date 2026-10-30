@@ -2227,7 +2227,7 @@ bool AppInit2()
 
     InitIBDBatching();
 
-    uiInterface.InitMessage(_("Loading block index..."));
+    uiInterface.InitMessage(_("Loading block index (this can take several minutes)..."));
     printf("Loading block index...\n");
     nStart = GetTimeMillis();
     if (!LoadBlockIndex())
@@ -2249,7 +2249,7 @@ bool AppInit2()
     if (fBlockDataRepair)
     {
         printf("Block data repair mode: fetching missing block data, then shutting down for a restart\n");
-        uiInterface.InitMessage(_("Repairing block data..."));
+        uiInterface.InitMessage(_("Repairing block data: fetching missing blocks, then restarting..."));
     }
 
     // Validate the retained connect-time DAG plans before loading any wallet or worker. Legacy
@@ -2623,7 +2623,7 @@ bool AppInit2()
     if (!fBlockDataRepair && pindexBest != pindexRescan && pindexBest && pindexRescan &&
         pindexBest->nHeight > pindexRescan->nHeight)
     {
-        uiInterface.InitMessage(_("Rescanning..."));
+        uiInterface.InitMessage(strprintf(_("Rescanning wallet: blocks %d to %d..."), pindexRescan->nHeight, pindexBest->nHeight));
         printf("Rescanning last %i blocks (from block %i)...\n", pindexBest->nHeight - pindexRescan->nHeight, pindexRescan->nHeight);
         nStart = GetTimeMillis();
         int nWalletTransactionsFound = 0;
