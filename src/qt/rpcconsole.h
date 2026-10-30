@@ -18,6 +18,7 @@ namespace Ui {
 QT_BEGIN_NAMESPACE
 class QItemSelection;
 class QLabel;
+class QThread;
 QT_END_NAMESPACE
 
 /** Local Bitcoin RPC console. */
@@ -28,6 +29,8 @@ class RPCConsole: public QDialog
 public:
     explicit RPCConsole(QWidget *parent = 0);
     ~RPCConsole();
+
+    void stopExecutorAndWait();
 
     void setClientModel(ClientModel *model);
 
@@ -90,6 +93,7 @@ signals:
     void cmdRequest(const QString &command);
 
 private:
+    QThread* executorThread;
     static QString FormatBytes(quint64 bytes);
     void setTrafficGraphRange(int mins);
     /** show detailed information on ui about selected node */

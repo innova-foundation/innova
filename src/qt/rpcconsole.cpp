@@ -195,6 +195,7 @@ void RPCExecutor::request(const QString &command)
 
 RPCConsole::RPCConsole(QWidget *parent) :
     QDialog(parent),
+    executorThread(0),
     ui(new Ui::RPCConsole),
     historyPtr(0),
     cachedNodeid(-1),
@@ -250,8 +251,18 @@ RPCConsole::RPCConsole(QWidget *parent) :
 
 RPCConsole::~RPCConsole()
 {
-    emit stopExecutor();
+    stopExecutorAndWait();
     delete ui;
+}
+
+void RPCConsole::stopExecutorAndWait()
+{
+    if (!executorThread)
+        return;
+    emit stopExecutor();
+    executorThread->wait();
+    delete executorThread;
+    executorThread = 0;
 }
 
 bool RPCConsole::eventFilter(QObject* obj, QEvent *event)
@@ -556,6 +567,7 @@ void RPCConsole::browseHistory(int offset)
 void RPCConsole::startExecutor()
 {
     QThread* thread = new QThread;
+    executorThread = thread;
     RPCExecutor *executor = new RPCExecutor();
     executor->moveToThread(thread);
 
@@ -570,8 +582,6 @@ void RPCConsole::startExecutor()
     // - quit the Qt event loop in the execution thread
     connect(this, SIGNAL(stopExecutor()), executor, SLOT(deleteLater()));
     connect(this, SIGNAL(stopExecutor()), thread, SLOT(quit()));
-    // Queue the thread for deletion (in this thread) when it is finished
-    connect(thread, SIGNAL(finished()), thread, SLOT(deleteLater()));
 
     // Default implementation of QThread::run() simply spins up an event loop in the thread,
     // which is what we want.

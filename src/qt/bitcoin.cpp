@@ -2,6 +2,7 @@
  * W.J. van der Laan 2011-2012
  */
 #include "bitcoingui.h"
+#include "rpcconsole.h"
 #include "clientmodel.h"
 #include "walletmodel.h"
 #include "optionsmodel.h"
@@ -321,6 +322,9 @@ int main(int argc, char *argv[])
             splash.show();
             splashref = &splash;
             uiInterface.InitMessage(_("Innova is shutting down, please do not turn off your computer..."));
+
+            for (RPCConsole* console : window.findChildren<RPCConsole*>())
+                console->stopExecutorAndWait();
 
             // Shutdown the core and its threads, but don't exit Bitcoin-Qt here
             Shutdown(NULL);
