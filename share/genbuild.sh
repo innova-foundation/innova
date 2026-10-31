@@ -21,11 +21,14 @@ if command -v git >/dev/null 2>&1 &&
     # clean 'dirty' status of touched files that haven't been modified
     git diff >/dev/null 2>/dev/null
 
-    # Bind RPC/release evidence to the complete source commit, not an
-    # ambiguous abbreviated describe.  Preserve a human-friendly tag prefix
-    # and make any tracked or untracked worktree change explicit.
-    DESCRIBE="$(git describe --always --abbrev=12 2>/dev/null)"
+    VERHDR="$(dirname "$0")/../src/clientversion.h"
+    VER=""
+    for part in MAJOR MINOR REVISION BUILD; do
+        n="$(sed -n "s/^#define CLIENT_VERSION_$part *\([0-9][0-9]*\).*/\1/p" "$VERHDR" 2>/dev/null)"
+        VER="${VER:+$VER.}$n"
+    done
     COMMIT="$(git rev-parse --verify HEAD 2>/dev/null)"
+    DESCRIBE="v${VER}-g$(git rev-parse --short=12 HEAD 2>/dev/null)"
     DIRTYSUFFIX=""
     # An untracked file still changes what was built, so it counts as dirty
     # here where git diff-index alone would call the tree clean.
