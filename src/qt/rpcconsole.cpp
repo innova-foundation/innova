@@ -5,6 +5,7 @@
 #include "innovarpc.h"
 #include "guiutil.h"
 #include "peertablemodel.h"
+#include "main.h"
 
 #include <QTime>
 #include <QTimer>
@@ -203,7 +204,9 @@ RPCConsole::RPCConsole(QWidget *parent) :
     dagTips(0),
     dagInferredK(0),
     dagAdaptiveLimit(0),
-    dagFinality(0)
+    dagFinality(0),
+    forkMergeset(0),
+    forkMigration(0)
 {
     ui->setupUi(this);
 
@@ -224,6 +227,16 @@ RPCConsole::RPCConsole(QWidget *parent) :
     dagLayout->addRow(tr("Adaptive limit"), dagAdaptiveLimit);
     dagLayout->addRow(tr("Finality"), dagFinality);
     ui->gridLayout->addWidget(dagGroup, 22, 0, 1, 2);
+
+    QGroupBox *forkGroup = new QGroupBox(tr("Fork"), ui->tab_info);
+    QFormLayout *forkLayout = new QFormLayout(forkGroup);
+    forkMergeset = new QLabel(tr("N/A"), forkGroup);
+    forkMigration = new QLabel(tr("N/A"), forkGroup);
+    forkMergeset->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    forkMigration->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    forkLayout->addRow(tr("Mergeset fork"), forkMergeset);
+    forkLayout->addRow(tr("Free migration"), forkMigration);
+    ui->gridLayout->addWidget(forkGroup, 23, 0, 1, 2);
 
 #ifndef Q_OS_MAC
     ui->openDebugLogfileButton->setIcon(QIcon(":/icons/export"));
@@ -443,6 +456,29 @@ void RPCConsole::setNumBlocks(int count, int countOfPeers)
     }
 
     updateDAGInfo();
+    updateForkInfo();
+}
+
+void RPCConsole::updateForkInfo()
+{
+    const int nHeight = nBestHeight;
+
+    if (!IsMergesetConfigured())
+        forkMergeset->setText(tr("Not scheduled"));
+    else if (nHeight < FORK_HEIGHT_MERGESET)
+        forkMergeset->setText(tr("Block %1 - %2 blocks left").arg(FORK_HEIGHT_MERGESET).arg(FORK_HEIGHT_MERGESET - nHeight));
+    else
+        forkMergeset->setText(tr("Active since block %1").arg(FORK_HEIGHT_MERGESET));
+
+    const int nEnd = GetMigrationEndHeight();
+    if (!IsMigrationConfigured())
+        forkMigration->setText(tr("Not scheduled"));
+    else if (nHeight < FORK_HEIGHT_MIGRATION)
+        forkMigration->setText(tr("Opens at block %1").arg(FORK_HEIGHT_MIGRATION));
+    else if (IsMigrationActiveAtHeight(nHeight))
+        forkMigration->setText(tr("Open until block %1 - %2 blocks left").arg(nEnd).arg(nEnd - nHeight));
+    else
+        forkMigration->setText(tr("Closed at block %1").arg(nEnd));
 }
 
 void RPCConsole::updateDAGInfo()
