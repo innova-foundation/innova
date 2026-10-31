@@ -189,11 +189,47 @@ vector<unsigned char> ParseHexO(const Object& o, string strKey)
 /// Note: This interface may still be subject to change.
 ///
 
+static const char* const HELP_GROUPS[] = {
+    "Wallet", "Privacy and migration", "Blockchain and IDAG", "Network", "Mining", "Staking and collateral nodes", "Messaging, names and files", "Control"
+};
+
+// First matching prefix wins
+static int HelpGroup(const string& m)
+{
+    static const struct { const char* prefix; int group; } table[] = {
+        {"getstakinginfo", 5}, {"getfinalitystaking", 5},
+        {"z_", 1}, {"n_", 1}, {"iv5", 1}, {"anon", 1}, {"sendanon", 1}, {"sendinntoanon", 1}, {"checkanon", 1},
+        {"estimateanon", 1}, {"reloadanon", 1}, {"getanon", 1}, {"mix", 1}, {"startmixing", 1}, {"stopmixing", 1},
+        {"getmixing", 1}, {"listcompromised", 1}, {"getforkinfo", 1}, {"getv5migration", 1}, {"getnewstealth", 1},
+        {"liststealth", 1}, {"importstealth", 1}, {"sendtostealth", 1},
+        {"getdag", 2}, {"getepoch", 2}, {"getfinality", 2}, {"submitfinality", 2}, {"isblockfinalized", 2},
+        {"getblock", 2}, {"getbestblock", 2}, {"getrawmempool", 2}, {"getdifficulty", 2}, {"getcheckpoint", 2},
+        {"getstakemodifier", 2}, {"invalidateblock", 2}, {"reconsiderblock", 2}, {"setbestblock", 2},
+        {"erasedag", 2}, {"gettxout", 2}, {"getsubsidy", 2}, {"searchrawtransactions", 2}, {"dumpbootstrap", 2},
+        {"downloadbootstrap", 2}, {"getspv", 2}, {"spvrescan", 2},
+        {"getpeer", 3}, {"getconnection", 3}, {"getaddednode", 3}, {"ping", 3}, {"getnet", 3},
+        {"disconnectnode", 3}, {"addnode", 3}, {"setban", 3}, {"listbanned", 3}, {"clearbanned", 3},
+        {"getwork", 4}, {"getblocktemplate", 4}, {"submitblock", 4}, {"setgenerate", 4}, {"startmining", 4},
+        {"stopmining", 4}, {"getmining", 4}, {"gethashes", 4}, {"getpool", 4},
+        {"reservebalance", 5}, {"delegatestake", 5}, {"listcold", 5}, {"getcoldstaking", 5},
+        {"revokecoldstaking", 5}, {"getnewstaking", 5}, {"masternode", 5}, {"collateralnode", 5},
+        {"smsg", 6}, {"name_", 6}, {"sendtoname", 6}, {"hyperfile", 6}, {"proofofdata", 6}, {"podverify", 6},
+        {"nyx", 6},
+        {"help", 7}, {"stop", 7}, {"getinfo", 7}, {"setdebug", 7},
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+        if (m.compare(0, strlen(table[i].prefix), table[i].prefix) == 0)
+            return table[i].group;
+    return 0;
+}
+
 string CRPCTable::help(string strCommand) const
 {
     //Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
     bool fAllAnon = strCommand == "anon" ? true : false;
-    printf("fAllAnon %d %s\n", fAllAnon, strCommand.c_str());
+    const bool fList = strCommand.empty();
+    const size_t nGroups = sizeof(HELP_GROUPS) / sizeof(HELP_GROUPS[0]);
+    vector<string> vGroup(nGroups);
 
     string strRet;
     set<rpcfn_type> setDone;
@@ -228,9 +264,19 @@ string CRPCTable::help(string strCommand) const
             if (fAllAnon || strCommand == "")
                 if (strHelp.find('\n') != string::npos)
                     strHelp = strHelp.substr(0, strHelp.find('\n'));
-            strRet += strHelp + "\n";
+            if (fList)
+                vGroup[HelpGroup(strMethod)] += "  " + strHelp + "\n";
+            else
+                strRet += strHelp + "\n";
         };
     };
+    if (fList)
+    {
+        for (size_t i = 0; i < nGroups; i++)
+            if (!vGroup[i].empty())
+                strRet += string(strRet.empty() ? "" : "\n") + "== " + HELP_GROUPS[i] + " ==\n" + vGroup[i];
+        strRet += "\nUse 'help <command>' for details on one command.\n";
+    }
     if (strRet == "")
         strRet = strprintf("help: unknown command: %s\n", strCommand.c_str());
     strRet = strRet.substr(0,strRet.size()-1);
