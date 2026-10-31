@@ -15,11 +15,20 @@ static const std::string GITHUB_API_LATEST = "https://api.github.com/repos/innov
 
 static const std::string BOOTSTRAP_FILENAME = "innovabootstrap.zip";
 
-static const std::string FALLBACK_BOOTSTRAP_URL = "https://github.com/innova-foundation/innova/releases/download/v5.0.0.0/innovabootstrap.zip";
+static const std::string GITHUB_API_RELEASES = "https://api.github.com/repos/innova-foundation/innova/releases?per_page=15";
+
+// sha256sum-format list of the split parts (innovabootstrap.zip.001, ...) and the joined zip
+static const std::string BOOTSTRAP_MANIFEST = "innovabootstrap.sha256";
 
 typedef std::function<void(int64_t, int64_t)> ProgressCallback;
 
 std::string FetchLatestBootstrapUrl();
+
+std::string FetchLatestManifestUrl();
+
+bool ApplyManifest(const std::string& manifestUrl,
+                   const boost::filesystem::path& dataDir,
+                   ProgressCallback progressCallback = nullptr);
 
 bool Download(const std::string& url,
               const boost::filesystem::path& destPath,
