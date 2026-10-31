@@ -13,11 +13,13 @@
 #include "initexecutor.h"
 #include "ringsig.h"
 #include "init.h"
+#include "bootstrap.h"
 #include "ui_interface.h"
 #include "qtipcserver.h"
 
 #include <QApplication>
 #include <QMessageBox>
+#include <QPushButton>
 #if QT_VERSION < 0x050000
 #include <QTextCodec>
 #endif
@@ -223,6 +225,22 @@ int main(int argc, char *argv[])
         GUIUtil::HelpMessageBox help;
         help.showOrPrint();
         return 1;
+    }
+
+    if (!GetBoolArg("-testnet", false) && !GetBoolArg("-regtest", false) &&
+        !mapArgs.count("-getbootstrap") && !GetBoolArg("-nobootstrap", false) &&
+        Bootstrap::IsNeeded(GetDataDir()))
+    {
+        QMessageBox box(QMessageBox::Question, "Innova",
+                        QObject::tr("No blockchain data was found.\n\n"
+                                    "Download the bootstrap from the latest Innova release (several GB, much faster), "
+                                    "or sync every block from the network?"));
+        QPushButton* bootstrap = box.addButton(QObject::tr("Download bootstrap"), QMessageBox::AcceptRole);
+        box.addButton(QObject::tr("Sync from network"), QMessageBox::RejectRole);
+        box.setDefaultButton(bootstrap);
+        box.exec();
+        if (box.clickedButton() == bootstrap)
+            SoftSetBoolArg("-getbootstrap", true);
     }
 
     // show a persistent splash screen unless it is disabled from flags

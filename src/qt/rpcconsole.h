@@ -117,8 +117,11 @@ private:
     QLabel *dagInferredK;
     QLabel *dagAdaptiveLimit;
     QLabel *dagFinality;
+    QLabel *forkMergeset;
+    QLabel *forkMigration;
     void startExecutor();
     void updateDAGInfo();
+    void updateForkInfo();
 };
 
 #endif // RPCCONSOLE_H
