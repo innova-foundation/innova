@@ -10,7 +10,10 @@
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 #include <algorithm>
+#include <map>
 #include <vector>
+
+#include <openssl/evp.h>
 
 #include "minizip/unzip.h"
 
@@ -111,7 +114,7 @@ static std::string ExtractJsonString(const std::string& json, const std::string&
     return json.substr(startQuote + 1, endQuote - startQuote - 1);
 }
 
-static const size_t MAX_API_RESPONSE_SIZE = 1048576;
+static const size_t MAX_API_RESPONSE_SIZE = 4194304;
 
 static size_t WriteStringCallbackLimited(void* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -127,31 +130,31 @@ static size_t WriteStringCallbackLimited(void* ptr, size_t size, size_t nmemb, v
     return totalSize;
 }
 
-std::string FetchLatestBootstrapUrl()
+static bool FetchString(const std::string& url, std::string& response, bool fGitHubApi)
 {
     CURL* curl = curl_easy_init();
     if (!curl) {
         printf("Bootstrap: Failed to initialize CURL\n");
-        return "";
+        return false;
     }
 
-    std::string response;
-    response.reserve(65536);
-
-    curl_easy_setopt(curl, CURLOPT_URL, GITHUB_API_LATEST.c_str());
+    response.clear();
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteStringCallbackLimited);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Core");
-
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
     struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, "Accept: application/vnd.github.v3+json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (fGitHubApi) {
+        headers = curl_slist_append(headers, "Accept: application/vnd.github.v3+json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -159,9 +162,40 @@ std::string FetchLatestBootstrapUrl()
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        printf("Bootstrap: GitHub API request failed: %s\n", curl_easy_strerror(res));
-        return "";
+        printf("Bootstrap: Request failed for %s: %s\n", url.c_str(), curl_easy_strerror(res));
+        return false;
     }
+    return true;
+}
+
+std::string FetchLatestManifestUrl()
+{
+    std::string response;
+    if (!FetchString(GITHUB_API_RELEASES, response, true))
+        return "";
+
+    // Releases come newest first; take the first one that carries a manifest
+    const std::string suffix = "/" + BOOTSTRAP_MANIFEST;
+    size_t pos = 0;
+    while ((pos = response.find("\"browser_download_url\"", pos)) != std::string::npos) {
+        std::string url = ExtractJsonString(response.substr(pos, 1024), "browser_download_url");
+        pos++;
+        if (url.size() > suffix.size() && url.compare(url.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            if (!IsUrlAllowed(url))
+                return "";
+            printf("Bootstrap: Found manifest %s\n", url.c_str());
+            return url;
+        }
+    }
+    printf("Bootstrap: No release carries %s\n", BOOTSTRAP_MANIFEST.c_str());
+    return "";
+}
+
+std::string FetchLatestBootstrapUrl()
+{
+    std::string response;
+    if (!FetchString(GITHUB_API_LATEST, response, true))
+        return "";
 
     size_t pos = 0;
     while ((pos = response.find(BOOTSTRAP_FILENAME, pos)) != std::string::npos) {
@@ -180,7 +214,9 @@ std::string FetchLatestBootstrapUrl()
         std::string assetJson = response.substr(assetStart, assetEnd - assetStart + 1);
 
         std::string downloadUrl = ExtractJsonString(assetJson, "browser_download_url");
-        if (!downloadUrl.empty()) {
+        const std::string suffix = "/" + BOOTSTRAP_FILENAME;
+        if (downloadUrl.size() > suffix.size() &&
+            downloadUrl.compare(downloadUrl.size() - suffix.size(), suffix.size(), suffix) == 0) {
             if (!IsUrlAllowed(downloadUrl)) {
                 printf("Bootstrap: SECURITY - Extracted URL failed validation\n");
                 return "";
@@ -198,12 +234,7 @@ std::string FetchLatestBootstrapUrl()
 
 std::string GetDefaultUrl()
 {
-    std::string url = FetchLatestBootstrapUrl();
-    if (url.empty()) {
-        printf("Bootstrap: Using fallback URL\n");
-        return FALLBACK_BOOTSTRAP_URL;
-    }
-    return url;
+    return FetchLatestBootstrapUrl();
 }
 
 bool Download(const std::string& url,
@@ -353,33 +384,33 @@ static std::string SanitizeZipFilename(const std::string& filename)
 bool ExtractZip(const boost::filesystem::path& zipPath,
                 const boost::filesystem::path& destDir)
 {
-    unzFile zf = unzOpen(zipPath.string().c_str());
+    unzFile zf = unzOpen64(zipPath.string().c_str());
     if (!zf) {
         printf("Bootstrap: Failed to open zip file: %s\n", zipPath.string().c_str());
         return false;
     }
 
-    unz_global_info gi;
-    if (unzGetGlobalInfo(zf, &gi) != UNZ_OK) {
+    unz_global_info64 gi;
+    if (unzGetGlobalInfo64(zf, &gi) != UNZ_OK) {
         printf("Bootstrap: Failed to read zip info\n");
         unzClose(zf);
         return false;
     }
 
     if (gi.number_entry > 10000) {
-        printf("Bootstrap: Zip contains too many files (%lu), aborting\n", gi.number_entry);
+        printf("Bootstrap: Zip contains too many files (%llu), aborting\n", (unsigned long long)gi.number_entry);
         unzClose(zf);
         return false;
     }
 
-    printf("Bootstrap: Extracting %lu files...\n", gi.number_entry);
+    printf("Bootstrap: Extracting %llu files...\n", (unsigned long long)gi.number_entry);
 
     char filename[512];
     char buf[8192];
 
-    for (uLong i = 0; i < gi.number_entry; i++) {
-        unz_file_info fi;
-        if (unzGetCurrentFileInfo(zf, &fi, filename, sizeof(filename),
+    for (ZPOS64_T i = 0; i < gi.number_entry; i++) {
+        unz_file_info64 fi;
+        if (unzGetCurrentFileInfo64(zf, &fi, filename, sizeof(filename),
                                    NULL, 0, NULL, 0) != UNZ_OK) {
             printf("Bootstrap: Failed to get file info\n");
             unzClose(zf);
@@ -494,6 +525,33 @@ bool ExtractZip(const boost::filesystem::path& zipPath,
     return true;
 }
 
+// Extract to a staging dir so a failed run leaves the datadir untouched
+static bool ExtractStaged(const boost::filesystem::path& zipPath,
+                          const boost::filesystem::path& dataDir)
+{
+    boost::filesystem::path stage = dataDir / "bootstrap_extract";
+    boost::system::error_code ec;
+    boost::filesystem::remove_all(stage, ec);
+    boost::filesystem::create_directories(stage);
+
+    bool fOk = ExtractZip(zipPath, stage);
+    if (fOk) {
+        for (boost::filesystem::directory_iterator it(stage), end; it != end; ++it) {
+            boost::filesystem::path target = dataDir / it->path().filename();
+            boost::filesystem::remove_all(target, ec);
+            boost::filesystem::rename(it->path(), target, ec);
+            if (ec) {
+                printf("Bootstrap: Could not move %s into place: %s\n",
+                       target.string().c_str(), ec.message().c_str());
+                fOk = false;
+                break;
+            }
+        }
+    }
+    boost::filesystem::remove_all(stage, ec);
+    return fOk;
+}
+
 bool IsNeeded(const boost::filesystem::path& dataDir)
 {
     boost::filesystem::path blkFile = dataDir / "blk0001.dat";
@@ -507,29 +565,207 @@ bool IsNeeded(const boost::filesystem::path& dataDir)
 
 void CleanupTempFiles(const boost::filesystem::path& dataDir)
 {
-    boost::filesystem::path tempZip = dataDir / "bootstrap_temp.zip";
-    if (boost::filesystem::exists(tempZip)) {
-        boost::filesystem::remove(tempZip);
+    boost::filesystem::remove(dataDir / "bootstrap_temp.zip");
+    boost::filesystem::remove(dataDir / "bootstrap_part.tmp");
+    boost::system::error_code ec;
+    boost::filesystem::remove_all(dataDir / "bootstrap_extract", ec);
+}
+
+static std::string Sha256File(const boost::filesystem::path& path)
+{
+    FILE* f = fopen(path.string().c_str(), "rb");
+    if (!f)
+        return "";
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    std::vector<unsigned char> buf(1 << 20);
+    size_t n;
+    while ((n = fread(buf.data(), 1, buf.size(), f)) > 0)
+        EVP_DigestUpdate(ctx, buf.data(), n);
+    bool fError = ferror(f) != 0;
+    fclose(f);
+    unsigned char md[EVP_MAX_MD_SIZE];
+    unsigned int mdLen = 0;
+    EVP_DigestFinal_ex(ctx, md, &mdLen);
+    EVP_MD_CTX_free(ctx);
+    if (fError)
+        return "";
+    return HexStr(md, md + mdLen);
+}
+
+static bool AppendFile(const boost::filesystem::path& from, const boost::filesystem::path& to)
+{
+    FILE* in = fopen(from.string().c_str(), "rb");
+    FILE* out = fopen(to.string().c_str(), "ab");
+    bool fOk = in && out;
+    std::vector<char> buf(1 << 20);
+    size_t n;
+    while (fOk && (n = fread(buf.data(), 1, buf.size(), in)) > 0)
+        fOk = fwrite(buf.data(), 1, n, out) == n;
+    if (fOk && ferror(in))
+        fOk = false;
+    if (in)
+        fclose(in);
+    if (out && fclose(out) != 0)
+        fOk = false;
+    return fOk;
+}
+
+static bool IsPartName(const std::string& name)
+{
+    // innovabootstrap.zip.NNN
+    if (name.size() != BOOTSTRAP_FILENAME.size() + 4 || name.compare(0, BOOTSTRAP_FILENAME.size(), BOOTSTRAP_FILENAME) != 0)
+        return false;
+    return name[BOOTSTRAP_FILENAME.size()] == '.' && isdigit((unsigned char)name[name.size() - 3]) &&
+           isdigit((unsigned char)name[name.size() - 2]) && isdigit((unsigned char)name[name.size() - 1]);
+}
+
+bool ApplyManifest(const std::string& manifestUrl,
+                   const boost::filesystem::path& dataDir,
+                   ProgressCallback progressCallback)
+{
+    if (!IsUrlAllowed(manifestUrl))
+        return false;
+
+    std::string manifest;
+    if (!FetchString(manifestUrl, manifest, false)) {
+        printf("Bootstrap: Could not download the manifest\n");
+        return false;
     }
+
+    std::map<std::string, std::string> mapParts;
+    std::string strZipHash;
+    std::vector<std::string> vLines;
+    boost::split(vLines, manifest, boost::is_any_of("\n"));
+    for (std::string line : vLines) {
+        boost::trim(line);
+        if (line.empty() || line[0] == '#')
+            continue;
+        size_t sp = line.find(' ');
+        if (sp != 64 || !IsHex(line.substr(0, 64))) {
+            printf("Bootstrap: Malformed manifest line: %s\n", line.c_str());
+            return false;
+        }
+        std::string name = line.substr(sp);
+        boost::trim_left_if(name, boost::is_any_of(" *"));
+        std::string hash = boost::to_lower_copy(line.substr(0, 64));
+        if (name == BOOTSTRAP_FILENAME)
+            strZipHash = hash;
+        else if (IsPartName(name))
+            mapParts[name] = hash;
+        else {
+            printf("Bootstrap: Unexpected file in manifest: %s\n", name.c_str());
+            return false;
+        }
+    }
+
+    if (mapParts.empty() || strZipHash.empty() || mapParts.size() > 999) {
+        printf("Bootstrap: Manifest must list the parts and the joined zip\n");
+        return false;
+    }
+    int nExpected = 1;
+    for (const auto& item : mapParts) {
+        if (item.first != strprintf("%s.%03d", BOOTSTRAP_FILENAME.c_str(), nExpected++)) {
+            printf("Bootstrap: Manifest parts are not numbered 001..%03d\n", (int)mapParts.size());
+            return false;
+        }
+    }
+
+    const std::string base = manifestUrl.substr(0, manifestUrl.rfind('/') + 1);
+    boost::filesystem::path tempZip = dataDir / "bootstrap_temp.zip";
+    boost::filesystem::path tempPart = dataDir / "bootstrap_part.tmp";
+    CleanupTempFiles(dataDir);
+
+    int nPart = 0;
+    const int nParts = mapParts.size();
+    int64_t nPartSize = 0;
+    for (const auto& item : mapParts) {
+        ++nPart;
+        uiInterface.InitMessage(strprintf(_("Downloading blockchain bootstrap (part %d of %d)..."), nPart, nParts));
+        printf("Bootstrap: Part %d of %d: %s\n", nPart, nParts, item.first.c_str());
+
+        auto partProgress = [&](int64_t downloaded, int64_t total) {
+            if (!progressCallback || total <= 0)
+                return;
+            const int64_t nFull = nPartSize > 0 ? nPartSize : total;
+            const int64_t nAll = (int64_t)(nParts - 1) * nFull + (nPart == nParts ? total : nFull);
+            progressCallback((int64_t)(nPart - 1) * nFull + downloaded, nAll);
+        };
+
+        if (!Download(base + item.first, tempPart, partProgress)) {
+            CleanupTempFiles(dataDir);
+            return false;
+        }
+        if (Sha256File(tempPart) != item.second) {
+            printf("Bootstrap: Checksum mismatch on %s\n", item.first.c_str());
+            CleanupTempFiles(dataDir);
+            return false;
+        }
+        if (!AppendFile(tempPart, tempZip)) {
+            printf("Bootstrap: Could not join %s (disk full?)\n", item.first.c_str());
+            CleanupTempFiles(dataDir);
+            return false;
+        }
+        if (nPart == 1) {
+            // The joined zip and the extracted copy are on disk together
+            nPartSize = boost::filesystem::file_size(tempPart);
+            const uint64_t nNeed = (uint64_t)nPartSize * nParts * 2 + 1073741824ULL;
+            if (boost::filesystem::space(dataDir).available < nNeed) {
+                printf("Bootstrap: Not enough disk space, need about %llu MB free\n",
+                       (unsigned long long)(nNeed / 1048576));
+                uiInterface.InitMessage(_("Not enough disk space for the bootstrap."));
+                CleanupTempFiles(dataDir);
+                return false;
+            }
+        }
+        boost::filesystem::remove(tempPart);
+    }
+
+    uiInterface.InitMessage(_("Verifying blockchain bootstrap..."));
+    if (Sha256File(tempZip) != strZipHash) {
+        printf("Bootstrap: Checksum mismatch on the joined zip\n");
+        CleanupTempFiles(dataDir);
+        return false;
+    }
+
+    uiInterface.InitMessage(_("Extracting blockchain bootstrap..."));
+    bool fOk = ExtractStaged(tempZip, dataDir);
+    CleanupTempFiles(dataDir);
+    if (fOk) {
+        uiInterface.InitMessage(_("Bootstrap applied successfully."));
+        printf("Bootstrap: Applied successfully to %s\n", dataDir.string().c_str());
+    }
+    return fOk;
 }
 
 bool DownloadAndApply(const std::string& url,
                       const boost::filesystem::path& dataDir,
                       ProgressCallback progressCallback)
 {
+    if (!boost::filesystem::exists(dataDir)) {
+        boost::filesystem::create_directories(dataDir);
+    }
+
+    const std::string manifestSuffix = "/" + BOOTSTRAP_MANIFEST;
+    std::string manifestUrl;
+    if (url.empty()) {
+        printf("Bootstrap: Looking for the newest release with a bootstrap...\n");
+        manifestUrl = FetchLatestManifestUrl();
+    } else if (url.size() > manifestSuffix.size() &&
+               url.compare(url.size() - manifestSuffix.size(), manifestSuffix.size(), manifestSuffix) == 0) {
+        manifestUrl = url;
+    }
+    if (!manifestUrl.empty())
+        return ApplyManifest(manifestUrl, dataDir, progressCallback);
+
     std::string downloadUrl = url;
     if (downloadUrl.empty()) {
-        printf("Bootstrap: Fetching latest release URL...\n");
         downloadUrl = GetDefaultUrl();
     }
 
     if (downloadUrl.empty()) {
         printf("Bootstrap: No valid download URL available\n");
         return false;
-    }
-
-    if (!boost::filesystem::exists(dataDir)) {
-        boost::filesystem::create_directories(dataDir);
     }
 
     boost::filesystem::path tempZip = dataDir / "bootstrap_temp.zip";
@@ -544,7 +780,7 @@ bool DownloadAndApply(const std::string& url,
 
     uiInterface.InitMessage(_("Extracting blockchain bootstrap..."));
 
-    if (!ExtractZip(tempZip, dataDir)) {
+    if (!ExtractStaged(tempZip, dataDir)) {
         CleanupTempFiles(dataDir);
         return false;
     }

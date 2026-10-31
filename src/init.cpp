@@ -2265,7 +2265,7 @@ bool AppInit2()
 
     // ********************************************************* Step 6.5: Bootstrap download (optional)
 
-    if (Bootstrap::IsNeeded(GetDataDir()))
+    if (!fTestNet && !fRegTest && Bootstrap::IsNeeded(GetDataDir()))
     {
         bool fGetBootstrap = GetBoolArg("-getbootstrap", false);
         bool fNoBootstrap = GetBoolArg("-nobootstrap", false);
@@ -2281,7 +2281,7 @@ bool AppInit2()
             printf("===============================================================\n");
             printf("\n");
             printf("  No blockchain data found. How would you like to sync?\n\n");
-            printf("  [1] Download bootstrap (faster, ~4GB download)\n");
+            printf("  [1] Download bootstrap (faster, several GB download)\n");
             printf("  [2] Sync from genesis block (slower, full verification)\n");
             printf("\n");
             printf("  Enter choice [1/2]: ");
@@ -2306,12 +2306,16 @@ bool AppInit2()
                     int64_t percent = static_cast<int64_t>((static_cast<double>(downloaded) / total) * 100.0);
                     if (percent > 100) percent = 100;
                     if (percent < 0) percent = 0;
-                    if (percent != lastPercent && percent % 5 == 0) {
-                        printf("Bootstrap download: %lld%% (%lld MB / %lld MB)\n",
-                               (long long)percent,
-                               (long long)(downloaded / 1048576),
-                               (long long)(total / 1048576));
-                        fflush(stdout);
+                    if (percent != lastPercent) {
+                        uiInterface.InitMessage(strprintf(_("Downloading blockchain bootstrap... %d%% (%d / %d MB)"),
+                                                          (int)percent, (int)(downloaded / 1048576), (int)(total / 1048576)));
+                        if (percent % 5 == 0) {
+                            printf("Bootstrap download: %lld%% (%lld MB / %lld MB)\n",
+                                   (long long)percent,
+                                   (long long)(downloaded / 1048576),
+                                   (long long)(total / 1048576));
+                            fflush(stdout);
+                        }
                         lastPercent = percent;
                     }
                 }
@@ -2320,6 +2324,10 @@ bool AppInit2()
             if (!Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback))
             {
                 printf("Bootstrap download failed. Starting normal sync from genesis block.\n");
+#ifdef QT_GUI
+                uiInterface.ThreadSafeMessageBox(_("The bootstrap could not be downloaded or applied, so Innova will sync from the network instead. See debug.log for the reason."),
+                                                 _("Innova"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+#endif
             }
             printf("\n");
         }
