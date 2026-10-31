@@ -440,7 +440,9 @@ private:
             return;
         }
 
-        const int p2p = (int)GetArg("-port", (int64_t)GetDefaultPort());
+        // fTestNet/fRegTest are not set yet in the daemon parent
+        const int64_t p2pDefault = GetBoolArg("-regtest", false) ? 18444 : (GetBoolArg("-testnet", false) ? 15539 : 14530);
+        const int p2p = (int)GetArg("-port", p2pDefault);
         const int rpc = (int)GetArg("-rpcport", (int64_t)(GetBoolArg("-testnet", false) ? 15531 : 14531));
         const char* build =
 #ifdef __OPTIMIZE__
