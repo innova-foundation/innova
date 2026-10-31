@@ -32,13 +32,16 @@ static const int DATABASE_VERSION = 21212;
 // network protocol versioning
 //
 
-static const int PROTOCOL_VERSION = 50100;
+static const int PROTOCOL_VERSION = 52002;
 
 // peers below this are dropped once past the DAG fork
 static const int DAG_PROTO_VERSION = 50000;
 
 // peers below this are dropped once the mergeset fork is active
 static const int MERGESET_PROTO_VERSION = 50100;
+
+// peers below this are dropped once past the DAG fork: v5.2.0.2 is the network standard
+static const int V52_PROTO_VERSION = 52002;
 
 // intial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 21212;

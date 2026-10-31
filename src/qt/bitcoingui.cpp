@@ -1015,7 +1015,7 @@ void BitcoinGUI::updateForkBanner()
         return;
     }
 
-    QString text = tr("Hard fork at block %1 - %2 blocks left. Make sure you run v5.2.0.1 or later.")
+    QString text = tr("Hard fork at block %1 - %2 blocks left. Make sure you run v5.2.0.2 or later.")
         .arg(nFork).arg(nFork - nBestHeight);
 
     int nOutdated = 0;
