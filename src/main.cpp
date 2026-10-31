@@ -18606,6 +18606,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return false;
         }
 
+        if (pfrom->nVersion < V52_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
+        {
+            printf("peer %s version %d is older than v5.2.0.2; disconnecting\n",
+                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
+            pfrom->MarkDisconnect("pre-v52-version");
+            return false;
+        }
+
         /*
         if (pfrom->nVersion < PROTO_VERSION)
         {
