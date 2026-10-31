@@ -48,6 +48,7 @@ irc=0
 upnp=0
 nativetor=0
 idns=0
+nobootstrap=1
 staking=0
 connect=127.0.0.1:1
 EOF
