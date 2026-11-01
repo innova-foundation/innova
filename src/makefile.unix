@@ -404,6 +404,7 @@ TEST_OBJS= \
     obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
+    obj/test/nyx_v2_tests.o \
     obj/test/base58_tests.o \
     obj/test/bip32_tests.o \
     obj/test/stealth_retirement_tests.o \
@@ -534,6 +535,15 @@ $(FUZZ_DESERIALIZE_OBJ): test/fuzz/fuzz_deserialize.cpp
 fuzz-deserialize-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
 
+# The v2 wire layer is pure functions of peer bytes; only OpenSSL is linked.
+FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse
+FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp
+
+fuzz-nyx-v2-libfuzzer:
+	for t in $(FUZZ_NYX_TARGETS); do \
+	    $(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $$t test/fuzz/$$t.cpp $(FUZZ_NYX_SRCS) $(LIBS) || exit 1; \
+	done
+
 FUZZ_SCRIPT_BIN ?= fuzz_script
 FUZZ_BLOCK_HEADER_BIN ?= fuzz_block_header
 
@@ -567,7 +577,7 @@ FUZZ_PRIVACY_PAYLOAD_SRCS ?= test/fuzz/fuzz_privacy_payload.cpp
 FUZZ_PRIVACY_REPLAY_BIN ?= fuzz_privacy_replay
 FUZZ_PRIVACY_REPLAY_SRCS ?= test/fuzz/fuzz_privacy_replay.cpp
 
-fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer fuzz-privacy-payload-libfuzzer
+fuzz-all-libfuzzer: fuzz-nyx-v2-libfuzzer fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer fuzz-privacy-payload-libfuzzer
 
 check-legacy-aggregate: test_innova
 	./test_innova --run_test=allocator_tests,base32_tests,base58_tests,base64_tests,bignum_tests,Checkpoints_tests,DoS_tests,getarg_tests,key_tests,mruset_tests,multisig_tests,netbase_tests,ringsig_tests,rpc_tests,script_P2SH_tests,script_tests,sigopcount_tests,transaction_tests,uint160_tests,uint256_tests,util_tests,wallet_tests,accounting_tests,miner_tests
@@ -724,6 +734,9 @@ check-smessage-hmac: test_innova
 
 check-smessage-bounds: test_innova
 	./test_innova --run_test=smessage_bounds_tests
+
+check-nyx-v2: test_innova
+	./test_innova --run_test=nyx_v2_tests
 
 # A suite name is not a file name, so no glob over test/*.cpp can enumerate the
 # suites: shielded_nullifier_binding_tests.cpp defines two and test_innova.cpp
