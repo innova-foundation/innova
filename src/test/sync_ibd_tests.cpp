@@ -6,6 +6,7 @@
 
 #include "main.h"
 #include "net.h"
+#include "txdb.h"
 #include "util.h"
 
 #include <map>
@@ -62,6 +63,16 @@ BOOST_AUTO_TEST_CASE(repeated_calls_give_the_same_answer)
     const bool f1 = IsInitialBlockDownload();
     const bool f2 = IsInitialBlockDownload();
     BOOST_CHECK_EQUAL(f1, f2);
+}
+
+BOOST_AUTO_TEST_CASE(ibd_commits_sync_per_batch_or_time_slice)
+{
+    BOOST_CHECK(IBDBatchShouldSync(false, 0, 0, 500, 10000));
+    BOOST_CHECK(IBDBatchShouldSync(true, 0, 0, 0, 10000));
+    BOOST_CHECK(!IBDBatchShouldSync(true, 0, 0, 500, 10000));
+    BOOST_CHECK(!IBDBatchShouldSync(true, 498, 9999, 500, 10000));
+    BOOST_CHECK(IBDBatchShouldSync(true, 499, 0, 500, 10000));
+    BOOST_CHECK(IBDBatchShouldSync(true, 3, 10000, 500, 10000));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

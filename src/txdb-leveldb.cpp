@@ -254,17 +254,45 @@ TxDBReadStatus ParseTxIndexValue(const char* pData, size_t nDataSize,
 } // namespace
 
 static int nIBDBatchSize = 0;
+static int64_t nIBDBatchMs = 0;
 static int nIBDBatchCount = 0;
+static int64_t nIBDBatchLastSyncMs = 0;
 static bool fIBDBatchPending = false;
 static CCriticalSection cs_IBDBatch;
 
 void InitIBDBatching()
 {
-    nIBDBatchSize = GetArg("-ibdbatchsize", 50);
+    nIBDBatchSize = GetArg("-ibdbatchsize", 500);
     if (nIBDBatchSize < 0) nIBDBatchSize = 0;
-    if (nIBDBatchSize > 1000) nIBDBatchSize = 1000;
+    if (nIBDBatchSize > 5000) nIBDBatchSize = 5000;
+    nIBDBatchMs = 1000 * std::max<int64_t>(1, std::min<int64_t>(GetArg("-ibdbatchseconds", 10), 300));
+    nIBDBatchLastSyncMs = GetTimeMillis();
     if (nIBDBatchSize > 0)
-        printf("IBD batching enabled: committing every %d blocks\n", nIBDBatchSize);
+        printf("IBD batching: fsync every %d blocks or %" PRId64" s\n", nIBDBatchSize, nIBDBatchMs / 1000);
+}
+
+bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatchSize, int64_t nSliceMs)
+{
+    if (!fIBD || nBatchSize <= 0)
+        return true;
+    return nPending + 1 >= nBatchSize || nMsSinceSync >= nSliceMs;
+}
+
+bool IBDBlockCommitSync()
+{
+    const bool fIBD = IsInitialBlockDownload() || (fRegTest && GetBoolArg("-ibdbatchalways", false));
+    LOCK(cs_IBDBatch);
+    const int64_t nNowMs = GetTimeMillis();
+    if (IBDBatchShouldSync(fIBD, nIBDBatchCount, nNowMs - nIBDBatchLastSyncMs, nIBDBatchSize, nIBDBatchMs))
+    {
+        nIBDBatchCount = 0;
+        fIBDBatchPending = false;
+        nIBDBatchLastSyncMs = nNowMs;
+        return true;
+    }
+    nIBDBatchCount++;
+    fIBDBatchPending = true;
+    return false;
 }
 
 void FlushIBDBatch()
@@ -275,9 +303,10 @@ void FlushIBDBatch()
         printf("Flushing pending IBD batch (%d blocks)...\n", nIBDBatchCount);
         CTxDB txdbFlush;
         txdbFlush.TxnBegin();
-        txdbFlush.TxnCommit();
+        txdbFlush.TxnCommit(true);
         fIBDBatchPending = false;
         nIBDBatchCount = 0;
+        nIBDBatchLastSyncMs = GetTimeMillis();
     }
 }
 
@@ -462,13 +491,6 @@ bool CTxDB::TxnCommit(bool fSync)
 
     leveldb::WriteOptions writeOptions;
     writeOptions.sync = fSync;
-    if (!fSync && IsInitialBlockDownload() && nIBDBatchSize > 0)
-    {
-        LOCK(cs_IBDBatch);
-        fIBDBatchPending = true;
-        nIBDBatchCount++;
-    }
-
     leveldb::Status status = pdb->Write(writeOptions, activeBatch);
     delete activeBatch;
     activeBatch = NULL;
