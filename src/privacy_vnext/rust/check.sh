@@ -26,6 +26,7 @@ case "$actual_rustc" in
 esac
 
 cc -std=c11 -Wall -Wextra -Werror -Iinclude -fsyntax-only tests/header_compile.c
+cc -std=c11 -Wall -Wextra -Werror -Iinclude -fsyntax-only tests/nyx_pq_header.c
 rustfmt --edition 2021 --check src/lib.rs
 cargo build --locked --offline
 cargo test --locked --offline
