@@ -411,6 +411,7 @@ TEST_OBJS= \
     obj/test/smessage_bounds_tests.o \
     obj/test/nyx_v2_tests.o \
     obj/test/nyx_identity_tests.o \
+    obj/test/nyx_session_tests.o \
     obj/test/nyx_pq_kat_tests.o \
     obj/test/base58_tests.o \
     obj/test/bip32_tests.o \
@@ -543,8 +544,8 @@ fuzz-deserialize-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
 
 # The v2 wire layer is pure functions of peer bytes; only OpenSSL is linked.
-FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse fuzz_nyx_cert fuzz_nyx_keyring fuzz_nyx_bundle
-FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp nyxcert.cpp
+FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse fuzz_nyx_cert fuzz_nyx_keyring fuzz_nyx_bundle fuzz_nyx_session
+FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp nyxcert.cpp nyxsessionwire.cpp
 
 fuzz-nyx-v2-libfuzzer:
 	for t in $(FUZZ_NYX_TARGETS); do \
@@ -745,6 +746,7 @@ check-smessage-bounds: test_innova
 check-nyx-v2: test_innova
 	./test_innova --run_test=nyx_v2_tests
 	./test_innova --run_test=nyx_identity_tests
+	./test_innova --run_test=nyx_session_tests
 	./test_innova --run_test=nyx_pq_kat_tests
 
 # A suite name is not a file name, so no glob over test/*.cpp can enumerate the
