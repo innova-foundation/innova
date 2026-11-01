@@ -324,6 +324,7 @@ TEST_OBJS= \
     obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
+    obj/test/nyx_v2_tests.o \
     obj/test/base58_tests.o \
     obj/test/bip32_tests.o \
     obj/test/stealth_retirement_tests.o \
@@ -459,6 +460,15 @@ $(FUZZ_DESERIALIZE_OBJ): test/fuzz/fuzz_deserialize.cpp
 
 fuzz-deserialize-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(CXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
+
+# The v2 wire layer is pure functions of peer bytes; only OpenSSL is linked.
+FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse
+FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp
+
+fuzz-nyx-v2-libfuzzer:
+	for t in $(FUZZ_NYX_TARGETS); do \
+	    $(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(CXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $$t test/fuzz/$$t.cpp $(FUZZ_NYX_SRCS) $(LIBS) || exit 1; \
+	done
 
 check-legacy-aggregate: test_innova
 	./test_innova --run_test=allocator_tests,base32_tests,base58_tests,base64_tests,bignum_tests,Checkpoints_tests,DoS_tests,getarg_tests,key_tests,mruset_tests,multisig_tests,netbase_tests,ringsig_tests,rpc_tests,script_P2SH_tests,script_tests,sigopcount_tests,transaction_tests,uint160_tests,uint256_tests,util_tests,wallet_tests,accounting_tests,miner_tests
