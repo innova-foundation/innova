@@ -107,7 +107,6 @@ NyxRelayHeld Held(const NyxPinInput& in)
         NyxHash(in.keyrings[i], x);
         h.keyrings.push_back(k);
         h.keyringHashes.push_back(NyxBytes(x, x + 32));
-        h.revoked.insert(k.revoked.begin(), k.revoked.end());
     }
     for (size_t i = 0; i < in.certs.size(); ++i)
     {
@@ -765,6 +764,36 @@ BOOST_AUTO_TEST_CASE(seq1_sibling_freezes_but_never_continues)
     BOOST_CHECK(pin.fFrozen);
     BOOST_CHECK(pin.krBody == pinned);
     BOOST_CHECK(!pin.devices.count(NyxId(o.devs[x].deviceId)));
+}
+
+BOOST_AUTO_TEST_CASE(relay_fork_revocations_stay_on_their_branch)
+{
+    TwoDevices t;
+    const NyxKeyring base = t.pin.kr;
+    const NyxBytes baseBody = t.pin.krBody;
+    NyxKeyring a = t.o.Next(base, baseBody, 0, T0 + 100);
+    a.live.erase(a.live.begin() + 1);
+    a.revoked.push_back(NyxId(t.o.devs[1].deviceId));
+    t.o.Sign(a, 0);
+    NyxKeyring b = t.o.Next(base, baseBody, 1, T0 + 101);
+    b.live.erase(b.live.begin());
+    b.revoked.push_back(NyxId(t.o.devs[0].deviceId));
+    t.o.Sign(b, 1);
+    t.o.net.keyrings.push_back(a.Serialize());
+    t.o.net.keyrings.push_back(b.Serialize());
+    const NyxRelayHeld h = Held(t.o.net);
+
+    // b's revocation of device 0 does not block a's continuation by device 0.
+    NyxKeyring c = t.o.Next(a, a.Serialize(), 0, T0 + 120);
+    t.o.Sign(c, 0);
+    BOOST_CHECK_EQUAL(NyxRelayVerify(h, c.Serialize()), NYX_PO_OK);
+    // a's own revocation of device 1 still holds on a's branch.
+    NyxKeyring r = t.o.Next(a, a.Serialize(), 0, T0 + 121);
+    r.live.push_back(t.o.Entry(1));
+    t.o.Sign(r, 0);
+    BOOST_CHECK_EQUAL(NyxRelayVerify(h, r.Serialize()), NYX_PO_BAD);
+    // Neither device is revoked on every branch.
+    BOOST_CHECK(NyxRelayRevoked(h).empty());
 }
 
 BOOST_AUTO_TEST_CASE(fork_with_both_sides_advanced_stays_frozen)

@@ -167,6 +167,7 @@ static void Forget()
     mapPin.clear();
 }
 
+// Wraps a fresh storage key, reseals every record under it and compacts the old plaintext key away.
 void NyxIdOnWalletEncrypted(CCryptoKeyStore* ks)
 {
     LOCK(cs_nyxid);
@@ -179,11 +180,41 @@ void NyxIdOnWalletEncrypted(CCryptoKeyStore* ks)
     }
     if (rec.size() != 33 || rec[0] != 0)
         return;
-    uint8_t sk[32];
-    if (NyxStorageKeyResolve(ks, rec, sk, newRec, sError) && !newRec.empty())
-        DbWrite(NYX_DB_SK, newRec);
-    OPENSSL_cleanse(sk, sizeof(sk));
+    uint8_t oldSk[32], sk[32];
+    memcpy(oldSk, rec.data() + 1, 32);
     OPENSSL_cleanse(&rec[0], rec.size());
+    if (NyxStorageKeyResolve(ks, "", sk, newRec, sError) && !newRec.empty())
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        if (db.Open("cw"))
+        {
+            leveldb::WriteBatch batch;
+            leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+            for (it->Seek("ny"); it->Valid() && it->key().starts_with("ny"); it->Next())
+            {
+                const std::string key = it->key().ToString();
+                std::string plain, sealed;
+                if (key != NYX_DB_SK && NyxStoreOpen(oldSk, key, it->value().ToString(), plain)
+                    && NyxStoreSeal(sk, key, plain, sealed))
+                    batch.Put(key, sealed);
+                if (!plain.empty())
+                    OPENSSL_cleanse(&plain[0], plain.size());
+            }
+            delete it;
+            batch.Put(NYX_DB_SK, newRec);
+            // Old and new values in one memtable flush to one table that compaction may never revisit.
+            db.pdb->CompactRange(NULL, NULL);
+            if (db.pdb->Write(leveldb::WriteOptions(), &batch).ok())
+            {
+                db.pdb->CompactRange(NULL, NULL);
+                if (fSkLoaded)
+                    memcpy(skCache, sk, 32);
+            }
+        }
+    }
+    OPENSSL_cleanse(oldSk, sizeof(oldSk));
+    OPENSSL_cleanse(sk, sizeof(sk));
 }
 
 void NyxIdTryLoad()
