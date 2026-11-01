@@ -482,7 +482,6 @@ public:
     bool fGetAddr;
     bool fWantsAddrV2;
     std::set<uint256> setKnown;
-    uint256 hashCheckpointKnown; // ppcoin: known sent sync-checkpoint
 
     // inventory based relay
     mruset<CInv> setInventoryKnown;
@@ -593,7 +592,6 @@ public:
         fGetAddr = false;
         fWantsAddrV2 = false;
         nMisbehavior = 0;
-        hashCheckpointKnown = 0;
         setInventoryKnown.max_size(SendBufferSize() / 1000);
         nMigrationWindowStart = 0;
         nMigrationInWindow = 0;

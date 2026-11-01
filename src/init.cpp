@@ -97,7 +97,6 @@ unsigned int nBlockMinSize;
 int64_t nMinTxFee = MIN_TX_FEE;
 
 bool fUseFastIndex;
-enum Checkpoints::CPMode CheckpointsMode;
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -759,7 +758,6 @@ std::string HelpMessage()
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
         "  -synctime              " + _("Sync time with other nodes. Disable if time on your system is precise e.g. syncing with NTP (default: 1)") + "\n" +
-        "  -cppolicy              " + _("Sync checkpoints policy (default: strict)") + "\n" +
         "  -banscore=<n>          " + _("Threshold for disconnecting misbehaving peers (default: 100)") + "\n" +
         "  -bantime=<n>           " + _("Number of seconds to keep misbehaving peers from reconnecting (default: 86400)") + "\n" +
         "  -softbantime=<n>       " + _("Number of seconds to keep soft banned peers from reconnecting (default: 3600)") + "\n" +
@@ -1383,18 +1381,6 @@ bool AppInit2()
 
     if (fDebug)
         printf("nMinerSleep %u\n", nMinerSleep);
-
-    CheckpointsMode = Checkpoints::STRICT;
-    std::string strCpMode = GetArg("-cppolicy", "strict");
-
-    if (strCpMode == "strict")
-        CheckpointsMode = Checkpoints::STRICT;
-
-    if (strCpMode == "advisory")
-        CheckpointsMode = Checkpoints::ADVISORY;
-
-    if (strCpMode == "permissive")
-        CheckpointsMode = Checkpoints::PERMISSIVE;
 
     nDerivationMethodIndex = 0;
 
@@ -2264,12 +2250,6 @@ bool AppInit2()
             InitError(_("Invalid amount for -reservebalance=<amount>"));
             return false;
         };
-    };
-
-    if (mapArgs.count("-checkpointkey")) // ppcoin: checkpoint master priv key
-    {
-        if (!Checkpoints::SetCheckpointPrivKey(GetArg("-checkpointkey", "")))
-            InitError(_("Unable to sign checkpoint, wrong checkpointkey?\n"));
     };
 
     for (string strDest : mapMultiArgs["-seednode"])
