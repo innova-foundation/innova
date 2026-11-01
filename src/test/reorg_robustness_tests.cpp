@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include "main.h"
 #include "txdb.h"
 
 BOOST_AUTO_TEST_SUITE(reorg_robustness_tests)
@@ -32,6 +33,38 @@ BOOST_AUTO_TEST_CASE(startup_check_failure_names_height_and_resync)
     BOOST_CHECK(str.find("7883137") != std::string::npos);
     BOOST_CHECK(str.find("resync") != std::string::npos);
     BOOST_CHECK(str.find("txleveldb") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(supply_stage_restores_on_abort)
+{
+    CBlockIndex a, b;
+    a.nMint = 1; a.nMoneySupply = 100;
+    b.nMint = 2; b.nMoneySupply = 200;
+    {
+        CSupplyStage stage;
+        stage.Note(&a);
+        a.nMint = 50; a.nMoneySupply = 150;
+        stage.Note(&b);
+        b.nMint = 60; b.nMoneySupply = 210;
+    }
+    BOOST_CHECK_EQUAL(a.nMint, 1);
+    BOOST_CHECK_EQUAL(a.nMoneySupply, 100);
+    BOOST_CHECK_EQUAL(b.nMint, 2);
+    BOOST_CHECK_EQUAL(b.nMoneySupply, 200);
+}
+
+BOOST_AUTO_TEST_CASE(supply_stage_keeps_committed_values)
+{
+    CBlockIndex a;
+    a.nMint = 1; a.nMoneySupply = 100;
+    {
+        CSupplyStage stage;
+        stage.Note(&a);
+        a.nMint = 50; a.nMoneySupply = 150;
+        stage.Commit();
+    }
+    BOOST_CHECK_EQUAL(a.nMint, 50);
+    BOOST_CHECK_EQUAL(a.nMoneySupply, 150);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

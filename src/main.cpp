@@ -14720,6 +14720,22 @@ static void ReofferDAGUnappliedTxs(CTxDB& txdb, CBlockIndex* pindex,
         tx.AcceptToMemoryPool(txdb);
 }
 
+void CSupplyStage::Note(CBlockIndex* pindex)
+{
+    Entry e = { pindex, pindex->nMint, pindex->nMoneySupply };
+    vEntries.push_back(e);
+}
+
+void CSupplyStage::Restore()
+{
+    for (std::vector<Entry>::reverse_iterator it = vEntries.rbegin(); it != vEntries.rend(); ++it)
+    {
+        it->pindex->nMint = it->nMint;
+        it->pindex->nMoneySupply = it->nMoneySupply;
+    }
+    vEntries.clear();
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects,
@@ -14730,6 +14746,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     if (pfChainStateMutated)
         *pfChainStateMutated = false;
     printf("REORGANIZE\n");
+    CSupplyStage supplyStage;
 
     {
         // Deterministic anchor only: the node-local GetFinalizedHeight() streak must not enter
@@ -14907,6 +14924,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (pfChainStateMutated)
             *pfChainStateMutated = true;
         CBlock::ConnectResult connectResult = CBlock::CONNECT_RESULT_INVALID;
+        supplyStage.Note(pindex);
         if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
             if (ConnectResultMayPersistVerdict(connectResult))
@@ -15033,6 +15051,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         pCommittedEffects->Clear();
         return error("Reorganize() : TxnCommit failed");
     }
+    supplyStage.Commit();
 
     // The effect batch and its final wallet locator were fully allocated before
     // commit.  Marking it durable cannot allocate or throw.
@@ -15204,6 +15223,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     // ConnectBlock classifies deterministic invalidity separately from local
     // read/write/resource failure.  Only the former may poison the block index.
     ConnectResult connectResult = CONNECT_RESULT_INVALID;
+    CSupplyStage supplyStage;
+    supplyStage.Note(pindexNew);
     if (!ConnectBlock(txdb, pindexNew, false, true, &connectResult))
     {
         // Read the verdict's text before the abort and the restore can log over it.
@@ -15346,6 +15367,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
         return error("SetBestChain() : TxnCommit failed");
     }
 
+    supplyStage.Commit();
     pCommittedEffects->MarkCommitted();
 
     RefreshCommittedShieldedPoolOrShutdown(txdb, pindexNew,
