@@ -15334,7 +15334,10 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     bool fCommitOk;
     {
         BLOCK_PHASE(BP_DB_COMMIT);
-        fCommitOk = txdb.TxnCommit(IBDBlockCommitSync());
+        const bool fSync = IBDBlockCommitSync();
+        fCommitOk = txdb.TxnCommit(fSync);
+        if (fCommitOk && !fSync)
+            NoteUnsyncedIBDCommit();
     }
     if (!fCommitOk)
     {

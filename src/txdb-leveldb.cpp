@@ -3,6 +3,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
 
+#include <atomic>
 #include <map>
 #include <set>
 #include <limits>
@@ -12,6 +13,7 @@
 #include <boost/filesystem/fstream.hpp>
 
 #include <leveldb/env.h>
+#include <leveldb/write_batch.h>
 #include <leveldb/cache.h>
 #include <leveldb/filter_policy.h>
 #include <memenv/memenv.h>
@@ -257,7 +259,7 @@ static int nIBDBatchSize = 0;
 static int64_t nIBDBatchMs = 0;
 static int nIBDBatchCount = 0;
 static int64_t nIBDBatchLastSyncMs = 0;
-static bool fIBDBatchPending = false;
+static std::atomic<bool> fIBDBatchPending(false);
 static CCriticalSection cs_IBDBatch;
 
 void InitIBDBatching()
@@ -299,19 +301,33 @@ bool IBDBlockCommitSync()
         return true;
     }
     nIBDBatchCount++;
-    fIBDBatchPending = true;
     return false;
 }
 
+// Set after the unsynced commit lands, so a flush on another thread cannot clear it first.
+void NoteUnsyncedIBDCommit() { fIBDBatchPending = true; }
+
+bool IBDBatchPending() { return fIBDBatchPending; }
+
+// An empty synced write fsyncs the log, and every unsynced commit before it.
 void FlushIBDBatch()
 {
+    if (!fIBDBatchPending)
+        return;
     LOCK(cs_IBDBatch);
     if (fIBDBatchPending && txdb)
     {
-        printf("Flushing pending IBD batch (%d blocks)...\n", nIBDBatchCount);
-        CTxDB txdbFlush;
-        txdbFlush.TxnBegin();
-        txdbFlush.TxnCommit(true);
+        if (fDebug)
+            printf("Flushing pending IBD batch (%d blocks)\n", nIBDBatchCount);
+        leveldb::WriteOptions writeOptions;
+        writeOptions.sync = true;
+        leveldb::WriteBatch batch;
+        leveldb::Status status = txdb->Write(writeOptions, &batch);
+        if (!status.ok())
+        {
+            printf("FlushIBDBatch: %s\n", status.ToString().c_str());
+            return;
+        }
         fIBDBatchPending = false;
         nIBDBatchCount = 0;
         nIBDBatchLastSyncMs = GetTimeMillis();

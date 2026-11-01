@@ -5,11 +5,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include "checkpoints.h"
+#include "init.h"
 #include "main.h"
 #include "net.h"
 #include "txdb.h"
 #include "util.h"
 #include "version.h"
+#include "wallet.h"
+#include "walletdb.h"
 
 #include <leveldb/cache.h>
 
@@ -186,6 +189,26 @@ BOOST_AUTO_TEST_CASE(getheaders_main_chain_stop_uses_the_main_chain_path)
     setHave.insert(c.vHash[0]);
     BOOST_CHECK(!CollectSideBranchHeaders(setHave, c[0], c[4], 2000, vOut));
     BOOST_CHECK(vOut.empty());
+}
+
+BOOST_AUTO_TEST_CASE(a_bdb_write_fsyncs_the_pending_ibd_batch_first)
+{
+    mapArgs["-ibdbatchalways"] = "1";
+    InitIBDBatching();
+    BOOST_CHECK(!IBDBlockCommitSync());
+    BOOST_CHECK(!IBDBatchPending());
+    NoteUnsyncedIBDCommit();
+    BOOST_CHECK(IBDBatchPending());
+    {
+        CWalletDB walletdb(pwalletMain->strWalletFile);
+        BOOST_CHECK(walletdb.WriteName("ibd-batch-test", "x"));
+    }
+    BOOST_CHECK(!IBDBatchPending());
+    NoteUnsyncedIBDCommit();
+    FlushIBDBatch();
+    BOOST_CHECK(!IBDBatchPending());
+    mapArgs.erase("-ibdbatchalways");
+    InitIBDBatching();
 }
 
 BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)

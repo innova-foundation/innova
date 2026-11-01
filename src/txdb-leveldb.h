@@ -780,6 +780,8 @@ private:
 
 void InitIBDBatching();
 void FlushIBDBatch();
+bool IBDBatchPending();
+void NoteUnsyncedIBDCommit();
 bool IBDBlockCommitSync();
 bool OpensSynced(int64_t nMarkerTipTime, int64_t nNow);
 int64_t DefaultDbCacheMB(bool fSynced);
