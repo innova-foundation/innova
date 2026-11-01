@@ -4,9 +4,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include "../init.h"
+#include "../key.h"
 #include "../main.h"
 #include "../net.h"
 #include "../nyxparts.h"
+#include "../nyxkeyring.h"
 #include "../nyxpo.h"
 #include "../smessage.h"
 #include "../util.h"
@@ -230,6 +232,11 @@ std::vector<uint8_t> Bundle(uint8_t addrSeed, bool fPq, uint8_t nOpk)
 int VerifyOk(const std::vector<uint8_t>&)
 {
     return NYX_PO_OK;
+}
+
+int VerifyHeld(const std::vector<uint8_t>&)
+{
+    return NYX_PO_UNVERIFIED;
 }
 
 int nVerifyCalls = 0;
@@ -1055,6 +1062,7 @@ BOOST_AUTO_TEST_CASE(po_unverified_held_locally_verified_relayed)
     std::string sError;
     bool fRelayed = true;
 
+    NyxPoSetVerifyHook(VerifyHeld);
     std::vector<uint8_t> cert = ClassicalCert(0x70);
     BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(cert, sError) == 0, sError);
     BOOST_REQUIRE(PoListed(cert, fRelayed));
@@ -1136,7 +1144,7 @@ BOOST_AUTO_TEST_CASE(po_unverified_cannot_displace_verified)
     BOOST_CHECK(fRelayed);
 
     // Same key, sender-chosen maximal seq, but unverified.
-    NyxPoSetVerifyHook(NULL);
+    NyxPoSetVerifyHook(VerifyHeld);
     std::vector<uint8_t> bad = ClassicalCert(0x72, 0xFFFFFFFF);
     BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(bad, sError) == 0, sError);
     std::vector<NyxPoListEntry> v;
@@ -1286,6 +1294,67 @@ BOOST_AUTO_TEST_CASE(smsg_validate_and_record_decode_smoke)
     big.append("\xff\xff\xff\xff", 4);
     BOOST_CHECK(!SecureMsgPoDecodeRecord(big, rec));
     fNyxV2 = fSaved;
+}
+
+BOOST_AUTO_TEST_CASE(po_relay_verifies_identity_chain)
+{
+    V2Guard g(true);
+    std::string sError;
+    bool fRelayed = false;
+    CKey key;
+    key.MakeNewKey(true);
+    uint8_t addr[20];
+    memcpy(addr, key.GetPubKey().GetID().begin(), 20);
+    uint8_t fp[32] = {1};
+    NyxOwnDevice d;
+    BOOST_REQUIRE(NyxDeviceCreate(d, addr, NYX_MODE_PQ, fp));
+    const int64_t now = GetTime();
+    NyxCert c;
+    BOOST_REQUIRE(NyxBuildCert(d, key, now, 1, NULL, c));
+    const NyxBytes cert = c.Serialize();
+    NyxKeyring kr;
+    memcpy(kr.addrHash, addr, 20);
+    kr.ts = now;
+    NyxKeyringEntry e;
+    memcpy(e.deviceId, d.deviceId, 16);
+    NyxHash(cert, e.certHash);
+    kr.live.push_back(e);
+    BOOST_REQUIRE(NyxBuildKeyring(kr, key, NULL));
+    NyxBundle b;
+    BOOST_REQUIRE(NyxBuildBundle(d, key, now, b));
+
+    // Out of order: the bundle and the cert wait until the keyring arrives, then all relay.
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(d.lastBundle, sError) == 0, sError);
+    BOOST_REQUIRE(PoListed(d.lastBundle, fRelayed));
+    BOOST_CHECK(!fRelayed);
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(cert, sError) == 0, sError);
+    BOOST_REQUIRE(PoListed(cert, fRelayed));
+    BOOST_CHECK(fRelayed);  // no keyring held yet: an address-signed first cert
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(kr.Serialize(), sError) == 0, sError);
+    BOOST_REQUIRE(PoListed(kr.Serialize(), fRelayed));
+    BOOST_CHECK(fRelayed);
+    BOOST_REQUIRE(PoListed(d.lastBundle, fRelayed));
+    BOOST_CHECK(fRelayed);
+
+    // A keyring signed by a device the chain never admitted is dropped.
+    NyxOwnDevice x;
+    BOOST_REQUIRE(NyxDeviceCreate(x, addr, NYX_MODE_PQ, fp));
+    NyxKeyring forged = kr;
+    forged.seq = 2;
+    NyxHash(kr.Serialize(), forged.prevHash);
+    BOOST_REQUIRE(NyxBuildKeyring(forged, key, &x));
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(forged.Serialize(), sError) == 0, sError);
+    std::vector<NyxPoListEntry> v;
+    SecureMsgPoList(v);
+    const std::string sAddr = HexStr(addr, addr + 20);
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i].addrHash == sAddr && v[i].type == NYX_PO_KEYRING)
+            BOOST_CHECK_EQUAL(v[i].seq, 1U);
+
+    // A garbage-signed cert for another address is refused outright.
+    std::vector<uint8_t> junk = ClassicalCert(0x7a);
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(junk, sError) == 0, sError);
+    BOOST_CHECK(!PoListed(junk, fRelayed));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
