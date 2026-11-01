@@ -1210,6 +1210,42 @@ static Value nyx_identity(const Array& params, const std::string& sub)
     return o;
 }
 
+static Value nyx_session(const Array& params)
+{
+    static const char* usage =
+        "nyx session send <from> <to> <message>     PQXDH/X3DH session message to every live device of <to>\n"
+        "nyx session list <address>                 Sessions of this node's device for <address>\n"
+        "nyx session messages <address> [peer]      Session inbox and sent messages (decrypted once, stored sealed)\n"
+        "nyx session delete <address> <peer>        Erase the session state with <peer>";
+    const std::string op = params.size() > 1 ? params[1].get_str() : "";
+    std::string sError;
+    bool fOk = false;
+    if (op == "send" && params.size() == 5)
+    {
+        Object o;
+        if (!NyxSessSend(params[2].get_str(), params[3].get_str(), params[4].get_str(), o, sError))
+            throw JSONRPCError(-13, sError);
+        return o;
+    }
+    if ((op == "list" && params.size() == 3) || (op == "messages" && (params.size() == 3 || params.size() == 4)))
+    {
+        Array a;
+        fOk = op == "list" ? NyxSessList(params[2].get_str(), a, sError)
+                           : NyxSessMessages(params[2].get_str(), params.size() == 4 ? params[3].get_str() : "", a, sError);
+        if (!fOk)
+            throw JSONRPCError(-13, sError);
+        return a;
+    }
+    if (op == "delete" && params.size() == 4)
+    {
+        Object o;
+        if (!NyxSessDelete(params[2].get_str(), params[3].get_str(), o, sError))
+            throw JSONRPCError(-13, sError);
+        return o;
+    }
+    throw runtime_error(usage);
+}
+
 Value nyx(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
@@ -1258,6 +1294,7 @@ Value nyx(const Array& params, bool fHelp)
             "  keyring init|show|contact|accept|reset|confirm <address> ...\n"
             "  devices <address>           Live devices of an address\n"
             "  device pair|approve|install|revoke <address> ...\n"
+            "  session send|list|messages|delete ...  1:1 post-quantum sessions\n"
         );
 
     std::string subcmd = params[0].get_str();
@@ -1283,6 +1320,7 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "disable")     return nyx_disable(params);
     if (subcmd == "status")      return nyx_status(params);
     if (subcmd == "peers")       return nyx_peers(params);
+    if (subcmd == "session")     return nyx_session(params);
     if (subcmd == "keyring" || subcmd == "devices" || subcmd == "device")
         return nyx_identity(params, subcmd);
     if (subcmd.compare(0, 2, "v2") == 0 || subcmd == "poget" || subcmd == "polist")
