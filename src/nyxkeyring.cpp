@@ -10,6 +10,7 @@
 #include "uint256.h"
 
 #include <algorithm>
+#include <iterator>
 #include <string.h>
 
 static_assert(NYX_MLDSA_PK == NYX_MLDSA65_PK, "ML-DSA-65 public key size");
@@ -164,13 +165,66 @@ static const NyxCert* RelaySignerCert(const NyxRelayHeld& held, const NyxKeyring
     return NULL;
 }
 
+// Revocations along the held chain ending at keyrings[i].
+static void ChainRevoked(const NyxRelayHeld& held, size_t i, std::set<std::string>& out)
+{
+    for (size_t n = 0; n <= held.keyrings.size(); ++n)
+    {
+        const NyxKeyring& k = held.keyrings[i];
+        out.insert(k.revoked.begin(), k.revoked.end());
+        size_t j = 0;
+        for (; j < held.keyrings.size(); ++j)
+            if (held.keyrings[j].epoch == k.epoch && HashEq(held.keyringHashes[j], k.prevHash))
+                break;
+        if (j == held.keyrings.size())
+            return;
+        i = j;
+    }
+}
+
+std::set<std::string> NyxRelayRevoked(const NyxRelayHeld& held)
+{
+    std::set<std::string> out = held.revoked;
+    const uint32_t maxEpoch = MaxEpoch(held);
+    bool fFirst = true;
+    std::set<std::string> common;
+    for (size_t i = 0; i < held.keyrings.size(); ++i)
+    {
+        if (held.keyrings[i].epoch != maxEpoch)
+            continue;
+        bool fTip = true;
+        for (size_t j = 0; j < held.keyrings.size() && fTip; ++j)
+            fTip = !(held.keyrings[j].epoch == maxEpoch && HashEq(held.keyringHashes[i], held.keyrings[j].prevHash));
+        if (!fTip)
+            continue;
+        std::set<std::string> r;
+        ChainRevoked(held, i, r);
+        if (fFirst)
+            common.swap(r);
+        else
+        {
+            std::set<std::string> x;
+            std::set_intersection(common.begin(), common.end(), r.begin(), r.end(), std::inserter(x, x.begin()));
+            common.swap(x);
+        }
+        fFirst = false;
+    }
+    out.insert(common.begin(), common.end());
+    return out;
+}
+
+static bool LiveRevoked(const NyxKeyring& kr, const std::set<std::string>& rev)
+{
+    for (size_t i = 0; i < kr.live.size(); ++i)
+        if (rev.count(NyxId(kr.live[i].deviceId)))
+            return true;
+    return false;
+}
+
 static int RelayKeyring(const NyxRelayHeld& held, const NyxKeyring& kr, const uint8_t hash[32])
 {
     if (!NyxKeyringAddrValid(kr))
         return NYX_PO_BAD;
-    for (size_t i = 0; i < kr.live.size(); ++i)
-        if (held.revoked.count(NyxId(kr.live[i].deviceId)) && kr.epoch == MaxEpoch(held))
-            return NYX_PO_BAD;
     if (held.keyrings.empty())
     {
         if (kr.seq == 1 || kr.mode != NYX_MODE_PQ)
@@ -197,6 +251,19 @@ static int RelayKeyring(const NyxRelayHeld& held, const NyxKeyring& kr, const ui
             return NYX_PO_OK;
         if (HashEq(held.keyringHashes[i], kr.prevHash))
             pred = &k;
+    }
+    if (kr.epoch == maxEpoch)
+    {
+        std::set<std::string> rev;
+        if (pred)
+        {
+            rev = held.revoked;
+            ChainRevoked(held, pred - &held.keyrings[0], rev);
+        }
+        else
+            rev = NyxRelayRevoked(held);
+        if (LiveRevoked(kr, rev))
+            return NYX_PO_BAD;
     }
     if (!pred)
     {
@@ -227,7 +294,7 @@ static int RelayCert(const NyxRelayHeld& held, const NyxCert& c, const uint8_t h
     if (!NyxCertAddrValid(c))
         return NYX_PO_BAD;
     const std::string id = NyxId(c.deviceId);
-    if (held.revoked.count(id))
+    if (NyxRelayRevoked(held).count(id))
         return NYX_PO_BAD;
     const uint32_t maxEpoch = MaxEpoch(held);
     bool fPq = false;
@@ -262,7 +329,7 @@ static int RelayCert(const NyxRelayHeld& held, const NyxCert& c, const uint8_t h
 static int RelayBundle(const NyxRelayHeld& held, const NyxBundle& b)
 {
     const std::string id = NyxId(b.deviceId);
-    if (held.revoked.count(id))
+    if (NyxRelayRevoked(held).count(id))
         return NYX_PO_BAD;
     std::map<std::string, NyxCert>::const_iterator it = held.certs.find(id);
     if (it == held.certs.end())
@@ -313,7 +380,9 @@ static void WrBytes(std::string& s, const NyxBytes& v)
 
 static void WrRaw(std::string& s, const void* p, size_t n)
 {
-    WrStr(s, std::string((const char*)p, n));
+    const uint32_t len = n;
+    s.append((const char*)&len, 4);
+    s.append((const char*)p, n);
 }
 
 struct NyxReader
@@ -348,13 +417,20 @@ struct NyxReader
     }
     void Raw(void* p, size_t n)
     {
-        const std::string r = Str();
-        if (r.size() != n)
+        uint32_t len = 0;
+        if (!fOk || s.size() - off < 4)
         {
             fOk = false;
             return;
         }
-        memcpy(p, r.data(), n);
+        memcpy(&len, s.data() + off, 4);
+        if (len != n || s.size() - off - 4 < n)
+        {
+            fOk = false;
+            return;
+        }
+        memcpy(p, s.data() + off + 4, n);
+        off += 4 + n;
     }
 };
 

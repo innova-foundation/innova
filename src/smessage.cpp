@@ -110,8 +110,6 @@ static NyxReassembler nyxPrivParts(NYX_POOL_PRIVATE);
 static NyxReassembler nyxPubParts(NYX_POOL_PUBLIC);
 static NyxPoStore nyxPoStore;
 static std::set<std::string> setPoRelayed;
-// Cumulative revoked device ids per address for its highest epoch.
-static std::map<std::string, std::pair<uint32_t, std::set<std::string> > > mapPoRevoked;
 static std::vector<NyxV2Delivered> vNyxDelivered;
 static std::set<std::string> setNyxDelivered;
 static const size_t NYX_DELIVERED_KEEP = 256;
@@ -6305,16 +6303,6 @@ static void NyxPoHeld(const uint8_t addrHash[20], NyxRelayHeld& held)
             }
         }
     }
-    uint32_t maxEpoch = 0;
-    for (size_t i = 0; i < held.keyrings.size(); ++i)
-        maxEpoch = std::max(maxEpoch, held.keyrings[i].epoch);
-    for (size_t i = 0; i < held.keyrings.size(); ++i)
-        if (held.keyrings[i].epoch == maxEpoch)
-            held.revoked.insert(held.keyrings[i].revoked.begin(), held.keyrings[i].revoked.end());
-    std::map<std::string, std::pair<uint32_t, std::set<std::string> > >::const_iterator it =
-        mapPoRevoked.find(std::string((const char*)addrHash, 20));
-    if (it != mapPoRevoked.end() && it->second.first == maxEpoch)
-        held.revoked.insert(it->second.second.begin(), it->second.second.end());
 }
 
 // cs_nyxv2 held.
@@ -6349,27 +6337,15 @@ static void NyxPoAfterKeyring(const uint8_t addrHash[20])
             prevTip = in.seq;
         }
     }
-    const std::string addr((const char*)addrHash, 20);
-    std::pair<uint32_t, std::set<std::string> >& rev = mapPoRevoked[addr];
-    if (rev.first != maxEpoch)
-    {
-        rev.first = maxEpoch;
-        rev.second.clear();
-    }
+    NyxRelayHeld held;
+    NyxPoHeld(addrHash, held);
+    const std::set<std::string> rev = NyxRelayRevoked(held);
     std::vector<std::string> vRemove;
     for (size_t i = 0; i < vRec.size(); ++i)
     {
         const NyxPoInfo& in = vRec[i]->info;
         if (in.type != NYX_PO_KEYRING)
             continue;
-        if (vRec[i]->fVerified && in.epoch == maxEpoch)
-        {
-            std::vector<unsigned char> body;
-            NyxPoInfo tmp;
-            NyxKeyring k;
-            if (NyxPoBodyFromParts(vRec[i]->vParts, body, tmp) && NyxParseKeyring(&body[0], body.size(), k) == 0)
-                rev.second.insert(k.revoked.begin(), k.revoked.end());
-        }
         const bool fKeep = (in.epoch == maxEpoch && in.seq + NYX_KR_MAX_SEQ_JUMP > tip)
                         || (in.epoch == prevEpoch && in.seq == prevTip && vRec[i]->fVerified);
         if (!fKeep)
@@ -6378,35 +6354,19 @@ static void NyxPoAfterKeyring(const uint8_t addrHash[20])
     for (size_t i = 0; i < vRec.size(); ++i)
     {
         const NyxPoInfo& in = vRec[i]->info;
-        if (in.type != NYX_PO_KEYRING && rev.second.count(std::string((const char*)in.deviceId, 16)))
+        if (in.type != NYX_PO_KEYRING && rev.count(std::string((const char*)in.deviceId, 16)))
             vRemove.push_back(NyxPoStore::Key(in));
     }
     for (size_t i = 0; i < vRemove.size(); ++i)
         nyxPoStore.Remove(vRemove[i]);
 }
 
-// Drops revocation sets of addresses whose keyrings left the store. cs_nyxv2 held.
-static void NyxPoPruneRevoked()
-{
-    for (std::map<std::string, std::pair<uint32_t, std::set<std::string> > >::iterator it = mapPoRevoked.begin();
-         it != mapPoRevoked.end();)
-    {
-        std::vector<const NyxPoStore::Record*> vRec;
-        nyxPoStore.Get((const uint8_t*)it->first.data(), vRec);
-        bool fKeyring = false;
-        for (size_t i = 0; i < vRec.size() && !fKeyring; ++i)
-            fKeyring = vRec[i]->info.type == NYX_PO_KEYRING;
-        if (fKeyring)
-            ++it;
-        else
-            mapPoRevoked.erase(it++);
-    }
-}
-
-bool SecureMsgPoRevokedHeld(const uint8_t addrHash[20])
+size_t SecureMsgPoRevokedCount(const uint8_t addrHash[20])
 {
     LOCK(cs_nyxv2);
-    return mapPoRevoked.count(std::string((const char*)addrHash, 20)) > 0;
+    NyxRelayHeld held;
+    NyxPoHeld(addrHash, held);
+    return NyxRelayRevoked(held).size();
 }
 
 void SecureMsgPoExpire(int64_t nNow)
@@ -6418,8 +6378,6 @@ void SecureMsgPoExpire(int64_t nNow)
         vErased = nyxPoStore.TakeErased();
         for (size_t i = 0; i < vErased.size(); ++i)
             setPoRelayed.erase(vErased[i]);
-        if (!vErased.empty())
-            NyxPoPruneRevoked();
     }
     for (size_t i = 0; i < vErased.size(); ++i)
         NyxPoPersist(vErased[i], NULL);
@@ -6556,8 +6514,6 @@ static void NyxPoLoad()
         }
     std::vector<std::string> vDropped = nyxPoStore.TakeErased();
     vDropped.insert(vDropped.end(), vStale.begin(), vStale.end());
-    if (!vDropped.empty())
-        NyxPoPruneRevoked();
     for (size_t i = 0; i < vDropped.size(); ++i)
     {
         setPoRelayed.erase(vDropped[i]);
@@ -6629,8 +6585,6 @@ static void SecureMsgV2PublicIntake(CNode* pfrom, unsigned char* pHeader, unsign
         vErased = nyxPoStore.TakeErased();
         for (size_t i = 0; i < vErased.size(); ++i)
             setPoRelayed.erase(vErased[i]);
-        if (!vErased.empty())
-            NyxPoPruneRevoked();
     }
     for (size_t i = 0; i < vErased.size(); ++i)
         NyxPoPersist(vErased[i], NULL);
