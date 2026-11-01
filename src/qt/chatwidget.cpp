@@ -92,6 +92,8 @@ static bool isJumboEmoji(const QString& text)
 #include <ipfs/http/transport.h>
 #endif
 
+static const qint64 NYX_ATTACH_MAX = 500 * 1024 * 1024;
+
 // ---- File message protocol ----
 // Format: [file:CID:encKeyHex:filename:sizeBytes]
 // Example: [file:QmXyz123:a1b2c3d4...64hex:photo.jpg:153280]
@@ -2849,14 +2851,9 @@ qint64 ChatWidget::checkIPFSGateway()
 
         if (!version["Version"].dump().empty())
         {
-            // Read max file size from conf (nyxmaxfilesize), fallback to 100MB for public gateways
-            if (fLocal)
-            {
-                std::string sMax = GetArg("-nyxmaxfilesize", "10995116277760");
-                return atoll(sMax.c_str());
-            }
-            else
-                return 100 * 1024 * 1024;  // 100MB public gateway fallback
+            // Receivers refuse anything over NYX_ATTACH_MAX, so never send more.
+            qint64 nMax = atoll(GetArg("-nyxmaxfilesize", "10995116277760").c_str());
+            return (nMax > 0 && nMax < NYX_ATTACH_MAX) ? nMax : NYX_ATTACH_MAX;
         }
     }
     catch (...) {}
@@ -2993,13 +2990,14 @@ bool ChatWidget::encryptAndUploadFile(const QString& filePath, QString& outCID, 
     if (maxSize == 0)
     {
         file.close();
-        outError = "IPFS gateway unreachable. Check innova.conf: hyperfilelocal=1 hyperfileip=ipfs.innova-foundation.com:5001";
+        outError = QString("Attachment server unreachable (%1). Try again later, or set hyperfileip=<host:port> in innova.conf to use your own IPFS node.")
+                       .arg(QString::fromStdString(GetArg("-hyperfileip", "ipfs.innova-foundation.com:5001")));
         return false;
     }
     if (fileSize > maxSize)
     {
         file.close();
-        outError = QString("File too large. Maximum: %1 MB for current gateway.").arg(maxSize / (1024 * 1024));
+        outError = QString("File too large. Maximum: %1 MB.").arg(maxSize / (1024 * 1024));
         return false;
     }
 
@@ -3332,7 +3330,7 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
 
     // In-memory download cap. The CID is sender-chosen, so check the cap against the stream
     // before copying the buffer; the transport enforces its own cap too.
-    const qint64 dlMaxSize = 500 * 1024 * 1024;
+    const qint64 dlMaxSize = NYX_ATTACH_MAX;
 
     try {
         if (!fLocal)
