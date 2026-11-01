@@ -443,6 +443,7 @@ int SecureMsgScanMessage(unsigned char *pHeader, unsigned char *pPayload, uint32
 
 int SecureMsgGetStoredKey(CKeyID& ckid, CPubKey& cpkOut);
 int SecureMsgGetLocalKey(CKeyID& ckid, CPubKey& cpkOut);
+int SecureMsgInsertAddress(CKeyID& hashKey, CPubKey& pubKey);
 int SecureMsgGetLocalPublicKey(std::string& strAddress, std::string& strPublicKey);
 
 int SecureMsgAddAddress(std::string& address, std::string& publicKey);

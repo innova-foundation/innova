@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "nyxidentity.h"
+#include "nyxsession.h"
 #include "privacy_vnext/rust/include/nyx_pq.h"
 
 #include "base58.h"
@@ -129,6 +130,7 @@ static void HostFp(uint8_t out[32])
 }
 
 static bool Ready(std::string& sError);
+static void SessHousekeeping(std::vector<NyxBytes>& vPub);
 
 static void Forget()
 {
@@ -450,6 +452,8 @@ static bool StartIdentity(const std::string& addr, const CKey& key, uint8_t mode
     memcpy(e.deviceId, d.deviceId, 16);
     NyxHash(d.certBody, e.certHash);
     kr.live.push_back(e);
+    NyxDeviceTopUpOpks(d, GetTime());
+    NyxDeviceRotateSpk(d, GetTime());
     NyxBundle b;
     if (!NyxBuildKeyring(kr, key, NULL) || !NyxBuildBundle(d, key, now, b))
     {
@@ -780,6 +784,8 @@ bool NyxIdInstall(const std::string& sAddr, const std::string& certHex, Object& 
         Tip(addr, t);
         if (t.fHave && t.kr.IsLive(d.deviceId))
             d.keyringBody = t.body;
+        NyxDeviceTopUpOpks(d, GetTime());
+        NyxDeviceRotateSpk(d, GetTime());
         NyxBundle b;
         if (!NyxBuildBundle(d, key, GetTime(), b))
         {
@@ -946,6 +952,8 @@ bool NyxIdKeyringConfirm(const std::string& sAddr, Object& out, std::string& sEr
             if (!NextKeyring(addr, key, d, kr, h, vRev, &fresh.certBody, vPub, sError))
                 return false;
             fresh.keyringBody = d.keyringBody;
+            NyxDeviceTopUpOpks(fresh, GetTime());
+            NyxDeviceRotateSpk(fresh, GetTime());
             NyxBundle b;
             if (!NyxBuildBundle(fresh, key, GetTime(), b))
             {
@@ -1175,6 +1183,737 @@ void NyxIdHousekeeping()
                 vPub.push_back(d.lastBundle);
             SaveDev(it->first);
         }
+        SessHousekeeping(vPub);
     }
     Publish(vPub);
+}
+
+// ---------------------------------------------------------------- 1:1 sessions
+
+static const char NYX_DB_SESS[] = "nys";    // local20 || remoteDev16
+static const char NYX_DB_SEEN[] = "nye";    // local20
+static const char NYX_DB_INBOX[] = "nyi";   // local20 || time BE8 || logicalId16
+static const size_t NYX_HELD_MAX = 32;
+static const int64_t NYX_HELD_UNPINNED = 60 * 60;
+static const int64_t NYX_HELD_FROZEN = 60 * 60 * 48;
+static const size_t NYX_SEEN_MAX = 4096;
+
+struct NyxHeld
+{
+    std::string local;
+    NyxBytes body;
+    int64_t until;
+    std::string why;
+};
+static std::vector<NyxHeld> vHeld;
+
+enum { NYX_RX_DONE, NYX_RX_HOLD, NYX_RX_DROP };
+
+static void PrefixScan(const std::string& prefix, std::vector<std::pair<std::string, std::string> >& out)
+{
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cw"))
+        return;
+    leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
+    for (it->Seek(prefix); it->Valid() && it->key().starts_with(prefix); it->Next())
+        out.push_back(std::make_pair(it->key().ToString(), it->value().ToString()));
+    delete it;
+}
+
+static void DbErase(const std::vector<std::string>& keys)
+{
+    if (keys.empty())
+        return;
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    if (!db.Open("cw"))
+        return;
+    for (size_t i = 0; i < keys.size(); ++i)
+        db.pdb->Delete(leveldb::WriteOptions(), keys[i]);
+    std::string lo = keys.front(), hi = keys.front();
+    for (size_t i = 1; i < keys.size(); ++i)
+    {
+        lo = std::min(lo, keys[i]);
+        hi = std::max(hi, keys[i]);
+    }
+    leveldb::Slice a(lo), b(hi);
+    db.pdb->CompactRange(&a, &b);
+}
+
+static bool SealPut(const std::string& key, std::string& plain)
+{
+    std::string sealed;
+    const bool fOk = NyxStoreSeal(skCache, key, plain, sealed) && DbWrite(key, sealed);
+    if (!plain.empty())
+        OPENSSL_cleanse(&plain[0], plain.size());
+    return fOk;
+}
+
+static bool OpenGet(const std::string& key, std::string& plain)
+{
+    std::string sealed;
+    return DbRead(key, sealed) && NyxStoreOpen(skCache, key, sealed, plain);
+}
+
+static std::string SessKey(const std::string& local, const uint8_t dev[16])
+{
+    return NYX_DB_SESS + local + std::string((const char*)dev, 16);
+}
+
+static bool LoadSess(const std::string& local, const uint8_t dev[16], NyxSession& s)
+{
+    std::string plain;
+    s.states.clear();
+    const bool fOk = OpenGet(SessKey(local, dev), plain) && s.Deserialize(plain);
+    if (!plain.empty())
+        OPENSSL_cleanse(&plain[0], plain.size());
+    return fOk;
+}
+
+static bool SaveSess(const std::string& local, const uint8_t dev[16], const NyxSession& s)
+{
+    std::string plain = s.Serialize();
+    return SealPut(SessKey(local, dev), plain);
+}
+
+// Seen handshake ids of one local address: id32 -> first seen.
+static void LoadSeen(const std::string& local, std::map<std::string, int64_t>& m)
+{
+    m.clear();
+    std::string plain;
+    if (!OpenGet(NYX_DB_SEEN + local, plain))
+        return;
+    for (size_t off = 0; off + 40 <= plain.size(); off += 40)
+    {
+        int64_t t;
+        memcpy(&t, plain.data() + off + 32, 8);
+        m[plain.substr(off, 32)] = t;
+    }
+}
+
+static void SaveSeen(const std::string& local, std::map<std::string, int64_t>& m, int64_t now)
+{
+    std::string plain;
+    for (std::map<std::string, int64_t>::iterator it = m.begin(); it != m.end();)
+        if (now - it->second > NYX_HS_WINDOW)
+            m.erase(it++);
+        else
+            ++it;
+    while (m.size() > NYX_SEEN_MAX)
+    {
+        std::map<std::string, int64_t>::iterator oldest = m.begin();
+        for (std::map<std::string, int64_t>::iterator it = m.begin(); it != m.end(); ++it)
+            if (it->second < oldest->second)
+                oldest = it;
+        m.erase(oldest);
+    }
+    for (std::map<std::string, int64_t>::const_iterator it = m.begin(); it != m.end(); ++it)
+    {
+        plain += it->first;
+        plain.append((const char*)&it->second, 8);
+    }
+    SealPut(NYX_DB_SEEN + local, plain);
+}
+
+static void StoreInbox(const std::string& local, bool fOut, const uint8_t peer[20], const uint8_t dev[16],
+                       int64_t t, const NyxEnvelope& env, uint8_t mode)
+{
+    std::string key = NYX_DB_INBOX + local;
+    for (int i = 7; i >= 0; --i)
+        key.push_back((char)(t >> (8 * i)));
+    key.append((const char*)env.logicalId, 16);
+    std::string probe;
+    if (DbRead(key, probe))
+        return;
+    std::string v;
+    v.reserve(70 + env.text.size());
+    v.push_back((char)fOut);
+    v.append((const char*)peer, 20);
+    v.append((const char*)dev, 16);
+    v.append((const char*)&t, 8);
+    v.append((const char*)env.logicalId, 16);
+    v.push_back((char)mode);
+    v.append(env.text);
+    SealPut(key, v);
+}
+
+// Pin for addr, refreshed from the public store; a first pin is made here (TOFU). cs_nyxid held.
+static NyxPin* PinFor(const std::string& addr, bool fRefresh)
+{
+    std::map<std::string, NyxPin>::iterator it = mapPin.find(addr);
+    if (it != mapPin.end() && it->second.fPinned && !fRefresh)
+        return &it->second;
+    NyxPin& p = mapPin[addr];
+    memcpy(p.addrHash, addr.data(), 20);
+    NyxPinInput in;
+    SecureMsgPoCollect((const uint8_t*)addr.data(), in);
+    const int flags = NyxPinApply(p, in, GetTime());
+    if (p.fPinned || p.fResetPending)
+    {
+        if (flags)
+            SavePin(addr);
+        return &p;
+    }
+    mapPin.erase(addr);
+    return NULL;
+}
+
+static bool PinDevice(const NyxPin& p, const uint8_t dev[16], int64_t now, const NyxPinDevice** out)
+{
+    const std::vector<std::string> v = NyxPinUsable(p, now);
+    const std::string id = NyxId(dev);
+    if (std::find(v.begin(), v.end(), id) == v.end() || !p.kr.IsLive(dev))
+        return false;
+    NyxDeviceMap::const_iterator it = p.devices.find(id);
+    if (it == p.devices.end())
+        return false;
+    *out = &it->second;
+    return true;
+}
+
+static std::string PinRefusal(const NyxPin* p, uint8_t mode)
+{
+    if (!p || !p->fPinned)
+        return "No pinned keyring for the recipient; a key fetch was started, retry shortly.";
+    if (p->fFrozen)
+        return "Recipient keyring is frozen: two valid keyrings exist at one sequence. Sending stops until the "
+               "owner confirms on one device.";
+    if (p->fResetPending)
+        return "Recipient identity was reset; review it and run nyx keyring accept first.";
+    if (p->kr.mode != mode)
+        return mode == NYX_MODE_PQ ? "Recipient is classical-only while this device is PQ; refusing to downgrade."
+                                   : "Recipient is PQ while this device is classical; upgrade this identity first.";
+    return std::string();
+}
+
+// This node's paired, live device for local; NULL with sError otherwise. cs_nyxid held.
+static NyxOwnDevice* LiveDevice(const std::string& local, NyxLocalSide& me, NyxKeyring& kr, std::string& sError)
+{
+    std::map<std::string, NyxOwnDevice>::iterator it = mapDev.find(local);
+    uint8_t h[32];
+    if (it == mapDev.end() || it->second.certBody.empty())
+    {
+        sError = "No paired device for this address on this node; run nyx keyring init or device pair.";
+        return NULL;
+    }
+    NyxOwnDevice& d = it->second;
+    RefreshOwn(local, d);
+    if (d.fCloneAlarm)
+    {
+        sError = "Clone alarm is set on this device; run nyx keyring confirm first.";
+        return NULL;
+    }
+    if (!OwnKeyring(d, kr, h) || !kr.IsLive(d.deviceId))
+    {
+        sError = "This device is not live in its keyring.";
+        return NULL;
+    }
+    me.dev = &d;
+    NyxHash(d.certBody, me.certHash);
+    me.epoch = kr.epoch;
+    me.seq = kr.seq;
+    me.addrKey = NULL;
+    return &d;
+}
+
+static void RebuildBundle(const std::string& local, NyxOwnDevice& d, std::vector<NyxBytes>& vPub)
+{
+    CKeyID id;
+    memcpy(id.begin(), local.data(), 20);
+    CKey key;
+    NyxBundle b;
+    if (pwalletMain->GetKey(id, key) && NyxBuildBundle(d, key, GetTime(), b))
+        vPub.push_back(d.lastBundle);
+    SaveDev(local);
+}
+
+static int Deliver(const std::string& local, const NyxRatchet& r, const NyxBytes& pt)
+{
+    NyxEnvelope env;
+    if (!env.Parse(pt) || env.ctype != 0 || memcmp(env.convAddr, r.remoteAddr, 20) != 0)
+        return NYX_RX_DROP;
+    StoreInbox(local, false, r.remoteAddr, r.remoteDev, GetTime(), env, r.mode);
+    return NYX_RX_DONE;
+}
+
+static void RxLog(const std::string& why)
+{
+    printf("Nyx session: %s\n", why.c_str());
+}
+
+// One private session body for local. cs_nyxid held.
+static int SessRx(const std::string& local, const NyxBytes& body, std::string& why, std::vector<NyxBytes>& vPub)
+{
+    const int64_t now = GetTime();
+    NyxLocalSide me;
+    NyxKeyring kr;
+    NyxOwnDevice* d = LiveDevice(local, me, kr, why);
+    if (!d)
+        return NYX_RX_DROP;
+    if (body[0] == NYX_BODY_RATCHET)
+    {
+        NyxRatchetMsg m;
+        if (NyxParseRatchetMsg(&body[0], body.size(), m) != 0 || memcmp(m.devB, d->deviceId, 16) != 0)
+        {
+            why = "ratchet message malformed or for another device";
+            return NYX_RX_DROP;
+        }
+        NyxSession s;
+        if (!LoadSess(local, m.devA, s) || s.states.empty())
+        {
+            why = "no session with the sending device";
+            return NYX_RX_DROP;
+        }
+        const std::string peer((const char*)s.states[0].remoteAddr, 20);
+        std::map<std::string, NyxPin>::iterator itP = mapPin.find(peer);
+        if (itP == mapPin.end() || !itP->second.fPinned)
+        {
+            why = "sender is no longer pinned";
+            return NYX_RX_DROP;
+        }
+        const NyxPinDevice* pd;
+        if (itP->second.fFrozen || itP->second.fResetPending)
+        {
+            why = "sender keyring frozen or reset pending";
+            return NYX_RX_HOLD;
+        }
+        if (!PinDevice(itP->second, m.devA, now, &pd))
+        {
+            why = "sending device is not live in the sender's pinned keyring";
+            return NYX_RX_DROP;
+        }
+        NyxBytes pt;
+        const int r = s.Decrypt(m.tail, now, pt);
+        if (r != NYX_DR_OK)
+        {
+            why = "ratchet message refused (" + boost::lexical_cast<std::string>(r) + ")";
+            return NYX_RX_DROP;
+        }
+        SaveSess(local, m.devA, s);
+        const int rv = Deliver(local, s.states[0], pt);
+        if (!pt.empty())
+            OPENSSL_cleanse(&pt[0], pt.size());
+        return rv;
+    }
+
+    NyxHandshake hs;
+    if (NyxParseHandshake(&body[0], body.size(), hs) != 0 || memcmp(hs.devB, d->deviceId, 16) != 0)
+    {
+        why = "handshake malformed or for another device";
+        return NYX_RX_DROP;
+    }
+    const std::string peer((const char*)hs.addrA, 20);
+    NyxPin* p = PinFor(peer, mapPin.count(peer) == 0 || mapPin[peer].kr.seq < hs.seqA
+                                 || mapPin[peer].kr.epoch < hs.epochA);
+    if (!p || !p->fPinned)
+    {
+        SecureMsgPoGet(std::vector<unsigned char>(peer.begin(), peer.end()));
+        why = "initiator not pinned yet";
+        return NYX_RX_HOLD;
+    }
+    if (p->fFrozen || p->fResetPending)
+    {
+        why = "initiator keyring frozen or reset pending";
+        return NYX_RX_HOLD;
+    }
+    if (p->kr.mode != d->mode || hs.mode != d->mode)
+    {
+        why = "initiator mode differs from this device (downgrade refused)";
+        return NYX_RX_DROP;
+    }
+    if (hs.epochA > p->kr.epoch || (hs.epochA == p->kr.epoch && hs.seqA > p->kr.seq))
+    {
+        SecureMsgPoGet(std::vector<unsigned char>(peer.begin(), peer.end()));
+        why = "initiator keyring ahead of the pin";
+        return NYX_RX_HOLD;
+    }
+    const NyxPinDevice* pd;
+    if (!PinDevice(*p, hs.devA, now, &pd))
+    {
+        why = "initiating device is not live in its pinned keyring";
+        return NYX_RX_DROP;
+    }
+    uint8_t hsId[32];
+    NyxHsId(hs, hsId);
+    NyxSession s;
+    LoadSess(local, hs.devA, s);
+    NyxBytes pt;
+    if (s.FindHs(hsId) >= 0)
+    {
+        const int r = s.Decrypt(hs.tail, now, pt);
+        if (r != NYX_DR_OK)
+        {
+            why = "repeated handshake message refused (" + boost::lexical_cast<std::string>(r) + ")";
+            return NYX_RX_DROP;
+        }
+    }
+    else
+    {
+        std::map<std::string, int64_t> seen;
+        LoadSeen(local, seen);
+        const std::string sid((const char*)hsId, 32);
+        if (seen.count(sid))
+        {
+            why = "handshake replay";
+            return NYX_RX_DROP;
+        }
+        NyxPeerSide ps;
+        ps.cert = &pd->cert;
+        memcpy(ps.certHash, pd->certHash, 32);
+        ps.epoch = p->kr.epoch;
+        ps.seq = p->kr.seq;
+        NyxRatchet r;
+        uint32_t opk = NYX_OPK_NONE;
+        if (!NyxHsRespond(me, ps, hs, now, r, opk, why))
+            return NYX_RX_DROP;
+        const int dr = NyxRatchetDecrypt(r, hs.tail, now, pt);
+        if (dr != NYX_DR_OK)
+        {
+            why = "handshake message refused (" + boost::lexical_cast<std::string>(dr) + ")";
+            return NYX_RX_DROP;
+        }
+        seen[sid] = now;
+        SaveSeen(local, seen, now);
+        s.Push(r);
+        if (opk != NYX_OPK_NONE)
+        {
+            NyxDeviceEraseOpk(*d, opk);
+            NyxDeviceTopUpOpks(*d, now);
+            RebuildBundle(local, *d, vPub);
+        }
+    }
+    SaveSess(local, hs.devA, s);
+    const int rv = Deliver(local, s.states[0], pt);
+    if (!pt.empty())
+        OPENSSL_cleanse(&pt[0], pt.size());
+    return rv;
+}
+
+static void Hold(const std::string& local, const NyxBytes& body, const std::string& why)
+{
+    NyxHeld h;
+    h.local = local;
+    h.body = body;
+    h.until = GetTime() + (why.find("frozen") != std::string::npos ? NYX_HELD_FROZEN : NYX_HELD_UNPINNED);
+    h.why = why;
+    if (vHeld.size() >= NYX_HELD_MAX)
+        vHeld.erase(vHeld.begin());
+    vHeld.push_back(h);
+}
+
+// cs_nyxid held.
+static void RetryHeld(std::vector<NyxBytes>& vPub)
+{
+    if (vHeld.empty())
+        return;
+    std::vector<NyxHeld> v;
+    v.swap(vHeld);
+    const int64_t now = GetTime();
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        if (v[i].until < now)
+            continue;
+        std::string why;
+        const int r = SessRx(v[i].local, v[i].body, why, vPub);
+        if (r == NYX_RX_HOLD)
+            vHeld.push_back(v[i]);
+        else if (r == NYX_RX_DROP)
+            RxLog("held message dropped: " + why);
+    }
+}
+
+void NyxSessOnPrivate(const std::string& sAddrTo, const std::vector<uint8_t>& body)
+{
+    if (body.empty() || (body[0] != NYX_BODY_HANDSHAKE && body[0] != NYX_BODY_RATCHET))
+        return;
+    std::vector<NyxBytes> vPub;
+    {
+        LOCK(cs_nyxid);
+        std::string sError, local;
+        if (!Ready(sError) || !ParseAddr(sAddrTo, local, NULL, sError))
+        {
+            RxLog("cannot process a session message for " + sAddrTo + ": " + sError);
+            return;
+        }
+        std::string why;
+        const int r = SessRx(local, body, why, vPub);
+        if (r == NYX_RX_HOLD)
+        {
+            Hold(local, body, why);
+            RxLog("held: " + why);
+        }
+        else if (r == NYX_RX_DROP)
+            RxLog("dropped: " + why);
+    }
+    Publish(vPub);
+}
+
+static void EnsureSmsgKey(const std::string& sAddrTo, const NyxPin& p)
+{
+    CBitcoinAddress a(sAddrTo);
+    CKeyID id;
+    CPubKey pk;
+    if (!a.GetKeyID(id) || SecureMsgGetStoredKey(id, pk) == 0 || SecureMsgGetLocalKey(id, pk) == 0)
+        return;
+    if (NyxAddrRecover(NYX_TAG_KEYRING, p.kr.Signed(), p.kr.addrSig, pk) && pk.GetID() == id)
+        SecureMsgInsertAddress(id, pk);
+}
+
+bool NyxSessSend(const std::string& sFrom, const std::string& sTo, const std::string& text, Object& out,
+                 std::string& sError)
+{
+    std::vector<NyxBytes> vBodies, vPub;
+    NyxPin pinCopy;
+    {
+        LOCK(cs_nyxid);
+        std::string local, peer;
+        CKey key;
+        if (!Ready(sError) || !ParseAddr(sFrom, local, &key, sError) || !ParseAddr(sTo, peer, NULL, sError))
+            return false;
+        if (text.empty() || text.size() > (size_t)nNyxMaxParts * NYX_PART_BODY_MAX - NYX_HS_FIXED_PQ - 200)
+        {
+            sError = "Message is empty or too long.";
+            return false;
+        }
+        NyxLocalSide me;
+        NyxKeyring kr;
+        NyxOwnDevice* d = LiveDevice(local, me, kr, sError);
+        if (!d)
+            return false;
+        me.addrKey = &key;
+        NyxPin* p = PinFor(peer, true);
+        sError = PinRefusal(p, d->mode);
+        if (!sError.empty())
+        {
+            SecureMsgPoGet(std::vector<unsigned char>(peer.begin(), peer.end()));
+            return false;
+        }
+        const int64_t now = GetTime();
+        const std::vector<std::string> usable = NyxPinUsable(*p, now);
+        NyxPinInput in;
+        std::vector<NyxBytes> vb;
+        SecureMsgPoCollect((const uint8_t*)peer.data(), in, &vb);
+        std::map<std::string, NyxBundle> bundles;
+        for (size_t i = 0; i < vb.size(); ++i)
+        {
+            NyxBundle b;
+            if (NyxParseBundle(&vb[i][0], vb[i].size(), b) == 0
+                && (!bundles.count(NyxId(b.deviceId)) || bundles[NyxId(b.deviceId)].seq < b.seq))
+                bundles[NyxId(b.deviceId)] = b;
+        }
+        NyxEnvelope env;
+        env.ctype = 0;
+        GetRandBytes(env.logicalId, 16);
+        memcpy(env.convAddr, local.data(), 20);
+        env.text = text;
+        NyxBytes pt = env.Serialize();
+        Array devs;
+        for (size_t i = 0; i < usable.size(); ++i)
+        {
+            const NyxPinDevice& pd = p->devices[usable[i]];
+            if (!p->kr.IsLive(pd.cert.deviceId))
+                continue;
+            Object o;
+            o.push_back(Pair("device", Hex(pd.cert.deviceId, 16)));
+            NyxSession s;
+            LoadSess(local, pd.cert.deviceId, s);
+            bool fNew = s.states.empty() || !s.states[0].fCKs
+                     || (s.states[0].fInitiator && !s.states[0].fAcked && now - s.states[0].created > NYX_HS_WINDOW);
+            if (fNew)
+            {
+                std::map<std::string, NyxBundle>::iterator itB = bundles.find(usable[i]);
+                NyxPeerSide ps;
+                ps.cert = &pd.cert;
+                memcpy(ps.certHash, pd.certHash, 32);
+                ps.epoch = p->kr.epoch;
+                ps.seq = p->kr.seq;
+                NyxRatchet r;
+                std::string why;
+                if (itB == bundles.end())
+                    why = "no bundle published";
+                else if (!NyxHsInitiate(me, ps, itB->second, now, r, why))
+                    why = "handshake: " + why;
+                if (!why.empty())
+                {
+                    o.push_back(Pair("error", why));
+                    devs.push_back(o);
+                    continue;
+                }
+                s.Push(r);
+            }
+            NyxBytes body;
+            if (!NyxSessionSeal(s.states[0], pt, now, body))
+            {
+                o.push_back(Pair("error", "could not seal"));
+                devs.push_back(o);
+                continue;
+            }
+            SaveSess(local, pd.cert.deviceId, s);
+            o.push_back(Pair("handshake", body[0] == NYX_BODY_HANDSHAKE));
+            o.push_back(Pair("opk", s.states[0].fOpk));
+            o.push_back(Pair("bytes", (int)body.size()));
+            devs.push_back(o);
+            vBodies.push_back(body);
+        }
+        OPENSSL_cleanse(&pt[0], pt.size());
+        if (vBodies.empty())
+        {
+            SecureMsgPoGet(std::vector<unsigned char>(peer.begin(), peer.end()));
+            sError = "No session could be started with any recipient device (no verified bundle yet); a key fetch "
+                     "was started, retry shortly.";
+            return false;
+        }
+        StoreInbox(local, true, (const uint8_t*)peer.data(), d->deviceId, now, env, d->mode);
+        pinCopy = *p;
+        out.push_back(Pair("logical_id", Hex(env.logicalId, 16)));
+        out.push_back(Pair("mode", d->mode == NYX_MODE_PQ ? "pq" : "classical"));
+        out.push_back(Pair("devices", devs));
+    }
+    EnsureSmsgKey(sTo, pinCopy);
+    Array ids;
+    for (size_t i = 0; i < vBodies.size(); ++i)
+    {
+        std::string msgid, err;
+        if (SecureMsgV2SendPrivate(sTo, vBodies[i], msgid, err) != 0)
+        {
+            sError = "Sealed but not sent: " + err;
+            return false;
+        }
+        ids.push_back(msgid);
+    }
+    out.push_back(Pair("msgids", ids));
+    return true;
+}
+
+static std::string AddrStr(const uint8_t h[20])
+{
+    CKeyID id;
+    memcpy(id.begin(), h, 20);
+    return CBitcoinAddress(id).ToString();
+}
+
+bool NyxSessList(const std::string& sAddr, Array& out, std::string& sError)
+{
+    LOCK(cs_nyxid);
+    std::string local;
+    if (!Ready(sError) || !ParseAddr(sAddr, local, NULL, sError))
+        return false;
+    std::vector<std::pair<std::string, std::string> > v;
+    PrefixScan(NYX_DB_SESS + local, v);
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        std::string plain;
+        NyxSession s;
+        const bool fOk = NyxStoreOpen(skCache, v[i].first, v[i].second, plain) && s.Deserialize(plain);
+        if (!plain.empty())
+            OPENSSL_cleanse(&plain[0], plain.size());
+        if (!fOk || s.states.empty())
+            continue;
+        const NyxRatchet& r = s.states[0];
+        Object o;
+        o.push_back(Pair("peer", AddrStr(r.remoteAddr)));
+        o.push_back(Pair("peer_device", Hex(r.remoteDev, 16)));
+        o.push_back(Pair("mode", r.mode == NYX_MODE_PQ ? "pq" : "classical"));
+        o.push_back(Pair("suite", r.mode == NYX_MODE_PQ ? "PQXDH ML-KEM-768 + X25519, ML-DSA-65 handshake"
+                                                        : "X3DH X25519, ECDSA handshake"));
+        o.push_back(Pair("opk", r.fOpk));
+        o.push_back(Pair("initiator", r.fInitiator));
+        o.push_back(Pair("acked", r.fAcked));
+        o.push_back(Pair("sent", (int64_t)r.Ns));
+        o.push_back(Pair("received", (int64_t)r.Nr));
+        o.push_back(Pair("skipped_keys", (int64_t)r.skipped.size()));
+        o.push_back(Pair("states", (int64_t)s.states.size()));
+        o.push_back(Pair("transcript", Hex(r.T, 32)));
+        o.push_back(Pair("created", r.created));
+        o.push_back(Pair("last_used", r.lastUsed));
+        out.push_back(o);
+    }
+    size_t nHeld = 0;
+    for (size_t i = 0; i < vHeld.size(); ++i)
+        nHeld += vHeld[i].local == local;
+    if (nHeld)
+    {
+        Object o;
+        o.push_back(Pair("held_inbound", (int64_t)nHeld));
+        o.push_back(Pair("held_reason", vHeld.back().why));
+        out.push_back(o);
+    }
+    return true;
+}
+
+bool NyxSessMessages(const std::string& sAddr, const std::string& sPeer, Array& out, std::string& sError)
+{
+    LOCK(cs_nyxid);
+    std::string local, peer;
+    if (!Ready(sError) || !ParseAddr(sAddr, local, NULL, sError)
+        || (!sPeer.empty() && !ParseAddr(sPeer, peer, NULL, sError)))
+        return false;
+    std::vector<std::pair<std::string, std::string> > v;
+    PrefixScan(NYX_DB_INBOX + local, v);
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        std::string plain;
+        if (!NyxStoreOpen(skCache, v[i].first, v[i].second, plain) || plain.size() < 62)
+            continue;
+        if (!peer.empty() && plain.compare(1, 20, peer) != 0)
+            continue;
+        int64_t t;
+        memcpy(&t, plain.data() + 37, 8);
+        Object o;
+        o.push_back(Pair("direction", plain[0] ? "out" : "in"));
+        o.push_back(Pair("peer", AddrStr((const uint8_t*)plain.data() + 1)));
+        o.push_back(Pair(plain[0] ? "from_device" : "peer_device", Hex((const uint8_t*)plain.data() + 21, 16)));
+        o.push_back(Pair("time", t));
+        o.push_back(Pair("logical_id", Hex((const uint8_t*)plain.data() + 45, 16)));
+        o.push_back(Pair("mode", plain[61] == NYX_MODE_PQ ? "pq" : "classical"));
+        o.push_back(Pair("text", plain.substr(62)));
+        out.push_back(o);
+        OPENSSL_cleanse(&plain[0], plain.size());
+    }
+    return true;
+}
+
+bool NyxSessDelete(const std::string& sAddr, const std::string& sPeer, Object& out, std::string& sError)
+{
+    LOCK(cs_nyxid);
+    std::string local, peer;
+    if (!Ready(sError) || !ParseAddr(sAddr, local, NULL, sError) || !ParseAddr(sPeer, peer, NULL, sError))
+        return false;
+    std::vector<std::pair<std::string, std::string> > v;
+    PrefixScan(NYX_DB_SESS + local, v);
+    std::vector<std::string> vErase;
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        std::string plain;
+        NyxSession s;
+        if (NyxStoreOpen(skCache, v[i].first, v[i].second, plain) && s.Deserialize(plain) && !s.states.empty()
+            && memcmp(s.states[0].remoteAddr, peer.data(), 20) == 0)
+            vErase.push_back(v[i].first);
+        if (!plain.empty())
+            OPENSSL_cleanse(&plain[0], plain.size());
+    }
+    DbErase(vErase);
+    out.push_back(Pair("deleted", (int64_t)vErase.size()));
+    return true;
+}
+
+// SPK rotation, OPK top-up and held-message retries, from NyxIdHousekeeping. cs_nyxid held.
+static void SessHousekeeping(std::vector<NyxBytes>& vPub)
+{
+    const int64_t now = GetTime();
+    for (std::map<std::string, NyxOwnDevice>::iterator it = mapDev.begin(); it != mapDev.end(); ++it)
+    {
+        NyxOwnDevice& d = it->second;
+        if (d.certBody.empty() || d.fCloneAlarm)
+            continue;
+        const int64_t created = d.spkCreated;
+        const bool fRot = NyxDeviceRotateSpk(d, now);
+        const bool fTop = NyxDeviceTopUpOpks(d, now);
+        if (fRot || fTop)
+            RebuildBundle(it->first, d, vPub);
+        else if (created != d.spkCreated)
+            SaveDev(it->first);
+    }
+    RetryHeld(vPub);
 }

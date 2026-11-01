@@ -40,4 +40,14 @@ bool NyxIdRevoke(const std::string& addr, const std::string& deviceIdHex, json_s
 bool NyxIdContact(const std::string& addr, json_spirit::Object& out, std::string& sError);
 bool NyxIdAcceptReset(const std::string& addr, bool fAllowDowngrade, json_spirit::Object& out, std::string& sError);
 
+
+// 1:1 sessions.
+/** A completed {2,0} body of type 0x10/0x11 for a local address; held, dropped or stored in the inbox. */
+void NyxSessOnPrivate(const std::string& addrTo, const std::vector<uint8_t>& body);
+bool NyxSessSend(const std::string& from, const std::string& to, const std::string& text, json_spirit::Object& out,
+                 std::string& sError);
+bool NyxSessList(const std::string& addr, json_spirit::Array& out, std::string& sError);
+bool NyxSessMessages(const std::string& addr, const std::string& peer, json_spirit::Array& out, std::string& sError);
+bool NyxSessDelete(const std::string& addr, const std::string& peer, json_spirit::Object& out, std::string& sError);
+
 #endif // INNOVA_NYXIDENTITY_H

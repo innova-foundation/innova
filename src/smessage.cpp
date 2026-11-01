@@ -6134,10 +6134,10 @@ static std::string NyxPeerOwner(const CNode* pfrom)
 }
 
 // cs_nyxv2 held.
-static void SecureMsgV2Dispatch(const std::string& addrTo, const NyxFrame& f, const std::vector<unsigned char>& body)
+static bool SecureMsgV2Dispatch(const std::string& addrTo, const NyxFrame& f, const std::vector<unsigned char>& body)
 {
     if (body.empty() || NyxPoIsPublicType(body[0]))
-        return;
+        return false;
     const std::string id(addrTo + std::string((const char*)f.msgid, 16));
     const int64_t now = GetTime();
     while (!qNyxDelivered.empty()
@@ -6147,7 +6147,7 @@ static void SecureMsgV2Dispatch(const std::string& addrTo, const NyxFrame& f, co
         qNyxDelivered.pop_front();
     }
     if (!setNyxDelivered.insert(id).second)
-        return;
+        return false;
     qNyxDelivered.push_back(std::make_pair(now, id));
 
     NyxV2Delivered d;
@@ -6161,6 +6161,7 @@ static void SecureMsgV2Dispatch(const std::string& addrTo, const NyxFrame& f, co
     if (vNyxDelivered.size() > NYX_DELIVERED_KEEP)
         vNyxDelivered.erase(vNyxDelivered.begin());
     printf("Nyx v2 message %s complete for %s, %u bytes, type %u.\n", d.msgid.c_str(), addrTo.c_str(), d.nLen, d.type);
+    return true;
 }
 
 static int SecureMsgScanV2(unsigned char* pHeader, unsigned char* pPayload, uint32_t nPayload)
@@ -6188,12 +6189,17 @@ static int SecureMsgScanV2(unsigned char* pHeader, unsigned char* pPayload, uint
             return 1;
 
         const std::string addrTo = coinAddress.ToString();
-        LOCK(cs_nyxv2);
-        if (setNyxDelivered.count(addrTo + std::string((const char*)f.msgid, 16)))
-            return 0;
         std::vector<unsigned char> body;
-        if (nyxPrivParts.Add(addrTo, f, GetTime(), body) == NYX_RA_COMPLETE)
-            SecureMsgV2Dispatch(addrTo, f, body);
+        bool fNew = false;
+        {
+            LOCK(cs_nyxv2);
+            if (setNyxDelivered.count(addrTo + std::string((const char*)f.msgid, 16)))
+                return 0;
+            if (nyxPrivParts.Add(addrTo, f, GetTime(), body) == NYX_RA_COMPLETE)
+                fNew = SecureMsgV2Dispatch(addrTo, f, body);
+        }
+        if (fNew)
+            NyxSessOnPrivate(addrTo, body);
         return 0;
     }
     return 2;
