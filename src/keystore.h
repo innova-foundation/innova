@@ -165,6 +165,10 @@ public:
 
     bool LockKeyStore();
 
+    /** Encrypt or decrypt a non-key secret under the wallet master key; fails while locked. */
+    bool WrapSecret(const CSecret& vchPlain, const uint256& nIV, std::vector<unsigned char>& vchOut);
+    bool UnwrapSecret(const std::vector<unsigned char>& vchIn, const uint256& nIV, CSecret& vchPlain) const;
+
     virtual bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
     bool AddKeyPubKey(const CKey& key, const CPubKey &pubkey);
     bool HaveKey(const CKeyID &address) const
