@@ -13,6 +13,7 @@
 #include <vector>
 
 static const uint8_t  NYX_PO_BUNDLE  = 0x02;
+static const size_t   NYX_PO_ADDR_UNVERIFIED = 64;   // pending objects held per address
 static const uint8_t  NYX_PO_CERT    = 0x03;
 static const uint8_t  NYX_PO_KEYRING = 0x04;
 

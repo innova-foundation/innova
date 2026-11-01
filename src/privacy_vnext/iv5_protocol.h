@@ -30,7 +30,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "f4843e366fbf52ff048cb9553482bd10709761871062321725cf56d39fc2c357";
+    "7c65361df08e3b2c3aa4efa82b539918f8bf073fa9bd238b0e3770a8a7436527";
 // Parameter digest stamped on a chain's first IV5 epoch and used below it. Consensus.
 // FROZEN opaque constant: never re-derive it when the contract text changes
 // (pinned by genesis_parameter_digest_is_frozen).

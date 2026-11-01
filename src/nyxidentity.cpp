@@ -15,12 +15,15 @@
 
 #include <algorithm>
 #include <fstream>
+
+#include <openssl/crypto.h>
 #include <string.h>
 #include <unistd.h>
 
 using namespace json_spirit;
 
 static const int64_t NYX_KR_REFRESH = 60 * 60 * 20;
+static const int64_t NYX_KR_RENEW_SLOT = 60 * 60;    // x device rank (< 16), below NYX_KR_REFRESH
 static const char NYX_DB_SK[] = "nyxsk";
 static const char NYX_DB_DEV[] = "nyd";
 static const char NYX_DB_PIN[] = "nyp";
@@ -153,7 +156,10 @@ static bool SaveDev(const std::string& addr)
 {
     std::string sealed;
     const std::string key = NYX_DB_DEV + addr;
-    return NyxStoreSeal(skCache, key, mapDev[addr].Serialize(), sealed) && DbWrite(key, sealed);
+    std::string plain = mapDev[addr].Serialize();
+    const bool fOk = NyxStoreSeal(skCache, key, plain, sealed);
+    OPENSSL_cleanse(&plain[0], plain.size());
+    return fOk && DbWrite(key, sealed);
 }
 
 static bool SavePin(const std::string& addr)
@@ -219,7 +225,10 @@ static bool Ready(std::string& sError)
     {
         std::string plain;
         NyxOwnDevice d;
-        if (!NyxStoreOpen(skCache, v[i].first, v[i].second, plain) || !d.Deserialize(plain))
+        const bool fOk = NyxStoreOpen(skCache, v[i].first, v[i].second, plain) && d.Deserialize(plain);
+        if (!plain.empty())
+            OPENSSL_cleanse(&plain[0], plain.size());
+        if (!fOk)
             continue;
         const std::string addr = v[i].first.substr(strlen(NYX_DB_DEV));
         const std::string why = NyxCloneCheck(d, fp, NULL);
@@ -502,6 +511,11 @@ bool NyxIdKeyringReset(const std::string& sAddr, uint8_t mode, Object& out, std:
         {
             epoch = own.epoch + 1;
             memcpy(prev, ownHash, 32);
+        }
+        if (epoch == 0)
+        {
+            sError = "Reset epoch is exhausted.";
+            return false;
         }
         mapDev.erase(addr);
         if (!StartIdentity(addr, key, mode, epoch, prev, vPub, sError))
@@ -1017,7 +1031,7 @@ bool NyxIdAcceptReset(const std::string& sAddr, bool fAllowDowngrade, Object& ou
     if (!Ready(sError) || !ParseAddr(sAddr, addr, NULL, sError))
         return false;
     std::map<std::string, NyxPin>::iterator it = mapPin.find(addr);
-    if (it == mapPin.end() || !NyxPinAcceptReset(it->second, fAllowDowngrade, sError))
+    if (it == mapPin.end() || !NyxPinAcceptReset(it->second, fAllowDowngrade, GetTime(), sError))
     {
         if (sError.empty())
             sError = "No pin for this address.";
@@ -1113,11 +1127,11 @@ void NyxIdHousekeeping()
                              && now > (int64_t)(c.created + (c.expiry - c.created) * 4 / 5);
             if (!fRenew && now - (int64_t)kr.ts < NYX_KR_REFRESH)
                 continue;
-            // One refresher per address avoids two devices publishing the same seq.
-            bool fLowest = true;
+            // One publisher per slot: the lowest id refreshes, renewals wait rank slots past the tip.
+            int64_t nRank = 0;
             for (size_t i = 0; i < kr.live.size(); ++i)
-                fLowest &= memcmp(kr.live[i].deviceId, d.deviceId, 16) >= 0;
-            if (!fLowest && !fRenew)
+                nRank += memcmp(kr.live[i].deviceId, d.deviceId, 16) < 0;
+            if (fRenew ? now - (int64_t)kr.ts < nRank * NYX_KR_RENEW_SLOT : nRank != 0)
                 continue;
             CKeyID id;
             memcpy(id.begin(), it->first.data(), 20);

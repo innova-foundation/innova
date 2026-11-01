@@ -52,6 +52,8 @@ static int ParseCert(const uint8_t* p, size_t n, NyxPoInfo& out)
     if (n < off + 16)
         return 2;
     const bool fFirst = IsZero(p + off, 16);
+    if (mode == 0 && !fFirst)
+        return 5;
     off += 16;
     if (mode == 1 && !fFirst)
         off += NYX_MLDSA_SIG;
@@ -60,15 +62,16 @@ static int ParseCert(const uint8_t* p, size_t n, NyxPoInfo& out)
 
 static int ParseBundle(const uint8_t* p, size_t n, NyxPoInfo& out)
 {
-    const size_t nHead = 1 + 20 + 16 + 8 + 4 + 4 + 32;
+    const size_t nHead = 1 + 1 + 20 + 16 + 8 + 4 + 4 + 32;
     if (n < nHead + 1)
         return 2;
-    memcpy(out.addrHash, p + 1, 20);
-    memcpy(out.deviceId, p + 21, 16);
-    out.ts = LE64(p + 37);
-    out.seq = LE32(p + 45);
-    const size_t nPqMin = nHead + 4 + NYX_MLKEM_EK + 1 + NYX_MLDSA_SIG;
-    const bool fPq = n >= nPqMin;
+    if (p[1] > 1)
+        return 4;
+    const bool fPq = p[1] == 1;
+    memcpy(out.addrHash, p + 2, 20);
+    memcpy(out.deviceId, p + 22, 16);
+    out.ts = LE64(p + 38);
+    out.seq = LE32(p + 46);
     const size_t offOpk = nHead + (fPq ? 4 + NYX_MLKEM_EK : 0);
     if (n < offOpk + 1)
         return 2;
@@ -274,6 +277,16 @@ bool NyxPoStore::Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_
         }
         Account(it->second, false);
         records.erase(it);
+    }
+    if (!fVerified)
+    {
+        std::vector<const Record*> v;
+        Get(info.addrHash, v);
+        size_t nUnv = 0;
+        for (size_t i = 0; i < v.size(); ++i)
+            nUnv += !v[i]->fVerified;
+        if (nUnv >= NYX_PO_ADDR_UNVERIFIED)
+            return false;
     }
     Record r;
     r.info = info;

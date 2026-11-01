@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(cert_keyring_bundle_sign_verify_and_sizes)
     NyxBundle b;
     BOOST_REQUIRE(NyxBuildBundle(o.devs[0], o.key, T0, b));
     const NyxBytes bb = b.Serialize();
-    BOOST_CHECK_EQUAL(bb.size(), 4583U);   // PQ bundle with no OPKs
+    BOOST_CHECK_EQUAL(bb.size(), 4584U);   // PQ bundle with no OPKs
     NyxBundle b2;
     BOOST_REQUIRE_EQUAL(NyxParseBundle(&bb[0], bb.size(), b2), 0);
     NyxCert c0;
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(expiry_cap_and_expired_cert)
     NyxCert c;
     NyxParseCert(&o.CertOf(0)[0], o.CertOf(0).size(), c);
     c.expiry = c.created + NYX_CERT_LIFE + 1;
-    BOOST_REQUIRE(NyxAddrSign(o.key, NYX_TAG_CERT, c.Fields(), c.addrSig));
+    BOOST_REQUIRE(NyxAddrSign(o.key, NYX_TAG_CERT, c.Signed(), c.addrSig));
     const NyxBytes b = c.Serialize();
     NyxCert out;
     BOOST_CHECK(NyxParseCert(&b[0], b.size(), out) != 0);
@@ -349,12 +349,12 @@ BOOST_AUTO_TEST_CASE(identity_reset_needs_one_click_accept)
     BOOST_CHECK_EQUAL(t.pin.kr.epoch, 1U);
 
     std::string err;
-    BOOST_REQUIRE(NyxPinAcceptReset(t.pin, false, err));
+    BOOST_REQUIRE(NyxPinAcceptReset(t.pin, false, T0 + 340, err));
     BOOST_CHECK_EQUAL(t.pin.kr.epoch, 2U);
     BOOST_CHECK_EQUAL(t.pin.devices.size(), 1U);
     BOOST_CHECK(NyxPinCanSend(t.pin));
     BOOST_CHECK(NyxSafetyNumber(t.o.addr, t.pin.kr.epoch, t.pin.devices) != sn1);
-    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, err));
+    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, T0 + 340, err));
 }
 
 BOOST_AUTO_TEST_CASE(downgrade_refused_after_pq)
@@ -382,8 +382,8 @@ BOOST_AUTO_TEST_CASE(downgrade_refused_after_pq)
     t.o.Publish(r);
     BOOST_CHECK(HasFlag(NyxPinApply(t.pin, t.o.net, T0 + 330), NYX_PIN_RESET));
     std::string err;
-    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, err));
-    BOOST_CHECK(NyxPinAcceptReset(t.pin, true, err));
+    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, T0 + 340, err));
+    BOOST_CHECK(NyxPinAcceptReset(t.pin, true, T0 + 340, err));
     BOOST_CHECK_EQUAL(t.pin.kr.mode, NYX_MODE_CLASSICAL);
 }
 
@@ -463,7 +463,7 @@ BOOST_AUTO_TEST_CASE(relay_continuity)
     // Address signature from another key.
     Owner other;
     NyxKeyring forged = k;
-    BOOST_REQUIRE(NyxAddrSign(other.key, NYX_TAG_KEYRING, forged.Fields(), forged.addrSig));
+    BOOST_REQUIRE(NyxAddrSign(other.key, NYX_TAG_KEYRING, forged.Signed(), forged.addrSig));
     BOOST_CHECK_EQUAL(NyxRelayVerify(Held(held), forged.Serialize()), NYX_PO_BAD);
     // A higher epoch must start at seq 1.
     NyxKeyring jump = o.tip;
@@ -659,6 +659,219 @@ BOOST_AUTO_TEST_CASE(keyring_parser_rejects_malformed)
     BOOST_CHECK(NyxParseKeyring(&pb[0], pb.size(), k) != 0);
     for (size_t n = 0; n < b.size(); n += 7)
         BOOST_CHECK(NyxParseKeyring(&b[0], n, k) != 0);
+}
+
+BOOST_AUTO_TEST_CASE(address_signature_is_not_malleable)
+{
+    static const uint8_t N[32] = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,
+                                  0xba,0xae,0xdc,0xe6,0xaf,0x48,0xa0,0x3b,0xbf,0xd2,0x5e,0x8c,0xd0,0x36,0x41,0x41};
+    Owner o;
+    BOOST_REQUIRE(NyxKeyringAddrValid(o.tip));
+    NyxKeyring h = o.tip;
+    h.addrSig[0] += 8;
+    BOOST_CHECK(!NyxKeyringAddrValid(h));
+    // (r, n - s) with the other recid recovers the same key: refused as high-S.
+    NyxKeyring m = o.tip;
+    int borrow = 0;
+    for (int i = 31; i >= 0; --i)
+    {
+        const int d = (int)N[i] - (int)m.addrSig[33 + i] - borrow;
+        m.addrSig[33 + i] = (uint8_t)(d & 0xff);
+        borrow = d < 0;
+    }
+    m.addrSig[0] ^= 1;
+    BOOST_CHECK(!NyxKeyringAddrValid(m));
+    // Every signature this code makes is low-S.
+    for (int i = 0; i < 32; ++i)
+    {
+        NyxKeyring k = o.tip;
+        k.ts = T0 + i;
+        BOOST_REQUIRE(NyxBuildKeyring(k, o.key, NULL));
+        BOOST_CHECK(NyxKeyringAddrValid(k));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(signer_id_is_signed)
+{
+    Owner o(NYX_MODE_CLASSICAL);
+    const size_t i = o.AddDevice(NYX_MODE_CLASSICAL, NULL, T0 + 10, 2);
+    NyxKeyring k = o.Next(o.tip, o.tipBody, 0, T0 + 10);
+    k.live.push_back(o.Entry(i));
+    o.Sign(k, 0);
+    BOOST_REQUIRE(NyxKeyringAddrValid(k));
+    NyxKeyring r = k;
+    r.signerId[0] ^= 1;
+    BOOST_CHECK(!NyxKeyringAddrValid(r));
+    NyxPinInput relay = o.net;
+    BOOST_CHECK_EQUAL(NyxRelayVerify(Held(relay), r.Serialize()), NYX_PO_BAD);
+
+    // A classical cert never names a signer.
+    NyxCert c;
+    BOOST_REQUIRE_EQUAL(NyxParseCert(&o.CertOf(0)[0], o.CertOf(0).size(), c), 0);
+    c.signerId[0] = 1;
+    BOOST_REQUIRE(NyxAddrSign(o.key, NYX_TAG_CERT, c.Signed(), c.addrSig));
+    const NyxBytes cb = c.Serialize();
+    NyxCert out;
+    BOOST_CHECK(NyxParseCert(&cb[0], cb.size(), out) != 0);
+    // A PQ cert's signer id is under the address signature too.
+    Owner q;
+    NyxCert pc;
+    BOOST_REQUIRE(NyxBuildCert(q.devs[0], q.key, T0, 1, &q.devs[0], pc));
+    BOOST_REQUIRE(NyxCertAddrValid(pc));
+    pc.signerId[1] ^= 1;
+    BOOST_CHECK(!NyxCertAddrValid(pc));
+}
+
+BOOST_AUTO_TEST_CASE(bundle_mode_is_explicit)
+{
+    Owner o;
+    NyxBundle b;
+    BOOST_REQUIRE(NyxBuildBundle(o.devs[0], o.key, T0, b));
+    NyxBytes bb = b.Serialize();
+    BOOST_CHECK_EQUAL(bb[1], NYX_MODE_PQ);
+    NyxBundle out;
+    bb[1] = NYX_MODE_CLASSICAL;
+    BOOST_CHECK(NyxParseBundle(&bb[0], bb.size(), out) != 0);
+    bb[1] = 2;
+    BOOST_CHECK(NyxParseBundle(&bb[0], bb.size(), out) != 0);
+    Owner cl(NYX_MODE_CLASSICAL);
+    BOOST_REQUIRE(NyxBuildBundle(cl.devs[0], cl.key, T0, b));
+    bb = b.Serialize();
+    BOOST_CHECK_EQUAL(bb[1], NYX_MODE_CLASSICAL);
+    BOOST_CHECK_EQUAL(NyxParseBundle(&bb[0], bb.size(), out), 0);
+    BOOST_CHECK(!out.fPq);
+}
+
+BOOST_AUTO_TEST_CASE(seq1_sibling_freezes_but_never_continues)
+{
+    Owner o;
+    NyxPin pin = FreshPin(o);
+    BOOST_REQUIRE(HasFlag(NyxPinApply(pin, o.net, T0 + 10), NYX_PIN_PINNED));
+    const NyxBytes pinned = pin.krBody;
+    // Address key only: a seq 1 sibling with a fresh device, then seq 2 signed by that device.
+    const size_t x = o.AddDevice(NYX_MODE_PQ, NULL, T0 + 20, 1);
+    NyxKeyring s1;
+    memcpy(s1.addrHash, o.addr, 20);
+    s1.ts = T0 + 20;
+    s1.live.push_back(o.Entry(x));
+    BOOST_REQUIRE(NyxBuildKeyring(s1, o.key, NULL));
+    o.Publish(s1);
+    NyxKeyring s2 = o.Next(s1, s1.Serialize(), x, T0 + 30);
+    o.Sign(s2, x);
+    o.Publish(s2);
+    const int f = NyxPinApply(pin, o.net, T0 + 40);
+    BOOST_CHECK(HasFlag(f, NYX_PIN_FROZEN));
+    BOOST_CHECK(!HasFlag(f, NYX_PIN_UNFROZEN));
+    BOOST_CHECK(pin.fFrozen);
+    BOOST_CHECK(pin.krBody == pinned);
+    BOOST_CHECK(!pin.devices.count(NyxId(o.devs[x].deviceId)));
+}
+
+BOOST_AUTO_TEST_CASE(fork_with_both_sides_advanced_stays_frozen)
+{
+    TwoDevices t;
+    const NyxKeyring base = t.pin.kr;
+    const NyxBytes baseBody = t.pin.krBody;
+    NyxKeyring a = t.o.Next(base, baseBody, 0, T0 + 100);
+    a.live.erase(a.live.begin() + 1);
+    a.revoked.push_back(NyxId(t.o.devs[1].deviceId));
+    t.o.Sign(a, 0);
+    NyxKeyring b = t.o.Next(base, baseBody, 1, T0 + 101);
+    b.live.erase(b.live.begin());
+    b.revoked.push_back(NyxId(t.o.devs[0].deviceId));
+    t.o.Sign(b, 1);
+    t.o.net.keyrings.push_back(a.Serialize());
+    t.o.net.keyrings.push_back(b.Serialize());
+    BOOST_REQUIRE(HasFlag(NyxPinApply(t.pin, t.o.net, T0 + 110), NYX_PIN_FROZEN));
+    const NyxBytes pinned = t.pin.krBody;
+
+    NyxKeyring c = t.o.Next(a, a.Serialize(), 0, T0 + 120);
+    t.o.Sign(c, 0);
+    NyxKeyring d = t.o.Next(b, b.Serialize(), 1, T0 + 121);
+    t.o.Sign(d, 1);
+    t.o.net.keyrings.push_back(c.Serialize());
+    t.o.net.keyrings.push_back(d.Serialize());
+    const int g = NyxPinApply(t.pin, t.o.net, T0 + 130);
+    BOOST_CHECK(HasFlag(g, NYX_PIN_FROZEN));
+    BOOST_CHECK(!HasFlag(g, NYX_PIN_UNFROZEN));
+    BOOST_CHECK(t.pin.fFrozen);
+    BOOST_CHECK(t.pin.krBody == pinned);
+}
+
+BOOST_AUTO_TEST_CASE(expired_device_cannot_sign)
+{
+    TwoDevices t;
+    const int64_t late = T0 + NYX_CERT_LIFE + 100;
+    NyxKeyring k = t.o.Next(t.pin.kr, t.pin.krBody, 0, late);
+    t.o.Sign(k, 0);
+    t.o.Publish(k);
+    const int f = NyxPinApply(t.pin, t.o.net, late + 10);
+    BOOST_CHECK(HasFlag(f, NYX_PIN_FORGERY));
+    BOOST_CHECK_EQUAL(t.pin.kr.seq, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(reset_epoch_step_and_expiry)
+{
+    TwoDevices t;
+    const size_t i = t.o.AddDevice(NYX_MODE_PQ, NULL, T0 + 200, 1);
+    NyxKeyring r;
+    memcpy(r.addrHash, t.o.addr, 20);
+    r.epoch = 1 + NYX_KR_MAX_SEQ_JUMP + 1;
+    NyxHash(t.pin.krBody, r.prevHash);
+    r.ts = T0 + 200;
+    r.live.push_back(t.o.Entry(i));
+    BOOST_REQUIRE(NyxBuildKeyring(r, t.o.key, NULL));
+    BOOST_CHECK_EQUAL(NyxRelayVerify(Held(t.o.net), r.Serialize()), NYX_PO_BAD);
+    r.epoch = 0xffffffff;
+    BOOST_REQUIRE(NyxBuildKeyring(r, t.o.key, NULL));
+    BOOST_CHECK_EQUAL(NyxRelayVerify(Held(t.o.net), r.Serialize()), NYX_PO_BAD);
+    r.epoch = 2;
+    BOOST_REQUIRE(NyxBuildKeyring(r, t.o.key, NULL));
+    BOOST_CHECK_EQUAL(NyxRelayVerify(Held(t.o.net), r.Serialize()), NYX_PO_OK);
+    t.o.Publish(r);
+    BOOST_REQUIRE(HasFlag(NyxPinApply(t.pin, t.o.net, T0 + 210), NYX_PIN_RESET));
+    std::string err;
+    // Accepted after the reset device's cert expired: refused.
+    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, T0 + 200 + NYX_CERT_LIFE + 1, err));
+    BOOST_CHECK(NyxPinAcceptReset(t.pin, false, T0 + 220, err));
+}
+
+BOOST_AUTO_TEST_CASE(stale_reset_not_offered)
+{
+    TwoDevices t;
+    const int64_t ts = T0 + 200;
+    const size_t i = t.o.AddDevice(NYX_MODE_PQ, NULL, ts, 1);
+    NyxKeyring r;
+    memcpy(r.addrHash, t.o.addr, 20);
+    r.epoch = 2;
+    NyxHash(t.pin.krBody, r.prevHash);
+    r.ts = ts;
+    r.live.push_back(t.o.Entry(i));
+    BOOST_REQUIRE(NyxBuildKeyring(r, t.o.key, NULL));
+    t.o.Publish(r);
+    BOOST_CHECK(!HasFlag(NyxPinApply(t.pin, t.o.net, ts + NYX_FIRST_PIN_MAX_AGE + 1), NYX_PIN_RESET));
+    BOOST_CHECK(!t.pin.fResetPending);
+}
+
+BOOST_AUTO_TEST_CASE(po_store_caps_unverified_per_address)
+{
+    NyxPoStore st;
+    NyxPoInfo info;
+    memset(&info, 0, sizeof(info));
+    info.type = NYX_PO_CERT;
+    memset(info.addrHash, 9, 20);
+    std::vector<std::vector<uint8_t> > parts(1, std::vector<uint8_t>(10, 1));
+    for (size_t i = 0; i < NYX_PO_ADDR_UNVERIFIED; ++i)
+    {
+        info.deviceId[0] = (uint8_t)i;
+        info.deviceId[1] = 1;
+        BOOST_REQUIRE(st.Put(info, parts, T0, false));
+    }
+    info.deviceId[0] = 0xff;
+    BOOST_CHECK(!st.Put(info, parts, T0, false));
+    BOOST_CHECK(st.Put(info, parts, T0, true));
+    info.addrHash[0] = 8;
+    BOOST_CHECK(st.Put(info, parts, T0, false));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
