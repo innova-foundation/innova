@@ -216,6 +216,9 @@ OBJS= \
     obj/nyxext.o \
     obj/nyxgroup.o \
     obj/nyxparts.o \
+    obj/nyxcert.o \
+    obj/nyxidentity.o \
+    obj/nyxkeyring.o \
     obj/nyxpo.o \
     obj/nyxsafety.o \
     obj/nyxui.o \
@@ -323,6 +326,8 @@ TEST_OBJS= \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
     obj/test/nyx_v2_tests.o \
+    obj/test/nyx_identity_tests.o \
+    obj/test/nyx_pq_kat_tests.o \
     obj/test/base58_tests.o \
     obj/test/bip32_tests.o \
     obj/test/stealth_retirement_tests.o \
@@ -459,8 +464,8 @@ fuzz-deserialize-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(CXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
 
 # The v2 wire layer is pure functions of peer bytes; only OpenSSL is linked.
-FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse
-FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp
+FUZZ_NYX_TARGETS ?= fuzz_v2_frame fuzz_reassembly fuzz_po_parse fuzz_nyx_cert fuzz_nyx_keyring fuzz_nyx_bundle
+FUZZ_NYX_SRCS ?= nyxparts.cpp nyxpo.cpp nyxcert.cpp
 
 fuzz-nyx-v2-libfuzzer:
 	for t in $(FUZZ_NYX_TARGETS); do \

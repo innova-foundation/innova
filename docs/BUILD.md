@@ -106,6 +106,12 @@ step. `--sync upstream/Cargo.toml` restores the full crate set the pinned upstre
 lock names (the wrapper alone resolves fewer crates, and the provenance check in
 `release-check` refuses that set). Every later build is offline and reproducible.
 
+The wrapper lock also names the Nyx messenger crates (ml-kem, ml-dsa, x25519-dalek,
+chacha20poly1305, hkdf and their dependencies), which the upstream lock does not. They are
+not consensus inputs and are pinned by name, version and SHA-256 in
+`tools/provenance_common.py`. A `vendor/` restored before they were added lacks them; rerun
+the `cargo vendor` step above.
+
 For an air-gapped build, each release also ships
 `innova-<version>-rust-vendor.tar.zst`; unpack it in place of `cargo vendor`:
 
