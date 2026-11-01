@@ -276,3 +276,19 @@ bool CCryptoKeyStore::EncryptKeys(CKeyingMaterial& vMasterKeyIn)
     }
     return true;
 }
+
+bool CCryptoKeyStore::WrapSecret(const CSecret& vchPlain, const uint256& nIV, std::vector<unsigned char>& vchOut)
+{
+    LOCK(cs_KeyStore);
+    if (!IsCrypted() || vMasterKey.empty())
+        return false;
+    return EncryptSecret(vMasterKey, vchPlain, nIV, vchOut);
+}
+
+bool CCryptoKeyStore::UnwrapSecret(const std::vector<unsigned char>& vchIn, const uint256& nIV, CSecret& vchPlain) const
+{
+    LOCK(cs_KeyStore);
+    if (!IsCrypted() || vMasterKey.empty())
+        return false;
+    return DecryptSecret(vMasterKey, vchIn, nIV, vchPlain);
+}
