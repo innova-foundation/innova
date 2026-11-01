@@ -188,6 +188,8 @@ bool NyxDeviceTopUpOpks(NyxOwnDevice& dev, int64_t now);
 /** New SPK and ML-KEM prekey after NYX_SPK_LIFE; the previous pair stays for NYX_SPK_GRACE. */
 bool NyxDeviceRotateSpk(NyxOwnDevice& dev, int64_t now, bool fForce = false);
 /** Secret prekeys by id: current or unexpired previous SPK (and its ML-KEM seed), or an OPK. */
+/** Wipes the previous SPK and ML-KEM seed once their grace period ends; true when it did. */
+bool NyxDeviceExpirePrevSpk(NyxOwnDevice& dev, int64_t now);
 bool NyxDeviceSpk(const NyxOwnDevice& dev, uint32_t spkId, int64_t now, uint8_t sk[32], const uint8_t** pKemSeed);
 const NyxOpk* NyxDeviceOpk(const NyxOwnDevice& dev, uint32_t id);
 void NyxDeviceEraseOpk(NyxOwnDevice& dev, uint32_t id);
