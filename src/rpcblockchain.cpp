@@ -2008,64 +2008,58 @@ Value downloadbootstrap(const Array& params, bool fHelp)
     if (fHelp || params.size() > 2)
         throw runtime_error(
             "downloadbootstrap [url] [force]\n"
-            "Download and apply blockchain bootstrap.\n"
-            "This downloads the bootstrap from the latest GitHub release.\n"
-            "Requires restart after completion.\n"
-            "\nWARNING: This will overwrite existing blockchain data!\n"
+            "Schedule the blockchain bootstrap for the next start.\n"
+            "On restart the node downloads the bootstrap from the latest GitHub release and replaces\n"
+            "its chain data (blk*.dat, txleveldb) with it before the chain loads, then rescans the wallet.\n"
+            "wallet.dat, innova.conf, peers and messages are kept. A failed bootstrap keeps the current chain.\n"
             "\nArguments:\n"
-            "1. url    (string, optional) Custom bootstrap URL. Default: latest GitHub release\n"
-            "2. force  (bool, optional) Force download even if blockchain data exists. Default: false\n"
+            "1. url    (string, optional) Custom bootstrap or manifest URL. Default: latest GitHub release\n"
+            "2. force  (bool, optional) Schedule even if the chain is not far behind. Default: false\n"
             "\nResult:\n"
             "{\n"
-            "  \"status\": \"success|failed\",\n"
+            "  \"status\": \"scheduled\",\n"
+            "  \"local_height\": n,\n"
+            "  \"bootstrap_height\": n,   (-1 if unknown)\n"
             "  \"message\": \"description\"\n"
             "}\n");
+
+    extern bool fRegTest;
+    if (fTestNet || fRegTest)
+        throw runtime_error("The bootstrap is published for mainnet only.");
 
     std::string url = params.size() > 0 ? params[0].get_str() : "";
     bool force = params.size() > 1 ? params[1].get_bool() : false;
 
-    if (!Bootstrap::IsNeeded(GetDataDir()) && !force) {
-        throw runtime_error(
-            "Blockchain data already exists. This command would overwrite existing data.\n"
-            "If you really want to do this, call with force=true:\n"
-            "  downloadbootstrap \"\" true\n"
-            "WARNING: Your existing blockchain data will be overwritten!");
-    }
-
-    if (!url.empty()) {
-        printf("Bootstrap: WARNING - Using custom URL: %s\n", url.c_str());
-        printf("Bootstrap: Only use URLs from trusted sources!\n");
-    }
-
-    printf("Bootstrap: Starting download via RPC...\n");
-
-    int64_t lastPercent = -1;
-    auto progressCallback = [&lastPercent](int64_t downloaded, int64_t total) {
-        if (total > 0) {
-            int64_t percent = static_cast<int64_t>((static_cast<double>(downloaded) / total) * 100.0);
-            if (percent > 100) percent = 100;
-            if (percent < 0) percent = 0;
-            if (percent != lastPercent && percent % 10 == 0) {
-                printf("Bootstrap download: %lld%% (%lld MB / %lld MB)\n",
-                       (long long)percent,
-                       (long long)(downloaded / 1048576),
-                       (long long)(total / 1048576));
-                lastPercent = percent;
-            }
+    int nLocal = 0;
+    int64_t nTipTime = 0;
+    {
+        LOCK(cs_main);
+        if (pindexBest) {
+            nLocal = pindexBest->nHeight;
+            nTipTime = pindexBest->GetBlockTime();
         }
-    };
+    }
+    const int64_t nNow = GetTime();
+    int nPublished = nNow - nTipTime > Bootstrap::STALE_TIP_SECONDS ? Bootstrap::FetchManifestHeight() : -1;
+    if (!force && Bootstrap::Decide(false, nLocal, nTipTime, nPublished, nNow) != Bootstrap::OFFER_BEHIND) {
+        throw runtime_error(strprintf(
+            "The local chain (height %d) is not far behind the bootstrap, so it is kept.\n"
+            "To replace it anyway:\n"
+            "  downloadbootstrap \"\" true", nLocal));
+    }
 
-    bool success = Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback);
+    if (!url.empty())
+        printf("Bootstrap: WARNING - custom URL scheduled: %s\n", url.c_str());
+
+    if (!Bootstrap::WriteRequest(GetDataDir(), url))
+        throw runtime_error("Could not write " + Bootstrap::REQUEST_FILENAME + " in the data directory.");
+    printf("Bootstrap: scheduled for the next start via RPC\n");
 
     Object result;
-    if (success) {
-        result.push_back(Pair("status", "success"));
-        result.push_back(Pair("message", "Bootstrap applied successfully. Please restart Innova to load the new blockchain data."));
-    } else {
-        result.push_back(Pair("status", "failed"));
-        result.push_back(Pair("message", "Bootstrap download or extraction failed. Check debug.log for details."));
-    }
-
+    result.push_back(Pair("status", "scheduled"));
+    result.push_back(Pair("local_height", nLocal));
+    result.push_back(Pair("bootstrap_height", nPublished));
+    result.push_back(Pair("message", "Restart Innova to apply the bootstrap. The chain is replaced before it loads; the wallet is kept and rescanned."));
     return result;
 }
 

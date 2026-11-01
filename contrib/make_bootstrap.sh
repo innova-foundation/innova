@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Usage: make_bootstrap.sh <stopped mainnet datadir> <output dir> [part size, default 1900M]
+# Usage: make_bootstrap.sh <stopped mainnet datadir> <output dir> <chain height> [part size, default 1900M]
+# The height (getblockcount before the stop) goes in the manifest; nodes compare it to their own tip.
 # Builds innovabootstrap.zip.NNN parts and innovabootstrap.sha256 from a node's chain data.
 # Linux only (GNU split and sha256sum).
 set -euo pipefail
 
 DATADIR="${1:?datadir required}"
 OUT="${2:?output dir required}"
-PART="${3:-1900M}"
+HEIGHT="${3:?chain height required (getblockcount before stopping the node)}"
+PART="${4:-1900M}"
+case "$HEIGHT" in ""|*[!0-9]*) echo "height must be a number" >&2; exit 1;; esac
 NAME=innovabootstrap.zip
 
 [ -f "$DATADIR/blk0001.dat" ] && [ -d "$DATADIR/txleveldb" ] || { echo "no chain data in $DATADIR" >&2; exit 1; }
@@ -37,7 +40,7 @@ with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64
         z.write(os.path.join(src, n), n)
 PY
 (cd "$OUT" && split -b "$PART" -d -a 3 --numeric-suffixes=1 "$NAME" "$NAME.")
-(cd "$OUT" && sha256sum "$NAME".[0-9][0-9][0-9] "$NAME" > innovabootstrap.sha256)
+(cd "$OUT" && { echo "# height $HEIGHT"; sha256sum "$NAME".[0-9][0-9][0-9] "$NAME"; } > innovabootstrap.sha256)
 rm -f "$OUT/$NAME"
 
 ls -l "$OUT"

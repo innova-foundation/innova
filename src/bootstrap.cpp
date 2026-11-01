@@ -5,6 +5,10 @@
 #include "bootstrap.h"
 #include "util.h"
 #include "ui_interface.h"
+#include "main.h"
+
+#include <leveldb/db.h>
+#include <set>
 
 #include <curl/curl.h>
 #include <boost/filesystem.hpp>
@@ -659,6 +663,97 @@ bool ExtractZip(const boost::filesystem::path& zipPath,
     return true;
 }
 
+static bool IsBlkName(const std::string& name)
+{
+    // blkNNNN.dat
+    return name.size() == 11 && name.compare(0, 3, "blk") == 0 && name.compare(7, 4, ".dat") == 0 &&
+           std::all_of(name.begin() + 3, name.begin() + 7, [](char c) { return isdigit((unsigned char)c); });
+}
+
+bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem::path& dataDir,
+                  const std::string& strFailOn)
+{
+    namespace fs = boost::filesystem;
+    boost::system::error_code ec;
+    std::vector<fs::path> vItems;
+    std::set<std::string> setNames;
+    for (fs::directory_iterator it(stage), end; it != end; ++it) {
+        vItems.push_back(it->path());
+        setNames.insert(it->path().filename().string());
+    }
+    // txleveldb last: IsNeeded() keys on it, so a partial move is retried next start
+    std::stable_partition(vItems.begin(), vItems.end(),
+        [](const fs::path& p) { return p.filename() != "txleveldb"; });
+
+    // Block files past the bootstrap's last one would not match its index
+    std::vector<fs::path> vStale;
+    for (fs::directory_iterator it(dataDir), end; it != end; ++it) {
+        std::string name = it->path().filename().string();
+        if (IsBlkName(name) && !setNames.count(name))
+            vStale.push_back(it->path());
+    }
+
+    std::vector<std::pair<fs::path, bool> > vTouched; // target, placed from the stage
+    auto rollback = [&]() {
+        for (auto it = vTouched.rbegin(); it != vTouched.rend(); ++it) {
+            if (it->second)
+                fs::remove_all(it->first, ec);
+            fs::path old = it->first.string() + ".bootstrap-old";
+            if (fs::exists(old))
+                fs::rename(old, it->first, ec);
+        }
+    };
+    auto aside = [&](const fs::path& target) {
+        fs::path backup = target.string() + ".bootstrap-old";
+        fs::remove_all(backup, ec);
+        if (!fs::exists(target))
+            return true;
+        fs::rename(target, backup, ec);
+        if (ec) {
+            printf("Bootstrap: Could not move %s aside: %s\n", target.string().c_str(), ec.message().c_str());
+            return false;
+        }
+        return true;
+    };
+
+    for (const auto& target : vStale) {
+        if (!aside(target)) {
+            rollback();
+            return false;
+        }
+        vTouched.push_back(std::make_pair(target, false));
+    }
+    for (const auto& item : vItems) {
+        fs::path target = dataDir / item.filename();
+        if (!aside(target)) {
+            rollback();
+            return false;
+        }
+        vTouched.push_back(std::make_pair(target, true));
+        if (item.filename().string() == strFailOn) {
+            ec = boost::system::errc::make_error_code(boost::system::errc::io_error);
+        } else {
+            for (int nTry = 0; nTry < 10; ++nTry) {
+                fs::rename(item, target, ec);
+                if (!ec)
+                    break;
+                MilliSleep(500);
+            }
+        }
+        if (ec) {
+            printf("Bootstrap: Could not move %s into place: %s\n",
+                   target.string().c_str(), ec.message().c_str());
+            rollback();
+            return false;
+        }
+    }
+    for (const auto& t : vTouched)
+        fs::remove_all(t.first.string() + ".bootstrap-old", ec);
+    if (!vStale.empty())
+        printf("Bootstrap: Removed %u block files past the bootstrap\n", (unsigned)vStale.size());
+    return true;
+}
+
 // Extract to a staging dir so a failed run leaves the datadir untouched
 static bool ExtractStaged(const boost::filesystem::path& zipPath,
                           const boost::filesystem::path& dataDir)
@@ -669,44 +764,12 @@ static bool ExtractStaged(const boost::filesystem::path& zipPath,
     boost::filesystem::create_directories(stage);
 
     bool fOk = ExtractZip(zipPath, stage);
-    if (fOk) {
-        // txleveldb last: IsNeeded() keys on it, so a partial move is retried next start
-        std::vector<boost::filesystem::path> vItems, vMoved;
-        for (boost::filesystem::directory_iterator it(stage), end; it != end; ++it)
-            vItems.push_back(it->path());
-        std::stable_partition(vItems.begin(), vItems.end(),
-            [](const boost::filesystem::path& p) { return p.filename() != "txleveldb"; });
-        for (const auto& item : vItems) {
-            boost::filesystem::path target = dataDir / item.filename();
-            boost::filesystem::path backup = target.string() + ".bootstrap-old";
-            boost::filesystem::remove_all(backup, ec);
-            if (boost::filesystem::exists(target))
-                boost::filesystem::rename(target, backup, ec);
-            for (int nTry = 0; nTry < 10; ++nTry) {
-                boost::filesystem::rename(item, target, ec);
-                if (!ec)
-                    break;
-                MilliSleep(500);
-            }
-            if (ec) {
-                printf("Bootstrap: Could not move %s into place: %s\n",
-                       target.string().c_str(), ec.message().c_str());
-                vMoved.push_back(target);
-                for (const auto& moved : vMoved) {
-                    boost::filesystem::remove_all(moved, ec);
-                    boost::filesystem::path old = moved.string() + ".bootstrap-old";
-                    if (boost::filesystem::exists(old))
-                        boost::filesystem::rename(old, moved, ec);
-                }
-                fOk = false;
-                break;
-            }
-            vMoved.push_back(target);
-        }
-        if (fOk)
-            for (const auto& moved : vMoved)
-                boost::filesystem::remove_all(moved.string() + ".bootstrap-old", ec);
+    if (fOk && !boost::filesystem::exists(stage / "txleveldb")) {
+        printf("Bootstrap: Archive has no txleveldb\n");
+        fOk = false;
     }
+    if (fOk)
+        fOk = SwapInStaged(stage, dataDir);
     boost::filesystem::remove_all(stage, ec);
     return fOk;
 }
@@ -720,6 +783,133 @@ bool IsNeeded(const boost::filesystem::path& dataDir)
     bool hasTxDb = boost::filesystem::exists(txdbDir);
 
     return !hasBlkFile && !hasTxDb;
+}
+
+Offer Decide(bool fEmpty, int nLocalHeight, int64_t nTipTime, int nManifestHeight, int64_t nNow)
+{
+    if (fEmpty)
+        return OFFER_EMPTY;
+    if (nNow - nTipTime <= STALE_TIP_SECONDS)
+        return OFFER_NONE;
+    if (nManifestHeight >= 0 && nLocalHeight >= nManifestHeight - FAR_BEHIND_BLOCKS)
+        return OFFER_NONE;
+    return OFFER_BEHIND;
+}
+
+bool ReadLocalTip(const boost::filesystem::path& dataDir, int& nHeight, int64_t& nTipTime)
+{
+    nHeight = 0;
+    nTipTime = 0;
+    boost::filesystem::path dir = dataDir / "txleveldb";
+    if (!boost::filesystem::exists(dir / "CURRENT"))
+        return false;
+    leveldb::Options options;
+    options.create_if_missing = false;
+    options.max_open_files = 64;
+    leveldb::DB* db = nullptr;
+    leveldb::Status status = leveldb::DB::Open(options, dir.string(), &db);
+    if (!status.ok()) {
+        printf("Bootstrap: Could not read the local chain: %s\n", status.ToString().c_str());
+        return false;
+    }
+    bool fOk = false;
+    try {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        ssKey << std::string("hashBestChain");
+        std::string strValue;
+        if (db->Get(leveldb::ReadOptions(), leveldb::Slice(&ssKey[0], ssKey.size()), &strValue).ok()) {
+            uint256 hashBest;
+            CDataStream ssHash(strValue.data(), strValue.data() + strValue.size(), SER_DISK, CLIENT_VERSION);
+            ssHash >> hashBest;
+            CDataStream ssIndexKey(SER_DISK, CLIENT_VERSION);
+            ssIndexKey << std::make_pair(std::string("blockindex"), hashBest);
+            if (db->Get(leveldb::ReadOptions(), leveldb::Slice(&ssIndexKey[0], ssIndexKey.size()), &strValue).ok()) {
+                CDataStream ssIndex(strValue.data(), strValue.data() + strValue.size(), SER_DISK, CLIENT_VERSION);
+                CDiskBlockIndex diskindex;
+                ssIndex >> diskindex;
+                nHeight = diskindex.nHeight;
+                nTipTime = diskindex.nTime;
+                fOk = true;
+            }
+        }
+    } catch (const std::exception& e) {
+        printf("Bootstrap: Could not decode the local tip: %s\n", e.what());
+    }
+    delete db;
+    return fOk;
+}
+
+int ParseManifestHeight(const std::string& manifest)
+{
+    std::vector<std::string> vLines;
+    boost::split(vLines, manifest, boost::is_any_of("\n"));
+    for (std::string line : vLines) {
+        boost::trim(line);
+        if (line.compare(0, 9, "# height ") != 0)
+            continue;
+        std::string num = line.substr(9);
+        boost::trim(num);
+        if (num.empty() || num.size() > 9 || !std::all_of(num.begin(), num.end(), [](char c) { return isdigit((unsigned char)c); }))
+            return -1;
+        return atoi(num.c_str());
+    }
+    return -1;
+}
+
+int FetchManifestHeight()
+{
+    std::string manifest;
+    if (!FetchString(LATEST_MANIFEST_URL, manifest, false))
+        return -1;
+    return ParseManifestHeight(manifest);
+}
+
+Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLocalHeight, int* pnManifestHeight)
+{
+    int nLocal = 0, nManifest = -1;
+    int64_t nTipTime = 0;
+    bool fEmpty = IsNeeded(dataDir);
+    if (!fEmpty)
+        ReadLocalTip(dataDir, nLocal, nTipTime);
+    if (!fEmpty && nNow - nTipTime > STALE_TIP_SECONDS)
+        nManifest = FetchManifestHeight();
+    if (pnLocalHeight)
+        *pnLocalHeight = nLocal;
+    if (pnManifestHeight)
+        *pnManifestHeight = nManifest;
+    Offer o = Decide(fEmpty, nLocal, nTipTime, nManifest, nNow);
+    printf("Bootstrap: local height %d, tip age %llds, bootstrap height %d -> %s\n", nLocal,
+           (long long)(nNow - nTipTime), nManifest, o == OFFER_EMPTY ? "empty" : o == OFFER_BEHIND ? "behind" : "current");
+    return o;
+}
+
+bool WriteRequest(const boost::filesystem::path& dataDir, const std::string& url)
+{
+    FILE* f = OpenFile(dataDir / REQUEST_FILENAME, "wb");
+    if (!f)
+        return false;
+    bool fOk = fwrite(url.data(), 1, url.size(), f) == url.size();
+    return fclose(f) == 0 && fOk;
+}
+
+bool ReadRequest(const boost::filesystem::path& dataDir, std::string& url)
+{
+    url.clear();
+    FILE* f = OpenFile(dataDir / REQUEST_FILENAME, "rb");
+    if (!f)
+        return false;
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    url.assign(buf, n);
+    boost::trim(url);
+    return true;
+}
+
+void ClearRequest(const boost::filesystem::path& dataDir)
+{
+    boost::system::error_code ec;
+    boost::filesystem::remove(dataDir / REQUEST_FILENAME, ec);
 }
 
 void CleanupTempFiles(const boost::filesystem::path& dataDir)

@@ -50,6 +50,7 @@
 #include "chatwidget.h"
 #include "managenamespage.h"
 #include "init.h"
+#include "bootstrap.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -149,6 +150,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     encryptWalletAction(0),
     showPhraseAction(0),
     restorePhraseAction(0),
+    bootstrapAction(0),
     iv5SeedAction(0),
     changePassphraseAction(0),
     unlockWalletAction(0),
@@ -647,6 +649,9 @@ void BitcoinGUI::createActions()
     connect(consolidateCoinsAction, SIGNAL(triggered()), this, SLOT(consolidateCoins()));
     connect(showPhraseAction, SIGNAL(triggered()), this, SLOT(showRecoveryPhrase()));
     connect(restorePhraseAction, SIGNAL(triggered()), this, SLOT(restoreRecoveryPhrase()));
+    bootstrapAction = new QAction(QIcon(":/icons/synced"), tr("Replace Chain with &Bootstrap..."), this);
+    bootstrapAction->setStatusTip(tr("Replace the local chain data with the published bootstrap on restart"));
+    connect(bootstrapAction, SIGNAL(triggered()), this, SLOT(scheduleBootstrap()));
     connect(iv5SeedAction, SIGNAL(triggered()), this, SLOT(showIv5Seed()));
     connect(changePassphraseAction, SIGNAL(triggered()), this, SLOT(changePassphrase()));
     connect(unlockWalletAction, SIGNAL(triggered()), this, SLOT(unlockWallet()));
@@ -690,6 +695,7 @@ void BitcoinGUI::createMenuBar()
     settings->addAction(backupWalletAction);
     settings->addAction(showPhraseAction);
     settings->addAction(restorePhraseAction);
+    settings->addAction(bootstrapAction);
     settings->addAction(iv5SeedAction);
     settings->addAction(changePassphraseAction);
     settings->addSeparator();
@@ -1757,6 +1763,31 @@ void BitcoinGUI::restoreRecoveryPhrase()
     RecoveryPhraseDialog dlg(RecoveryPhraseDialog::RestoreFromPhrase, this);
     dlg.setModel(walletModel);
     dlg.exec();
+}
+
+bool fRestartRequested = false;
+
+void BitcoinGUI::scheduleBootstrap()
+{
+    if (GetBoolArg("-testnet", false) || GetBoolArg("-regtest", false)) {
+        QMessageBox::information(this, tr("Bootstrap"), tr("The bootstrap is published for mainnet only."));
+        return;
+    }
+    QMessageBox::StandardButton r = QMessageBox::question(this, tr("Replace chain with bootstrap"),
+        tr("Innova will restart, download the bootstrap from the latest release (several GB) and "
+           "replace the local chain data with it.\n\n"
+           "Your wallet, settings and messages are kept, and the wallet is rescanned. "
+           "If the bootstrap fails, the current chain data is kept.\n\nContinue?"),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (r != QMessageBox::Yes)
+        return;
+    if (!Bootstrap::WriteRequest(GetDataDir(), "")) {
+        QMessageBox::critical(this, tr("Bootstrap"), tr("Could not write %1 in the data directory.")
+                              .arg(QString::fromStdString(Bootstrap::REQUEST_FILENAME)));
+        return;
+    }
+    fRestartRequested = true;
+    qApp->quit();
 }
 
 void BitcoinGUI::showIv5Seed()
