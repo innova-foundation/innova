@@ -781,6 +781,10 @@ private:
 void InitIBDBatching();
 void FlushIBDBatch();
 bool IBDBlockCommitSync();
+bool OpensSynced(int64_t nMarkerTipTime, int64_t nNow);
+int64_t DefaultDbCacheMB(bool fSynced);
+void WriteSyncedMarker(int64_t nTipTime);
+void OnInitialBlockDownloadDone(int64_t nTipTime);
 bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatchSize, int64_t nSliceMs);
 
 #endif // BITCOIN_DB_H

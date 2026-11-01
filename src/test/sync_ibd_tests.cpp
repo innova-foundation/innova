@@ -11,6 +11,8 @@
 #include "util.h"
 #include "version.h"
 
+#include <leveldb/cache.h>
+
 #include <map>
 #include <set>
 #include <vector>
@@ -292,6 +294,47 @@ BOOST_AUTO_TEST_CASE(signature_skip_needs_the_checkpointed_chain)
     // Never above the last checkpoint.
     BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[5]));
     BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, NULL));
+}
+
+BOOST_AUTO_TEST_CASE(memory_defaults_follow_the_synced_marker)
+{
+    const int64_t nNow = 2000000000;
+    BOOST_CHECK(!OpensSynced(0, nNow));
+    BOOST_CHECK(OpensSynced(nNow - 3600, nNow));
+    BOOST_CHECK(!OpensSynced(nNow - 2 * 24 * 3600, nNow));
+    BOOST_CHECK_EQUAL(DefaultDbCacheMB(false), 300);
+    BOOST_CHECK_EQUAL(DefaultDbCacheMB(true), 64);
+}
+
+namespace {
+void DeleteNothing(const leveldb::Slice&, void*) {}
+}
+
+BOOST_AUTO_TEST_CASE(leveldb_cache_shrinks_in_place)
+{
+    leveldb::Cache* cache = leveldb::NewLRUCache(16 * 1000);
+    static int nValue = 0;
+    for (int i = 0; i < 1000; i++)
+    {
+        const std::string key = strprintf("k%d", i);
+        cache->Release(cache->Insert(key, &nValue, 10, DeleteNothing));
+    }
+    int nBefore = 0;
+    for (int i = 0; i < 1000; i++)
+    {
+        leveldb::Cache::Handle* h = cache->Lookup(strprintf("k%d", i));
+        if (h) { nBefore++; cache->Release(h); }
+    }
+    cache->SetCapacity(16 * 10);
+    int nAfter = 0;
+    for (int i = 0; i < 1000; i++)
+    {
+        leveldb::Cache::Handle* h = cache->Lookup(strprintf("k%d", i));
+        if (h) { nAfter++; cache->Release(h); }
+    }
+    BOOST_CHECK_EQUAL(nBefore, 1000);
+    BOOST_CHECK(nAfter <= 16 * 1 + 16);
+    delete cache;
 }
 
 BOOST_AUTO_TEST_SUITE_END()

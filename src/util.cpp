@@ -4,6 +4,10 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "util.h"
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include "sync.h"
 #include "strlcpy.h"
 #include "version.h"
@@ -104,6 +108,22 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fRegTest = false;
+
+// glibc gives each thread its own arena; capping them bounds fragmentation. MALLOC_ARENA_MAX wins.
+void ConfigureMallocArenas()
+{
+#if defined(__GLIBC__)
+    if (getenv("MALLOC_ARENA_MAX") == NULL)
+        mallopt(M_ARENA_MAX, (int)std::max<int64_t>(1, GetArg("-mallocarenas", 2)));
+#endif
+}
+
+void ReleaseFreeHeapMemory()
+{
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+}
 bool fNativeTor = false;
 bool fHyperfileLocal = false;
 bool fCNLock = false;

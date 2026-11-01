@@ -281,6 +281,14 @@ bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatc
 bool IBDBlockCommitSync()
 {
     const bool fIBD = IsInitialBlockDownload() || (fRegTest && GetBoolArg("-ibdbatchalways", false));
+    static bool fSeenIBD = false;
+    if (fIBD)
+        fSeenIBD = true;
+    else if (fSeenIBD)
+    {
+        fSeenIBD = false;
+        OnInitialBlockDownloadDone(pindexBest ? pindexBest->GetBlockTime() : GetTime());
+    }
     LOCK(cs_IBDBatch);
     const int64_t nNowMs = GetTimeMillis();
     if (IBDBatchShouldSync(fIBD, nIBDBatchCount, nNowMs - nIBDBatchLastSyncMs, nIBDBatchSize, nIBDBatchMs))
@@ -310,9 +318,44 @@ void FlushIBDBatch()
     }
 }
 
+// Tip time recorded at the end of IBD and at shutdown; a fresh one means the node opens synced.
+static fs::path SyncedMarkerPath() { return GetDataDir() / "txleveldb" / "INNOVA_SYNCED"; }
+
+bool OpensSynced(int64_t nMarkerTipTime, int64_t nNow)
+{
+    return nMarkerTipTime > 0 && nNow - nMarkerTipTime < 24 * 60 * 60;
+}
+
+static int64_t ReadSyncedMarker()
+{
+    int64_t nTime = 0;
+    try
+    {
+        fs::ifstream f(SyncedMarkerPath());
+        if (f)
+            f >> nTime;
+    }
+    catch (...) { nTime = 0; }
+    return nTime;
+}
+
+void WriteSyncedMarker(int64_t nTipTime)
+{
+    try
+    {
+        fs::ofstream f(SyncedMarkerPath(), std::ios::trunc);
+        if (f)
+            f << nTipTime << "\n";
+    }
+    catch (...) {}
+}
+
+int64_t DefaultDbCacheMB(bool fSynced) { return fSynced ? 64 : 300; }
+
 static leveldb::Options GetOptions() {
     leveldb::Options options;
-    int nCacheSizeMB = GetArg("-dbcache", 300);
+    const bool fSynced = OpensSynced(ReadSyncedMarker(), GetTime());
+    int nCacheSizeMB = GetArg("-dbcache", DefaultDbCacheMB(fSynced));
     if (txdbBlockCache || txdbFilterPolicy)
         ReleaseLevelDBSharedResources();
     try
@@ -328,10 +371,22 @@ static leveldb::Options GetOptions() {
     }
     options.block_cache = txdbBlockCache;
     options.filter_policy = txdbFilterPolicy;
-    options.write_buffer_size = 64 * 1048576; // 64MB write buffer (default 4MB) for smoother IBD
-    options.max_open_files = 1000;
+    options.write_buffer_size = (fSynced ? 8 : 64) * 1048576;
+    options.max_open_files = 128;
     options.compression = leveldb::kSnappyCompression;
+    printf("LevelDB: cache %d MB, write buffer %d MB, max_open_files 128%s\n", nCacheSizeMB,
+           fSynced ? 8 : 64, fSynced ? " (synced)" : "");
     return options;
+}
+
+// Called once when IBD ends: shrink the block cache to its post-IBD default and record the tip.
+void OnInitialBlockDownloadDone(int64_t nTipTime)
+{
+    if (!mapArgs.count("-dbcache") && txdbBlockCache)
+        txdbBlockCache->SetCapacity(DefaultDbCacheMB(true) * 1048576);
+    WriteSyncedMarker(nTipTime);
+    ReleaseFreeHeapMemory();
+    printf("IBD complete: block cache %d MB\n", (int)GetArg("-dbcache", DefaultDbCacheMB(true)));
 }
 
 void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {

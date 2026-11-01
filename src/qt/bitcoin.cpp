@@ -190,6 +190,7 @@ int main(int argc, char *argv[])
 
     // Command-line options take precedence:
     ParseParameters(argc, argv);
+    ConfigureMallocArenas();
 
     // User language is set up: pick a data directory
     Intro::pickDataDirectory();

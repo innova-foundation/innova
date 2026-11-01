@@ -81,6 +81,9 @@ class Cache {
   // its cache keys.
   virtual uint64_t NewId() = 0;
 
+  // Change the capacity, evicting unpinned entries above it.
+  virtual void SetCapacity(size_t capacity) { }
+
  private:
   void LRU_Remove(Handle* e);
   void LRU_Append(Handle* e);

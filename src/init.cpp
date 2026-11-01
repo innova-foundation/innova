@@ -177,6 +177,8 @@ void Shutdown(void* parg)
         }
 
         FlushIBDBatch();
+        if (pindexBest && !IsInitialBlockDownload())
+            WriteSyncedMarker(pindexBest->GetBlockTime());
 
         // Make a deferred name-index cursor durable so a clean stop during
         // initial download does not force a rebuild on the next start.
@@ -537,6 +539,7 @@ bool AppInit(int argc, char* argv[])
         //
         // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's main()
         ParseParameters(argc, argv);
+        ConfigureMallocArenas();
         if (!fs::is_directory(GetDataDir(false)))
         {
             fprintf(stderr, "Error: Specified directory does not exist\n");
@@ -702,7 +705,8 @@ std::string HelpMessage()
         "  -pid=<file>            " + _("Specify pid file (default: innovad.pid)") + "\n" +
         "  -datadir=<dir>         " + _("Specify data directory") + "\n" +
         "  -wallet=<dir>          " + _("Specify wallet file (within data directory)") + "\n" +
-        "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 300)") + "\n" +
+        "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 300 while syncing, 64 once synced)") + "\n" +
+        "  -mallocarenas=<n>      " + _("Cap glibc malloc arenas unless MALLOC_ARENA_MAX is set (default: 2)") + "\n" +
         "  -dblogsize=<n>         " + _("Set database disk log size in megabytes (default: 100)") + "\n" +
         "  -nameindexbatch=<n>    " + _("Blocks the name index may defer its cursor over before committing, capped at 30 seconds; 0 commits every block (default: 1000)") + "\n" +
         "  -timeout=<n>           " + _("Specify connection timeout in milliseconds (default: 5000)") + "\n" +
