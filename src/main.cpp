@@ -6051,6 +6051,26 @@ static void RequestOrphanAncestry(CNode* pfrom, CBlockIndex* pindexFrom, const u
     pfrom->hashAncestryStop = hashStop;
 }
 
+// At the per-peer cap, orphans a peer parked more than this long ago stop counting against it.
+// The pool's entry and byte bounds, and the per-peer byte share, still hold them.
+static const int64_t ORPHAN_CAP_DECAY_SECONDS = 60;
+
+int OrphanCountTowardCap(NodeId id, int nHeld, int64_t nNow)
+{
+    if (nHeld < MAX_ORPHAN_BLOCKS_PER_PEER)
+        return nHeld;
+    int nStale = 0;
+    for (std::map<uint256, NodeId>::const_iterator it = mapOrphanBlocksByNode.begin(); it != mapOrphanBlocksByNode.end(); ++it)
+    {
+        if (it->second != id)
+            continue;
+        std::map<uint256, COrphanBlock>::const_iterator mi = mapOrphanBlocks.find(it->first);
+        if (mi != mapOrphanBlocks.end() && nNow - mi->second.nTimeParked >= ORPHAN_CAP_DECAY_SECONDS)
+            nStale++;
+    }
+    return nHeld > nStale ? nHeld - nStale : 0;
+}
+
 // The only writer that adds to the orphan tables.
 bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWaitedFor,
                     NodeId owner, size_t nFootprint)
@@ -17379,7 +17399,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 // peer holding nothing, which is both a growing map keyed on a
                 // per-connection id and a count the erase-at-zero rule forbids.
                 std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
-                int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
+                int nOrphansFromPeer = OrphanCountTowardCap(pfrom->GetId(),
+                    (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second, GetTime());
                 // A gap root draws on the reserve above the cap, because it is the
                 // arrival that drains the pool rather than adding to it.
                 const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
@@ -17485,7 +17506,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (pfrom) {
             // Read, do not create (see the DAG park site above).
             std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
-            int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
+            int nOrphansFromPeer = OrphanCountTowardCap(pfrom->GetId(),
+                (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second, GetTime());
             // See the DAG park site: a gap root draws on the reserve above the cap.
             const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
             const int nPeerOrphanCap = MAX_ORPHAN_BLOCKS_PER_PEER +
@@ -18556,6 +18578,46 @@ void static ProcessGetData(CNode* pfrom)
 // a large 4-byte int at any alignment.
 unsigned char pchMessageStart[4] = { 0xfa, 0xf4, 0x3f, 0xb7 };
 
+// Headers from the requester's fork toward a stop block off the main chain, oldest first, up to
+// nLimit. Index pointers only; stops before the first invalid block. False when not a side branch.
+bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pindexMainFork,
+                              CBlockIndex* pindexStop, unsigned int nLimit, std::vector<CBlockIndex*>& vOut)
+{
+    static const size_t MAX_SIDE_BRANCH_WALK = 10000;
+    vOut.clear();
+    if (!pindexStop || pindexStop->IsInMainChain() || nLimit == 0)
+        return false;
+    std::vector<CBlockIndex*> vBranch;
+    CBlockIndex* p = pindexStop;
+    for (; p && !p->IsInMainChain() && !setHave.count(p->GetBlockHash()); p = p->pprev)
+    {
+        if (vBranch.size() >= MAX_SIDE_BRANCH_WALK)
+            return false;
+        vBranch.push_back(p);
+    }
+    if (!p)
+        return false;
+    if (p->IsInMainChain() && !setHave.count(p->GetBlockHash()) &&
+        pindexMainFork && pindexMainFork->IsInMainChain() && pindexMainFork->nHeight < p->nHeight)
+    {
+        for (CBlockIndex* m = pindexMainFork->pnext; m && vOut.size() < nLimit; m = m->pnext)
+        {
+            vOut.push_back(m);
+            if (m == p)
+                break;
+        }
+        if (vOut.empty() || vOut.back() != p)
+            return true;
+    }
+    for (std::vector<CBlockIndex*>::reverse_iterator it = vBranch.rbegin(); it != vBranch.rend() && vOut.size() < nLimit; ++it)
+    {
+        if ((*it)->IsInvalid())
+            break;
+        vOut.push_back(*it);
+    }
+    return true;
+}
+
 // Header hashes and PoW verdicts, computed without cs_main. Legacy PoS headers carry nNonce == 0,
 // so whether the verdict applies is decided under the lock, where the parent height is known.
 void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
@@ -19174,6 +19236,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         vector<CBlock> vHeaders;
+        if (!locator.IsNull() && hashStop != 0)
+        {
+            map<uint256, CBlockIndex*>::iterator miStop = mapBlockIndex.find(hashStop);
+            std::vector<CBlockIndex*> vSide;
+            const std::set<uint256> setHave(locator.GetHave().begin(), locator.GetHave().end());
+            if (miStop != mapBlockIndex.end() &&
+                CollectSideBranchHeaders(setHave, locator.GetBlockIndex(), miStop->second, 2000, vSide))
+            {
+                for (CBlockIndex* pside : vSide)
+                    vHeaders.push_back(pside->GetBlockHeader());
+                if (fDebugNet) printf("getheaders: %u side-branch headers toward %s\n", (unsigned int)vHeaders.size(), hashStop.ToString().substr(0,20).c_str());
+                pfrom->PushMessage("headers", vHeaders);
+                return true;
+            }
+        }
         int nLimit = 2000;
         if (fDebugNet) printf("getheaders %d to %s\n", (pindex ? pindex->nHeight : -1), hashStop.ToString().substr(0,20).c_str());
         for (; pindex; pindex = pindex->pnext)

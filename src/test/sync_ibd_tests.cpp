@@ -104,4 +104,107 @@ BOOST_AUTO_TEST_CASE(header_prechecks_run_without_the_index)
     BOOST_CHECK(!vPowOk[1]);
 }
 
+namespace {
+struct ToyChain
+{
+    std::vector<uint256> vHash;
+    std::vector<CBlockIndex> vIndex;
+    ToyChain() : vHash(10), vIndex(10)
+    {
+        // 0..5 main (5 is linked onward to 9 so it counts as main), 6..8 a side branch off 2, 9 the tip pad
+        for (int i = 0; i < 10; i++)
+        {
+            vHash[i] = uint256((uint64_t)(0x5100 + i));
+            vIndex[i].phashBlock = &vHash[i];
+        }
+        for (int i = 1; i <= 5; i++)
+        {
+            vIndex[i].pprev = &vIndex[i - 1];
+            vIndex[i - 1].pnext = &vIndex[i];
+            vIndex[i].nHeight = i;
+        }
+        vIndex[5].pnext = &vIndex[9];
+        vIndex[9].pprev = &vIndex[5];
+        vIndex[9].nHeight = 6;
+        vIndex[6].pprev = &vIndex[2]; vIndex[6].nHeight = 3;
+        vIndex[7].pprev = &vIndex[6]; vIndex[7].nHeight = 4;
+        vIndex[8].pprev = &vIndex[7]; vIndex[8].nHeight = 5;
+    }
+    CBlockIndex* operator[](int i) { return &vIndex[i]; }
+};
+}
+
+BOOST_AUTO_TEST_CASE(getheaders_serves_a_side_branch_from_the_fork)
+{
+    ToyChain c;
+    std::vector<CBlockIndex*> vOut;
+    std::set<uint256> setHave;
+
+    setHave.insert(c.vHash[2]);
+    BOOST_CHECK(CollectSideBranchHeaders(setHave, c[2], c[8], 2000, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 3U);
+    BOOST_CHECK(vOut[0] == c[6] && vOut[1] == c[7] && vOut[2] == c[8]);
+
+    setHave.clear();
+    setHave.insert(c.vHash[0]);
+    BOOST_CHECK(CollectSideBranchHeaders(setHave, c[0], c[8], 2000, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 5U);
+    BOOST_CHECK(vOut[0] == c[1] && vOut[1] == c[2] && vOut[2] == c[6] && vOut[4] == c[8]);
+
+    BOOST_CHECK(CollectSideBranchHeaders(setHave, c[0], c[8], 3, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 3U);
+    BOOST_CHECK(vOut[2] == c[6]);
+
+    setHave.clear();
+    setHave.insert(c.vHash[6]);
+    BOOST_CHECK(CollectSideBranchHeaders(setHave, c[2], c[8], 2000, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 2U);
+    BOOST_CHECK(vOut[0] == c[7]);
+}
+
+BOOST_AUTO_TEST_CASE(getheaders_side_branch_stops_at_an_invalid_block)
+{
+    ToyChain c;
+    std::vector<CBlockIndex*> vOut;
+    std::set<uint256> setHave;
+    setHave.insert(c.vHash[2]);
+    c[7]->SetFailedValid();
+    BOOST_CHECK(CollectSideBranchHeaders(setHave, c[2], c[8], 2000, vOut));
+    BOOST_REQUIRE_EQUAL(vOut.size(), 1U);
+    BOOST_CHECK(vOut[0] == c[6]);
+}
+
+BOOST_AUTO_TEST_CASE(getheaders_main_chain_stop_uses_the_main_chain_path)
+{
+    ToyChain c;
+    std::vector<CBlockIndex*> vOut;
+    std::set<uint256> setHave;
+    setHave.insert(c.vHash[0]);
+    BOOST_CHECK(!CollectSideBranchHeaders(setHave, c[0], c[4], 2000, vOut));
+    BOOST_CHECK(vOut.empty());
+}
+
+BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)
+{
+    LOCK(cs_main);
+    const std::map<uint256, COrphanBlock> savedBlocks = mapOrphanBlocks;
+    const std::map<uint256, NodeId> savedByNode = mapOrphanBlocksByNode;
+    mapOrphanBlocks.clear();
+    mapOrphanBlocksByNode.clear();
+    const int64_t nNow = 1000000;
+    // Peer 7 holds 760 orphans, 700 of them parked two minutes ago; peer 8 holds one fresh one.
+    for (int i = 0; i < 761; i++)
+    {
+        const uint256 hash((uint64_t)(0x0c0000 + i));
+        mapOrphanBlocks[hash] = COrphanBlock(NULL, 100, uint256(0), i < 700 ? nNow - 120 : nNow - 5);
+        mapOrphanBlocksByNode[hash] = (i == 760) ? (NodeId)8 : (NodeId)7;
+    }
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 10, nNow), 10);
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 760, nNow), 60);
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 760, nNow - 100), 760);
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(8, 750, nNow), 750);
+    mapOrphanBlocks = savedBlocks;
+    mapOrphanBlocksByNode = savedByNode;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
