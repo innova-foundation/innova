@@ -1399,6 +1399,8 @@ bool MergesetOwnTxKeyConflict(const CTransaction& tx, const std::set<uint256>& s
 /** Epoch tx room for one block, one coinbase reserved per later height. */
 int64_t GetMergesetEpochTxCeiling(int nHeight);
 
+bool IsReorgResurrectable(const CTransaction& tx);
+
 /** Saves nMint/nMoneySupply of blocks connected in one db transaction; restores them unless committed. */
 class CSupplyStage
 {

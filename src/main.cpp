@@ -14736,6 +14736,11 @@ void CSupplyStage::Restore()
     vEntries.clear();
 }
 
+bool IsReorgResurrectable(const CTransaction& tx)
+{
+    return !(tx.IsCoinBase() || tx.IsCoinStake());
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects,
@@ -14873,11 +14878,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!block.DisconnectBlock(txdb, pindex))
             return error("Reorganize() : DisconnectBlock %s failed", pindex->GetBlockHash().ToString().substr(0,20).c_str());
 
-        // Queue memory transactions to resurrect.
-        // We only do this for blocks after the last checkpoint (reorganisation before that
-        // point should only happen with -reindex/-loadblock, or a misbehaving peer.
         BOOST_REVERSE_FOREACH(const CTransaction& tx, block.vtx)
-            if (!(tx.IsCoinBase() || tx.IsCoinStake()) && pindex->nHeight > Checkpoints::GetTotalBlocksEstimate())
+            if (IsReorgResurrectable(tx))
                 vResurrect.push_front(tx);
         CMergesetAcceptRecord recMerged;
         std::vector<CTransaction> vMergedTxs;
@@ -14897,7 +14899,6 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!block.ReadFromDisk(pindex))
             return error("Reorganize() : ReadFromDisk for connect failed");
 
-        if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
         int nReorgV2Epoch = -1;
         if (fV2EpochReorg &&
@@ -15133,6 +15134,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                 ReofferDAGUnappliedTxs(txdb, pindex,
                                        g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash()));
     CollateralNReorgBlock = true;
+    if (!IsInitialBlockDownload() && !vConnect.empty())
+        GetCollateralnodeRanks(vConnect.back());
     printf("REORGANIZE: done\n");
 
     return true;

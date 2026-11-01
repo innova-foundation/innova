@@ -67,4 +67,20 @@ BOOST_AUTO_TEST_CASE(supply_stage_keeps_committed_values)
     BOOST_CHECK_EQUAL(a.nMoneySupply, 150);
 }
 
+BOOST_AUTO_TEST_CASE(reorg_resurrects_plain_txs_only)
+{
+    CTransaction txPlain;
+    txPlain.vin.resize(1);
+    txPlain.vin[0].prevout = COutPoint(uint256(1), 0);
+    txPlain.vout.resize(1);
+    txPlain.vout[0].nValue = 1;
+    BOOST_CHECK(IsReorgResurrectable(txPlain));
+
+    CTransaction txCoinbase;
+    txCoinbase.vin.resize(1);
+    txCoinbase.vin[0].prevout.SetNull();
+    txCoinbase.vout.resize(1);
+    BOOST_CHECK(!IsReorgResurrectable(txCoinbase));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
