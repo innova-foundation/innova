@@ -9,6 +9,10 @@
 #include "../net.h"
 #include "../nyxparts.h"
 #include "../nyxkeyring.h"
+#include "../nyxidentity.h"
+#include "../base58.h"
+#include "../keystore.h"
+#include "json/json_spirit_value.h"
 #include "../nyxpo.h"
 #include "../smessage.h"
 #include "../util.h"
@@ -1356,6 +1360,118 @@ BOOST_AUTO_TEST_CASE(po_relay_verifies_identity_chain)
     std::vector<uint8_t> junk = ClassicalCert(0x7a);
     BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(junk, sError) == 0, sError);
     BOOST_CHECK(!PoListed(junk, fRelayed));
+}
+
+BOOST_AUTO_TEST_CASE(po_expiry_prunes_revocation_sets)
+{
+    V2Guard g(true);
+    std::string sError;
+    CKey key;
+    key.MakeNewKey(true);
+    uint8_t addr[20];
+    memcpy(addr, key.GetPubKey().GetID().begin(), 20);
+    uint8_t fp[32] = {2};
+    NyxOwnDevice d;
+    BOOST_REQUIRE(NyxDeviceCreate(d, addr, NYX_MODE_PQ, fp));
+    const int64_t now = GetTime();
+    NyxCert c;
+    BOOST_REQUIRE(NyxBuildCert(d, key, now, 1, NULL, c));
+    const NyxBytes cert = c.Serialize();
+    NyxKeyring kr;
+    memcpy(kr.addrHash, addr, 20);
+    kr.ts = now;
+    NyxKeyringEntry e;
+    memcpy(e.deviceId, d.deviceId, 16);
+    NyxHash(cert, e.certHash);
+    kr.live.push_back(e);
+    BOOST_REQUIRE(NyxBuildKeyring(kr, key, NULL));
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(cert, sError) == 0, sError);
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(kr.Serialize(), sError) == 0, sError);
+    BOOST_REQUIRE(SecureMsgPoRevokedHeld(addr));
+    SecureMsgPoExpire(GetTime() + NYX_PO_KEEP + 1);
+    bool fRelayed = false;
+    BOOST_CHECK(!PoListed(kr.Serialize(), fRelayed));
+    BOOST_CHECK(!SecureMsgPoRevokedHeld(addr));
+}
+
+namespace {
+struct EncKeyStore : public CCryptoKeyStore
+{
+    bool Encrypt(CKeyingMaterial& m) { return EncryptKeys(m); }
+    bool Open(const CKeyingMaterial& m) { return Unlock(m); }
+};
+
+bool SkRecord(std::string& v)
+{
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    return db.Open("cw") && db.pdb->Get(leveldb::ReadOptions(), "nyxsk", &v).ok();
+}
+
+void SetSkRecord(const std::string& v)
+{
+    LOCK(cs_smsgDB);
+    SecMsgDB db;
+    BOOST_REQUIRE(db.Open("cw"));
+    BOOST_REQUIRE(db.pdb->Put(leveldb::WriteOptions(), "nyxsk", v).ok());
+}
+}
+
+BOOST_AUTO_TEST_CASE(wallet_encryption_wraps_storage_key)
+{
+    std::string saved;
+    const bool fHad = SkRecord(saved);
+    uint8_t sk[32];
+    for (int i = 0; i < 32; ++i)
+        sk[i] = (uint8_t)(0xa0 + i);
+    SetSkRecord(std::string(1, (char)0) + std::string((const char*)sk, 32));
+
+    EncKeyStore ks;
+    CKey k;
+    k.MakeNewKey(true);
+    BOOST_REQUIRE(ks.AddKeyPubKey(k, k.GetPubKey()));
+    CKeyingMaterial master(32, 0x6b);
+    BOOST_REQUIRE(ks.Encrypt(master));
+    BOOST_REQUIRE(ks.Open(master));
+    NyxIdOnWalletEncrypted(&ks);
+
+    std::string rec;
+    BOOST_REQUIRE(SkRecord(rec));
+    BOOST_REQUIRE(!rec.empty());
+    BOOST_CHECK_EQUAL(rec[0], 1);
+    BOOST_CHECK(rec.find(std::string((const char*)sk, 32)) == std::string::npos);
+    uint8_t out[32];
+    std::string newRec, err;
+    BOOST_REQUIRE(NyxStorageKeyResolve(&ks, rec, out, newRec, err));
+    BOOST_CHECK(memcmp(out, sk, 32) == 0);
+
+    if (fHad)
+        SetSkRecord(saved);
+    else
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        if (db.Open("cw"))
+            db.pdb->Delete(leveldb::WriteOptions(), "nyxsk");
+    }
+    NyxIdForget();
+}
+
+// The pin is dropped for an unpinned contact; the reply must not read it afterwards (ASan).
+BOOST_AUTO_TEST_CASE(contact_lookup_of_unpinned_address)
+{
+    V2Guard g(true);
+    CKey key;
+    key.MakeNewKey(true);
+    json_spirit::Object out;
+    std::string sError;
+    BOOST_REQUIRE_MESSAGE(NyxIdContact(CBitcoinAddress(key.GetPubKey().GetID()).ToString(), out, sError), sError);
+    bool fPinned = true;
+    for (size_t i = 0; i < out.size(); ++i)
+        if (out[i].name_ == "pinned")
+            fPinned = out[i].value_.get_bool();
+    BOOST_CHECK(!fPinned);
+    NyxIdForget();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

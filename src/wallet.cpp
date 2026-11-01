@@ -13,6 +13,7 @@
 #include "bip39.h"
 #include "hdroot.h"
 #include "wallet.h"
+#include "nyxidentity.h"
 #include "nullsend_v2008.h"
 #include "nullsend_driver.h"
 #include "subsidy.h"
@@ -1784,6 +1785,7 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
 
         Lock();
         Unlock(strWalletPassphrase);
+        NyxIdOnWalletEncrypted(this);
         NewKeyPool();
         Lock();
 

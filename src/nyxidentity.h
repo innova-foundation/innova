@@ -22,6 +22,8 @@ void NyxIdOnPublic(const NyxPoInfo& info, const std::vector<uint8_t>& body, bool
 /** Keyring refresh and clone checks, from the SMSG thread. */
 void NyxIdHousekeeping();
 void NyxIdForget();
+/** Rewraps a raw storage key record under the wallet master key; ks must be unlocked. */
+void NyxIdOnWalletEncrypted(CCryptoKeyStore* ks);
 /** Opens the storage key and loads devices and pins when the wallet allows it. */
 void NyxIdTryLoad();
 

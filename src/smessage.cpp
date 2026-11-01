@@ -6379,6 +6379,46 @@ static void NyxPoAfterKeyring(const uint8_t addrHash[20])
         nyxPoStore.Remove(vRemove[i]);
 }
 
+// Drops revocation sets of addresses whose keyrings left the store. cs_nyxv2 held.
+static void NyxPoPruneRevoked()
+{
+    for (std::map<std::string, std::pair<uint32_t, std::set<std::string> > >::iterator it = mapPoRevoked.begin();
+         it != mapPoRevoked.end();)
+    {
+        std::vector<const NyxPoStore::Record*> vRec;
+        nyxPoStore.Get((const uint8_t*)it->first.data(), vRec);
+        bool fKeyring = false;
+        for (size_t i = 0; i < vRec.size() && !fKeyring; ++i)
+            fKeyring = vRec[i]->info.type == NYX_PO_KEYRING;
+        if (fKeyring)
+            ++it;
+        else
+            mapPoRevoked.erase(it++);
+    }
+}
+
+bool SecureMsgPoRevokedHeld(const uint8_t addrHash[20])
+{
+    LOCK(cs_nyxv2);
+    return mapPoRevoked.count(std::string((const char*)addrHash, 20)) > 0;
+}
+
+void SecureMsgPoExpire(int64_t nNow)
+{
+    std::vector<std::string> vErased;
+    {
+        LOCK(cs_nyxv2);
+        nyxPoStore.Expire(nNow);
+        vErased = nyxPoStore.TakeErased();
+        for (size_t i = 0; i < vErased.size(); ++i)
+            setPoRelayed.erase(vErased[i]);
+        if (!vErased.empty())
+            NyxPoPruneRevoked();
+    }
+    for (size_t i = 0; i < vErased.size(); ++i)
+        NyxPoPersist(vErased[i], NULL);
+}
+
 // Promote held unverified objects of an address that now verify. cs_nyxv2 held.
 static void NyxPoReverify(const uint8_t addrHash[20], int64_t nNow,
                           std::vector<std::vector<std::vector<unsigned char> > >& vRelay)
@@ -6510,6 +6550,8 @@ static void NyxPoLoad()
         }
     std::vector<std::string> vDropped = nyxPoStore.TakeErased();
     vDropped.insert(vDropped.end(), vStale.begin(), vStale.end());
+    if (!vDropped.empty())
+        NyxPoPruneRevoked();
     for (size_t i = 0; i < vDropped.size(); ++i)
     {
         setPoRelayed.erase(vDropped[i]);
@@ -6581,6 +6623,8 @@ static void SecureMsgV2PublicIntake(CNode* pfrom, unsigned char* pHeader, unsign
         vErased = nyxPoStore.TakeErased();
         for (size_t i = 0; i < vErased.size(); ++i)
             setPoRelayed.erase(vErased[i]);
+        if (!vErased.empty())
+            NyxPoPruneRevoked();
     }
     for (size_t i = 0; i < vErased.size(); ++i)
         NyxPoPersist(vErased[i], NULL);
@@ -6940,7 +6984,6 @@ static void SecureMsgV2Housekeeping()
         for (CNode* pnode : vNodes)
             setLive.insert(NyxPeerOwner(pnode));
     }
-    std::vector<std::string> vErased;
     {
         LOCK(cs_nyxv2);
         const int64_t now = GetTime();
@@ -6951,12 +6994,7 @@ static void SecureMsgV2Housekeeping()
         for (size_t i = 0; i < vPub.size(); ++i)
             if (vPub[i].owner != "self" && !setLive.count(vPub[i].owner))
                 nyxPubParts.FreeOwner(vPub[i].owner);
-        nyxPoStore.Expire(now);
-        vErased = nyxPoStore.TakeErased();
-        for (size_t i = 0; i < vErased.size(); ++i)
-            setPoRelayed.erase(vErased[i]);
     }
-    for (size_t i = 0; i < vErased.size(); ++i)
-        NyxPoPersist(vErased[i], NULL);
+    SecureMsgPoExpire(GetTime());
     NyxIdHousekeeping();
 }
