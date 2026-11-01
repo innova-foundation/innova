@@ -39,7 +39,7 @@ struct NyxPoInfo
 {
     uint8_t type;
     uint8_t addrHash[20];
-    uint8_t deviceId[16];   // zero for a keyring
+    uint8_t deviceId[16];   // keyring: epoch BE4 || seq BE4 || SHA256(body)[0..8]
     uint32_t epoch;
     uint32_t seq;
     uint64_t ts;
@@ -58,9 +58,11 @@ enum NyxPoVerifyResult
 
 typedef int (*NyxPoVerifyFn)(const std::vector<uint8_t>& body);
 
-/** Signature check; stubbed to UNVERIFIED until the identity increment. Results are cached by SHA256(body). */
+/** Test-hook verification, cached by SHA256(body); without a hook every body is UNVERIFIED. */
 int NyxPoVerify(const std::vector<uint8_t>& body);
 void NyxPoSetVerifyHook(NyxPoVerifyFn fn);
+/** True while a test hook replaces the relay's own signature and continuity checks. */
+bool NyxPoHookInstalled();
 void NyxPoClearCache();
 size_t NyxPoCacheSize();
 
@@ -85,6 +87,8 @@ public:
     /** Returns false when an equal or newer record, or any verified one for an unverified put, is already held. */
     bool Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_t> >& vParts, int64_t nNow, bool fVerified = true);
     void Get(const uint8_t addrHash[20], std::vector<const Record*>& out) const;
+    const Record* Find(const std::string& key) const;
+    void Remove(const std::string& key);
     void Expire(int64_t nNow);
     void Load(const std::string& key, const Record& rec);
     void All(std::vector<std::pair<std::string, const Record*> >& out) const;

@@ -612,6 +612,9 @@ struct NyxPoListEntry
 void SecureMsgPoList(std::vector<NyxPoListEntry>& out);
 /** Decode one persisted public object record; false on any bound or parse failure. */
 bool SecureMsgPoDecodeRecord(const std::string& v, NyxPoStore::Record& rec);
+struct NyxPinInput;
+/** Verified keyrings and certs (and optionally bundles) held for an address. */
+void SecureMsgPoCollect(const uint8_t addrHash[20], NyxPinInput& out, std::vector<std::vector<uint8_t> >* pBundles = NULL);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 
 int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message, int64_t nTimestamp = 0);

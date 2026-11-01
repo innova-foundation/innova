@@ -113,7 +113,18 @@ static int ParseKeyring(const uint8_t* p, size_t n, NyxPoInfo& out)
     off += 16;
     if (mode == 1 && out.seq > 1)
         off += NYX_MLDSA_SIG;
-    return n == off ? 0 : 6;
+    if (n != off)
+        return 6;
+    // Keyrings are stored per (epoch, seq, hash) so a relay can hold a chain and a same-seq fork.
+    uint8_t h[32];
+    NyxSha256(p, n, h);
+    for (int i = 0; i < 4; ++i)
+    {
+        out.deviceId[i] = (uint8_t)(out.epoch >> (24 - 8 * i));
+        out.deviceId[4 + i] = (uint8_t)(out.seq >> (24 - 8 * i));
+    }
+    memcpy(out.deviceId + 8, h, 8);
+    return 0;
 }
 
 int NyxPoParse(const uint8_t* p, size_t n, NyxPoInfo& out)
@@ -144,6 +155,11 @@ void NyxPoSetVerifyHook(NyxPoVerifyFn fn)
 {
     pfnVerify = fn ? fn : NyxPoVerifyStub;
     NyxPoClearCache();
+}
+
+bool NyxPoHookInstalled()
+{
+    return pfnVerify != NyxPoVerifyStub;
 }
 
 void NyxPoClearCache()
@@ -252,7 +268,7 @@ bool NyxPoStore::Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_
         const bool fOldVerified = it->second.fVerified;
         if ((fOldVerified && !fVerified) || (fOldVerified == fVerified && !Newer(info, it->second.info)))
         {
-            if (it->second.vParts == vParts)
+            if (it->second.vParts == vParts || (fOldVerified == fVerified && !Newer(it->second.info, info)))
                 it->second.nLastSeen = nNow;
             return false;
         }
@@ -290,6 +306,19 @@ void NyxPoStore::Get(const uint8_t addrHash[20], std::vector<const Record*>& out
         out.push_back(&it->second);
 }
 
+const NyxPoStore::Record* NyxPoStore::Find(const std::string& key) const
+{
+    std::map<std::string, Record>::const_iterator it = records.find(key);
+    return it == records.end() ? NULL : &it->second;
+}
+
+void NyxPoStore::Remove(const std::string& key)
+{
+    std::map<std::string, Record>::iterator it = records.find(key);
+    if (it != records.end())
+        Erase(it);
+}
+
 void NyxPoStore::All(std::vector<std::pair<std::string, const Record*> >& out) const
 {
     out.clear();
@@ -310,6 +339,9 @@ void NyxPoStore::Expire(int64_t nNow)
 std::vector<std::string> NyxPoStore::TakeErased()
 {
     std::vector<std::string> v;
-    v.swap(vErased);
+    for (size_t i = 0; i < vErased.size(); ++i)
+        if (!records.count(vErased[i]))
+            v.push_back(vErased[i]);
+    vErased.clear();
     return v;
 }
