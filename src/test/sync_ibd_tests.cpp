@@ -207,4 +207,13 @@ BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)
     mapOrphanBlocksByNode = savedByNode;
 }
 
+BOOST_AUTO_TEST_CASE(headers_forking_below_the_last_checkpoint_are_refused)
+{
+    BOOST_CHECK(HeaderForksBelowCheckpoint(1000, 5000, 4000));
+    BOOST_CHECK(HeaderForksBelowCheckpoint(4000, 4000, 4000));
+    BOOST_CHECK(!HeaderForksBelowCheckpoint(4001, 5000, 4000));
+    BOOST_CHECK(!HeaderForksBelowCheckpoint(1000, 3999, 4000));
+    BOOST_CHECK(!HeaderForksBelowCheckpoint(1, 5000, 0));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

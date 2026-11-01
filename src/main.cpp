@@ -18618,6 +18618,12 @@ bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pin
     return true;
 }
 
+// The main chain holds the checkpoint, so an unknown header at or below its height is off it.
+bool HeaderForksBelowCheckpoint(int nHeaderHeight, int nBestHeight, int nCheckpointHeight)
+{
+    return nCheckpointHeight > 0 && nBestHeight >= nCheckpointHeight && nHeaderHeight <= nCheckpointHeight;
+}
+
 // Header hashes and PoW verdicts, computed without cs_main. Legacy PoS headers carry nNonce == 0,
 // so whether the verdict applies is decided under the lock, where the parent height is known.
 void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
@@ -19333,6 +19339,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
 
             int nHeaderHeight = nParentHeight + 1;
+            if (HeaderForksBelowCheckpoint(nHeaderHeight, nBestHeight, Checkpoints::GetTotalBlocksEstimate()))
+            {
+                pfrom->Misbehaving(20, "header forks below the last checkpoint");
+                return error("header %s at height %d forks below the last checkpoint", hash.ToString().substr(0,20).c_str(), nHeaderHeight);
+            }
             pfrom->UpdateBestKnownBlock(nHeaderHeight, hash);
 
             // PoS blocks have nNonce==0 in legacy headers, but post-DAG all

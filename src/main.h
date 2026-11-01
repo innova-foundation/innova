@@ -1510,6 +1510,7 @@ bool IsInitialBlockDownload();
 bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pindexMainFork,
                               CBlockIndex* pindexStop, unsigned int nLimit, std::vector<CBlockIndex*>& vOut);
 int OrphanCountTowardCap(NodeId id, int nHeld, int64_t nNow);
+bool HeaderForksBelowCheckpoint(int nHeaderHeight, int nBestHeight, int nCheckpointHeight);
 void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
                      std::vector<char>& vPowOkOut);
 bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nHeight,
