@@ -868,7 +868,7 @@ std::string HelpMessage()
         "  -cnrelaylearned            " + _("Relay a collateralnode entry learned from a list reply, not only a fresh announcement (default: 0)") + "\n" +
 
         "\n" + _("Secure messaging options:") + "\n" +
-        "  -smsg                                    " + _("Enable secure messaging (default: 0, off). Also settable as smsg=1 in innova.conf.") + "\n" +
+        "  -smsg                                    " + _("Enable secure messaging (default: 1). Set smsg=0 in innova.conf to turn it off.") + "\n" +
         "  -nosmsg                                  " + _("Force secure messaging off, overriding -smsg.") + "\n" +
         "  -debugsmsg                               " + _("Log extra debug messages.") + "\n" +
         "  -smsgscanchain                           " + _("Scan the block chain for public key addresses on startup.") + "\n";
@@ -1818,10 +1818,10 @@ bool AppInit2()
                                     "incoming connections."), nConn, nOut));
     }
 
-    // Secure messaging is opt-in (-smsg); -nosmsg still forces it off. Resolved after the SPV
+    // Secure messaging is on by default; -smsg=0 or -nosmsg turns it off. Resolved after the SPV
     // block so every parameter interaction is seen.
     {
-        const bool fSmsgRequested = GetBoolArg("-smsg", false);
+        const bool fSmsgRequested = GetBoolArg("-smsg", true);
         const bool fSmsgForcedOff = GetBoolArg("-nosmsg", false);
         fNoSmsg = !fSmsgRequested || fSmsgForcedOff;
 
@@ -1829,8 +1829,8 @@ bool AppInit2()
             printf("Secure messaging: -nosmsg overrides -smsg, messaging stays disabled\n");
         else
             printf("Secure messaging: %s\n", fNoSmsg
-                       ? "disabled (default; set smsg=1 in innova.conf to enable)"
-                       : "enabled by -smsg");
+                       ? "disabled by -smsg=0"
+                       : "enabled");
     }
 
     {
