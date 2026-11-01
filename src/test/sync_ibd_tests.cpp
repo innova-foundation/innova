@@ -65,6 +65,13 @@ BOOST_AUTO_TEST_CASE(repeated_calls_give_the_same_answer)
     BOOST_CHECK_EQUAL(f1, f2);
 }
 
+BOOST_AUTO_TEST_CASE(a_send_drain_below_the_limit_wakes_the_handler)
+{
+    BOOST_CHECK(SendDrainUnblocksGetData(10000, 9999, 10000));
+    BOOST_CHECK(!SendDrainUnblocksGetData(9000, 100, 10000));
+    BOOST_CHECK(!SendDrainUnblocksGetData(20000, 10000, 10000));
+}
+
 BOOST_AUTO_TEST_CASE(ibd_commits_sync_per_batch_or_time_slice)
 {
     BOOST_CHECK(IBDBatchShouldSync(false, 0, 0, 500, 10000));

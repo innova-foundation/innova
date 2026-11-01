@@ -39,6 +39,7 @@ static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
 
 inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 50*1000); }
 inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 10*1000); }
+bool SendDrainUnblocksGetData(size_t nBefore, size_t nAfter, size_t nLimit);
 inline unsigned int ReceiveFloodHardSize()
 {
     unsigned int nSoft = ReceiveFloodSize();
