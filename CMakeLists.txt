@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Innova VERSION 5.0.0 LANGUAGES C CXX OBJCXX ASM)
+project(Innova VERSION 5.2.0 LANGUAGES C CXX OBJCXX ASM)
 
 # Qt6 build. Homebrew ships Qt6's qmake as a -query stub with no platform
 # mkspecs, so the .pro cannot drive a Qt6 build; this is the Qt6 path. The
