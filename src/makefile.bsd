@@ -189,6 +189,8 @@ OBJS= \
     obj/pbkdf2.o \
     obj/scrypt.o \
     obj/smessage.o \
+    obj/nyxparts.o \
+    obj/nyxpo.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
     obj/collateralnodeconfig.o \
