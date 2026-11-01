@@ -128,7 +128,7 @@ private:
     };
 
     void Drop(std::map<Key, Set>::iterator it);
-    bool EvictOldest(const std::string* pOwner, const Key& keep);
+    bool EvictWeakest(const std::string* pOwner, const Key& keep);
 
     NyxReassemblyLimits limits;
     std::map<Key, Set> sets;

@@ -22,6 +22,10 @@ static const size_t   NYX_PO_CACHE_SIZE   = 4096;
 static const uint32_t NYX_PO_MAX_OBJECTS  = 64;
 static const uint32_t NYX_PO_MAX_MSG      = 1 << 20;
 static const uint32_t NYX_PO_GETS_PER_MIN = 20;
+static const uint64_t NYX_PO_BYTES_PER_MIN = 2 << 20;
+static const size_t   NYX_PO_WANTED_MAX   = 64;
+static const int64_t  NYX_PO_TIME_LEEWAY  = 300;
+static const int64_t  NYX_PO_WANTED_TTL   = 60;
 
 static const unsigned int NYX_MLDSA_PK  = 1952;
 static const unsigned int NYX_MLDSA_SIG = 3309;
@@ -39,6 +43,7 @@ struct NyxPoInfo
     uint32_t epoch;
     uint32_t seq;
     uint64_t ts;
+    uint64_t expiry;        // certs only; 0 otherwise
 };
 
 /** Field and length checks for a reassembled public body; 0 ok, >0 reason. */
@@ -63,7 +68,7 @@ size_t NyxPoCacheSize();
 class NyxPoStore
 {
 public:
-    explicit NyxPoStore(uint64_t nCap = NYX_PO_NODE_CAP, int64_t nKeep = NYX_PO_KEEP) : nCap(nCap), nKeep(nKeep), nBytes(0) {}
+    explicit NyxPoStore(uint64_t nCap = NYX_PO_NODE_CAP, int64_t nKeep = NYX_PO_KEEP) : nCap(nCap), nKeep(nKeep), nBytes(0), nUnvBytes(0) {}
 
     static std::string Key(const NyxPoInfo& info);
 
@@ -72,11 +77,13 @@ public:
         NyxPoInfo info;
         int64_t nLastSeen;
         std::vector<std::vector<uint8_t> > vParts;
+        bool fVerified;
+        Record() : nLastSeen(0), fVerified(true) {}
         uint64_t Bytes() const;
     };
 
-    /** Returns false when an equal or newer record is already held. */
-    bool Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_t> >& vParts, int64_t nNow);
+    /** Returns false when an equal or newer record, or any verified one for an unverified put, is already held. */
+    bool Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_t> >& vParts, int64_t nNow, bool fVerified = true);
     void Get(const uint8_t addrHash[20], std::vector<const Record*>& out) const;
     void Expire(int64_t nNow);
     void Load(const std::string& key, const Record& rec);
@@ -84,6 +91,7 @@ public:
 
     size_t Count() const { return records.size(); }
     uint64_t Bytes() const { return nBytes; }
+    uint64_t UnverifiedBytes() const { return nUnvBytes; }
 
     /** Keys removed since the last call, for the caller's persistent copy. */
     std::vector<std::string> TakeErased();
@@ -91,10 +99,12 @@ public:
 private:
     void Erase(std::map<std::string, Record>::iterator it);
     void Enforce();
+    void Account(const Record& r, bool fAdd);
 
     uint64_t nCap;
     int64_t nKeep;
     uint64_t nBytes;
+    uint64_t nUnvBytes;     // capped at nCap / 8
     std::map<std::string, Record> records;
     std::vector<std::string> vErased;
 };

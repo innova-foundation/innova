@@ -187,7 +187,7 @@ std::vector<uint8_t> ClassicalCert(uint8_t addrSeed, uint32_t krSeq = 1)
         b[3 + i] = (uint8_t)(addrSeed + i);
     for (int i = 0; i < 16; ++i)
         b[23 + i] = (uint8_t)(0x40 + i);
-    const uint64_t created = 1700000000, expiry = created + 86400;
+    const uint64_t created = (uint64_t)GetTime() - 60, expiry = created + 86400;
     memcpy(&b[39], &created, 8);
     memcpy(&b[47], &expiry, 8);
     PutLE32(&b[55], krSeq);
@@ -1093,11 +1093,18 @@ BOOST_AUTO_TEST_CASE(po_unverified_held_locally_verified_relayed)
     Deliver(v1.node, "smsgPoGet", get);
     BOOST_CHECK(Sent(v1.node, "smsgPo").empty());
 
-    // Rate limit: 20 per minute.
+    // Each address is served once per window per peer; at most 20 requests per minute.
     Peer busy(31023, NYX_V2_PROTO, true);
+    Deliver(busy.node, "smsgPoGet", get);
+    Deliver(busy.node, "smsgPoGet", get);
+    BOOST_CHECK_EQUAL(Sent(busy.node, "smsgPo").size(), 1U);
     for (int i = 0; i < 25; ++i)
-        Deliver(busy.node, "smsgPoGet", get);
-    BOOST_CHECK_EQUAL(Sent(busy.node, "smsgPo").size(), 20U);
+    {
+        std::vector<unsigned char> other(20, (unsigned char)(0xA0 + i));
+        Deliver(busy.node, "smsgPoGet", other);
+    }
+    BOOST_CHECK_EQUAL(Sent(busy.node, "smsgPo").size(), 19U);     // the repeat counted
+    BOOST_CHECK(busy.node.smsgData.nPoGetBytes <= NYX_PO_BYTES_PER_MIN);
 
     // The served response stores at a requester only when it asked for that address.
     std::vector<unsigned char> resp = Sent(busy.node, "smsgPo")[0];
@@ -1105,12 +1112,180 @@ BOOST_AUTO_TEST_CASE(po_unverified_held_locally_verified_relayed)
     Peer src(31024, NYX_V2_PROTO, true);
     Deliver(src.node, "smsgPo", resp);
     BOOST_CHECK_EQUAL(BucketTokens(nBucket, false), 0U);
-    src.node.smsgData.setPoWanted.insert(std::string(get.begin(), get.end()));
+    src.node.smsgData.mapPoWanted[std::string(get.begin(), get.end())] = GetTime();
     Deliver(src.node, "smsgPo", resp);
     BOOST_CHECK_EQUAL(src.node.nMisbehavior, 0);
-    BOOST_CHECK(src.node.smsgData.setPoWanted.empty());
+    BOOST_CHECK(src.node.smsgData.mapPoWanted.empty());
     BOOST_CHECK_EQUAL(BucketTokens(nBucket, false), 1U);
     ClearBucket(nBucket);
+}
+
+BOOST_AUTO_TEST_CASE(po_unverified_cannot_displace_verified)
+{
+    V2Guard g(true);
+    const int64_t now = GetTime();
+    const int64_t nBucket = now - (now % SMSG_BUCKET_LEN);
+    ClearBucket(nBucket);
+    std::string sError;
+    bool fRelayed = false;
+
+    NyxPoSetVerifyHook(VerifyOk);
+    std::vector<uint8_t> good = ClassicalCert(0x72, 1);
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(good, sError) == 0, sError);
+    BOOST_REQUIRE(PoListed(good, fRelayed));
+    BOOST_CHECK(fRelayed);
+
+    // Same key, sender-chosen maximal seq, but unverified.
+    NyxPoSetVerifyHook(NULL);
+    std::vector<uint8_t> bad = ClassicalCert(0x72, 0xFFFFFFFF);
+    BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(bad, sError) == 0, sError);
+    std::vector<NyxPoListEntry> v;
+    SecureMsgPoList(v);
+    const std::string addr = HexStr(&good[3], &good[23]);
+    int nFound = 0;
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i].addrHash == addr)
+        {
+            nFound++;
+            BOOST_CHECK(v[i].fRelayed);
+            BOOST_CHECK_EQUAL(v[i].seq, 1U);
+        }
+    BOOST_CHECK_EQUAL(nFound, 1);
+    ClearBucket(nBucket);
+}
+
+BOOST_AUTO_TEST_CASE(po_store_quarantines_unverified)
+{
+    NyxPoStore st(8000, 1000);
+    NyxPoInfo a;
+    memset(&a, 0, sizeof(a));
+    a.type = NYX_PO_KEYRING;
+    a.addrHash[0] = 1;
+    a.epoch = 1;
+    a.seq = 2;
+    std::vector<std::vector<uint8_t> > parts(1, std::vector<uint8_t>(400, 1));
+    BOOST_CHECK(st.Put(a, parts, 10, true));
+    NyxPoInfo hi = a;
+    hi.seq = 0xFFFFFFFF;
+    BOOST_CHECK(!st.Put(hi, parts, 11, false));
+    std::vector<const NyxPoStore::Record*> v;
+    st.Get(a.addrHash, v);
+    BOOST_REQUIRE_EQUAL(v.size(), 1U);
+    BOOST_CHECK(v[0]->fVerified);
+    BOOST_CHECK_EQUAL(v[0]->info.seq, 2U);
+
+    // A verified record replaces an unverified one regardless of seq.
+    NyxPoInfo b = a;
+    b.addrHash[0] = 2;
+    b.seq = 0xFFFFFFFF;
+    BOOST_CHECK(st.Put(b, parts, 12, false));
+    b.seq = 1;
+    BOOST_CHECK(st.Put(b, parts, 13, true));
+    st.Get(b.addrHash, v);
+    BOOST_REQUIRE_EQUAL(v.size(), 1U);
+    BOOST_CHECK(v[0]->fVerified);
+    BOOST_CHECK_EQUAL(st.UnverifiedBytes(), 0U);
+
+    // Unverified records are held to an eighth of the cap and never evict verified ones.
+    for (int i = 0; i < 20; ++i)
+    {
+        NyxPoInfo u = a;
+        u.addrHash[0] = (uint8_t)(0x40 + i);
+        st.Put(u, parts, 20 + i, false);
+    }
+    BOOST_CHECK(st.UnverifiedBytes() <= 1000U);
+    st.Get(a.addrHash, v);
+    BOOST_CHECK_EQUAL(v.size(), 1U);
+    st.Get(b.addrHash, v);
+    BOOST_CHECK_EQUAL(v.size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(reassembler_evicts_least_complete_first)
+{
+    NyxReassemblyLimits l;
+    l.nOwnerBytes = 64 * 4224;
+    l.nNodeBytes = 64 * 4224;
+    l.nOwnerSets = 2;
+    l.nTimeout = 1000;
+    NyxReassembler ra(l);
+    std::vector<uint8_t> out;
+    std::vector<std::vector<uint8_t> > s1 = Split(Body(4 * 4224, 1), 1);
+    std::vector<std::vector<uint8_t> > s2 = Split(Body(4 * 4224, 2), 2);
+    std::vector<std::vector<uint8_t> > s3 = Split(Body(4 * 4224, 3), 3);
+
+    for (int i = 0; i < 3; ++i)
+        BOOST_CHECK_EQUAL(ra.Add("a", Parse(s1[i]), 1, out), NYX_RA_STORED);
+    BOOST_CHECK_EQUAL(ra.Add("a", Parse(s2[0]), 2, out), NYX_RA_STORED);
+    // The older but nearly complete set survives a third set.
+    BOOST_CHECK_EQUAL(ra.Add("a", Parse(s3[0]), 3, out), NYX_RA_STORED);
+    BOOST_CHECK_EQUAL(ra.OwnerSetCount("a"), 2U);
+    BOOST_CHECK_EQUAL(ra.Add("a", Parse(s1[3]), 4, out), NYX_RA_COMPLETE);
+}
+
+BOOST_AUTO_TEST_CASE(bucket_refused_public_parts_count_as_seen)
+{
+    unsigned char p1[8] = {1, 1, 1, 1, 1, 1, 1, 1}, p2[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+    SecMsgToken held(100, p1, 8, 0, 1, 1), refused(100, p2, 8, 0, 1, 1);
+
+    SecMsgBucket peer;
+    peer.insertToken(held);
+    peer.insertToken(refused);
+    peer.hashBucket();
+
+    SecMsgBucket mine;
+    mine.insertToken(held);
+    mine.hashBucket();
+    BOOST_CHECK(mine.getCmpCount() < peer.getTokenCount());
+    BOOST_CHECK(mine.refuseToken(refused));
+    BOOST_CHECK(!mine.refuseToken(refused));
+    BOOST_CHECK(!mine.refuseToken(held));
+    BOOST_CHECK_EQUAL(mine.getCmpCount(), peer.getTokenCount());
+    BOOST_CHECK_EQUAL(mine.getCmpHash(), peer.hash);
+    BOOST_CHECK_EQUAL(mine.getTokenCount(), 1U);
+
+    // Storing it later drops it from the refused set.
+    mine.insertToken(refused);
+    mine.hashBucket();
+    BOOST_CHECK(mine.setRefused.empty());
+    BOOST_CHECK_EQUAL(mine.getCmpHash(), peer.hash);
+}
+
+BOOST_AUTO_TEST_CASE(smsg_validate_and_record_decode_smoke)
+{
+    const bool fSaved = fNyxV2;
+    uint32_t r = 0x12345678;
+    for (int mode = 0; mode < 2; ++mode)
+    {
+        fNyxV2 = mode == 1;
+        for (int i = 0; i < 2000; ++i)
+        {
+            const size_t n = SMSG_HDR_LEN + (i % 300);
+            std::vector<unsigned char> buf(n);
+            for (size_t j = 0; j < n; ++j)
+            {
+                r = r * 1103515245 + 12345;
+                buf[j] = (unsigned char)(r >> 16);
+            }
+            buf[0] = (unsigned char)(1 + (i & 1));
+            SecureMessage* psmsg = (SecureMessage*)&buf[0];
+            psmsg->version[0] = (unsigned char)(1 + (i & 1));
+            psmsg->version[1] = (unsigned char)((i >> 1) & 1);
+            psmsg->nPayload = n - SMSG_HDR_LEN;
+            const int rv = SecureMsgValidate(&buf[0], &buf[0] + SMSG_HDR_LEN, n - SMSG_HDR_LEN);
+            BOOST_CHECK(rv >= 1 && rv <= 5);
+
+            NyxPoStore::Record rec;
+            BOOST_CHECK(!SecureMsgPoDecodeRecord(std::string((const char*)&buf[0], n), rec));
+        }
+    }
+    NyxPoStore::Record rec;
+    BOOST_CHECK(!SecureMsgPoDecodeRecord(std::string(), rec));
+    BOOST_CHECK(!SecureMsgPoDecodeRecord(std::string(9, '\0'), rec));
+    std::string big(9, '\0');
+    big[8] = 1;
+    big.append("\xff\xff\xff\xff", 4);
+    BOOST_CHECK(!SecureMsgPoDecodeRecord(big, rec));
+    fNyxV2 = fSaved;
 }
 
 BOOST_AUTO_TEST_SUITE_END()
