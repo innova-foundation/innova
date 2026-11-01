@@ -865,6 +865,8 @@ std::string HelpMessage()
         "  -smsg                                    " + _("Enable secure messaging (default: 0, off). Also settable as smsg=1 in innova.conf.") + "\n" +
         "  -nosmsg                                  " + _("Force secure messaging off, overriding -smsg.") + "\n" +
         "  -debugsmsg                               " + _("Log extra debug messages.") + "\n" +
+        "  -nyxv2                                   " + _("Accept and relay Nyx v2 objects to v2 peers (default: 0)") + "\n" +
+        "  -nyxmaxparts=<n>                         " + _("Most parts a sent v2 message may use, 1..64 (default: 64)") + "\n" +
         "  -smsgscanchain                           " + _("Scan the block chain for public key addresses on startup.") + "\n";
 
     return strUsage;

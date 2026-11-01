@@ -32,7 +32,7 @@ static const int DATABASE_VERSION = 21212;
 // network protocol versioning
 //
 
-static const int PROTOCOL_VERSION = 52002;
+static const int PROTOCOL_VERSION = 52100;
 
 // peers below this are dropped once past the DAG fork
 static const int DAG_PROTO_VERSION = 50000;
@@ -42,6 +42,9 @@ static const int MERGESET_PROTO_VERSION = 50100;
 
 // peers below this are dropped once past the DAG fork: v5.2.0.2 is the network standard
 static const int V52_PROTO_VERSION = 52002;
+
+// peers at or above this may exchange Nyx v2 objects (smsg relay only)
+static const int NYX_V2_PROTO = 52100;
 
 // intial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 21212;

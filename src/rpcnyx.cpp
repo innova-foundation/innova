@@ -904,8 +904,27 @@ static Value nyx_status(const Array& params)
 
     result.push_back(Pair("nyx_enabled", GetBoolArg("-nyx", true)));
     result.push_back(Pair("smsg_enabled", fSecMsgEnabled));
-    result.push_back(Pair("nyx_version", 1));
+    result.push_back(Pair("nyx_version", fNyxV2 ? 2 : 1));
     result.push_back(Pair("encryption", "AES-256-CBC"));
+    if (fNyxV2)
+    {
+        std::vector<NyxSetProgress> vPriv, vPub;
+        uint64_t nPriv = 0, nPub = 0;
+        SecureMsgV2Progress(vPriv, vPub, nPriv, nPub);
+        Object v2;
+        v2.push_back(Pair("maxparts", (int)nNyxMaxParts));
+        v2.push_back(Pair("private_sets", (int)vPriv.size()));
+        v2.push_back(Pair("private_bytes", (int64_t)nPriv));
+        v2.push_back(Pair("public_sets", (int)vPub.size()));
+        v2.push_back(Pair("public_bytes", (int64_t)nPub));
+        Array incomplete;
+        for (size_t i = 0; i < vPriv.size(); ++i)
+            incomplete.push_back(vPriv[i].owner + " " + HexStr(vPriv[i].msgid.begin(), vPriv[i].msgid.end()) + " "
+                                 + boost::lexical_cast<std::string>(vPriv[i].nHave) + "/"
+                                 + boost::lexical_cast<std::string>(vPriv[i].nCount));
+        v2.push_back(Pair("incomplete", incomplete));
+        result.push_back(Pair("v2", v2));
+    }
 
     // Only report settings this build actually reads.
     Object config;
@@ -1014,6 +1033,105 @@ static Value nyx_peers(const Array& params)
     return result;
 }
 
+static Value nyx_v2(const Array& params, const std::string& sub)
+{
+    if (!fNyxV2)
+        throw runtime_error("Nyx v2 is not enabled (-nyxv2=1).");
+    std::string sError;
+    if (sub == "v2sendraw" || sub == "v2sendfill")
+    {
+        if (params.size() != 3)
+            throw runtime_error(sub == "v2sendraw" ? "nyx v2sendraw <address> <hex>" : "nyx v2sendfill <address> <bytes>");
+        std::vector<unsigned char> body;
+        if (sub == "v2sendraw")
+            body = ParseHex(params[2].get_str());
+        else
+        {
+            const int64_t n = boost::lexical_cast<int64_t>(params[2].get_str());
+            if (n < 1 || n > (int64_t)NYX_MAX_BODY)
+                throw runtime_error("bytes must be 1.." + boost::lexical_cast<std::string>(NYX_MAX_BODY));
+            body.resize(n);
+            body[0] = 0x01;
+            for (int64_t i = 1; i < n; ++i)
+                body[i] = (unsigned char)('a' + i % 26);
+        }
+        std::string msgid;
+        if (SecureMsgV2SendPrivate(params[1].get_str(), body, msgid, sError) != 0)
+            throw runtime_error(sError);
+        uint8_t h[32];
+        NyxSha256(&body[0], body.size(), h);
+        Object o;
+        o.push_back(Pair("msgid", msgid));
+        o.push_back(Pair("bytes", (int)body.size()));
+        o.push_back(Pair("parts", (int)((body.size() + NYX_PART_BODY_MAX - 1) / NYX_PART_BODY_MAX)));
+        o.push_back(Pair("sha256", HexStr(h, h + 32)));
+        return o;
+    }
+    if (sub == "v2recv")
+    {
+        std::vector<NyxV2Delivered> v;
+        SecureMsgV2Delivered(v);
+        Array a;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            Object o;
+            o.push_back(Pair("to", v[i].sAddrTo));
+            o.push_back(Pair("msgid", v[i].msgid));
+            o.push_back(Pair("type", (int)v[i].type));
+            o.push_back(Pair("bytes", (int)v[i].nLen));
+            o.push_back(Pair("sha256", HexStr(v[i].hash, v[i].hash + 32)));
+            o.push_back(Pair("received", v[i].timeReceived));
+            a.push_back(o);
+        }
+        return a;
+    }
+    if (sub == "v2publish")
+    {
+        if (params.size() != 2)
+            throw runtime_error("nyx v2publish <hex>");
+        if (SecureMsgV2PublishPublic(ParseHex(params[1].get_str()), sError) != 0)
+            throw runtime_error(sError);
+        return "published";
+    }
+    if (sub == "poget")
+    {
+        if (params.size() != 2)
+            throw runtime_error("nyx poget <address|addrhash160 hex>");
+        std::vector<unsigned char> h;
+        CBitcoinAddress addr(params[1].get_str());
+        CKeyID id;
+        if (addr.IsValid() && addr.GetKeyID(id))
+            h.assign(id.begin(), id.end());
+        else
+            h = ParseHex(params[1].get_str());
+        if (h.size() != 20)
+            throw runtime_error("Expected an address or 20-byte hash.");
+        Object o;
+        o.push_back(Pair("asked", SecureMsgPoGet(h)));
+        return o;
+    }
+    if (sub == "polist")
+    {
+        std::vector<NyxPoListEntry> v;
+        SecureMsgPoList(v);
+        Array a;
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            Object o;
+            o.push_back(Pair("addrhash", v[i].addrHash));
+            o.push_back(Pair("type", (int)v[i].type));
+            o.push_back(Pair("epoch", (int64_t)v[i].epoch));
+            o.push_back(Pair("seq", (int64_t)v[i].seq));
+            o.push_back(Pair("parts", (int)v[i].nParts));
+            o.push_back(Pair("lastseen", v[i].lastSeen));
+            o.push_back(Pair("relayed", v[i].fRelayed));
+            a.push_back(o);
+        }
+        return a;
+    }
+    throw runtime_error("Unknown nyx subcommand: " + sub);
+}
+
 Value nyx(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
@@ -1051,6 +1169,13 @@ Value nyx(const Array& params, bool fHelp)
             "  peers                       List peers with messaging support\n"
             "  accept|block|unblock <address>\n"
             "                              Accept a message request, or block/unblock a sender\n"
+            "\nv2 wire (-nyxv2=1, test surface):\n"
+            "  v2sendraw <address> <hex>   Send a body as {2,0} parts\n"
+            "  v2sendfill <address> <bytes> Send a generated 0x01 body of that size\n"
+            "  v2recv                      Bodies completed by the reassembler\n"
+            "  v2publish <hex>             Publish a public object body\n"
+            "  poget <address|hash160>     Ask v2 peers for an address's public objects\n"
+            "  polist                      Stored public objects\n"
         );
 
     std::string subcmd = params[0].get_str();
@@ -1076,6 +1201,8 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "disable")     return nyx_disable(params);
     if (subcmd == "status")      return nyx_status(params);
     if (subcmd == "peers")       return nyx_peers(params);
+    if (subcmd.compare(0, 2, "v2") == 0 || subcmd == "poget" || subcmd == "polist")
+        return nyx_v2(params, subcmd);
 
     throw runtime_error("Unknown nyx subcommand: " + subcmd + ". Run 'nyx help' for usage.");
 }

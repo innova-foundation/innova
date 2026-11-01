@@ -12,6 +12,7 @@
 #include "db.h"
 #include "wallet.h"
 #include "lz4/lz4.h"
+#include "nyxparts.h"
 
 
 const unsigned int SMSG_HDR_LEN         = 104;               // length of unencrypted header, 4 + 2 + 1 + 8 + 16 + 33 + 32 + 4 +4
@@ -35,6 +36,12 @@ const unsigned int SMSG_MAX_MSG_BYTES   = 4096;              // the user input p
 
 // max size of payload worst case compression
 const unsigned int SMSG_MAX_MSG_WORST = LZ4_COMPRESSBOUND(SMSG_MAX_MSG_BYTES+SMSG_PL_HDR_LEN);
+
+const unsigned int SMSG_V2_MAX_PAYLOAD = 4352;
+const unsigned int SMSG_V2_PUBLIC_MIN = NYX_FRAME_PREFIX + 1;
+
+static_assert(NYX_FRAME_PREFIX + NYX_PART_BODY_MAX + 16 <= SMSG_V2_MAX_PAYLOAD, "v2 part must fit one object");
+static_assert(NYX_MAX_PARTS * NYX_PART_BODY_MAX == NYX_MAX_BODY, "v2 body cap");
 
 // Dandelion++ for smsg: stem relay timeout before fluff fallback
 const unsigned int SMSG_STEM_TIMEOUT = 45;  // seconds — shorter than tx stem (messages are less frequent)
@@ -146,10 +153,11 @@ public:
 class SecMsgToken
 {
 public:
-    SecMsgToken(int64_t ts, unsigned char* p, int np, long int o, uint16_t fileNo=1)
+    SecMsgToken(int64_t ts, unsigned char* p, int np, long int o, uint16_t fileNo=1, uint8_t v2=0)
     {
         timestamp = ts;
         fileId = fileNo;
+        fV2 = v2;
 
         if (np < 8) // payload will always be > 8, just make sure
             memset(sample, 0, 8);
@@ -162,6 +170,7 @@ public:
     {
         timestamp = 0;
         fileId = 1;
+        fV2 = 0;
         memset(sample, 0, 8);
         offset = 0;
     };
@@ -180,6 +189,7 @@ public:
     uint16_t                    fileId;
     unsigned char               sample[8];    // first 8 bytes of payload - a hash
     int64_t                     offset;       // offset
+    uint8_t                     fV2;          // from the header; not part of ordering
 
 };
 
@@ -190,7 +200,12 @@ public:
     SecMsgBucket()
     {
         timeChanged     = 0;
+        timeChangedV1   = 0;
         hash            = 0;
+        hashV1          = 0;
+        nV2Live         = 0;
+        nTokenCountV1   = 0;
+        nCountV1Hashed  = 0;
         nLockCount      = 0;
         nLockPeerId     = 0;
         nTokenCount     = 0;
@@ -203,16 +218,29 @@ public:
     bool compact(int64_t nBucketTime);
     bool expand(int64_t nBucketTime);
     bool isCompacted() const { return fCompacted; }
-    uint32_t getTokenCount() const { return fCompacted ? nTokenCount : (uint32_t)setTokens.size(); }
+    uint32_t getTokenCount(bool fV1Only = false) const
+    {
+        if (fCompacted)
+            return fV1Only ? nTokenCountV1 : nTokenCount;
+        return (uint32_t)setTokens.size() - (fV1Only ? nV2Live : 0);
+    }
+    std::pair<std::set<SecMsgToken>::iterator, bool> insertToken(const SecMsgToken& token);
+    void eraseToken(std::set<SecMsgToken>::iterator it);
+    void clearTokens();
 
     int64_t                     timeChanged;
+    int64_t                     timeChangedV1;  // last change visible to v1 peers
     uint32_t                    hash;           // token set should get ordered the same on each node
+    uint32_t                    hashV1;         // v1 tokens only
     uint32_t                    nLockCount;     // set when smsgWant first sent, unset at end of smsgMsg, ticks down in ThreadSecureMsg()
     uint32_t                    nLockPeerId;    // id of peer that bucket is locked for
     std::set<SecMsgToken>       setTokens;
 
 private:
     uint32_t                    nTokenCount;    // Token count when compacted (memory optimization)
+    uint32_t                    nTokenCountV1;
+    uint32_t                    nV2Live;
+    uint32_t                    nCountV1Hashed; // v1 count at the last hashBucket
     bool                        fCompacted;     // True if setTokens has been cleared to save memory
 
 };
@@ -532,6 +560,47 @@ bool SecureMsgVerifyMessageMAC(const unsigned char key[32],
                                uint32_t nPayload);
 
 int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
+
+extern bool fNyxV2;
+extern unsigned int nNyxMaxParts;
+extern bool fNyxPoTestVerify;
+
+/** Largest payload a stored or relayed object of this header's version may carry. */
+uint32_t SecureMsgPayloadCap(const unsigned char* pHeader);
+bool SecureMsgIsV2(const unsigned char* pHeader);
+/** Whether v2 objects may be offered to or accepted from this peer. */
+bool SecureMsgPeerV2(const CNode* pnode);
+bool SecureMsgProofMeetsTargetFor(const unsigned char* pHeader, const unsigned char hash[32]);
+
+struct NyxV2Delivered
+{
+    std::string sAddrTo;
+    std::string msgid;
+    uint8_t type;
+    uint32_t nLen;
+    uint8_t hash[32];
+    int64_t timeReceived;
+};
+/** Bodies completed by the private reassembler, newest last (debug surface until the session layer). */
+void SecureMsgV2Delivered(std::vector<NyxV2Delivered>& out);
+void SecureMsgV2Progress(std::vector<NyxSetProgress>& vPriv, std::vector<NyxSetProgress>& vPub,
+                         uint64_t& nPrivBytes, uint64_t& nPubBytes);
+/** Split body into {2,0} parts to addressTo, prove each and store for relay. */
+int SecureMsgV2SendPrivate(const std::string& addressTo, const std::vector<unsigned char>& body,
+                           std::string& msgidHex, std::string& sError);
+/** Split body into {2,1} parts, prove each and run them through the public intake. */
+int SecureMsgV2PublishPublic(const std::vector<unsigned char>& body, std::string& sError);
+/** Ask v2 peers for the public objects of addrHash20. */
+int SecureMsgPoGet(const std::vector<unsigned char>& addrHash20);
+struct NyxPoListEntry
+{
+    std::string addrHash;
+    uint8_t type;
+    uint32_t epoch, seq, nParts;
+    int64_t lastSeen;
+    bool fRelayed;
+};
+void SecureMsgPoList(std::vector<NyxPoListEntry>& out);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 
 int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message, int64_t nTimestamp = 0);
