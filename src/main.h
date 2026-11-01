@@ -1207,6 +1207,8 @@ extern bool fUseFastIndex;
 extern bool fImporting;
 extern bool fReindex;
 extern bool fFullReplayVerify;
+std::string BuildStateDigestJson();
+void AppendStateDigest(bool fForce);
 extern unsigned int nDerivationMethodIndex;
 extern unsigned int nCoinCacheSize;
 

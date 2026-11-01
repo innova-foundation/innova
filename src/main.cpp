@@ -15560,6 +15560,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
       DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
 
     nTimeBestReceived = GetTime();
+    AppendStateDigest(false);
 
     if (IsBoundaryBActiveAtHeight(nBestHeight))
     {
@@ -20615,3 +20616,120 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     return true;
 }
 
+
+static bool DigestTxdbPrefix(leveldb::DB* pdb, const std::string& strPrefix,
+                             std::string& strHex, uint64_t& nCount)
+{
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << strPrefix;
+    const std::string strKeyPrefix(ssPrefix.begin(), ssPrefix.end());
+    const bool fTxIndex = (strPrefix == "tx");
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    nCount = 0;
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    for (it->Seek(strKeyPrefix); it->Valid(); it->Next())
+    {
+        leveldb::Slice k = it->key();
+        if (!k.starts_with(strKeyPrefix))
+            break;
+        SHA256_Update(&ctx, k.data(), k.size());
+        leveldb::Slice v = it->value();
+        if (fTxIndex)
+        {
+            // Disk positions are layout, not state: hash only the spent bitmap.
+            CTxIndex txindex;
+            try {
+                CDataStream ssValue(v.data(), v.data() + v.size(), SER_DISK, CLIENT_VERSION);
+                ssValue >> txindex;
+            } catch (const std::exception&) {
+                delete it;
+                return false;
+            }
+            std::vector<unsigned char> vBits(txindex.vSpent.size());
+            for (size_t i = 0; i < txindex.vSpent.size(); i++)
+                vBits[i] = txindex.vSpent[i].IsNull() ? 0 : 1;
+            uint32_t nOut = vBits.size();
+            SHA256_Update(&ctx, &nOut, sizeof(nOut));
+            if (!vBits.empty())
+                SHA256_Update(&ctx, vBits.data(), vBits.size());
+        }
+        else
+        {
+            SHA256_Update(&ctx, v.data(), v.size());
+        }
+        nCount++;
+    }
+    bool fOk = it->status().ok();
+    delete it;
+    unsigned char hash[32];
+    SHA256_Final(hash, &ctx);
+    strHex = HexStr(hash, hash + 32);
+    return fOk;
+}
+
+std::string BuildStateDigestJson()
+{
+    static const char* const vPrefixes[] = {
+        "tx", "ki", "sn", "sc", "ao", "iv5nf", "iv5cn", "iv5treeleaf", "iv5treenode",
+        "epochstate", "dagaccept", "dagmerged", "dagactiveset",
+        "finalitycert", "finalityvote", "finalitynotevote"
+    };
+    if (!pindexBest)
+        return "{}";
+    CTxDB txdb("r");
+    leveldb::DB* pdb = txdb.GetInstance();
+    std::string strOut = strprintf(
+        "{\"height\":%d,\"hash\":\"%s\",\"moneysupply\":%" PRId64 ",\"mint\":%" PRId64
+        ",\"stakemodifier\":\"%016" PRIx64 "\",\"modifierchecksum\":\"%08x\",\"finalized_height\":%d",
+        pindexBest->nHeight, pindexBest->GetBlockHash().GetHex().c_str(),
+        pindexBest->nMoneySupply, pindexBest->nMint, pindexBest->nStakeModifier,
+        pindexBest->nStakeModifierChecksum, g_finalityTracker.GetFinalizedHeight());
+    std::string strRoot;
+    int64_t nTreeSize = -1;
+    const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
+    CEpochState epoch;
+    if (nStoreEpoch >= 0 && g_dagManager.GetEpochState(nStoreEpoch, epoch) &&
+        epoch.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+    {
+        strRoot = HexStr(epoch.vchVNextRoot);
+        nTreeSize = (int64_t)epoch.nVNextTreeSize;
+    }
+    strOut += strprintf(",\"vnext_root\":\"%s\",\"vnext_tree_size\":%" PRId64 ",\"db\":{",
+                        strRoot.c_str(), nTreeSize);
+    SHA256_CTX all;
+    SHA256_Init(&all);
+    for (size_t i = 0; i < sizeof(vPrefixes) / sizeof(vPrefixes[0]); i++)
+    {
+        std::string strHex;
+        uint64_t nCount = 0;
+        if (!pdb || !DigestTxdbPrefix(pdb, vPrefixes[i], strHex, nCount))
+            strHex = "error";
+        SHA256_Update(&all, strHex.data(), strHex.size());
+        strOut += strprintf("%s\"%s\":{\"n\":%" PRIu64 ",\"h\":\"%s\"}",
+                            i ? "," : "", vPrefixes[i], nCount, strHex.c_str());
+    }
+    unsigned char hash[32];
+    SHA256_Final(hash, &all);
+    strOut += strprintf("},\"db_digest\":\"%s\"}", HexStr(hash, hash + 32).c_str());
+    return strOut;
+}
+
+void AppendStateDigest(bool fForce)
+{
+    static int nLastBucket = -1;
+    const int nInterval = (int)GetArg("-statedigestinterval", 0);
+    if (nInterval <= 0 || !pindexBest)
+        return;
+    const int nBucket = pindexBest->nHeight / nInterval;
+    if (!fForce && nBucket == nLastBucket)
+        return;
+    nLastBucket = nBucket;
+    std::string strPath = GetArg("-statedigestfile", (GetDataDir() / "statedigest.jsonl").string());
+    FILE* f = fopen(strPath.c_str(), "a");
+    if (!f)
+        return;
+    std::string strLine = BuildStateDigestJson();
+    fprintf(f, "%s\n", strLine.c_str());
+    fclose(f);
+}

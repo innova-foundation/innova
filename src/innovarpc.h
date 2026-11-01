@@ -264,6 +264,7 @@ extern json_spirit::Value sweepburnoutputs(const json_spirit::Array& params, boo
 extern json_spirit::Value searchrawtransactions(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value getstatedigest(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getblockprofile(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bool fHelp);

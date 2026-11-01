@@ -3020,3 +3020,20 @@ Value getdagconfidence(const Array& params, bool fHelp)
 
     return result;
 }
+
+Value getstatedigest(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getstatedigest\n"
+            "Returns tip height/hash, supply, stake modifier checksum and digests of the chain state tables.");
+    std::string strJson;
+    {
+        LOCK(cs_main);
+        strJson = BuildStateDigestJson();
+    }
+    Value v;
+    if (!read_string(strJson, v))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "state digest parse failed");
+    return v;
+}

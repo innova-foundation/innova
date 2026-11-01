@@ -810,6 +810,8 @@ std::string HelpMessage()
         "  -rescan                " + _("Rescan the block chain for missing wallet transactions") + "\n" +
         "  -zapwallettxes         " + _("Clear list of wallet transactions (diagnostic tool; implies -rescan)") + "\n" +
         "  -salvagewallet         " + _("Attempt to recover private keys from a corrupt wallet.dat") + "\n" +
+        "  -statedigestinterval=<n> " + _("Append a chain state digest every n blocks (default: 0, off)") + "\n" +
+        "  -statedigestfile=<path> " + _("State digest output (default: <datadir>/statedigest.jsonl)") + "\n" +
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
         "  -rebuildforwardlinks   " + _("Force a main-chain forward-link rebuild at startup (now automatic; retained for forcing)") + "\n" +
@@ -2923,6 +2925,7 @@ bool AppInit2()
                            : uint256(0).ToString().c_str()));
         printf("-replayblocks: trusted terminal tip verified at %d/%s\n",
                (int)nExpectedHeight64, hashExpected.ToString().c_str());
+        AppendStateDigest(true);
         ReplayExit(0);
     }
 
@@ -2936,6 +2939,7 @@ bool AppInit2()
             if (file)
                 LoadExternalBlockFile(file);
         }
+        AppendStateDigest(true);
         exit(0);
     }
 
