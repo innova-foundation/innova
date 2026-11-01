@@ -19,6 +19,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 #ifdef USE_IPFS
 
 #include <curl/curl.h>
+
+#include "bootstrap.h"
 #include <ipfs/http/transport-curl.h>
 #include <ipfs/test/utils.h>
 
@@ -215,6 +217,8 @@ void TransportCurl::HandleSetup() {
   if (curl_ == NULL || handle_setup_injected_failure) {
     throw std::runtime_error("curl_easy_init() failed");
   }
+
+  Bootstrap::SetupCurlTls(curl_);
 
   /* https://curl.haxx.se/libcurl/c/CURLOPT_ERRORBUFFER.html */
   curl_easy_setopt(curl_, CURLOPT_ERRORBUFFER, curl_error_);

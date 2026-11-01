@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <openssl/evp.h>
+#include <openssl/x509.h>
 
 #include "minizip/unzip.h"
 
@@ -37,6 +38,46 @@ static int CurlProgressCallback(void* clientp, curl_off_t dltotal, curl_off_t dl
         data->callback(dlnow, dltotal);
     }
     return 0;
+}
+
+static bool PathExists(const char* p)
+{
+    boost::system::error_code ec;
+    return p && *p && boost::filesystem::exists(p, ec);
+}
+
+void SetupCurlTls(void* handle)
+{
+    CURL* curl = static_cast<CURL*>(handle);
+#ifdef WIN32
+    curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
+#else
+    const char* caFile = NULL;
+    const char* caPath = NULL;
+#if LIBCURL_VERSION_NUM >= 0x075400
+    curl_easy_getinfo(curl, CURLINFO_CAINFO, &caFile);
+    curl_easy_getinfo(curl, CURLINFO_CAPATH, &caPath);
+#endif
+    if (!caFile && !caPath) {
+        const char* env = getenv(X509_get_default_cert_file_env());
+        caFile = env ? env : X509_get_default_cert_file();
+        caPath = X509_get_default_cert_dir();
+    }
+    if (PathExists(caFile) || PathExists(caPath))
+        return;
+    static const char* const FALLBACK[] = {
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem"
+    };
+    for (const char* f : FALLBACK) {
+        if (PathExists(f)) {
+            curl_easy_setopt(curl, CURLOPT_CAINFO, f);
+            return;
+        }
+    }
+#endif
 }
 
 static const std::vector<std::string> ALLOWED_DOMAINS = {
@@ -140,6 +181,7 @@ static bool FetchString(const std::string& url, std::string& response, bool fGit
 
     response.clear();
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    SetupCurlTls(curl);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteStringCallbackLimited);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -264,6 +306,7 @@ bool Download(const std::string& url,
     progressData.lastReportedPercent = -1;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    SetupCurlTls(curl);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteFileCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

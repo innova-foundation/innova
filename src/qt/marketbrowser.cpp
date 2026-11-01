@@ -6,6 +6,7 @@
 #include "clientmodel.h"
 #include "innovarpc.h"
 #include <QDesktopServices>
+#include "bootstrap.h"
 #include <curl/curl.h>
 #include <QtConcurrent/QtConcurrent>
 
@@ -72,6 +73,7 @@ static std::string fetchUrl(const std::string &url)
     CURL *curl = curl_easy_init();
     if (curl) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        Bootstrap::SetupCurlTls(curl);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);

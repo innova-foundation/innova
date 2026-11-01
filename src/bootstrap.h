@@ -22,6 +22,9 @@ static const std::string BOOTSTRAP_MANIFEST = "innovabootstrap.sha256";
 
 typedef std::function<void(int64_t, int64_t)> ProgressCallback;
 
+// Point a curl handle at a CA store that exists on this machine
+void SetupCurlTls(void* curl);
+
 std::string FetchLatestBootstrapUrl();
 
 std::string FetchLatestManifestUrl();

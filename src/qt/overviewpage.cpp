@@ -11,6 +11,7 @@
 #include "guiconstants.h"
 #include "marketbrowser.h"
 #include "main.h"
+#include "bootstrap.h"
 #include <curl/curl.h>
 
 #include <QAbstractItemDelegate>
@@ -175,6 +176,7 @@ PriceData OverviewPage::fetchPricesWorker()
         return result;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    Bootstrap::SetupCurlTls(curl);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -220,6 +222,7 @@ PriceData OverviewPage::fetchPricesWorker()
     if (ghCurl)
     {
         curl_easy_setopt(ghCurl, CURLOPT_URL, "https://api.github.com/repos/innova-foundation/innova/releases/latest");
+        Bootstrap::SetupCurlTls(ghCurl);
         curl_easy_setopt(ghCurl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
         curl_easy_setopt(ghCurl, CURLOPT_WRITEDATA, &ghBuffer);
         curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYPEER, 1L);
