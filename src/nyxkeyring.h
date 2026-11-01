@@ -12,6 +12,7 @@
 #include <vector>
 
 class CKey;
+class CPubKey;
 
 static const int64_t NYX_FIRST_PIN_MAX_AGE = 60 * 60 * 60;
 static const uint32_t NYX_KR_MAX_SEQ_JUMP = 16;
@@ -118,6 +119,19 @@ std::string NyxSafetyNumber(const uint8_t addrHash[20], uint32_t epoch, const Ny
 
 // ---- Own device ----
 
+static const unsigned int NYX_OPK_TARGET = 8;
+static const unsigned int NYX_OPK_LOW = 3;
+static const uint32_t NYX_OPK_MINT_PER_DAY = 8;
+static const int64_t NYX_SPK_LIFE = 60 * 60 * 24 * 7;
+static const int64_t NYX_SPK_GRACE = 60 * 60 * 49;   // previous SPK/KEM kept for in-flight handshakes
+
+struct NyxOpk
+{
+    uint32_t id;
+    uint8_t sk[32];
+    uint8_t pk[32];
+};
+
 struct NyxOwnDevice
 {
     uint8_t addrHash[20];
@@ -135,6 +149,15 @@ struct NyxOwnDevice
     uint8_t spk[32];
     uint32_t spkId;
     uint32_t bundleSeq;
+    int64_t spkCreated;
+    uint8_t prevSpkSk[32];
+    uint8_t prevKemSeed[64];
+    uint32_t prevSpkId;
+    int64_t prevSpkUntil;
+    std::vector<NyxOpk> opks;
+    uint32_t opkNext;
+    int64_t opkDay;
+    uint32_t opkMinted;
     NyxBytes certBody;
     NyxBytes lastBundle;
     NyxBytes keyringBody;
@@ -160,6 +183,15 @@ bool NyxBuildCertFor(uint8_t mode, const uint8_t addrHash[20], const uint8_t dev
                      const NyxOwnDevice* signer, NyxCert& out);
 bool NyxBuildKeyring(NyxKeyring& kr, const CKey& addrKey, const NyxOwnDevice* signer);
 bool NyxBuildBundle(NyxOwnDevice& dev, const CKey& addrKey, int64_t ts, NyxBundle& out);
+/** Mints OPKs up to NYX_OPK_TARGET once fewer than NYX_OPK_LOW remain, at most NYX_OPK_MINT_PER_DAY per day. */
+bool NyxDeviceTopUpOpks(NyxOwnDevice& dev, int64_t now);
+/** New SPK and ML-KEM prekey after NYX_SPK_LIFE; the previous pair stays for NYX_SPK_GRACE. */
+bool NyxDeviceRotateSpk(NyxOwnDevice& dev, int64_t now, bool fForce = false);
+/** Secret prekeys by id: current or unexpired previous SPK (and its ML-KEM seed), or an OPK. */
+bool NyxDeviceSpk(const NyxOwnDevice& dev, uint32_t spkId, int64_t now, uint8_t sk[32], const uint8_t** pKemSeed);
+const NyxOpk* NyxDeviceOpk(const NyxOwnDevice& dev, uint32_t id);
+void NyxDeviceEraseOpk(NyxOwnDevice& dev, uint32_t id);
+bool NyxAddrRecover(const char* tag, const NyxBytes& fields, const uint8_t sig[65], CPubKey& out);
 
 /** Non-empty reason when the device looks cloned: host fingerprint changed, or a bundle for its id it did not publish. */
 std::string NyxCloneCheck(const NyxOwnDevice& dev, const uint8_t hostFpNow[32], const NyxBytes* pSeenBundle);

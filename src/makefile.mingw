@@ -180,6 +180,8 @@ OBJS= \
     obj/nyxparts.o \
     obj/nyxcert.o \
     obj/nyxidentity.o \
+    obj/nyxsession.o \
+    obj/nyxsessionwire.o \
     obj/nyxkeyring.o \
     obj/nyxpo.o \
     obj/nyxsafety.o \
