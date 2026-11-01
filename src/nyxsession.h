@@ -6,6 +6,7 @@
 
 #include "nyxkeyring.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,12 @@ static const size_t NYX_MAX_SKIPPED = 2000;          // per session
 static const int64_t NYX_SKIPPED_TTL = 60 * 60 * 24 * 7;
 static const int64_t NYX_HS_WINDOW = 60 * 60 * 48 + 60;
 static const int64_t NYX_HS_FUTURE = 60;
+static const int64_t NYX_HS_RETRY = 60 * 60;          // unacked initiator starts a new handshake
+static const uint32_t NYX_RESYNC_SENDS = 32;         // sends with no reply before a new handshake
+static const size_t NYX_SEEN_MAX = 4096;
+static const size_t NYX_HELD_MAX = 32;
+static const size_t NYX_HELD_PER_SENDER = 4;
+static const size_t NYX_HELD_UNPINNED_MAX = 8;
 static const size_t NYX_SESSION_STATES = 2;          // current + one archived
 static const size_t NYX_HDR_LEN = 40;                // DHs 32 || PN 4 || N 4
 static const size_t NYX_ENC_HDR_LEN = NYX_HDR_LEN + 16;
@@ -73,7 +80,7 @@ void NyxHsId(const NyxHandshake& hs, uint8_t out[32]);
 bool NyxPqxdhKdf(const uint8_t* dh, size_t nDh, const uint8_t* ss, uint8_t out[96]);
 /** Root and chain KDFs of the ratchet (exposed for known-answer tests). */
 bool NyxKdfRk(const uint8_t rk[32], const uint8_t dhOut[32], uint8_t out[96]);
-void NyxKdfCk(const uint8_t ck[32], uint8_t ckNext[32], uint8_t mk[32]);
+bool NyxKdfCk(const uint8_t ck[32], uint8_t ckNext[32], uint8_t mk[32]);
 
 struct NyxSkippedKey
 {
@@ -91,6 +98,8 @@ struct NyxRatchet
     uint8_t remoteAddr[20];
     uint8_t remoteDev[16];
     uint8_t localDev[16];
+    uint8_t localCert[32], remoteCert[32];
+    uint32_t localEpoch, remoteEpoch;
     bool fInitiator;
     bool fAcked;                // initiator: a reply decrypted, stop re-sending the handshake
     bool fOpk;
@@ -142,7 +151,21 @@ struct NyxSession
     /** New state becomes current; the oldest beyond NYX_SESSION_STATES is wiped. */
     void Push(const NyxRatchet& r);
     int FindHs(const uint8_t hsId[32]) const;
+    /** True when the next send must start a new handshake. */
+    bool NeedsHandshake(const uint8_t localCert[32], uint32_t localEpoch, const uint8_t remoteCert[32],
+                        uint32_t remoteEpoch, int64_t now) const;
 };
+
+/** Seen handshake ids -> handshake ts. Drops entries past the acceptance window; false when still full. */
+bool NyxSeenPrune(std::map<std::string, int64_t>& seen, int64_t now);
+
+struct NyxHeldTag
+{
+    std::string sender;
+    bool fUnpinned;
+};
+/** Index to evict before queueing t, q.size() when none is needed. */
+size_t NyxHeldEvict(const std::vector<NyxHeldTag>& q, const NyxHeldTag& t);
 
 struct NyxLocalSide
 {

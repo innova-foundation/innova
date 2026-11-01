@@ -1295,6 +1295,15 @@ bool NyxDeviceRotateSpk(NyxOwnDevice& dev, int64_t now, bool fForce)
     return DerivePublic(dev);
 }
 
+bool NyxDeviceExpirePrevSpk(NyxOwnDevice& dev, int64_t now)
+{
+    if (now < dev.prevSpkUntil || (NyxIsZero(dev.prevSpkSk, 32) && NyxIsZero(dev.prevKemSeed, 64)))
+        return false;
+    OPENSSL_cleanse(dev.prevSpkSk, 32);
+    OPENSSL_cleanse(dev.prevKemSeed, 64);
+    return true;
+}
+
 bool NyxDeviceSpk(const NyxOwnDevice& dev, uint32_t spkId, int64_t now, uint8_t sk[32], const uint8_t** pKemSeed)
 {
     if (spkId == dev.spkId)
