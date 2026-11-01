@@ -790,4 +790,7 @@ void OnInitialBlockDownloadDone(int64_t nTipTime);
 void MaybeFinishInitialBlockDownload();
 bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatchSize, int64_t nSliceMs);
 
+static const int DEFAULT_CHECKBLOCKS = 288;
+void ClampStartupCheck(int& nLevel, int& nDepth, int nBestHeight);
+
 #endif // BITCOIN_DB_H
