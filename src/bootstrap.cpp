@@ -18,7 +18,48 @@
 
 #include "minizip/unzip.h"
 
+#ifdef WIN32
+#include "minizip/ioapi.h"
+#endif
+
 namespace Bootstrap {
+
+static const std::string LATEST_MANIFEST_URL =
+    "https://github.com/INNOVA-FOUNDATION/INNOVA/releases/latest/download/innovabootstrap.sha256";
+
+// path.string() is the ANSI code page on Windows
+static FILE* OpenFile(const boost::filesystem::path& path, const char* mode)
+{
+#ifdef WIN32
+    std::wstring wmode(mode, mode + strlen(mode));
+    return _wfopen(path.wstring().c_str(), wmode.c_str());
+#else
+    return fopen(path.string().c_str(), mode);
+#endif
+}
+
+#ifdef WIN32
+static voidpf ZCALLBACK WideOpenFunc(voidpf opaque, const void* filename, int mode)
+{
+    (void)opaque;
+    if (!filename || (mode & ZLIB_FILEFUNC_MODE_READWRITEFILTER) != ZLIB_FILEFUNC_MODE_READ)
+        return NULL;
+    return _wfopen((const wchar_t*)filename, L"rb");
+}
+#endif
+
+static unzFile OpenZip(const boost::filesystem::path& path)
+{
+#ifdef WIN32
+    zlib_filefunc64_def ff;
+    fill_fopen64_filefunc(&ff);
+    ff.zopen64_file = WideOpenFunc;
+    std::wstring w = path.wstring();
+    return unzOpen2_64(w.c_str(), &ff);
+#else
+    return unzOpen64(path.string().c_str());
+#endif
+}
 
 static size_t WriteFileCallback(void* ptr, size_t size, size_t nmemb, FILE* stream)
 {
@@ -83,8 +124,20 @@ void SetupCurlTls(void* handle)
 static const std::vector<std::string> ALLOWED_DOMAINS = {
     "github.com",
     "objects.githubusercontent.com",
-    "github-releases.githubusercontent.com"
+    "github-releases.githubusercontent.com",
+    "release-assets.githubusercontent.com"
 };
+
+static bool IsUrlAllowed(const std::string& url);
+
+static void SetHttpsOnlyRedirects(CURL* curl)
+{
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, (long)CURLPROTO_HTTPS);
+#endif
+}
 
 static bool IsUrlAllowed(const std::string& url)
 {
@@ -186,6 +239,7 @@ static bool FetchString(const std::string& url, std::string& response, bool fGit
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    SetHttpsOnlyRedirects(curl);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Core");
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
@@ -210,27 +264,38 @@ static bool FetchString(const std::string& url, std::string& response, bool fGit
     return true;
 }
 
-std::string FetchLatestManifestUrl()
+std::vector<std::string> FetchManifestUrls()
 {
+    std::vector<std::string> vUrls;
     std::string response;
-    if (!FetchString(GITHUB_API_RELEASES, response, true))
-        return "";
+    if (!FetchString(GITHUB_API_RELEASES, response, true)) {
+        // API is rate limited per IP; the latest-release redirect is not
+        printf("Bootstrap: Release list unavailable, trying %s\n", LATEST_MANIFEST_URL.c_str());
+        vUrls.push_back(LATEST_MANIFEST_URL);
+        return vUrls;
+    }
 
-    // Releases come newest first; take the first one that carries a manifest
+    // Releases come newest first
     const std::string suffix = "/" + BOOTSTRAP_MANIFEST;
     size_t pos = 0;
     while ((pos = response.find("\"browser_download_url\"", pos)) != std::string::npos) {
         std::string url = ExtractJsonString(response.substr(pos, 1024), "browser_download_url");
         pos++;
-        if (url.size() > suffix.size() && url.compare(url.size() - suffix.size(), suffix.size(), suffix) == 0) {
-            if (!IsUrlAllowed(url))
-                return "";
+        if (url.size() > suffix.size() && url.compare(url.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+            IsUrlAllowed(url) && std::find(vUrls.begin(), vUrls.end(), url) == vUrls.end()) {
             printf("Bootstrap: Found manifest %s\n", url.c_str());
-            return url;
+            vUrls.push_back(url);
         }
     }
-    printf("Bootstrap: No release carries %s\n", BOOTSTRAP_MANIFEST.c_str());
-    return "";
+    if (vUrls.empty())
+        printf("Bootstrap: No release carries %s\n", BOOTSTRAP_MANIFEST.c_str());
+    return vUrls;
+}
+
+std::string FetchLatestManifestUrl()
+{
+    std::vector<std::string> vUrls = FetchManifestUrls();
+    return vUrls.empty() ? "" : vUrls[0];
 }
 
 std::string FetchLatestBootstrapUrl()
@@ -294,16 +359,22 @@ bool Download(const std::string& url,
         return false;
     }
 
-    FILE* fp = fopen(destPath.string().c_str(), "wb");
+    FILE* fp = OpenFile(destPath, "wb");
     if (!fp) {
         printf("Bootstrap: Failed to open destination file: %s\n", destPath.string().c_str());
         curl_easy_cleanup(curl);
         return false;
     }
 
+    int64_t nResume = 0;
     ProgressData progressData;
     progressData.callback = progressCallback;
     progressData.lastReportedPercent = -1;
+    if (progressCallback) {
+        progressData.callback = [&](int64_t now, int64_t total) {
+            progressCallback(nResume + now, nResume + total);
+        };
+    }
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     SetupCurlTls(curl);
@@ -311,6 +382,8 @@ bool Download(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    SetHttpsOnlyRedirects(curl);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Core");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
@@ -328,6 +401,16 @@ bool Download(const std::string& url,
     printf("Bootstrap: Downloading from %s\n", url.c_str());
 
     CURLcode res = curl_easy_perform(curl);
+    for (int nRetry = 1; res != CURLE_OK && nRetry <= 3 && !fShutdown; ++nRetry) {
+        if (fflush(fp) != 0 || res == CURLE_WRITE_ERROR)
+            break;
+        nResume = (int64_t)boost::filesystem::file_size(destPath);
+        printf("Bootstrap: Download interrupted (%s), resuming at %lld (retry %d)\n",
+               curl_easy_strerror(res), (long long)nResume, nRetry);
+        MilliSleep(5000 * nRetry);
+        curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)nResume);
+        res = curl_easy_perform(curl);
+    }
 
     fclose(fp);
     curl_easy_cleanup(curl);
@@ -427,7 +510,7 @@ static std::string SanitizeZipFilename(const std::string& filename)
 bool ExtractZip(const boost::filesystem::path& zipPath,
                 const boost::filesystem::path& destDir)
 {
-    unzFile zf = unzOpen64(zipPath.string().c_str());
+    unzFile zf = OpenZip(zipPath);
     if (!zf) {
         printf("Bootstrap: Failed to open zip file: %s\n", zipPath.string().c_str());
         return false;
@@ -504,7 +587,7 @@ bool ExtractZip(const boost::filesystem::path& zipPath,
                 return false;
             }
 
-            FILE* fout = fopen(outPath.string().c_str(), "wb");
+            FILE* fout = OpenFile(outPath, "wb");
             if (!fout) {
                 printf("Bootstrap: Failed to create output file: %s\n", outPath.string().c_str());
                 unzCloseCurrentFile(zf);
@@ -579,16 +662,30 @@ static bool ExtractStaged(const boost::filesystem::path& zipPath,
 
     bool fOk = ExtractZip(zipPath, stage);
     if (fOk) {
-        for (boost::filesystem::directory_iterator it(stage), end; it != end; ++it) {
-            boost::filesystem::path target = dataDir / it->path().filename();
+        // txleveldb last: IsNeeded() keys on it, so a partial move is retried next start
+        std::vector<boost::filesystem::path> vItems, vMoved;
+        for (boost::filesystem::directory_iterator it(stage), end; it != end; ++it)
+            vItems.push_back(it->path());
+        std::stable_partition(vItems.begin(), vItems.end(),
+            [](const boost::filesystem::path& p) { return p.filename() != "txleveldb"; });
+        for (const auto& item : vItems) {
+            boost::filesystem::path target = dataDir / item.filename();
             boost::filesystem::remove_all(target, ec);
-            boost::filesystem::rename(it->path(), target, ec);
+            for (int nTry = 0; nTry < 10; ++nTry) {
+                boost::filesystem::rename(item, target, ec);
+                if (!ec)
+                    break;
+                MilliSleep(500);
+            }
             if (ec) {
                 printf("Bootstrap: Could not move %s into place: %s\n",
                        target.string().c_str(), ec.message().c_str());
+                for (const auto& moved : vMoved)
+                    boost::filesystem::remove_all(moved, ec);
                 fOk = false;
                 break;
             }
+            vMoved.push_back(target);
         }
     }
     boost::filesystem::remove_all(stage, ec);
@@ -616,7 +713,7 @@ void CleanupTempFiles(const boost::filesystem::path& dataDir)
 
 static std::string Sha256File(const boost::filesystem::path& path)
 {
-    FILE* f = fopen(path.string().c_str(), "rb");
+    FILE* f = OpenFile(path, "rb");
     if (!f)
         return "";
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -638,8 +735,8 @@ static std::string Sha256File(const boost::filesystem::path& path)
 
 static bool AppendFile(const boost::filesystem::path& from, const boost::filesystem::path& to)
 {
-    FILE* in = fopen(from.string().c_str(), "rb");
-    FILE* out = fopen(to.string().c_str(), "ab");
+    FILE* in = OpenFile(from, "rb");
+    FILE* out = OpenFile(to, "ab");
     bool fOk = in && out;
     std::vector<char> buf(1 << 20);
     size_t n;
@@ -661,6 +758,42 @@ static bool IsPartName(const std::string& name)
         return false;
     return name[BOOTSTRAP_FILENAME.size()] == '.' && isdigit((unsigned char)name[name.size() - 3]) &&
            isdigit((unsigned char)name[name.size() - 2]) && isdigit((unsigned char)name[name.size() - 1]);
+}
+
+static int64_t RemoteSize(const std::string& url)
+{
+    CURL* curl = curl_easy_init();
+    if (!curl)
+        return -1;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    SetupCurlTls(curl);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    SetHttpsOnlyRedirects(curl);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Core");
+    curl_off_t nSize = -1;
+    if (curl_easy_perform(curl) == CURLE_OK)
+        curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &nSize);
+    curl_easy_cleanup(curl);
+    return nSize;
+}
+
+// The joined zip and the extracted copy are on disk together
+static bool HasSpaceFor(const boost::filesystem::path& dataDir, int64_t nPartSize, int nParts)
+{
+    const uint64_t nNeed = (uint64_t)nPartSize * nParts * 2 + 1073741824ULL;
+    boost::system::error_code ec;
+    boost::filesystem::space_info si = boost::filesystem::space(dataDir, ec);
+    if (!ec && si.available < nNeed) {
+        printf("Bootstrap: Not enough disk space, need about %llu MB free\n",
+               (unsigned long long)(nNeed / 1048576));
+        uiInterface.InitMessage(_("Not enough disk space for the bootstrap."));
+        return false;
+    }
+    return true;
 }
 
 bool ApplyManifest(const std::string& manifestUrl,
@@ -721,7 +854,9 @@ bool ApplyManifest(const std::string& manifestUrl,
 
     int nPart = 0;
     const int nParts = mapParts.size();
-    int64_t nPartSize = 0;
+    int64_t nPartSize = RemoteSize(base + mapParts.begin()->first);
+    if (nPartSize > 0 && !HasSpaceFor(dataDir, nPartSize, nParts))
+        return false;
     for (const auto& item : mapParts) {
         ++nPart;
         uiInterface.InitMessage(strprintf(_("Downloading blockchain bootstrap (part %d of %d)..."), nPart, nParts));
@@ -750,13 +885,8 @@ bool ApplyManifest(const std::string& manifestUrl,
             return false;
         }
         if (nPart == 1) {
-            // The joined zip and the extracted copy are on disk together
             nPartSize = boost::filesystem::file_size(tempPart);
-            const uint64_t nNeed = (uint64_t)nPartSize * nParts * 2 + 1073741824ULL;
-            if (boost::filesystem::space(dataDir).available < nNeed) {
-                printf("Bootstrap: Not enough disk space, need about %llu MB free\n",
-                       (unsigned long long)(nNeed / 1048576));
-                uiInterface.InitMessage(_("Not enough disk space for the bootstrap."));
+            if (!HasSpaceFor(dataDir, nPartSize, nParts)) {
                 CleanupTempFiles(dataDir);
                 return false;
             }
@@ -793,7 +923,15 @@ bool DownloadAndApply(const std::string& url,
     std::string manifestUrl;
     if (url.empty()) {
         printf("Bootstrap: Looking for the newest release with a bootstrap...\n");
-        manifestUrl = FetchLatestManifestUrl();
+        std::vector<std::string> vUrls = FetchManifestUrls();
+        for (const auto& u : vUrls) {
+            if (ApplyManifest(u, dataDir, progressCallback))
+                return true;
+            if (fShutdown)
+                return false;
+        }
+        if (!vUrls.empty())
+            return false;
     } else if (url.size() > manifestSuffix.size() &&
                url.compare(url.size() - manifestSuffix.size(), manifestSuffix.size(), manifestSuffix) == 0) {
         manifestUrl = url;

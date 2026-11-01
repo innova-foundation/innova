@@ -7,6 +7,7 @@
 
 #include <string>
 #include <functional>
+#include <vector>
 #include <boost/filesystem.hpp>
 
 namespace Bootstrap {
@@ -28,6 +29,9 @@ void SetupCurlTls(void* curl);
 std::string FetchLatestBootstrapUrl();
 
 std::string FetchLatestManifestUrl();
+
+// Every release manifest, newest first
+std::vector<std::string> FetchManifestUrls();
 
 bool ApplyManifest(const std::string& manifestUrl,
                    const boost::filesystem::path& dataDir,
