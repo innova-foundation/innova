@@ -283,14 +283,6 @@ bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatc
 bool IBDBlockCommitSync()
 {
     const bool fIBD = IsInitialBlockDownload() || (fRegTest && GetBoolArg("-ibdbatchalways", false));
-    static bool fSeenIBD = false;
-    if (fIBD)
-        fSeenIBD = true;
-    else if (fSeenIBD)
-    {
-        fSeenIBD = false;
-        OnInitialBlockDownloadDone(pindexBest ? pindexBest->GetBlockTime() : GetTime());
-    }
     LOCK(cs_IBDBatch);
     const int64_t nNowMs = GetTimeMillis();
     if (IBDBatchShouldSync(fIBD, nIBDBatchCount, nNowMs - nIBDBatchLastSyncMs, nIBDBatchSize, nIBDBatchMs))
@@ -403,6 +395,28 @@ void OnInitialBlockDownloadDone(int64_t nTipTime)
     WriteSyncedMarker(nTipTime);
     ReleaseFreeHeapMemory();
     printf("IBD complete: block cache %d MB\n", (int)GetArg("-dbcache", DefaultDbCacheMB(true)));
+}
+
+// Polled from the message handler, outside cs_main; runs once per process when the tip is current.
+void MaybeFinishInitialBlockDownload()
+{
+    static std::atomic<bool> fDone(false);
+    static int64_t nLastCheck = 0;
+    const int64_t nNow = GetTime();
+    if (fDone || nNow - nLastCheck < 10)
+        return;
+    nLastCheck = nNow;
+    int64_t nTipTime = 0;
+    {
+        TRY_LOCK(cs_main, lockMain);
+        if (!lockMain || !pindexBest)
+            return;
+        nTipTime = pindexBest->GetBlockTime();
+    }
+    if (!OpensSynced(nTipTime, nNow) || IsInitialBlockDownload())
+        return;
+    fDone = true;
+    OnInitialBlockDownloadDone(nTipTime);
 }
 
 void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {

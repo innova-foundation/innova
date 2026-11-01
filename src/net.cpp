@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "db.h"
+#include "txdb.h"
 #include "net.h"
 #include "blockprofile.h"
 #include "nullsend_driver.h"
@@ -2633,6 +2634,7 @@ void ThreadMessageHandler2(void* parg)
         // Ungated on the peer count: a node that has just lost the peer holding
         // its orphans has no park and no SendMessages pass left to release them.
         PeriodicOrphanPoolSweep();
+        MaybeFinishInitialBlockDownload();
 
         bool fSleep = true;
 
