@@ -412,6 +412,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/nyxembed.h \
     src/nyxext.h \
     src/nyxgroup.h \
+    src/nyxparts.h \
+    src/nyxpo.h \
     src/nyxsafety.h \
     src/nyxui.h \
     src/main.h \
@@ -594,6 +596,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/nyxembed.cpp \
     src/nyxext.cpp \
     src/nyxgroup.cpp \
+    src/nyxparts.cpp \
+    src/nyxpo.cpp \
     src/nyxsafety.cpp \
     src/nyxui.cpp \
     src/util.cpp \
