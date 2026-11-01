@@ -327,6 +327,7 @@ TEST_OBJS= \
     obj/test/test_innova.o \
     obj/test/allocator_tests.o \
     obj/test/base32_tests.o \
+    obj/test/bootstrap_tests.o \
     obj/test/nyx_embed_tests.o \
     obj/test/nyx_ext_tests.o \
     obj/test/nyx_group_tests.o \

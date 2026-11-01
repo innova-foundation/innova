@@ -1949,7 +1949,13 @@ bool AppInit2()
         fclose(file);
 
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
-    if (!lock.try_lock())
+    bool fLocked = lock.try_lock();
+    // A GUI restart for a scheduled bootstrap starts before the old process exits
+    for (int nWait = 0; !fLocked && nWait < 60 && fs::exists(GetDataDir() / Bootstrap::REQUEST_FILENAME); ++nWait) {
+        MilliSleep(500);
+        fLocked = lock.try_lock();
+    }
+    if (!fLocked)
         return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Innova is probably already running."), strDataDir.c_str()));
     // Taken: from here the pid file and the databases in this directory are this
     // process's to remove and close. A start refused the lock owns neither.
@@ -2271,12 +2277,17 @@ bool AppInit2()
 
     // ********************************************************* Step 6.5: Bootstrap download (optional)
 
-    if (!fTestNet && !fRegTest && Bootstrap::IsNeeded(GetDataDir()))
+    if (!fTestNet && !fRegTest)
     {
-        bool fGetBootstrap = GetBoolArg("-getbootstrap", false);
+        std::string strRequestUrl;
+        // One attempt per request, so a failing bootstrap cannot loop restarts
+        bool fRequested = Bootstrap::ReadRequest(GetDataDir(), strRequestUrl);
+        Bootstrap::ClearRequest(GetDataDir());
+        bool fEmpty = Bootstrap::IsNeeded(GetDataDir());
+        bool fGetBootstrap = GetBoolArg("-getbootstrap", false) || fRequested;
         bool fNoBootstrap = GetBoolArg("-nobootstrap", false);
 
-        if (!fNoBootstrap && !fGetBootstrap && !fDaemon)
+        if (fEmpty && !fNoBootstrap && !fGetBootstrap && !fDaemon)
         {
 #ifdef QT_GUI
             fGetBootstrap = false;
@@ -2301,9 +2312,19 @@ bool AppInit2()
 #endif
         }
 
-        if (fGetBootstrap)
+        if (fGetBootstrap && !fNoBootstrap && !fEmpty && !fRequested)
         {
-            std::string url = GetArg("-bootstrapurl", "");
+            int nLocal = 0, nPublished = -1;
+            if (Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished) != Bootstrap::OFFER_BEHIND)
+            {
+                printf("Bootstrap: local chain (height %d) is not far behind, keeping it\n", nLocal);
+                fGetBootstrap = false;
+            }
+        }
+
+        if (fGetBootstrap && !fNoBootstrap)
+        {
+            std::string url = GetArg("-bootstrapurl", strRequestUrl);
             printf("\n");
 
             int64_t lastPercent = -1;
@@ -2327,9 +2348,17 @@ bool AppInit2()
                 }
             };
 
-            if (!Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback))
+            bool fApplied = Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback);
+            if (fApplied && !fEmpty)
             {
-                printf("Bootstrap download failed. Starting normal sync from genesis block.\n");
+                // The wallet's best-block locator points into the replaced chain
+                printf("Bootstrap: applied over existing chain data, rescanning the wallet\n");
+                mapArgs["-rescan"] = "1";
+            }
+            if (!fApplied)
+            {
+                printf(fEmpty ? "Bootstrap download failed. Starting normal sync from genesis block.\n"
+                              : "Bootstrap download failed. Keeping the existing chain data.\n");
 #ifdef QT_GUI
                 uiInterface.ThreadSafeMessageBox(_("The bootstrap could not be downloaded or applied, so Innova will sync from the network instead. See debug.log for the reason."),
                                                  _("Innova"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);

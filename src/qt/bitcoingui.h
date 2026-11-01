@@ -62,6 +62,9 @@ protected:
   Bitcoin GUI main class. This class represents the main window of the Bitcoin UI. It communicates with both the client and
   wallet models to give the user an up-to-date view of the current core state.
 */
+// Set when the GUI quits to apply a scheduled bootstrap; main() relaunches
+extern bool fRestartRequested;
+
 class BitcoinGUI : public QMainWindow
 {
     Q_OBJECT
@@ -166,6 +169,7 @@ private:
     QAction *backupWalletAction;
     QAction *showPhraseAction;
     QAction *restorePhraseAction;
+    QAction *bootstrapAction;
     QAction *iv5SeedAction;
     QAction *changePassphraseAction;
     QAction *unlockWalletAction;
@@ -338,6 +342,7 @@ private slots:
     void showRecoveryPhrase();
     /** Rebuild a wallet's shielded identity from a phrase. */
     void restoreRecoveryPhrase();
+    void scheduleBootstrap();
     /** IV5 seed status, create, export/import, phrase coverage. */
     void showIv5Seed();
     /** Change encrypted wallet passphrase */

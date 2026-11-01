@@ -29,6 +29,7 @@
 #include <QLibraryInfo>
 #include <QEventLoop>
 #include <QThread>
+#include <QProcess>
 
 #if defined(BITCOIN_NEED_QT_PLUGINS) && !defined(_BITCOIN_QT_PLUGINS_INCLUDED)
 #define _BITCOIN_QT_PLUGINS_INCLUDED
@@ -230,18 +231,39 @@ int main(int argc, char *argv[])
 
     if (!GetBoolArg("-testnet", false) && !GetBoolArg("-regtest", false) &&
         !mapArgs.count("-getbootstrap") && !GetBoolArg("-nobootstrap", false) &&
-        Bootstrap::IsNeeded(GetDataDir()))
+        !boost::filesystem::exists(GetDataDir() / Bootstrap::REQUEST_FILENAME))
     {
-        QMessageBox box(QMessageBox::Question, "Innova",
-                        QObject::tr("No blockchain data was found.\n\n"
-                                    "Download the bootstrap from the latest Innova release (several GB, much faster), "
-                                    "or sync every block from the network?"));
-        QPushButton* bootstrap = box.addButton(QObject::tr("Download bootstrap"), QMessageBox::AcceptRole);
-        box.addButton(QObject::tr("Sync from network"), QMessageBox::RejectRole);
-        box.setDefaultButton(bootstrap);
-        box.exec();
-        if (box.clickedButton() == bootstrap)
-            SoftSetBoolArg("-getbootstrap", true);
+        int nLocal = 0, nPublished = -1;
+        Bootstrap::Offer offer = Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished);
+        if (offer == Bootstrap::OFFER_EMPTY)
+        {
+            QMessageBox box(QMessageBox::Question, "Innova",
+                            QObject::tr("No blockchain data was found.\n\n"
+                                        "Download the bootstrap from the latest Innova release (several GB, much faster), "
+                                        "or sync every block from the network?"));
+            QPushButton* bootstrap = box.addButton(QObject::tr("Download bootstrap"), QMessageBox::AcceptRole);
+            box.addButton(QObject::tr("Sync from network"), QMessageBox::RejectRole);
+            box.setDefaultButton(bootstrap);
+            box.exec();
+            if (box.clickedButton() == bootstrap)
+                SoftSetBoolArg("-getbootstrap", true);
+        }
+        else if (offer == Bootstrap::OFFER_BEHIND)
+        {
+            QString strBehind = nPublished >= 0
+                ? QObject::tr("Your node is %1 blocks behind.").arg(nPublished - nLocal)
+                : QObject::tr("Your node's chain is more than two days behind.");
+            QMessageBox box(QMessageBox::Question, "Innova",
+                            strBehind + "\n\n" +
+                            QObject::tr("Replace the partial chain with the bootstrap from the latest Innova release "
+                                        "(several GB, much faster)? Your wallet and settings are kept."));
+            QPushButton* bootstrap = box.addButton(QObject::tr("Use bootstrap"), QMessageBox::AcceptRole);
+            box.addButton(QObject::tr("Keep syncing"), QMessageBox::RejectRole);
+            box.setDefaultButton(bootstrap);
+            box.exec();
+            if (box.clickedButton() == bootstrap)
+                Bootstrap::WriteRequest(GetDataDir(), "");
+        }
     }
 
     // show a persistent splash screen unless it is disabled from flags
@@ -347,6 +369,8 @@ int main(int argc, char *argv[])
 
             // Shutdown the core and its threads, but don't exit Bitcoin-Qt here
             Shutdown(NULL);
+            if (fRestartRequested)
+                QProcess::startDetached(QCoreApplication::applicationFilePath(), QCoreApplication::arguments().mid(1));
         }
         else
         {
