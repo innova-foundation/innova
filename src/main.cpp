@@ -9254,6 +9254,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 {
     if (pfFeeExemptMigration)
         *pfFeeExemptMigration = false;
+    const bool fSkipSigsCheckpointed = fBlock && !fForceSigs && !fFullReplayVerify &&
+                                       Checkpoints::IsCheckpointedAncestor(pindexBlock);
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
     // fMiner is true when called from the internal bitcoin miner
@@ -9345,13 +9347,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             }
 
             {
-            // Skip ECDSA signature verification when connecting blocks (fBlock=true)
-            // before the last blockchain checkpoint. This is safe because block merkle hashes are
-            // still computed and checked, and any change will be caught at the next checkpoint.
-            // -fullreplayverify forces full ECDSA verification of all historic blocks (used by
-            // -replayblocks to re-validate mainnet history end to end, not just to the checkpoint).
-            // Merged txs always verify signatures.
-            if (fForceSigs || !(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
+            // Signatures are skipped only in blocks on the checkpointed chain at or below the last
+            // checkpoint (-fullreplayverify and merged txs always verify).
+            if (!fSkipSigsCheckpointed)
             {
                 // Verify signature
                 bool fSigOk;

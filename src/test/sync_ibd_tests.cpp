@@ -4,6 +4,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include "checkpoints.h"
 #include "main.h"
 #include "net.h"
 #include "txdb.h"
@@ -259,6 +260,38 @@ BOOST_AUTO_TEST_CASE(peers_below_52002_are_disconnected_at_any_height)
         BOOST_CHECK(DeliverVersion(node, 52002));
         BOOST_CHECK_EQUAL(node.nVersion, 52002);
     }
+}
+
+BOOST_AUTO_TEST_CASE(signature_skip_needs_the_checkpointed_chain)
+{
+    ToyChain c;
+    for (int i = 0; i < 10; i++)
+        c[i]->BuildSkip();
+    Checkpoints::MapCheckpoints cps;
+    cps[0] = c.vHash[0];
+    cps[2] = c.vHash[2];
+    cps[4] = c.vHash[4];
+    std::map<uint256, CBlockIndex*> mapIndex;
+    for (int i = 0; i < 4; i++)
+        mapIndex[c.vHash[i]] = c[i];
+
+    // Last checkpoint not indexed yet: every checkpoint passed so far must match.
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[3]));
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[6]));
+    Checkpoints::MapCheckpoints cpsBad = cps;
+    cpsBad[2] = uint256((uint64_t)0xbad);
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cpsBad, mapIndex, c[3]));
+
+    // Indexed: ancestry of the last checkpoint only.
+    mapIndex[c.vHash[4]] = c[4];
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[3]));
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[4]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[6]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[7]));
+
+    // Never above the last checkpoint.
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[5]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, NULL));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

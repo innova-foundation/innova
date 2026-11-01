@@ -41,6 +41,13 @@ namespace Checkpoints
     // Return conservative estimate of total number of blocks, 0 if unknown
     int GetTotalBlocksEstimate();
 
+    // True when pindex is at or below the last checkpoint on a chain that matches it: by ancestry
+    // once that checkpoint is indexed, otherwise through every checkpoint at or below pindex.
+    bool IsCheckpointedAncestor(const MapCheckpoints& checkpoints,
+                                const std::map<uint256, CBlockIndex*>& mapIndex,
+                                const CBlockIndex* pindex);
+    bool IsCheckpointedAncestor(const CBlockIndex* pindex);
+
     // Returns last CBlockIndex* in mapBlockIndex that is a checkpoint
     CBlockIndex* GetLastCheckpoint(const std::map<uint256, CBlockIndex*>& mapBlockIndex);
 
