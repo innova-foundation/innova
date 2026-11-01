@@ -35,7 +35,8 @@ std::vector<std::string> FetchManifestUrls();
 
 bool ApplyManifest(const std::string& manifestUrl,
                    const boost::filesystem::path& dataDir,
-                   ProgressCallback progressCallback = nullptr);
+                   ProgressCallback progressCallback = nullptr,
+                   bool* pfTryOlder = nullptr);
 
 bool Download(const std::string& url,
               const boost::filesystem::path& destPath,

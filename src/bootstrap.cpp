@@ -404,6 +404,14 @@ bool Download(const std::string& url,
     for (int nRetry = 1; res != CURLE_OK && nRetry <= 3 && !fShutdown; ++nRetry) {
         if (fflush(fp) != 0 || res == CURLE_WRITE_ERROR)
             break;
+        if (res == CURLE_HTTP_RETURNED_ERROR) {
+            long nCode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &nCode);
+            // 416 on a resume means the part was already complete; the hash check decides
+            if (nCode == 416 && nResume > 0)
+                res = CURLE_OK;
+            break;
+        }
         nResume = (int64_t)boost::filesystem::file_size(destPath);
         printf("Bootstrap: Download interrupted (%s), resuming at %lld (retry %d)\n",
                curl_easy_strerror(res), (long long)nResume, nRetry);
@@ -670,7 +678,10 @@ static bool ExtractStaged(const boost::filesystem::path& zipPath,
             [](const boost::filesystem::path& p) { return p.filename() != "txleveldb"; });
         for (const auto& item : vItems) {
             boost::filesystem::path target = dataDir / item.filename();
-            boost::filesystem::remove_all(target, ec);
+            boost::filesystem::path backup = target.string() + ".bootstrap-old";
+            boost::filesystem::remove_all(backup, ec);
+            if (boost::filesystem::exists(target))
+                boost::filesystem::rename(target, backup, ec);
             for (int nTry = 0; nTry < 10; ++nTry) {
                 boost::filesystem::rename(item, target, ec);
                 if (!ec)
@@ -680,13 +691,21 @@ static bool ExtractStaged(const boost::filesystem::path& zipPath,
             if (ec) {
                 printf("Bootstrap: Could not move %s into place: %s\n",
                        target.string().c_str(), ec.message().c_str());
-                for (const auto& moved : vMoved)
+                vMoved.push_back(target);
+                for (const auto& moved : vMoved) {
                     boost::filesystem::remove_all(moved, ec);
+                    boost::filesystem::path old = moved.string() + ".bootstrap-old";
+                    if (boost::filesystem::exists(old))
+                        boost::filesystem::rename(old, moved, ec);
+                }
                 fOk = false;
                 break;
             }
             vMoved.push_back(target);
         }
+        if (fOk)
+            for (const auto& moved : vMoved)
+                boost::filesystem::remove_all(moved.string() + ".bootstrap-old", ec);
     }
     boost::filesystem::remove_all(stage, ec);
     return fOk;
@@ -798,8 +817,13 @@ static bool HasSpaceFor(const boost::filesystem::path& dataDir, int64_t nPartSiz
 
 bool ApplyManifest(const std::string& manifestUrl,
                    const boost::filesystem::path& dataDir,
-                   ProgressCallback progressCallback)
+                   ProgressCallback progressCallback,
+                   bool* pfTryOlder)
 {
+    // Only a fault in this release's files is worth retrying on an older one
+    bool fDummy;
+    bool& fTryOlder = pfTryOlder ? *pfTryOlder : fDummy;
+    fTryOlder = true;
     if (!IsUrlAllowed(manifestUrl))
         return false;
 
@@ -855,6 +879,7 @@ bool ApplyManifest(const std::string& manifestUrl,
     int nPart = 0;
     const int nParts = mapParts.size();
     int64_t nPartSize = RemoteSize(base + mapParts.begin()->first);
+    fTryOlder = false;
     if (nPartSize > 0 && !HasSpaceFor(dataDir, nPartSize, nParts))
         return false;
     for (const auto& item : mapParts) {
@@ -876,6 +901,7 @@ bool ApplyManifest(const std::string& manifestUrl,
         }
         if (Sha256File(tempPart) != item.second) {
             printf("Bootstrap: Checksum mismatch on %s\n", item.first.c_str());
+            fTryOlder = true;
             CleanupTempFiles(dataDir);
             return false;
         }
@@ -897,6 +923,7 @@ bool ApplyManifest(const std::string& manifestUrl,
     uiInterface.InitMessage(_("Verifying blockchain bootstrap..."));
     if (Sha256File(tempZip) != strZipHash) {
         printf("Bootstrap: Checksum mismatch on the joined zip\n");
+        fTryOlder = true;
         CleanupTempFiles(dataDir);
         return false;
     }
@@ -925,9 +952,10 @@ bool DownloadAndApply(const std::string& url,
         printf("Bootstrap: Looking for the newest release with a bootstrap...\n");
         std::vector<std::string> vUrls = FetchManifestUrls();
         for (const auto& u : vUrls) {
-            if (ApplyManifest(u, dataDir, progressCallback))
+            bool fTryOlder = false;
+            if (ApplyManifest(u, dataDir, progressCallback, &fTryOlder))
                 return true;
-            if (fShutdown)
+            if (fShutdown || !fTryOlder)
                 return false;
         }
         if (!vUrls.empty())
