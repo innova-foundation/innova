@@ -178,6 +178,9 @@ OBJS= \
     obj/nyxext.o \
     obj/nyxgroup.o \
     obj/nyxparts.o \
+    obj/nyxcert.o \
+    obj/nyxidentity.o \
+    obj/nyxkeyring.o \
     obj/nyxpo.o \
     obj/nyxsafety.o \
     obj/stealth.o \

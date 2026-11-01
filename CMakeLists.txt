@@ -544,6 +544,9 @@ set(INNOVA_CXX_SOURCES
     src/nyxembed.cpp
     src/nyxext.cpp
     src/nyxgroup.cpp
+    src/nyxcert.cpp
+    src/nyxidentity.cpp
+    src/nyxkeyring.cpp
     src/nyxparts.cpp
     src/nyxpo.cpp
     src/nyxsafety.cpp
@@ -728,6 +731,9 @@ set(INNOVA_HEADERS
     src/nyxembed.h
     src/nyxext.h
     src/nyxgroup.h
+    src/nyxcert.h
+    src/nyxidentity.h
+    src/nyxkeyring.h
     src/nyxparts.h
     src/nyxpo.h
     src/nyxsafety.h
