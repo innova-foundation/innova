@@ -18665,47 +18665,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         uint64_t nNonce = 1;
         vRecv >> pfrom->nVersion >> pfrom->nServices >> nTime >> addrMe;
 
-        // Old Node Versioning with Block Height Code
-        bool oldVersion = false;
-
         if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
-            oldVersion = true;
-
-        if (pfrom->nVersion < DAG_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
         {
-            printf("peer %s version %d is not on the DAG chain; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-dag-version");
-            return false;
-        }
-
-        if (pfrom->nVersion < MERGESET_PROTO_VERSION && IsMergesetActiveAtHeight(nBestHeight + 1))
-        {
-            printf("peer %s version %d predates the mergeset fork; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-mergeset-version");
-            return false;
-        }
-
-        if (pfrom->nVersion < V52_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
-        {
-            printf("peer %s version %d is older than v5.2.0.2; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-v52-version");
-            return false;
-        }
-
-        /*
-        if (pfrom->nVersion < PROTO_VERSION)
-        {
-            // disconnect from peers older than this proto version
-            printf("partner %s using obsolete version %i; disconnecting\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
+            printf("peer %s version %d is below %d; disconnecting\n",
+                   pfrom->addr.ToString().c_str(), pfrom->nVersion, MIN_PEER_PROTO_VERSION);
             pfrom->MarkDisconnect("proto-version-too-old");
             return false;
-        }*/
+        }
 
-        if (pfrom->nVersion == 10300)
-            pfrom->nVersion = 300;
         if (!vRecv.empty())
             vRecv >> addrFrom >> nNonce;
         if (!vRecv.empty())
@@ -18720,30 +18687,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->UpdateBestKnownBlock(pfrom->nChainHeight, uint256(0));
         }
 
-        // Disconnect if the peer's subversion is < /Innovai:3.3.9.14/
-        // Leaving this out for now until new update is out for a bit
-        // if (pfrom->strSubVer != "/Innovai:3.3.9.14/")
-        //     oldVersion = true;
-
-        // print the current pfrom->strSubVer
-        printf("ProcessMessage(): peer=%s using SubVer=%s, oldVersion=%s\n", pfrom->addr.ToString().c_str(), pfrom->strSubVer.c_str(), oldVersion ? "true" : "false");
-
-        if (oldVersion == true)
-        {
-          printf("Partner %s using obsolete version %i; DISCONNECTING\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
-          pfrom->MarkDisconnect("subver-obsolete");
-          if (pfrom->fColLateralMaster)
-              printf("Masternode hosting node version was obsolete. This masternode should be removed from the list\n");
-          return false;
-        }
-
-        // if (pfrom->nSendBytes >= 1000000) // New arg flag per peer 1MB 1000000 bytes
-        // {
-        //     printf("data sent by peer = %i, disconnecting\n", pfrom->nSendBytes);
-        //     printf("disconnecting node from max outbound per peer target: %s\n", pfrom->addr.ToString().c_str());
-        //     pfrom->fDisconnect = true;
-        //     return false;
-        // }
+        printf("ProcessMessage(): peer=%s using SubVer=%s\n", pfrom->addr.ToString().c_str(), pfrom->strSubVer.c_str());
 
         if (pfrom->fInbound && addrMe.IsRoutable())
         {
@@ -18786,12 +18730,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushAddress(addr);
             }
 
-            // Get recent addresses
-            if (pfrom->fOneShot || pfrom->nVersion >= CADDR_TIME_VERSION || addrman.size() < 1000)
-            {
-                pfrom->PushMessage("getaddr");
-                pfrom->fGetAddr = true;
-            }
+            pfrom->PushMessage("getaddr");
+            pfrom->fGetAddr = true;
             addrman.Good(pfrom->addr);
         } else {
             if (((CNetAddr)pfrom->addr) == (CNetAddr)addrFrom)
@@ -18813,9 +18753,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Ask every eligible network peer for catch-up work. Per-peer
         // PushGetBlocks throttling keeps reconnect loops from spamming.
         if (!pfrom->fClient && !pfrom->fOneShot &&
-            (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)) &&
-            (pfrom->nVersion < NOBLKS_VERSION_START ||
-             pfrom->nVersion >= NOBLKS_VERSION_END))
+            (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)))
         {
             pfrom->PushGetBlocks(pindexBest, uint256(0));
             pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
@@ -18897,9 +18835,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             vRecv >> vAddr;
         }
 
-        // Don't want addr from older versions unless seeding
-        if (pfrom->nVersion < CADDR_TIME_VERSION && addrman.size() > 1000)
-            return true;
         if (vAddr.size() > 1000)
         {
             pfrom->Misbehaving(20, "addr message too large");
@@ -18934,7 +18869,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     multimap<uint256, CNode*> mapMix;
                     for (CNode* pnode : vNodes)
                     {
-                        if (pnode->nVersion < CADDR_TIME_VERSION)
+                        if (pnode->nVersion < MIN_PEER_PROTO_VERSION)
                             continue;
                         unsigned int nPointer;
                         memcpy(&nPointer, &pnode, sizeof(nPointer));
@@ -19734,7 +19669,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
     else if (strCommand == "ping")
     {
-        if (pfrom->nVersion > BIP0031_VERSION)
         {
             uint64_t nonce = 0;
             vRecv >> nonce;
@@ -20236,13 +20170,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         }
         pto->fPingQueued = false;
         pto->nPingUsecStart = GetTimeMicros();
-        if (pto->nVersion > BIP0031_VERSION) {
-            pto->nPingNonceSent = nonce;
-            pto->PushMessage("ping", nonce);
-        } else {
-            pto->nPingNonceSent = 0;
-            pto->PushMessage("ping");
-        }
+        pto->nPingNonceSent = nonce;
+        pto->PushMessage("ping", nonce);
     }
 
     {

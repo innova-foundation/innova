@@ -8,6 +8,7 @@
 #include "net.h"
 #include "txdb.h"
 #include "util.h"
+#include "version.h"
 
 #include <map>
 #include <set>
@@ -214,6 +215,50 @@ BOOST_AUTO_TEST_CASE(headers_forking_below_the_last_checkpoint_are_refused)
     BOOST_CHECK(!HeaderForksBelowCheckpoint(4001, 5000, 4000));
     BOOST_CHECK(!HeaderForksBelowCheckpoint(1000, 3999, 4000));
     BOOST_CHECK(!HeaderForksBelowCheckpoint(1, 5000, 0));
+}
+
+namespace {
+// True when the handshake was accepted. A socketless peer raises fDisconnect on any send.
+bool DeliverVersion(CNode& receiver, int nVersion)
+{
+    CNode scratch(INVALID_SOCKET, CAddress(CService("203.0.113.10", 14531)), "", false);
+    scratch.PushMessage("version", nVersion, (uint64_t)NODE_NETWORK, GetTime(),
+                        CAddress(CService("203.0.113.11", 14532)), CAddress(CService("203.0.113.10", 14531)),
+                        (uint64_t)1, std::string("/test/"), 1);
+    CSerializeData data;
+    {
+        LOCK(scratch.cs_vSend);
+        BOOST_REQUIRE(!scratch.vSendMsg.empty());
+        data = scratch.vSendMsg.back();
+    }
+    BOOST_REQUIRE(receiver.ReceiveMsgBytes(&data[0], (unsigned int)data.size()));
+    LOCK(receiver.cs_vRecvMsg);
+    ProcessMessages(&receiver);
+    return receiver.fSuccessfullyConnected;
+}
+}
+
+BOOST_AUTO_TEST_CASE(peers_below_52002_are_disconnected_at_any_height)
+{
+    BOOST_CHECK_EQUAL(MIN_PEER_PROTO_VERSION, 52002);
+    {
+        CNode node(INVALID_SOCKET, CAddress(CService("203.0.113.12", 14533)), "", false);
+        node.nPingNonceSent = 1;
+        BOOST_CHECK(!DeliverVersion(node, 52001));
+        BOOST_CHECK(node.fDisconnect);
+    }
+    {
+        CNode node(INVALID_SOCKET, CAddress(CService("203.0.113.13", 14534)), "", false);
+        node.nPingNonceSent = 1;
+        BOOST_CHECK(!DeliverVersion(node, 43950));
+        BOOST_CHECK(node.fDisconnect);
+    }
+    {
+        CNode node(INVALID_SOCKET, CAddress(CService("203.0.113.14", 14535)), "", false);
+        node.nPingNonceSent = 1;
+        BOOST_CHECK(DeliverVersion(node, 52002));
+        BOOST_CHECK_EQUAL(node.nVersion, 52002);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
