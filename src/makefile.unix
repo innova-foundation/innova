@@ -285,6 +285,8 @@ OBJS= \
     obj/nyxembed.o \
     obj/nyxext.o \
     obj/nyxgroup.o \
+    obj/nyxparts.o \
+    obj/nyxpo.o \
     obj/nyxsafety.o \
     obj/nyxui.o \
     obj/stealth.o \
