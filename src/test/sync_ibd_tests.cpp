@@ -207,6 +207,11 @@ BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)
     BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 760, nNow), 60);
     BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 760, nNow - 100), 760);
     BOOST_CHECK_EQUAL(OrphanCountTowardCap(8, 750, nNow), 750);
+    // The decay stops at the hard ceiling, so one peer cannot climb to the pool limit.
+    BOOST_CHECK_EQUAL(OrphanPeerHardCeiling(DEFAULT_MAX_ORPHAN_BLOCKS), 1000);
+    BOOST_CHECK_EQUAL(OrphanPeerHardCeiling(100), 750);
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 999, nNow), 299);
+    BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 1000, nNow), 1000);
     mapOrphanBlocks = savedBlocks;
     mapOrphanBlocksByNode = savedByNode;
 }

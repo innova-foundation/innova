@@ -6051,13 +6051,21 @@ static void RequestOrphanAncestry(CNode* pfrom, CBlockIndex* pindexFrom, const u
     pfrom->hashAncestryStop = hashStop;
 }
 
-// At the per-peer cap, orphans a peer parked more than this long ago stop counting against it.
-// The pool's entry and byte bounds, and the per-peer byte share, still hold them.
+// At the per-peer cap, orphans a peer parked more than this long ago stop counting against it,
+// up to a hard ceiling of ORPHAN_PEER_SHARE_PERCENT of the pool's entries.
 static const int64_t ORPHAN_CAP_DECAY_SECONDS = 60;
+static const int ORPHAN_PEER_SHARE_PERCENT = 40;
+
+int OrphanPeerHardCeiling(int64_t nMaxEntries)
+{
+    return (int)std::max<int64_t>(MAX_ORPHAN_BLOCKS_PER_PEER, nMaxEntries * ORPHAN_PEER_SHARE_PERCENT / 100);
+}
 
 int OrphanCountTowardCap(NodeId id, int nHeld, int64_t nNow)
 {
     if (nHeld < MAX_ORPHAN_BLOCKS_PER_PEER)
+        return nHeld;
+    if (nHeld >= OrphanPeerHardCeiling(GetArg("-maxorphanblocks", DEFAULT_MAX_ORPHAN_BLOCKS)))
         return nHeld;
     int nStale = 0;
     for (std::map<uint256, NodeId>::const_iterator it = mapOrphanBlocksByNode.begin(); it != mapOrphanBlocksByNode.end(); ++it)
