@@ -1507,6 +1507,8 @@ unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBl
 int GetNumBlocksOfPeers();
 bool IsSynchronized();
 bool IsInitialBlockDownload();
+bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nHeight,
+                         int& nFreshPeerHeight, int64_t& nFreshPeerLastBlockRecv);
 std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
 

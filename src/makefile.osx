@@ -394,7 +394,8 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/mergeset_accept_tests.o \
     obj/test/mempool_rbf_tests.o \
     obj/test/migration_exempt_tests.o \
-    obj/test/dagheaders_tests.o
+    obj/test/dagheaders_tests.o \
+    obj/test/sync_ibd_tests.o
 
 # The suite reads its JSON vectors from src/test/data.  Compiling the absolute
 # path in keeps that resolution independent of the caller's working directory.

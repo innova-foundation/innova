@@ -8244,6 +8244,35 @@ bool ValidatePrivacyVNextIndexPersistence(
     return true;
 }
 
+// Read-only: an in-flight entry past its timeout is ignored here, not expired.
+bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nHeight,
+                         int& nFreshPeerHeight, int64_t& nFreshPeerLastBlockRecv)
+{
+    std::vector<int> vFresh, vKnown, vBusy;
+    nFreshPeerLastBlockRecv = 0;
+    for (const CNode* pnode : vPeers)
+    {
+        if (!pnode || pnode->fClient)
+            continue;
+        if (pnode->nBestKnownHeight > 0 && pnode->nLastHeightUpdate > 0 &&
+            nNow - pnode->nLastHeightUpdate <= 120)
+            vFresh.push_back(pnode->nBestKnownHeight);
+        if (pnode->nBestKnownHeight > 0)
+            vKnown.push_back(pnode->nBestKnownHeight);
+        if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
+            nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
+        // A peer at the tip stops raising its height, so busy peers count without a fresh height.
+        if (pnode->HasLiveBlockInFlight(nNow) || !pnode->mapAskFor.empty())
+            vBusy.push_back(pnode->nBestKnownHeight);
+    }
+    nFreshPeerHeight = LowerMedianPeerHeight(vFresh);
+    const int nKnownMedian = LowerMedianPeerHeight(vKnown);
+    for (int nBusyHeight : vBusy)
+        if (std::min(nBusyHeight, nKnownMedian) > nHeight + 2)
+            return true;
+    return false;
+}
+
 bool IsInitialBlockDownload()
 {
     if (fRegTest && pindexBest != NULL)
@@ -8261,37 +8290,7 @@ bool IsInitialBlockDownload()
     {
         TRY_LOCK(cs_vNodes, lockNodes);
         if (lockNodes)
-        {
-            std::vector<int> vFresh, vKnown, vBusy;
-            for (CNode* pnode : vNodes)
-            {
-                if (!pnode || pnode->fClient)
-                    continue;
-
-                pnode->ExpireBlockInFlight(nNow);
-
-                bool fFreshHeight = pnode->nBestKnownHeight > 0 &&
-                                    pnode->nLastHeightUpdate > 0 &&
-                                    nNow - pnode->nLastHeightUpdate <= 120;
-                if (fFreshHeight)
-                    vFresh.push_back(pnode->nBestKnownHeight);
-                if (pnode->nBestKnownHeight > 0)
-                    vKnown.push_back(pnode->nBestKnownHeight);
-
-                if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
-                    nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
-
-                // Not gated on fFreshHeight: a peer at the tip stops raising its height. Outstanding
-                // requests to a peer ahead count as catch-up; its height is capped at the median.
-                if (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty())
-                    vBusy.push_back(pnode->nBestKnownHeight);
-            }
-            nFreshPeerHeight = LowerMedianPeerHeight(vFresh);
-            int nKnownMedian = LowerMedianPeerHeight(vKnown);
-            for (int nBusyHeight : vBusy)
-                if (std::min(nBusyHeight, nKnownMedian) > nBestHeight + 2)
-                    fActiveCatchup = true;
-        }
+            fActiveCatchup = ScanPeersForCatchup(vNodes, nNow, nBestHeight, nFreshPeerHeight, nFreshPeerLastBlockRecv);
     }
 
     unsigned int nTargetSpacing = GetTargetSpacingForHeight(nBestHeight + 1);

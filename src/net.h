@@ -1070,13 +1070,28 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         }
     }
 
-    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    static int64_t BlockInFlightTimeout()
     {
         int64_t nTimeout = GetArg("-blockinflighttimeout", 30);
         if (nTimeout < 5)
             nTimeout = 5;
         if (nTimeout > 600)
             nTimeout = 600;
+        return nTimeout;
+    }
+
+    bool HasLiveBlockInFlight(int64_t nNow) const
+    {
+        const int64_t nTimeout = BlockInFlightTimeout();
+        for (std::map<uint256, int64_t>::const_iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); ++it)
+            if (nNow - it->second <= nTimeout)
+                return true;
+        return false;
+    }
+
+    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    {
+        const int64_t nTimeout = BlockInFlightTimeout();
         for (std::map<uint256, int64_t>::iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); )
         {
             if (nNow - it->second > nTimeout)
