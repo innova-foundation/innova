@@ -7,6 +7,7 @@
 
 #include "key.h"
 
+#include <algorithm>
 #include <openssl/crypto.h>
 #include <openssl/hmac.h>
 #include <string.h>
@@ -104,15 +105,20 @@ bool NyxKdfRk(const uint8_t rk[32], const uint8_t dhOut[32], uint8_t out[96])
     return nyx_hkdf_sha256(rk, 32, dhOut, 32, (const uint8_t*)INFO_RK, strlen(INFO_RK), out, 96) == 0;
 }
 
-void NyxKdfCk(const uint8_t ck[32], uint8_t ckNext[32], uint8_t mk[32])
+bool NyxKdfCk(const uint8_t ck[32], uint8_t ckNext[32], uint8_t mk[32])
 {
     static const uint8_t one = 0x01, two = 0x02;
     unsigned int n = 32;
     Secret<32> m;
-    HMAC(EVP_sha256(), ck, 32, &one, 1, m.b, &n);
-    HMAC(EVP_sha256(), ck, 32, &two, 1, ckNext, &n);
     const uint8_t salt[32] = {0};
-    nyx_hkdf_sha256(salt, 32, m.b, 32, (const uint8_t*)INFO_MK, strlen(INFO_MK), mk, 32);
+    if (!HMAC(EVP_sha256(), ck, 32, &one, 1, m.b, &n) || n != 32 || !HMAC(EVP_sha256(), ck, 32, &two, 1, ckNext, &n)
+        || n != 32 || nyx_hkdf_sha256(salt, 32, m.b, 32, (const uint8_t*)INFO_MK, strlen(INFO_MK), mk, 32) != 0)
+    {
+        OPENSSL_cleanse(ckNext, 32);
+        OPENSSL_cleanse(mk, 32);
+        return false;
+    }
+    return true;
 }
 
 void NyxTranscript(const NyxHandshake& hs, const uint8_t ikB[32], uint8_t out[32])
@@ -151,6 +157,9 @@ NyxRatchet::NyxRatchet()
     memset(remoteAddr, 0, 20);
     memset(remoteDev, 0, 16);
     memset(localDev, 0, 16);
+    memset(localCert, 0, 32);
+    memset(remoteCert, 0, 32);
+    localEpoch = remoteEpoch = 0;
     fInitiator = fAcked = fOpk = false;
     created = lastUsed = 0;
     memset(RK, 0, 32);
@@ -185,6 +194,10 @@ NyxRatchet& NyxRatchet::operator=(const NyxRatchet& o)
     memcpy(remoteAddr, o.remoteAddr, 20);
     memcpy(remoteDev, o.remoteDev, 16);
     memcpy(localDev, o.localDev, 16);
+    memcpy(localCert, o.localCert, 32);
+    memcpy(remoteCert, o.remoteCert, 32);
+    localEpoch = o.localEpoch;
+    remoteEpoch = o.remoteEpoch;
     fInitiator = o.fInitiator;
     fAcked = o.fAcked;
     fOpk = o.fOpk;
@@ -245,6 +258,10 @@ void NyxRatchet::Serialize(std::string& s) const
     WrRaw(s, remoteAddr, 20);
     WrRaw(s, remoteDev, 16);
     WrRaw(s, localDev, 16);
+    WrRaw(s, localCert, 32);
+    WrRaw(s, remoteCert, 32);
+    WrRaw(s, &localEpoch, 4);
+    WrRaw(s, &remoteEpoch, 4);
     WrRaw(s, hsFixed.empty() ? NULL : &hsFixed[0], hsFixed.size());
     WrRaw(s, &created, 8);
     WrRaw(s, &lastUsed, 8);
@@ -272,7 +289,8 @@ bool NyxRatchet::Deserialize(const std::string& s, size_t& off)
     uint32_t n = 0;
     if (!RdRaw(s, off, &mode, 1) || mode > NYX_MODE_PQ || !RdRaw(s, off, &flags, 1) || !RdRaw(s, off, T, 32)
         || !RdRaw(s, off, hsId, 32) || !RdRaw(s, off, remoteAddr, 20) || !RdRaw(s, off, remoteDev, 16)
-        || !RdRaw(s, off, localDev, 16) || !RdBytes(s, off, hsFixed, NYX_HS_FIXED_PQ)
+        || !RdRaw(s, off, localDev, 16) || !RdRaw(s, off, localCert, 32) || !RdRaw(s, off, remoteCert, 32)
+        || !RdRaw(s, off, &localEpoch, 4) || !RdRaw(s, off, &remoteEpoch, 4) || !RdBytes(s, off, hsFixed, NYX_HS_FIXED_PQ)
         || !RdRaw(s, off, &created, 8) || !RdRaw(s, off, &lastUsed, 8) || !RdRaw(s, off, RK, 32)
         || !RdRaw(s, off, CKs, 32) || !RdRaw(s, off, CKr, 32) || !RdRaw(s, off, DHsSk, 32) || !RdRaw(s, off, DHr, 32)
         || !RdRaw(s, off, HKs, 32) || !RdRaw(s, off, HKr, 32) || !RdRaw(s, off, NHKs, 32) || !RdRaw(s, off, NHKr, 32)
@@ -322,7 +340,8 @@ bool NyxRatchetEncrypt(NyxRatchet& s, const NyxBytes& pt, int64_t now, NyxBytes&
     if (!s.fCKs || !s.fHKs || s.Ns == 0xFFFFFFFFu)
         return false;
     Secret<32> mk, ck;
-    NyxKdfCk(s.CKs, ck.b, mk.b);
+    if (!NyxKdfCk(s.CKs, ck.b, mk.b))
+        return false;
     uint8_t hdr[NYX_HDR_LEN];
     memcpy(hdr, s.DHsPk, 32);
     for (int i = 0; i < 4; ++i)
@@ -359,6 +378,21 @@ static bool OpenBody(const NyxRatchet& s, const uint8_t mk[32], const NyxBytes& 
     return true;
 }
 
+// push_back without leaving a freed copy of the keys behind on reallocation.
+static void PushSkipped(std::vector<NyxSkippedKey>& v, const NyxSkippedKey& k)
+{
+    if (v.size() == v.capacity())
+    {
+        std::vector<NyxSkippedKey> w;
+        w.reserve(std::max<size_t>(16, v.capacity() * 2));
+        w = v;
+        if (!v.empty())
+            OPENSSL_cleanse(&v[0], v.size() * sizeof(NyxSkippedKey));
+        v.swap(w);
+    }
+    v.push_back(k);
+}
+
 static int SkipKeys(NyxRatchet& s, uint32_t until, int64_t now)
 {
     if (until < s.Nr)
@@ -374,7 +408,11 @@ static int SkipKeys(NyxRatchet& s, uint32_t until, int64_t now)
         memcpy(k.hk, s.HKr, 32);
         k.n = s.Nr;
         k.ts = now;
-        NyxKdfCk(s.CKr, ck, k.mk);
+        if (!NyxKdfCk(s.CKr, ck, k.mk))
+        {
+            OPENSSL_cleanse(&k, sizeof(k));
+            return NYX_DR_MALFORMED;
+        }
         memcpy(s.CKr, ck, 32);
         OPENSSL_cleanse(ck, 32);
         if (s.skipped.size() >= NYX_MAX_SKIPPED)
@@ -382,7 +420,7 @@ static int SkipKeys(NyxRatchet& s, uint32_t until, int64_t now)
             OPENSSL_cleanse(&s.skipped[0], sizeof(NyxSkippedKey));
             s.skipped.erase(s.skipped.begin());
         }
-        s.skipped.push_back(k);
+        PushSkipped(s.skipped, k);
         OPENSSL_cleanse(&k, sizeof(k));
         s.Nr++;
     }
@@ -481,7 +519,8 @@ int NyxRatchetDecrypt(NyxRatchet& st, const NyxBytes& tail, int64_t now, NyxByte
     if (r != NYX_DR_OK)
         return r;
     Secret<32> mk, ck;
-    NyxKdfCk(s.CKr, ck.b, mk.b);
+    if (!NyxKdfCk(s.CKr, ck.b, mk.b))
+        return NYX_DR_MALFORMED;
     if (!OpenBody(s, mk.b, tail, pt))
         return NYX_DR_AUTH;
     memcpy(s.CKr, ck.b, 32);
@@ -502,7 +541,7 @@ std::string NyxSession::Serialize() const
     for (size_t i = 0; i < states.size(); ++i)
         n += 1024 + states[i].hsFixed.size() + states[i].skipped.size() * (sizeof(NyxSkippedKey) + 4);
     s.reserve(n);
-    const uint8_t ver = 1, cnt = states.size();
+    const uint8_t ver = 2, cnt = states.size();
     s.push_back((char)ver);
     s.push_back((char)cnt);
     for (size_t i = 0; i < states.size(); ++i)
@@ -513,7 +552,7 @@ std::string NyxSession::Serialize() const
 bool NyxSession::Deserialize(const std::string& s)
 {
     states.clear();
-    if (s.size() < 2 || s[0] != 1 || (uint8_t)s[1] > NYX_SESSION_STATES)
+    if (s.size() < 2 || s[0] != 2 || (uint8_t)s[1] > NYX_SESSION_STATES)
         return false;
     size_t off = 2;
     states.resize((uint8_t)s[1]);
@@ -557,6 +596,46 @@ int NyxSession::FindHs(const uint8_t hsId[32]) const
         if (memcmp(states[i].hsId, hsId, 32) == 0)
             return (int)i;
     return -1;
+}
+
+bool NyxSession::NeedsHandshake(const uint8_t localCert[32], uint32_t localEpoch, const uint8_t remoteCert[32],
+                                uint32_t remoteEpoch, int64_t now) const
+{
+    if (states.empty())
+        return true;
+    const NyxRatchet& r = states[0];
+    return !r.fCKs || memcmp(r.localCert, localCert, 32) != 0 || memcmp(r.remoteCert, remoteCert, 32) != 0
+        || r.localEpoch != localEpoch || r.remoteEpoch != remoteEpoch || r.Ns >= NYX_RESYNC_SENDS
+        || (r.fInitiator && !r.fAcked && now - r.created > NYX_HS_RETRY);
+}
+
+bool NyxSeenPrune(std::map<std::string, int64_t>& seen, int64_t now)
+{
+    for (std::map<std::string, int64_t>::iterator it = seen.begin(); it != seen.end();)
+        if (now - it->second > NYX_HS_WINDOW)
+            seen.erase(it++);
+        else
+            ++it;
+    return seen.size() < NYX_SEEN_MAX;
+}
+
+size_t NyxHeldEvict(const std::vector<NyxHeldTag>& q, const NyxHeldTag& t)
+{
+    size_t nSender = 0, nUnpinned = 0, firstSender = q.size(), firstUnpinned = q.size();
+    for (size_t i = 0; i < q.size(); ++i)
+    {
+        if (q[i].sender == t.sender && nSender++ == 0)
+            firstSender = i;
+        if (q[i].fUnpinned && nUnpinned++ == 0)
+            firstUnpinned = i;
+    }
+    if (nSender >= NYX_HELD_PER_SENDER)
+        return firstSender;
+    if (t.fUnpinned && nUnpinned >= NYX_HELD_UNPINNED_MAX)
+        return firstUnpinned;
+    if (q.size() >= NYX_HELD_MAX)
+        return firstUnpinned < q.size() ? firstUnpinned : 0;
+    return q.size();
 }
 
 // ---------------------------------------------------------------- handshake
@@ -631,8 +710,13 @@ bool NyxHsInitiate(const NyxLocalSide& me, const NyxPeerSide& peer, const NyxBun
     }
     if (!b.opks.empty())
     {
-        hs.opkId = b.opks[0].first;
-        if (b.opks[0].second.size() != 32 || !Dh(ekSk.b, &b.opks[0].second[0], dh.b + 96))
+        // Random pick: initiators working from one bundle rarely collide on a single-use key.
+        uint32_t pick = 0;
+        if (nyx_random((uint8_t*)&pick, 4) != 0)
+            return false;
+        const std::pair<uint32_t, NyxBytes>& opk = b.opks[pick % b.opks.size()];
+        hs.opkId = opk.first;
+        if (opk.second.size() != 32 || !Dh(ekSk.b, &opk.second[0], dh.b + 96))
         {
             sError = "bad one-time prekey";
             return false;
@@ -663,6 +747,10 @@ bool NyxHsInitiate(const NyxLocalSide& me, const NyxPeerSide& peer, const NyxBun
     memcpy(out.remoteAddr, cB.addrHash, 20);
     memcpy(out.remoteDev, cB.deviceId, 16);
     memcpy(out.localDev, d.deviceId, 16);
+    memcpy(out.localCert, me.certHash, 32);
+    memcpy(out.remoteCert, peer.certHash, 32);
+    out.localEpoch = me.epoch;
+    out.remoteEpoch = peer.epoch;
     out.fInitiator = true;
     out.fOpk = nDh == 4;
     out.hsFixed = hs.Fixed();
@@ -770,6 +858,10 @@ bool NyxHsRespond(const NyxLocalSide& me, const NyxPeerSide& peer, const NyxHand
     memcpy(out.remoteAddr, hs.addrA, 20);
     memcpy(out.remoteDev, hs.devA, 16);
     memcpy(out.localDev, d.deviceId, 16);
+    memcpy(out.localCert, me.certHash, 32);
+    memcpy(out.remoteCert, peer.certHash, 32);
+    out.localEpoch = me.epoch;
+    out.remoteEpoch = peer.epoch;
     out.fInitiator = false;
     out.fAcked = true;
     out.fOpk = nDh == 4;

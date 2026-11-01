@@ -14,6 +14,7 @@
 #include <boost/lexical_cast.hpp>
 
 #include <algorithm>
+#include <set>
 #include <string.h>
 
 namespace {
@@ -227,7 +228,7 @@ BOOST_AUTO_TEST_CASE(kdf_known_answers)
     BOOST_CHECK(NyxBytes(out, out + 96) == Unhex("ee704f4efa7cd913a6c2fa7b2571747d6a37a723cd5247cd05342449e98bf127a97aa90126719b68031fa0223bf2467d53ee83c026f231087f900c6dd7ab0584a0a20a2f076d80a3dc3b439e10fe776f60a38e710f4c7088cd0e8b6eb71a8855"));
     uint8_t ck[32], ck2[32], mk[32];
     memset(ck, 0x99, 32);
-    NyxKdfCk(ck, ck2, mk);
+    BOOST_REQUIRE(NyxKdfCk(ck, ck2, mk));
     BOOST_CHECK(NyxBytes(ck2, ck2 + 32) == Unhex("bf31bdf94033a36e200122fcff5867bc4d679a13e25cc494d7a20247a59f0920"));
     BOOST_CHECK(NyxBytes(mk, mk + 32) == Unhex("2003bde44a17989c6e951d99339e75d1d213cc4617b106d66e9ca686e8f7f884"));
 }
@@ -507,16 +508,20 @@ BOOST_AUTO_TEST_CASE(opk_single_use_and_spk_rotation)
     NyxBytes pt;
     const NyxBundle b1 = p.b.Bundle();
     BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("x"), pt), NYX_DR_OK);
-    // A second initiator using the same (now consumed) OPK is refused.
+    // A second initiator that picks the same (now consumed) OPK is refused.
     NyxRatchet r;
     std::string err;
-    BOOST_REQUIRE(NyxHsInitiate(p.a.Local(), PeerOf(p.pinB), b1, T0 + 40, r, err));
-    NyxSession s2;
-    s2.Push(r);
-    NyxBytes h2;
-    BOOST_REQUIRE(NyxSessionSeal(s2.states[0], Pt("reuse"), T0 + 40, h2));
     NyxHandshake hs;
-    BOOST_REQUIRE_EQUAL(NyxParseHandshake(&h2[0], h2.size(), hs), 0);
+    for (int i = 0; i < 400; ++i)
+    {
+        BOOST_REQUIRE(NyxHsInitiate(p.a.Local(), PeerOf(p.pinB), b1, T0 + 40, r, err));
+        NyxBytes h2;
+        BOOST_REQUIRE(NyxSessionSeal(r, Pt("reuse"), T0 + 40, h2));
+        BOOST_REQUIRE_EQUAL(NyxParseHandshake(&h2[0], h2.size(), hs), 0);
+        if (hs.opkId == p.opkUsed)
+            break;
+    }
+    BOOST_REQUIRE_EQUAL(hs.opkId, p.opkUsed);
     uint32_t opk;
     NyxRatchet rb;
     BOOST_CHECK(!NyxHsRespond(p.b.Local(), PeerOf(p.pinA), hs, T0 + 41, rb, opk, err));
@@ -579,6 +584,146 @@ BOOST_AUTO_TEST_CASE(persistence_across_restart)
     BOOST_CHECK(!NyxSession().Deserialize(bad.substr(0, bad.size() - 1)));
     bad[1] = 9;
     BOOST_CHECK(!NyxSession().Deserialize(bad));
+}
+
+BOOST_AUTO_TEST_CASE(initiators_spread_over_one_time_prekeys)
+{
+    Pair p;
+    const NyxBundle b = p.b.Bundle();
+    BOOST_REQUIRE_EQUAL(b.opks.size(), (size_t)NYX_OPK_TARGET);
+    std::set<uint32_t> ids;
+    for (int i = 0; i < 24; ++i)
+    {
+        NyxRatchet r;
+        std::string err;
+        BOOST_REQUIRE(NyxHsInitiate(p.a.Local(), PeerOf(p.pinB), b, T0 + 10, r, err));
+        NyxHandshake hs;
+        NyxBytes body;
+        BOOST_REQUIRE(NyxSessionSeal(r, Pt("x"), T0 + 10, body));
+        BOOST_REQUIRE_EQUAL(NyxParseHandshake(&body[0], body.size(), hs), 0);
+        ids.insert(hs.opkId);
+    }
+    BOOST_CHECK_GT(ids.size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(session_bound_to_certs_and_epochs)
+{
+    Pair p;
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("x"), pt), NYX_DR_OK);
+    const NyxPeerSide pb = PeerOf(p.pinB), pa = PeerOf(p.pinA);
+    const NyxLocalSide la = p.a.Local(), lb = p.b.Local();
+    BOOST_CHECK(memcmp(p.sa.states[0].remoteCert, pb.certHash, 32) == 0);
+    BOOST_CHECK(memcmp(p.sa.states[0].localCert, la.certHash, 32) == 0);
+    BOOST_CHECK(memcmp(p.sb.states[0].remoteCert, pa.certHash, 32) == 0);
+    BOOST_CHECK(memcmp(p.sb.states[0].localCert, lb.certHash, 32) == 0);
+    BOOST_CHECK_EQUAL(p.sb.states[0].remoteEpoch, pa.epoch);
+    NyxSession s2;
+    BOOST_REQUIRE(s2.Deserialize(p.sb.Serialize()));
+    BOOST_CHECK(memcmp(s2.states[0].remoteCert, pa.certHash, 32) == 0);
+
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack"), pt), NYX_DR_OK);
+    const int64_t t = T0 + 40;
+    BOOST_CHECK(!p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, t));
+    uint8_t other[32];
+    memset(other, 0xAB, 32);
+    BOOST_CHECK(p.sa.NeedsHandshake(other, la.epoch, pb.certHash, pb.epoch, t));
+    BOOST_CHECK(p.sa.NeedsHandshake(la.certHash, la.epoch, other, pb.epoch, t));
+    BOOST_CHECK(p.sa.NeedsHandshake(la.certHash, la.epoch + 1, pb.certHash, pb.epoch, t));
+    BOOST_CHECK(p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch + 1, t));
+    BOOST_CHECK(NyxSession().NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, t));
+}
+
+BOOST_AUTO_TEST_CASE(unanswered_sessions_restart_the_handshake)
+{
+    Pair p;
+    const NyxLocalSide la = p.a.Local();
+    const NyxPeerSide pb = PeerOf(p.pinB);
+    // Unacked: a new handshake after NYX_HS_RETRY, not after the full window.
+    BOOST_CHECK(!p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, T0 + 10 + NYX_HS_RETRY));
+    BOOST_CHECK(p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, T0 + 11 + NYX_HS_RETRY));
+
+    // Acked, but the peer lost its state: after NYX_RESYNC_SENDS sends with no reply a new handshake starts.
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("x"), pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("y"), pt), NYX_DR_OK);
+    for (uint32_t i = 0; i + 1 < NYX_RESYNC_SENDS; ++i)
+        p.FromA("z");
+    BOOST_CHECK(!p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, T0 + 50));
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("z"), pt), NYX_DR_OK);
+    BOOST_CHECK(p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, T0 + 50));
+    // A reply to the new chain resets the count.
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("back"), pt), NYX_DR_OK);
+    BOOST_CHECK(!p.sa.NeedsHandshake(la.certHash, la.epoch, pb.certHash, pb.epoch, T0 + 50));
+}
+
+BOOST_AUTO_TEST_CASE(seen_set_covers_the_acceptance_window)
+{
+    std::map<std::string, int64_t> seen;
+    const int64_t now = T0;
+    seen[std::string(32, 'a')] = now + NYX_HS_FUTURE;   // stamped ahead
+    seen[std::string(32, 'b')] = now;
+    BOOST_CHECK(NyxSeenPrune(seen, now + NYX_HS_WINDOW + 1));
+    BOOST_CHECK_EQUAL(seen.size(), 1U);
+    BOOST_CHECK(seen.count(std::string(32, 'a')));
+    BOOST_CHECK(NyxSeenPrune(seen, now + NYX_HS_FUTURE + NYX_HS_WINDOW + 1));
+    BOOST_CHECK(seen.empty());
+
+    // Full of live entries: refused rather than evicting one that could then replay.
+    for (size_t i = 0; i < NYX_SEEN_MAX; ++i)
+        seen[std::string((const char*)&i, sizeof(i)) + std::string(32 - sizeof(i), 'x')] = now;
+    BOOST_CHECK(!NyxSeenPrune(seen, now + 1));
+    BOOST_CHECK_EQUAL(seen.size(), NYX_SEEN_MAX);
+}
+
+BOOST_AUTO_TEST_CASE(held_queue_caps_per_sender_and_unpinned)
+{
+    std::vector<NyxHeldTag> q;
+    NyxHeldTag frozen = {"frozen", false};
+    q.push_back(frozen);
+    // Unpinned junk under random senders fills at most NYX_HELD_UNPINNED_MAX slots.
+    for (int i = 0; i < 100; ++i)
+    {
+        NyxHeldTag t = {"junk" + boost::lexical_cast<std::string>(i), true};
+        const size_t e = NyxHeldEvict(q, t);
+        if (e < q.size())
+            q.erase(q.begin() + e);
+        q.push_back(t);
+    }
+    size_t nUnpinned = 0;
+    for (size_t i = 0; i < q.size(); ++i)
+        nUnpinned += q[i].fUnpinned;
+    BOOST_CHECK_EQUAL(nUnpinned, NYX_HELD_UNPINNED_MAX);
+    BOOST_CHECK(q.front().sender == "frozen");
+
+    // One pinned sender keeps at most NYX_HELD_PER_SENDER.
+    for (int i = 0; i < 100; ++i)
+    {
+        NyxHeldTag t = {"loud", false};
+        const size_t e = NyxHeldEvict(q, t);
+        if (e < q.size())
+            q.erase(q.begin() + e);
+        q.push_back(t);
+    }
+    size_t nLoud = 0;
+    for (size_t i = 0; i < q.size(); ++i)
+        nLoud += q[i].sender == "loud";
+    BOOST_CHECK_EQUAL(nLoud, NYX_HELD_PER_SENDER);
+    BOOST_CHECK(q.front().sender == "frozen");
+    BOOST_CHECK_LE(q.size(), NYX_HELD_MAX);
+}
+
+BOOST_AUTO_TEST_CASE(previous_spk_wiped_after_grace)
+{
+    Party b(NYX_MODE_PQ, false);
+    BOOST_REQUIRE(NyxDeviceRotateSpk(b.dev, T0 + 15, true));
+    BOOST_CHECK(!NyxIsZero(b.dev.prevSpkSk, 32));
+    BOOST_CHECK(!NyxDeviceExpirePrevSpk(b.dev, T0 + 15 + NYX_SPK_GRACE - 1));
+    BOOST_CHECK(!NyxIsZero(b.dev.prevSpkSk, 32));
+    BOOST_CHECK(NyxDeviceExpirePrevSpk(b.dev, T0 + 15 + NYX_SPK_GRACE));
+    BOOST_CHECK(NyxIsZero(b.dev.prevSpkSk, 32));
+    BOOST_CHECK(NyxIsZero(b.dev.prevKemSeed, 64));
+    BOOST_CHECK(!NyxDeviceExpirePrevSpk(b.dev, T0 + 15 + NYX_SPK_GRACE + 1));
 }
 
 BOOST_AUTO_TEST_CASE(envelope_and_parsers)
