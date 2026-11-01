@@ -281,6 +281,9 @@ public:
         nWakeCounter    = 0;
         nPeerId         = 0;
         fEnabled        = false;
+        fV2             = false;
+        nPoGetWindow    = 0;
+        nPoGetCount     = 0;
     };
 
     ~SecMsgNode() {};
@@ -291,6 +294,10 @@ public:
     uint32_t                    nWakeCounter;
     uint32_t                    nPeerId;
     bool                        fEnabled;
+    bool                        fV2;            // peer sent smsgV2
+    int64_t                     nPoGetWindow;
+    uint32_t                    nPoGetCount;
+    std::set<std::string>       setPoWanted;    // addr hashes asked of this peer
 
 };
 
