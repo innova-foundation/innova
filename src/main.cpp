@@ -18556,6 +18556,20 @@ void static ProcessGetData(CNode* pfrom)
 // a large 4-byte int at any alignment.
 unsigned char pchMessageStart[4] = { 0xfa, 0xf4, 0x3f, 0xb7 };
 
+// Header hashes and PoW verdicts, computed without cs_main. Legacy PoS headers carry nNonce == 0,
+// so whether the verdict applies is decided under the lock, where the parent height is known.
+void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
+                     std::vector<char>& vPowOkOut)
+{
+    vHashOut.resize(vHeaders.size());
+    vPowOkOut.resize(vHeaders.size());
+    for (size_t i = 0; i < vHeaders.size(); i++)
+    {
+        vHashOut[i] = vHeaders[i].GetHash();
+        vPowOkOut[i] = CheckProofOfWork(vHashOut[i], vHeaders[i].nBits) ? 1 : 0;
+    }
+}
+
 bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, int64_t nTimeReceived)
 {
     static map<CService, CPubKey> mapReuseKey;
@@ -19185,6 +19199,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return error("headers message size > 2000");
         }
 
+        std::vector<uint256> vHeaderHash;
+        std::vector<char> vHeaderPowOk;
+        PrecheckHeaders(vHeaders, vHeaderHash, vHeaderPowOk);
+
         LOCK(cs_main);
 
         if (fDebug)
@@ -19202,9 +19220,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         const bool fFillPeer = !fSPVMode && IsOrphanGapGatedPeer(pfrom->GetId());
         std::vector<uint256> vFill;
         bool fFillOpen = fFillPeer;
-        for (const CBlock& header : vHeaders)
+        for (size_t nHeader = 0; nHeader < vHeaders.size(); nHeader++)
         {
-            uint256 hash = header.GetHash();
+            const CBlock& header = vHeaders[nHeader];
+            const uint256& hash = vHeaderHash[nHeader];
 
             if (mapBlockIndex.count(hash))
             {
@@ -19241,13 +19260,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
             // PoS blocks have nNonce==0 in legacy headers, but post-DAG all
             // headers must be valid PoW headers.
-            if (nHeaderHeight >= FORK_HEIGHT_DAG || header.nNonce != 0)
+            if ((nHeaderHeight >= FORK_HEIGHT_DAG || header.nNonce != 0) && !vHeaderPowOk[nHeader])
             {
-                if (!CheckProofOfWork(hash, header.nBits))
-                {
-                    pfrom->Misbehaving(100, "header invalid proof of work");
-                    return error("header %s has invalid proof of work", hash.ToString().c_str());
-                }
+                pfrom->Misbehaving(100, "header invalid proof of work");
+                return error("header %s has invalid proof of work", hash.ToString().c_str());
             }
 
             if (header.GetBlockTime() > FutureDrift(GetAdjustedTime()))

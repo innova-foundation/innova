@@ -82,4 +82,26 @@ BOOST_AUTO_TEST_CASE(ibd_commits_sync_per_batch_or_time_slice)
     BOOST_CHECK(IBDBatchShouldSync(true, 3, 10000, 500, 10000));
 }
 
+BOOST_AUTO_TEST_CASE(header_prechecks_run_without_the_index)
+{
+    BOOST_REQUIRE(pindexGenesisBlock != NULL);
+    const CBlock genesis = pindexGenesisBlock->GetBlockHeader();
+    std::vector<CBlock> vHeaders(2000, genesis);
+    vHeaders[1].nBits = 0x01010000;
+    std::vector<uint256> vHash;
+    std::vector<char> vPowOk;
+
+    const int64_t nStart = GetTimeMicros();
+    PrecheckHeaders(vHeaders, vHash, vPowOk);
+    const int64_t nElapsed = GetTimeMicros() - nStart;
+    BOOST_TEST_MESSAGE("PrecheckHeaders: 2000 headers in " << nElapsed << " us");
+
+    BOOST_REQUIRE_EQUAL(vHash.size(), 2000U);
+    BOOST_REQUIRE_EQUAL(vPowOk.size(), 2000U);
+    BOOST_CHECK(vHash[0] == genesis.GetHash());
+    BOOST_CHECK(vHash[1] == vHeaders[1].GetHash());
+    BOOST_CHECK_EQUAL(vPowOk[0] != 0, CheckProofOfWork(vHash[0], genesis.nBits));
+    BOOST_CHECK(!vPowOk[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
