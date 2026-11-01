@@ -13,6 +13,7 @@
 #include "nyxsafety.h"
 #include "nyxext.h"
 #include "nyxgroup.h"
+#include "nyxidentity.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -1132,6 +1133,83 @@ static Value nyx_v2(const Array& params, const std::string& sub)
     throw runtime_error("Unknown nyx subcommand: " + sub);
 }
 
+static uint8_t NyxModeArg(const Array& params, size_t i)
+{
+    if (params.size() <= i || params[i].get_str() == "pq")
+        return NYX_MODE_PQ;
+    if (params[i].get_str() == "classical")
+        return NYX_MODE_CLASSICAL;
+    throw runtime_error("mode must be pq or classical");
+}
+
+static Value nyx_identity(const Array& params, const std::string& sub)
+{
+    std::string sError;
+    bool fOk = false;
+    Object o;
+    const std::string op = params.size() > 1 ? params[1].get_str() : "";
+    if (sub == "keyring")
+    {
+        static const char* usage =
+            "nyx keyring init <address> [pq|classical]   First device for the address (default pq)\n"
+            "nyx keyring show <address>                   This node's device and keyring\n"
+            "nyx keyring contact <address>                Fetch, verify and pin a contact's keyring\n"
+            "nyx keyring accept <address> [downgrade]     Accept a contact's identity reset\n"
+            "nyx keyring reset <address> [pq|classical]   Replace every device (epoch + 1)\n"
+            "nyx keyring confirm <address>                Resolve a keyring conflict or clone alarm on this device";
+        if (params.size() < 3)
+            throw runtime_error(usage);
+        const std::string addr = params[2].get_str();
+        if (op == "init")
+            fOk = NyxIdKeyringInit(addr, NyxModeArg(params, 3), o, sError);
+        else if (op == "show")
+            fOk = NyxIdKeyringShow(addr, o, sError);
+        else if (op == "contact")
+            fOk = NyxIdContact(addr, o, sError);
+        else if (op == "accept")
+            fOk = NyxIdAcceptReset(addr, params.size() > 3 && params[3].get_str() == "downgrade", o, sError);
+        else if (op == "reset")
+            fOk = NyxIdKeyringReset(addr, NyxModeArg(params, 3), o, sError);
+        else if (op == "confirm")
+            fOk = NyxIdKeyringConfirm(addr, o, sError);
+        else
+            throw runtime_error(usage);
+    }
+    else if (sub == "devices")
+    {
+        if (params.size() != 2)
+            throw runtime_error("nyx devices <address>");
+        Array a;
+        if (!NyxIdDevices(params[1].get_str(), a, sError))
+            throw JSONRPCError(-13, sError);
+        return a;
+    }
+    else
+    {
+        static const char* usage =
+            "nyx device pair <address> [pq|classical]     New node: create keys and print a pairing request\n"
+            "nyx device approve <address> <request>       Existing device: sign the new device in (keyring seq + 1)\n"
+            "nyx device install <address> <cert>          New node: install the approved cert and publish its bundle\n"
+            "nyx device revoke <address> <deviceid>       Remove a device (keyring seq + 1)";
+        if (params.size() < 3)
+            throw runtime_error(usage);
+        const std::string addr = params[2].get_str();
+        if (op == "pair")
+            fOk = NyxIdPairRequest(addr, NyxModeArg(params, 3), o, sError);
+        else if (op == "approve" && params.size() == 4)
+            fOk = NyxIdApprove(addr, params[3].get_str(), o, sError);
+        else if (op == "install" && params.size() == 4)
+            fOk = NyxIdInstall(addr, params[3].get_str(), o, sError);
+        else if (op == "revoke" && params.size() == 4)
+            fOk = NyxIdRevoke(addr, params[3].get_str(), o, sError);
+        else
+            throw runtime_error(usage);
+    }
+    if (!fOk)
+        throw JSONRPCError(-13, sError);
+    return o;
+}
+
 Value nyx(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
@@ -1176,6 +1254,10 @@ Value nyx(const Array& params, bool fHelp)
             "  v2publish <hex>             Publish a public object body\n"
             "  poget <address|hash160>     Ask v2 peers for an address's public objects\n"
             "  polist                      Stored public objects\n"
+            "\nv2 identity (-nyxv2=1):\n"
+            "  keyring init|show|contact|accept|reset|confirm <address> ...\n"
+            "  devices <address>           Live devices of an address\n"
+            "  device pair|approve|install|revoke <address> ...\n"
         );
 
     std::string subcmd = params[0].get_str();
@@ -1201,6 +1283,8 @@ Value nyx(const Array& params, bool fHelp)
     if (subcmd == "disable")     return nyx_disable(params);
     if (subcmd == "status")      return nyx_status(params);
     if (subcmd == "peers")       return nyx_peers(params);
+    if (subcmd == "keyring" || subcmd == "devices" || subcmd == "device")
+        return nyx_identity(params, subcmd);
     if (subcmd.compare(0, 2, "v2") == 0 || subcmd == "poget" || subcmd == "polist")
         return nyx_v2(params, subcmd);
 
