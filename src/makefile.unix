@@ -924,6 +924,12 @@ innova-cli: $(CLI_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
 test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) -lboost_unit_test_framework $(DARWIN_FRAMEWORKS)
 
+# SecureMsgValidate needs the node objects; only the harness itself is instrumented.
+FUZZ_SMSG_VALIDATE_BIN ?= fuzz_smsg_validate
+
+fuzz-smsg-validate-libfuzzer: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(PRIVACY_VNEXT_RUST_LIB)
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_SMSG_VALIDATE_BIN) test/fuzz/fuzz_smsg_validate.cpp $^ $(xLDFLAGS) $(LIBS)
+
 clean:
 	rm -f innovad
 	rm -f innova-cli

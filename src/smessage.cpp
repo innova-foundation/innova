@@ -31,6 +31,7 @@ Notes:
 
 #include <stdint.h>
 #include <time.h>
+#include <deque>
 #include <map>
 #include <stdexcept>
 #include <sstream>
@@ -110,6 +111,8 @@ static std::set<std::string> setPoRelayed;
 static std::vector<NyxV2Delivered> vNyxDelivered;
 static std::set<std::string> setNyxDelivered;
 static const size_t NYX_DELIVERED_KEEP = 256;
+static const size_t NYX_DELIVERED_IDS_MAX = 65536;
+static std::deque<std::pair<int64_t, std::string> > qNyxDelivered;
 
 static int SecureMsgScanV2(unsigned char* pHeader, unsigned char* pPayload, uint32_t nPayload);
 static void SecureMsgV2PublicIntake(CNode* pfrom, unsigned char* pHeader, unsigned char* pPayload, uint32_t nPayload,
@@ -476,6 +479,7 @@ bool SecMsgCrypter::Decrypt(unsigned char* chCiphertext, uint32_t nCipher, std::
 
 std::pair<std::set<SecMsgToken>::iterator, bool> SecMsgBucket::insertToken(const SecMsgToken& token)
 {
+    setRefused.erase(token);
     std::pair<std::set<SecMsgToken>::iterator, bool> r = setTokens.insert(token);
     if (r.second && token.fV2)
         nV2Live++;
@@ -487,6 +491,31 @@ void SecMsgBucket::eraseToken(std::set<SecMsgToken>::iterator it)
     if (it->fV2 && nV2Live > 0)
         nV2Live--;
     setTokens.erase(it);
+}
+
+static const size_t SMSG_REFUSED_MAX = 4096;
+
+bool SecMsgBucket::refuseToken(const SecMsgToken& token)
+{
+    if (fCompacted || setRefused.size() >= SMSG_REFUSED_MAX || setTokens.count(token)
+        || !setRefused.insert(token).second)
+        return false;
+    hashCompare();
+    return true;
+}
+
+void SecMsgBucket::hashCompare()
+{
+    void* state = XXH32_init(1);
+    std::set<SecMsgToken>::const_iterator a = setTokens.begin(), b = setRefused.begin();
+    while (a != setTokens.end() || b != setRefused.end())
+    {
+        if (b == setRefused.end() || (a != setTokens.end() && *a < *b))
+            XXH32_update(state, (a++)->sample, 8);
+        else
+            XXH32_update(state, (b++)->sample, 8);
+    }
+    hashCmp = XXH32_digest(state);
 }
 
 void SecMsgBucket::clearTokens()
@@ -515,6 +544,8 @@ void SecMsgBucket::hashBucket()
     };
 
     hash = XXH32_digest(state);
+    if (!setRefused.empty())
+        hashCompare();
     const uint32_t hashV1New = XXH32_digest(stateV1);
     const uint32_t nV1 = (uint32_t)setTokens.size() - nV2Live;
 
@@ -1963,8 +1994,8 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 // -- if this node has more than the peer node, peer node will pull from this
                 //    if then peer node has more this node will pull fom peer
                 // Use getTokenCount() to work with compacted buckets
-                uint32_t nThisCount = smsgBuckets[time].getTokenCount(!fPeerV2);
-                uint32_t nThisHash = fPeerV2 ? smsgBuckets[time].hash : smsgBuckets[time].hashV1;
+                uint32_t nThisCount = fPeerV2 ? smsgBuckets[time].getCmpCount() : smsgBuckets[time].getTokenCount(true);
+                uint32_t nThisHash = fPeerV2 ? smsgBuckets[time].getCmpHash() : smsgBuckets[time].hashV1;
                 if (nThisCount < ncontent
                     || (nThisCount == ncontent
                         && nThisHash != hash)) // if same amount in buckets check hash
@@ -2124,7 +2155,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 memcpy(&token.sample, p+8, 8);
 
                 it = tokenSet.find(token);
-                if (it == tokenSet.end())
+                if (it == tokenSet.end() && !smsgBuckets[time].setRefused.count(token))
                 {
                     int nd = vchDataOut.size();
                     try {
@@ -4504,6 +4535,14 @@ int SecureMsgReceive(CNode* pfrom, std::vector<unsigned char>& vchData)
         if (psmsg->version[0] == 2 && psmsg->version[1] == 1)
         {
             SecureMsgV2PublicIntake(pfrom, &vchData[n], &vchData[n + SMSG_HDR_LEN], psmsg->nPayload, NULL);
+            {
+                const int64_t ts = psmsg->GetTimestamp();
+                const int64_t bkt = ts - (ts % SMSG_BUCKET_LEN);
+                LOCK(cs_smsg);
+                SecMsgBucket& b = smsgBuckets[bkt];
+                b.expand(bkt);
+                b.refuseToken(SecMsgToken(ts, &vchData[n + SMSG_HDR_LEN], psmsg->nPayload, 0, 1, 1));
+            }
             n += (uint32_t)nDeclared;
             continue;
         };
@@ -6093,8 +6132,16 @@ static void SecureMsgV2Dispatch(const std::string& addrTo, const NyxFrame& f, co
     if (body.empty() || NyxPoIsPublicType(body[0]))
         return;
     const std::string id(addrTo + std::string((const char*)f.msgid, 16));
+    const int64_t now = GetTime();
+    while (!qNyxDelivered.empty()
+           && (qNyxDelivered.size() >= NYX_DELIVERED_IDS_MAX || now - qNyxDelivered.front().first > SMSG_RETENTION))
+    {
+        setNyxDelivered.erase(qNyxDelivered.front().second);
+        qNyxDelivered.pop_front();
+    }
     if (!setNyxDelivered.insert(id).second)
         return;
+    qNyxDelivered.push_back(std::make_pair(now, id));
 
     NyxV2Delivered d;
     d.sAddrTo = addrTo;
@@ -6185,6 +6232,32 @@ static bool NyxPoBodyFromParts(const std::vector<std::vector<unsigned char> >& v
     return !body.empty() && NyxPoParse(&body[0], body.size(), info) == 0;
 }
 
+bool SecureMsgPoDecodeRecord(const std::string& v, NyxPoStore::Record& rec)
+{
+    rec = NyxPoStore::Record();
+    if (v.size() < 9)
+        return false;
+    memcpy(&rec.nLastSeen, v.data(), 8);
+    const unsigned int nParts = (unsigned char)v[8];
+    size_t off = 9;
+    if (nParts < 1 || nParts > NYX_MAX_PARTS)
+        return false;
+    for (unsigned int i = 0; i < nParts; ++i)
+    {
+        uint32_t n;
+        if (v.size() - off < 4)
+            return false;
+        memcpy(&n, v.data() + off, 4);
+        off += 4;
+        if (n > SMSG_HDR_LEN + SMSG_V2_MAX_PAYLOAD || v.size() - off < n)
+            return false;
+        rec.vParts.push_back(std::vector<unsigned char>(v.begin() + off, v.begin() + off + n));
+        off += n;
+    }
+    std::vector<unsigned char> body;
+    return NyxPoBodyFromParts(rec.vParts, body, rec.info);
+}
+
 static void NyxPoLoad()
 {
     std::vector<std::pair<std::string, NyxPoStore::Record> > vLoaded;
@@ -6196,34 +6269,8 @@ static void NyxPoLoad()
         leveldb::Iterator* it = db.pdb->NewIterator(leveldb::ReadOptions());
         for (it->Seek("po"); it->Valid() && it->key().starts_with("po"); it->Next())
         {
-            const std::string v = it->value().ToString();
-            if (v.size() < 9)
-                continue;
             NyxPoStore::Record rec;
-            memcpy(&rec.nLastSeen, v.data(), 8);
-            const unsigned int nParts = (unsigned char)v[8];
-            size_t off = 9;
-            bool fOk = nParts >= 1 && nParts <= NYX_MAX_PARTS;
-            for (unsigned int i = 0; fOk && i < nParts; ++i)
-            {
-                uint32_t n;
-                if (v.size() - off < 4)
-                {
-                    fOk = false;
-                    break;
-                }
-                memcpy(&n, v.data() + off, 4);
-                off += 4;
-                if (n > SMSG_HDR_LEN + SMSG_V2_MAX_PAYLOAD || v.size() - off < n)
-                {
-                    fOk = false;
-                    break;
-                }
-                rec.vParts.push_back(std::vector<unsigned char>(v.begin() + off, v.begin() + off + n));
-                off += n;
-            }
-            std::vector<unsigned char> body;
-            if (fOk && NyxPoBodyFromParts(rec.vParts, body, rec.info))
+            if (SecureMsgPoDecodeRecord(it->value().ToString(), rec))
                 vLoaded.push_back(std::make_pair(it->key().ToString(), rec));
         }
         delete it;
@@ -6232,13 +6279,16 @@ static void NyxPoLoad()
     LOCK(cs_nyxv2);
     for (size_t i = 0; i < vLoaded.size(); ++i)
     {
-        nyxPoStore.Load(vLoaded[i].first, vLoaded[i].second);
         std::vector<unsigned char> body;
         NyxPoInfo info;
-        if (NyxPoBodyFromParts(vLoaded[i].second.vParts, body, info) && NyxPoVerify(body) == NYX_PO_OK)
+        vLoaded[i].second.fVerified = NyxPoBodyFromParts(vLoaded[i].second.vParts, body, info) && NyxPoVerify(body) == NYX_PO_OK;
+        nyxPoStore.Load(vLoaded[i].first, vLoaded[i].second);
+        if (vLoaded[i].second.fVerified)
             setPoRelayed.insert(vLoaded[i].first);
     }
-    nyxPoStore.TakeErased();
+    const std::vector<std::string> vDropped = nyxPoStore.TakeErased();
+    for (size_t i = 0; i < vDropped.size(); ++i)
+        setPoRelayed.erase(vDropped[i]);
 }
 
 // Validated {2,1} part from pfrom (NULL when published locally); cs_smsg held.
@@ -6272,6 +6322,9 @@ static void SecureMsgV2PublicIntake(CNode* pfrom, unsigned char* pHeader, unsign
         return;
     if (pWantAddr && memcmp(pWantAddr->data(), info.addrHash, 20) != 0)
         return;
+    const int64_t nNowPo = GetTime();
+    if (info.ts > (uint64_t)(nNowPo + NYX_PO_TIME_LEEWAY) || (info.expiry && info.expiry <= (uint64_t)nNowPo))
+        return;
 
     std::vector<std::string> vErased;
     bool fRelay;
@@ -6282,7 +6335,7 @@ static void SecureMsgV2PublicIntake(CNode* pfrom, unsigned char* pHeader, unsign
             return;
         fRelay = v == NYX_PO_OK;
         const std::string key = NyxPoStore::Key(info);
-        if (nyxPoStore.Put(info, vRaws, GetTime()))
+        if (nyxPoStore.Put(info, vRaws, GetTime(), fRelay))
         {
             std::vector<const NyxPoStore::Record*> vRec;
             nyxPoStore.Get(info.addrHash, vRec);
@@ -6319,8 +6372,11 @@ static void SecureMsgV2HandlePoGet(CNode* pfrom, const std::vector<unsigned char
     {
         pfrom->smsgData.nPoGetWindow = now;
         pfrom->smsgData.nPoGetCount = 0;
+        pfrom->smsgData.nPoGetBytes = 0;
+        pfrom->smsgData.setPoServed.clear();
     }
-    if (++pfrom->smsgData.nPoGetCount > NYX_PO_GETS_PER_MIN)
+    if (++pfrom->smsgData.nPoGetCount > NYX_PO_GETS_PER_MIN
+        || !pfrom->smsgData.setPoServed.insert(std::string((const char*)&vchData[0], 20)).second)
         return;
 
     std::vector<unsigned char> vchOut(vchData.begin(), vchData.end());
@@ -6350,6 +6406,9 @@ static void SecureMsgV2HandlePoGet(CNode* pfrom, const std::vector<unsigned char
         }
     }
     memcpy(&vchOut[20], &nObj, 4);
+    if (pfrom->smsgData.nPoGetBytes + vchOut.size() > NYX_PO_BYTES_PER_MIN)
+        return;
+    pfrom->smsgData.nPoGetBytes += vchOut.size();
     pfrom->PushMessage("smsgPo", vchOut);
 }
 
@@ -6358,7 +6417,12 @@ static void SecureMsgV2HandlePo(CNode* pfrom, std::vector<unsigned char>& vchDat
     if (vchData.size() < 24 || vchData.size() > 24 + NYX_PO_MAX_MSG)
         return;
     const std::string addr((const char*)&vchData[0], 20);
-    if (!pfrom->smsgData.setPoWanted.erase(addr))
+    std::map<std::string, int64_t>::iterator itWant = pfrom->smsgData.mapPoWanted.find(addr);
+    if (itWant == pfrom->smsgData.mapPoWanted.end())
+        return;
+    const bool fFresh = GetTime() - itWant->second <= NYX_PO_WANTED_TTL;
+    pfrom->smsgData.mapPoWanted.erase(itWant);
+    if (!fFresh)
         return;
 
     uint32_t nObj;
@@ -6384,6 +6448,12 @@ static void SecureMsgV2HandlePo(CNode* pfrom, std::vector<unsigned char>& vchDat
         }
         unsigned char* pHeader = &vchData[off];
         SecureMessage* psmsg = (SecureMessage*)pHeader;
+        const int64_t nTs = psmsg->GetTimestamp(), now = GetTime();
+        if (nTs > now + NYX_PO_TIME_LEEWAY || nTs < now - (int64_t)SMSG_RETENTION)
+        {
+            off += n;
+            continue;
+        }
         if (psmsg->version[0] != 2 || psmsg->version[1] != 1
             || SecureMsgValidate(pHeader, pHeader + SMSG_HDR_LEN, n - SMSG_HDR_LEN) != 0)
             pfrom->Misbehaving(1, "smsgPo invalid object");
@@ -6527,12 +6597,21 @@ int SecureMsgPoGet(const std::vector<unsigned char>& addrHash20)
         return 0;
     int nSent = 0;
     const std::string addr((const char*)&addrHash20[0], 20);
+    const int64_t now = GetTime();
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
     {
         if (!pnode->smsgData.fEnabled || !SecureMsgPeerV2(pnode))
             continue;
-        pnode->smsgData.setPoWanted.insert(addr);
+        std::map<std::string, int64_t>& mWant = pnode->smsgData.mapPoWanted;
+        for (std::map<std::string, int64_t>::iterator it = mWant.begin(); it != mWant.end();)
+            if (now - it->second > NYX_PO_WANTED_TTL)
+                mWant.erase(it++);
+            else
+                ++it;
+        if (!mWant.count(addr) && mWant.size() >= NYX_PO_WANTED_MAX)
+            continue;
+        mWant[addr] = now;
         pnode->PushMessage("smsgPoGet", addrHash20);
         nSent++;
     }

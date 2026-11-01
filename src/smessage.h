@@ -13,6 +13,7 @@
 #include "wallet.h"
 #include "lz4/lz4.h"
 #include "nyxparts.h"
+#include "nyxpo.h"
 
 
 const unsigned int SMSG_HDR_LEN         = 104;               // length of unencrypted header, 4 + 2 + 1 + 8 + 16 + 33 + 32 + 4 +4
@@ -209,6 +210,7 @@ public:
         nLockCount      = 0;
         nLockPeerId     = 0;
         nTokenCount     = 0;
+        hashCmp         = 0;
         fCompacted      = false;
     };
     ~SecMsgBucket() {};
@@ -227,6 +229,9 @@ public:
     std::pair<std::set<SecMsgToken>::iterator, bool> insertToken(const SecMsgToken& token);
     void eraseToken(std::set<SecMsgToken>::iterator it);
     void clearTokens();
+    bool refuseToken(const SecMsgToken& token);
+    uint32_t getCmpCount() const { return getTokenCount() + (uint32_t)setRefused.size(); }
+    uint32_t getCmpHash() const { return setRefused.empty() ? hash : hashCmp; }
 
     int64_t                     timeChanged;
     int64_t                     timeChangedV1;  // last change visible to v1 peers
@@ -235,8 +240,12 @@ public:
     uint32_t                    nLockCount;     // set when smsgWant first sent, unset at end of smsgMsg, ticks down in ThreadSecureMsg()
     uint32_t                    nLockPeerId;    // id of peer that bucket is locked for
     std::set<SecMsgToken>       setTokens;
+    std::set<SecMsgToken>       setRefused;     // public parts received but not held; count as seen in inv comparison
+    uint32_t                    hashCmp;        // hash over setTokens and setRefused
 
 private:
+    void hashCompare();
+
     uint32_t                    nTokenCount;    // Token count when compacted (memory optimization)
     uint32_t                    nTokenCountV1;
     uint32_t                    nV2Live;
@@ -601,6 +610,8 @@ struct NyxPoListEntry
     bool fRelayed;
 };
 void SecureMsgPoList(std::vector<NyxPoListEntry>& out);
+/** Decode one persisted public object record; false on any bound or parse failure. */
+bool SecureMsgPoDecodeRecord(const std::string& v, NyxPoStore::Record& rec);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 
 int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string& addressTo, std::string& message, int64_t nTimestamp = 0);

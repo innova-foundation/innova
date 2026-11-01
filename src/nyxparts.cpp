@@ -129,15 +129,23 @@ void NyxReassembler::Drop(std::map<Key, Set>::iterator it)
     sets.erase(it);
 }
 
-bool NyxReassembler::EvictOldest(const std::string* pOwner, const Key& keep)
+bool NyxReassembler::EvictWeakest(const std::string* pOwner, const Key& keep)
 {
     std::map<Key, Set>::iterator best = sets.end();
     for (std::map<Key, Set>::iterator it = sets.begin(); it != sets.end(); ++it)
     {
         if (it->first == keep || (pOwner && it->first.first != *pOwner))
             continue;
-        if (best == sets.end() || it->second.nFirstSeen < best->second.nFirstSeen
-            || (it->second.nFirstSeen == best->second.nFirstSeen && it->second.nSeq < best->second.nSeq))
+        if (best == sets.end())
+        {
+            best = it;
+            continue;
+        }
+        // Least complete first, then oldest.
+        const uint64_t a = (uint64_t)it->second.parts.size() * best->second.nCount;
+        const uint64_t b = (uint64_t)best->second.parts.size() * it->second.nCount;
+        if (a < b || (a == b && (it->second.nFirstSeen < best->second.nFirstSeen
+            || (it->second.nFirstSeen == best->second.nFirstSeen && it->second.nSeq < best->second.nSeq))))
             best = it;
     }
     if (best == sets.end())
@@ -161,7 +169,7 @@ NyxAddResult NyxReassembler::Add(const std::string& owner, const NyxFrame& f, in
         if (limits.nOwnerSets == 0)
             return NYX_RA_REFUSED;
         while (OwnerSetCount(owner) >= limits.nOwnerSets)
-            if (!EvictOldest(&owner, k))
+            if (!EvictWeakest(&owner, k))
                 return NYX_RA_REFUSED;
         Set s;
         s.nCount = f.partCount;
@@ -197,13 +205,13 @@ NyxAddResult NyxReassembler::Add(const std::string& owner, const NyxFrame& f, in
     nNodeBytes += nAdd;
 
     while (OwnerBytes(owner) > limits.nOwnerBytes)
-        if (!EvictOldest(&owner, k))
+        if (!EvictWeakest(&owner, k))
         {
             Drop(sets.find(k));
             return NYX_RA_REFUSED;
         }
     while (nNodeBytes > limits.nNodeBytes)
-        if (!EvictOldest(NULL, k))
+        if (!EvictWeakest(NULL, k))
         {
             Drop(sets.find(k));
             return NYX_RA_REFUSED;
