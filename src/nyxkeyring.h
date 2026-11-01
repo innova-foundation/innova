@@ -42,9 +42,11 @@ struct NyxRelayHeld
     std::vector<NyxBytes> keyringHashes;       // SHA256 of each keyring body
     std::map<std::string, NyxCert> certs;      // verified certs by deviceId
     std::map<std::string, NyxBytes> certHashes;
-    std::set<std::string> revoked;             // cumulative for the highest epoch
+    std::set<std::string> revoked;             // extra revocations; chain revocations are derived
 };
 
+/** held.revoked plus revocations shared by every highest-epoch branch tip. */
+std::set<std::string> NyxRelayRevoked(const NyxRelayHeld& held);
 /** NYX_PO_OK, NYX_PO_UNVERIFIED (store, do not relay) or NYX_PO_BAD for one public body against what a relay holds. */
 int NyxRelayVerify(const NyxRelayHeld& held, const NyxBytes& body);
 

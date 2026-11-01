@@ -21,6 +21,9 @@
 #include <openssl/sha.h>
 
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <boost/filesystem.hpp>
 #include <string>
 #include <vector>
 
@@ -1362,7 +1365,7 @@ BOOST_AUTO_TEST_CASE(po_relay_verifies_identity_chain)
     BOOST_CHECK(!PoListed(junk, fRelayed));
 }
 
-BOOST_AUTO_TEST_CASE(po_expiry_prunes_revocation_sets)
+BOOST_AUTO_TEST_CASE(po_revocation_state_is_bounded)
 {
     V2Guard g(true);
     std::string sError;
@@ -1387,11 +1390,40 @@ BOOST_AUTO_TEST_CASE(po_expiry_prunes_revocation_sets)
     BOOST_REQUIRE(NyxBuildKeyring(kr, key, NULL));
     BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(cert, sError) == 0, sError);
     BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(kr.Serialize(), sError) == 0, sError);
-    BOOST_REQUIRE(SecureMsgPoRevokedHeld(addr));
+    // Each successor revokes 16 fresh ids; relay state stays bounded by the kept window.
+    NyxKeyring prev = kr;
+    for (uint32_t n = 0; n < 20; ++n)
+    {
+        NyxKeyring next = prev;
+        next.seq = prev.seq + 1;
+        NyxHash(prev.Serialize(), next.prevHash);
+        next.revoked.clear();
+        for (unsigned int j = 0; j < NYX_KR_MAX_REVOKED; ++j)
+        {
+            uint8_t id[16];
+            GetRandBytes(id, 16);
+            next.revoked.push_back(std::string((const char*)id, 16));
+        }
+        BOOST_REQUIRE(NyxBuildKeyring(next, key, &d));
+        BOOST_REQUIRE_MESSAGE(SecureMsgV2PublishPublic(next.Serialize(), sError) == 0, sError);
+        prev = next;
+    }
+    std::vector<NyxPoListEntry> v;
+    SecureMsgPoList(v);
+    const std::string sAddr = HexStr(addr, addr + 20);
+    uint32_t top = 0;
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i].addrHash == sAddr && v[i].type == NYX_PO_KEYRING)
+            top = std::max(top, v[i].seq);
+    BOOST_CHECK_EQUAL(top, 21U);
+    const size_t nRev = SecureMsgPoRevokedCount(addr);
+    BOOST_CHECK(nRev > 0);
+    BOOST_CHECK(nRev <= (size_t)NYX_KR_MAX_SEQ_JUMP * NYX_KR_MAX_REVOKED);
+    BOOST_CHECK(nRev < 20 * NYX_KR_MAX_REVOKED);
     SecureMsgPoExpire(GetTime() + NYX_PO_KEEP + 1);
     bool fRelayed = false;
     BOOST_CHECK(!PoListed(kr.Serialize(), fRelayed));
-    BOOST_CHECK(!SecureMsgPoRevokedHeld(addr));
+    BOOST_CHECK_EQUAL(SecureMsgPoRevokedCount(addr), 0U);
 }
 
 namespace {
@@ -1425,6 +1457,15 @@ BOOST_AUTO_TEST_CASE(wallet_encryption_wraps_storage_key)
     for (int i = 0; i < 32; ++i)
         sk[i] = (uint8_t)(0xa0 + i);
     SetSkRecord(std::string(1, (char)0) + std::string((const char*)sk, 32));
+    const std::string devKey = std::string("nyd") + std::string(20, '\x5c');
+    std::string sealed, plain;
+    BOOST_REQUIRE(NyxStoreSeal(sk, devKey, "device secrets", sealed));
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        BOOST_REQUIRE(db.Open("cw"));
+        BOOST_REQUIRE(db.pdb->Put(leveldb::WriteOptions(), devKey, sealed).ok());
+    }
 
     EncKeyStore ks;
     CKey k;
@@ -1443,7 +1484,26 @@ BOOST_AUTO_TEST_CASE(wallet_encryption_wraps_storage_key)
     uint8_t out[32];
     std::string newRec, err;
     BOOST_REQUIRE(NyxStorageKeyResolve(&ks, rec, out, newRec, err));
-    BOOST_CHECK(memcmp(out, sk, 32) == 0);
+    BOOST_CHECK(memcmp(out, sk, 32) != 0);
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        BOOST_REQUIRE(db.Open("cw"));
+        BOOST_REQUIRE(db.pdb->Get(leveldb::ReadOptions(), devKey, &sealed).ok());
+        db.pdb->Delete(leveldb::WriteOptions(), devKey);
+    }
+    BOOST_CHECK(!NyxStoreOpen(sk, devKey, sealed, plain));
+    BOOST_REQUIRE(NyxStoreOpen(out, devKey, sealed, plain));
+    BOOST_CHECK_EQUAL(plain, "device secrets");
+    // The old plaintext key is gone from every log and table file.
+    const std::string needle((const char*)sk, 32);
+    boost::filesystem::path dir = GetDataDir() / "smsgDB";
+    for (boost::filesystem::directory_iterator it(dir), end; it != end; ++it)
+    {
+        std::ifstream f(it->path().string().c_str(), std::ios::binary);
+        const std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        BOOST_CHECK_MESSAGE(data.find(needle) == std::string::npos, it->path().string());
+    }
 
     if (fHad)
         SetSkRecord(saved);
