@@ -42,6 +42,7 @@ int nyx_mldsa65_verify(const uint8_t* pk, const uint8_t* msg, size_t len, const 
 int nyx_x25519_keygen(uint8_t* out_secret, uint8_t* out_public);
 int nyx_x25519(const uint8_t* sk, const uint8_t* pk, uint8_t* out);
 
+/* out may equal pt (in place); no other overlap. */
 int nyx_aead_seal(const uint8_t* key, const uint8_t* nonce, const uint8_t* ad, size_t ad_len,
                   const uint8_t* pt, size_t pt_len, uint8_t* out);
 int nyx_aead_open(const uint8_t* key, const uint8_t* nonce, const uint8_t* ad, size_t ad_len,

@@ -107,7 +107,7 @@ struct NyxPinInput
 /** Apply every keyring and cert the network holds for pin.addrHash; returns NyxPinFlag bits. */
 int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now);
 /** One-click accept of a pending identity reset; a classical reset after PQ also needs fAllowDowngrade. */
-bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, std::string& sError);
+bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, int64_t now, std::string& sError);
 /** Devices whose certs are unexpired at now. */
 std::vector<std::string> NyxPinUsable(const NyxPin& pin, int64_t now);
 bool NyxPinCanSend(const NyxPin& pin);

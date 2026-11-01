@@ -6392,6 +6392,9 @@ static void NyxPoReverify(const uint8_t addrHash[20], int64_t nNow,
         for (size_t i = 0; i < vRec.size(); ++i)
             if (!vRec[i]->fVerified)
                 vTry.push_back(std::make_pair(vRec[i]->info, vRec[i]->vParts));
+        // The held view is rebuilt only after the store changed, not per candidate.
+        NyxRelayHeld held;
+        bool fHeld = false;
         for (size_t i = 0; i < vTry.size(); ++i)
         {
             std::vector<unsigned char> body;
@@ -6399,7 +6402,21 @@ static void NyxPoReverify(const uint8_t addrHash[20], int64_t nNow,
             const std::string key = NyxPoStore::Key(vTry[i].first);
             if (!NyxPoBodyFromParts(vTry[i].second, body, info))
                 continue;
-            const int v = NyxPoContextVerify(body, addrHash);
+            int v;
+            if (NyxPoHookInstalled())
+                v = NyxPoVerify(body);
+            else
+            {
+                if (!fHeld)
+                {
+                    held = NyxRelayHeld();
+                    NyxPoHeld(addrHash, held);
+                    fHeld = true;
+                }
+                v = NyxRelayVerify(held, body);
+            }
+            if (v != NYX_PO_UNVERIFIED)
+                fHeld = false;
             if (v == NYX_PO_BAD)
             {
                 nyxPoStore.Remove(key);

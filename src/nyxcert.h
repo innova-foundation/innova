@@ -47,6 +47,7 @@ struct NyxCert
     bool HasSigner() const;
     /** Bytes the address signature covers (tag excluded). */
     NyxBytes Fields() const;
+    NyxBytes Signed() const;     // Fields() + signerId: what addrSig covers
     NyxBytes Serialize() const;
 };
 
@@ -74,6 +75,7 @@ struct NyxKeyring
     bool IsLive(const uint8_t id[16]) const;
     const NyxKeyringEntry* Find(const uint8_t id[16]) const;
     NyxBytes Fields() const;
+    NyxBytes Signed() const;
     NyxBytes Serialize() const;
 };
 

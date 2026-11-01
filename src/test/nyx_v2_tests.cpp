@@ -218,10 +218,11 @@ std::vector<uint8_t> Keyring(uint8_t addrSeed, uint32_t seq, uint8_t mode, uint8
 
 std::vector<uint8_t> Bundle(uint8_t addrSeed, bool fPq, uint8_t nOpk)
 {
-    std::vector<uint8_t> b(85, 0);
+    std::vector<uint8_t> b(86, 0);
     b[0] = NYX_PO_BUNDLE;
+    b[1] = fPq ? 1 : 0;
     for (int i = 0; i < 20; ++i)
-        b[1 + i] = (uint8_t)(addrSeed + i);
+        b[2 + i] = (uint8_t)(addrSeed + i);
     if (fPq)
         b.resize(b.size() + 4 + 1184, 0x55);
     b.push_back(nOpk);
@@ -977,10 +978,10 @@ BOOST_AUTO_TEST_CASE(po_parse_bounds)
     BOOST_CHECK(NyxPoParse(&kr[0], kr.size(), info) != 0);
 
     std::vector<uint8_t> bu = Bundle(4, false, 8);
-    BOOST_CHECK_EQUAL(bu.size(), 439U);
+    BOOST_CHECK_EQUAL(bu.size(), 440U);
     BOOST_CHECK_EQUAL(NyxPoParse(&bu[0], bu.size(), info), 0);
     bu = Bundle(4, true, 8);
-    BOOST_CHECK_EQUAL(bu.size(), 4871U);
+    BOOST_CHECK_EQUAL(bu.size(), 4872U);
     BOOST_CHECK_EQUAL(NyxPoParse(&bu[0], bu.size(), info), 0);
     bu = Bundle(4, false, 9);
     BOOST_CHECK(NyxPoParse(&bu[0], bu.size(), info) != 0);
