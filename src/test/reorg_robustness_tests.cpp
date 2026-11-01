@@ -26,4 +26,12 @@ BOOST_AUTO_TEST_CASE(startup_check_depth_bounds)
     BOOST_CHECK_EQUAL(nDepth, 100);
 }
 
+BOOST_AUTO_TEST_CASE(startup_check_failure_names_height_and_resync)
+{
+    std::string str = StartupCheckFailureMessage(7883137);
+    BOOST_CHECK(str.find("7883137") != std::string::npos);
+    BOOST_CHECK(str.find("resync") != std::string::npos);
+    BOOST_CHECK(str.find("txleveldb") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

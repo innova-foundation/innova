@@ -3652,6 +3652,8 @@ static CBlockIndex *InsertBlockIndex(uint256 hash)
     return pindexNew;
 }
 
+std::string strLoadBlockIndexError;
+
 void ClampStartupCheck(int& nLevel, int& nDepth, int nBestHeight)
 {
     if (nLevel < 0)
@@ -3662,6 +3664,13 @@ void ClampStartupCheck(int& nLevel, int& nDepth, int nBestHeight)
         nDepth = nBestHeight;
     if (nDepth > nBestHeight)
         nDepth = nBestHeight;
+}
+
+std::string StartupCheckFailureMessage(int nHeight)
+{
+    return strprintf("Startup block check found a bad block at height %d. "
+                     "The chain database is damaged; resync it: stop the node, delete txleveldb "
+                     "and the blk*.dat files from the data directory (keep wallet.dat), then restart.", nHeight);
 }
 
 bool CTxDB::LoadBlockIndex()
@@ -3837,6 +3846,7 @@ bool CTxDB::LoadBlockIndex()
     ReadBestInvalidTrust(bnBestInvalidTrust);
     nBestInvalidTrust = bnBestInvalidTrust.getuint256();
 
+    strLoadBlockIndexError.clear();
     // Verify blocks in the best chain
     int nCheckLevel = GetArg("-checklevel", 1);
     int nCheckDepth = GetArg("-checkblocks", DEFAULT_CHECKBLOCKS);
@@ -3876,13 +3886,8 @@ bool CTxDB::LoadBlockIndex()
     }
     if (pindexBad && !fRequestShutdown)
     {
-        CBlockIndex* pindexFork = pindexBad->pprev;
-        printf("LoadBlockIndex() : *** moving best chain pointer back to block %d\n", pindexFork->nHeight);
-        CBlock block;
-        if (!block.ReadFromDisk(pindexFork))
-            return error("LoadBlockIndex() : block.ReadFromDisk failed");
-        CTxDB txdb;
-        block.SetBestChain(txdb, pindexFork);
+        strLoadBlockIndexError = StartupCheckFailureMessage(pindexBad->nHeight);
+        return error("LoadBlockIndex() : %s", strLoadBlockIndexError.c_str());
     }
 
     return true;
