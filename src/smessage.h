@@ -610,6 +610,9 @@ struct NyxPoListEntry
     bool fRelayed;
 };
 void SecureMsgPoList(std::vector<NyxPoListEntry>& out);
+/** Expires public objects older than the keep window and the revocation sets they carried. */
+void SecureMsgPoExpire(int64_t nNow);
+bool SecureMsgPoRevokedHeld(const uint8_t addrHash[20]);
 /** Decode one persisted public object record; false on any bound or parse failure. */
 bool SecureMsgPoDecodeRecord(const std::string& v, NyxPoStore::Record& rec);
 struct NyxPinInput;
