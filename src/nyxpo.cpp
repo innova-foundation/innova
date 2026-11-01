@@ -47,6 +47,7 @@ static int ParseCert(const uint8_t* p, size_t n, NyxPoInfo& out)
         return 5;
     out.seq = LE32(p + 55);
     out.ts = created;
+    out.expiry = expiry;
     size_t off = nFixed + (mode == 1 ? NYX_MLDSA_PK : 0) + NYX_ECDSA_SIG;
     if (n < off + 16)
         return 2;
@@ -204,45 +205,66 @@ static bool Newer(const NyxPoInfo& a, const NyxPoInfo& b)
     return a.ts > b.ts;
 }
 
+void NyxPoStore::Account(const Record& r, bool fAdd)
+{
+    const uint64_t n = r.Bytes();
+    if (fAdd)
+        nBytes += n;
+    else
+        nBytes -= n;
+    if (!r.fVerified)
+    {
+        if (fAdd)
+            nUnvBytes += n;
+        else
+            nUnvBytes -= n;
+    }
+}
+
 void NyxPoStore::Erase(std::map<std::string, Record>::iterator it)
 {
-    nBytes -= it->second.Bytes();
+    Account(it->second, false);
     vErased.push_back(it->first);
     records.erase(it);
 }
 
 void NyxPoStore::Enforce()
 {
-    while (nBytes > nCap && !records.empty())
+    while (!records.empty() && (nBytes > nCap || nUnvBytes > nCap / 8))
     {
-        std::map<std::string, Record>::iterator oldest = records.begin();
+        // Unverified records go first.
+        const bool fUnv = nUnvBytes > 0;
+        std::map<std::string, Record>::iterator oldest = records.end();
         for (std::map<std::string, Record>::iterator it = records.begin(); it != records.end(); ++it)
-            if (it->second.nLastSeen < oldest->second.nLastSeen)
+            if ((!fUnv || !it->second.fVerified)
+                && (oldest == records.end() || it->second.nLastSeen < oldest->second.nLastSeen))
                 oldest = it;
         Erase(oldest);
     }
 }
 
-bool NyxPoStore::Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_t> >& vParts, int64_t nNow)
+bool NyxPoStore::Put(const NyxPoInfo& info, const std::vector<std::vector<uint8_t> >& vParts, int64_t nNow, bool fVerified)
 {
     const std::string k = Key(info);
     std::map<std::string, Record>::iterator it = records.find(k);
     if (it != records.end())
     {
-        if (!Newer(info, it->second.info))
+        const bool fOldVerified = it->second.fVerified;
+        if ((fOldVerified && !fVerified) || (fOldVerified == fVerified && !Newer(info, it->second.info)))
         {
             if (it->second.vParts == vParts)
                 it->second.nLastSeen = nNow;
             return false;
         }
-        nBytes -= it->second.Bytes();
+        Account(it->second, false);
         records.erase(it);
     }
     Record r;
     r.info = info;
     r.nLastSeen = nNow;
     r.vParts = vParts;
-    nBytes += r.Bytes();
+    r.fVerified = fVerified;
+    Account(r, true);
     records[k] = r;
     Enforce();
     return records.count(k) > 0;
@@ -252,9 +274,9 @@ void NyxPoStore::Load(const std::string& key, const Record& rec)
 {
     std::map<std::string, Record>::iterator it = records.find(key);
     if (it != records.end())
-        nBytes -= it->second.Bytes();
+        Account(it->second, false);
     records[key] = rec;
-    nBytes += rec.Bytes();
+    Account(rec, true);
     Enforce();
 }
 

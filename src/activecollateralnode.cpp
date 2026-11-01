@@ -677,10 +677,10 @@ bool CActiveCollateralnode::EnableHotColdCollateralNode(CTxIn& newVin, CService&
         return false;
     }
 
-    if (protocolVersion != PROTOCOL_VERSION)
+    if (protocolVersion < V52_PROTO_VERSION)
     {
-        printf("CActiveCollateralnode::EnableHotColdCollateralNode() - ERROR: protocol version mismatch (%d vs %d)\n",
-               protocolVersion, PROTOCOL_VERSION);
+        printf("CActiveCollateralnode::EnableHotColdCollateralNode() - ERROR: protocol version too old (%d < %d)\n",
+               protocolVersion, V52_PROTO_VERSION);
         return false;
     }
 

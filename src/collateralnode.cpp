@@ -452,7 +452,7 @@ static void ProcessCollateralnodeEntry(CNode* pfrom, CDataStream& vRecv, int64_t
             CBlockIndex* pindex = pindexBest;
 
             // if it matches our collateralnodeprivkey, then we've been remotely activated
-            if(pubkey2 == activeCollateralnode.pubKeyCollateralnode && protocolVersion == PROTOCOL_VERSION){
+            if(pubkey2 == activeCollateralnode.pubKeyCollateralnode && protocolVersion >= V52_PROTO_VERSION){
                 if (!activeCollateralnode.EnableHotColdCollateralNode(vin, addr, pubkey, vchSig, sigTime, pubkey2, protocolVersion)) {
                     if (fDebugCN) printf("isee - Remote activation failed internal verification\n");
                 }

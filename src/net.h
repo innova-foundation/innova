@@ -284,6 +284,7 @@ public:
         fV2             = false;
         nPoGetWindow    = 0;
         nPoGetCount     = 0;
+        nPoGetBytes     = 0;
     };
 
     ~SecMsgNode() {};
@@ -297,7 +298,9 @@ public:
     bool                        fV2;            // peer sent smsgV2
     int64_t                     nPoGetWindow;
     uint32_t                    nPoGetCount;
-    std::set<std::string>       setPoWanted;    // addr hashes asked of this peer
+    uint64_t                    nPoGetBytes;
+    std::set<std::string>       setPoServed;    // addr hashes served this window
+    std::map<std::string, int64_t> mapPoWanted; // addr hashes asked of this peer, by request time
 
 };
 
