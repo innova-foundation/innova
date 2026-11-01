@@ -138,6 +138,25 @@ static void Forget()
     mapPin.clear();
 }
 
+void NyxIdOnWalletEncrypted(CCryptoKeyStore* ks)
+{
+    LOCK(cs_nyxid);
+    std::string rec, newRec, sError;
+    {
+        LOCK(cs_smsgDB);
+        SecMsgDB db;
+        if (!db.Open("r") || !db.pdb->Get(leveldb::ReadOptions(), NYX_DB_SK, &rec).ok())
+            return;
+    }
+    if (rec.size() != 33 || rec[0] != 0)
+        return;
+    uint8_t sk[32];
+    if (NyxStorageKeyResolve(ks, rec, sk, newRec, sError) && !newRec.empty())
+        DbWrite(NYX_DB_SK, newRec);
+    OPENSSL_cleanse(sk, sizeof(sk));
+    OPENSSL_cleanse(&rec[0], rec.size());
+}
+
 void NyxIdTryLoad()
 {
     LOCK(cs_nyxid);
@@ -1015,11 +1034,11 @@ bool NyxIdContact(const std::string& sAddr, Object& out, std::string& sError)
     NyxPinInput in;
     SecureMsgPoCollect((const uint8_t*)addr.data(), in);
     const int flags = NyxPinApply(p, in, GetTime());
+    const NyxPin shown = p.fPinned ? p : NyxPin();
     if (p.fPinned || p.fResetPending)
         SavePin(addr);
     else
         mapPin.erase(addr);
-    NyxPin shown = p.fPinned ? p : NyxPin();
     PinJson(addr, shown, flags, out);
     return true;
 }
