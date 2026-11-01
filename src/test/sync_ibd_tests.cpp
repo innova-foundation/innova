@@ -305,12 +305,20 @@ BOOST_AUTO_TEST_CASE(signature_skip_needs_the_checkpointed_chain)
     for (int i = 0; i < 4; i++)
         mapIndex[c.vHash[i]] = c[i];
 
-    // Last checkpoint not indexed yet: every checkpoint passed so far must match.
-    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[3]));
-    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[6]));
+    // Last checkpoint not indexed yet: only up to the highest indexed one, on its ancestry.
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[1]));
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[2]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[3]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, c[6]));
+    CBlockIndex fork1;
+    fork1.nHeight = 1;
+    fork1.pprev = c[0];
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cps, mapIndex, &fork1));
     Checkpoints::MapCheckpoints cpsBad = cps;
     cpsBad[2] = uint256((uint64_t)0xbad);
-    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cpsBad, mapIndex, c[3]));
+    BOOST_CHECK(Checkpoints::IsCheckpointedAncestor(cpsBad, mapIndex, c[0]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(cpsBad, mapIndex, c[1]));
+    BOOST_CHECK(!Checkpoints::IsCheckpointedAncestor(Checkpoints::MapCheckpoints(), mapIndex, c[0]));
 
     // Indexed: ancestry of the last checkpoint only.
     mapIndex[c.vHash[4]] = c[4];

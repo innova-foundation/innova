@@ -184,21 +184,17 @@ namespace Checkpoints
     {
         if (pindex == NULL || checkpoints.empty())
             return false;
-        const int nLast = checkpoints.rbegin()->first;
-        if (pindex->nHeight > nLast)
-            return false;
-        std::map<uint256, CBlockIndex*>::const_iterator mi = mapIndex.find(checkpoints.rbegin()->second);
-        if (mi != mapIndex.end() && mi->second != NULL && mi->second->nHeight == nLast)
-            return mi->second->GetAncestor(pindex->nHeight) == pindex;
-        for (MapCheckpoints::const_iterator it = checkpoints.begin(); it != checkpoints.end(); ++it)
+        // Only up to the highest checkpoint in the index, and only on its ancestry.
+        for (MapCheckpoints::const_reverse_iterator it = checkpoints.rbegin(); it != checkpoints.rend(); ++it)
         {
-            if (it->first > pindex->nHeight)
-                break;
-            const CBlockIndex* pAncestor = pindex->GetAncestor(it->first);
-            if (pAncestor == NULL || pAncestor->GetBlockHash() != it->second)
+            std::map<uint256, CBlockIndex*>::const_iterator mi = mapIndex.find(it->second);
+            if (mi == mapIndex.end() || mi->second == NULL || mi->second->nHeight != it->first)
+                continue;
+            if (pindex->nHeight > it->first)
                 return false;
+            return mi->second->GetAncestor(pindex->nHeight) == pindex;
         }
-        return true;
+        return false;
     }
 
     bool IsCheckpointedAncestor(const CBlockIndex* pindex)
