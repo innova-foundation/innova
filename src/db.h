@@ -33,6 +33,9 @@ void StopWalletDBFlushThread();
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
 
+// Fsyncs any unsynced txleveldb commit, so no BDB store gets ahead of the chain index.
+void FlushIBDBatch();
+
 class CDBEnv
 {
 private:
@@ -164,6 +167,7 @@ protected:
     {
         if (!pdb)
             return false;
+        FlushIBDBatch();
         if (fReadOnly)
             assert(!"Write called on database in read-only mode");
 
@@ -193,6 +197,7 @@ protected:
     {
         if (!pdb)
             return false;
+        FlushIBDBatch();
         if (fReadOnly)
             assert(!"Erase called on database in read-only mode");
 

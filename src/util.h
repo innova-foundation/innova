@@ -250,6 +250,8 @@ extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
 extern bool fRegTest;
+void ConfigureMallocArenas();
+void ReleaseFreeHeapMemory();
 extern bool fNativeTor;
 extern bool fHyperfileLocal;
 extern bool fCNLock;

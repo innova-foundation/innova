@@ -139,6 +139,7 @@ class LRUCache {
 
   // Separate from constructor so caller can easily make an array of LRUCache
   void SetCapacity(size_t capacity) { capacity_ = capacity; }
+  void Resize(size_t capacity);
 
   // Like Cache methods, but with an extra "hash" parameter.
   Cache::Handle* Insert(const Slice& key, uint32_t hash,
@@ -255,6 +256,17 @@ Cache::Handle* LRUCache::Insert(
   return reinterpret_cast<Cache::Handle*>(e);
 }
 
+void LRUCache::Resize(size_t capacity) {
+  MutexLock l(&mutex_);
+  capacity_ = capacity;
+  while (usage_ > capacity_ && lru_.next != &lru_) {
+    LRUHandle* old = lru_.next;
+    LRU_Remove(old);
+    table_.Remove(old->key(), old->hash);
+    Unref(old);
+  }
+}
+
 void LRUCache::Erase(const Slice& key, uint32_t hash) {
   MutexLock l(&mutex_);
   LRUHandle* e = table_.Remove(key, hash);
@@ -313,6 +325,12 @@ class ShardedLRUCache : public Cache {
   virtual uint64_t NewId() {
     MutexLock l(&id_mutex_);
     return ++(last_id_);
+  }
+  virtual void SetCapacity(size_t capacity) {
+    const size_t per_shard = (capacity + (kNumShards - 1)) / kNumShards;
+    for (int s = 0; s < kNumShards; s++) {
+      shard_[s].Resize(per_shard);
+    }
   }
 };
 

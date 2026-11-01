@@ -39,6 +39,7 @@ static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
 
 inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 50*1000); }
 inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 10*1000); }
+bool SendDrainUnblocksGetData(size_t nBefore, size_t nAfter, size_t nLimit);
 inline unsigned int ReceiveFloodHardSize()
 {
     unsigned int nSoft = ReceiveFloodSize();
@@ -1070,13 +1071,28 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         }
     }
 
-    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    static int64_t BlockInFlightTimeout()
     {
         int64_t nTimeout = GetArg("-blockinflighttimeout", 30);
         if (nTimeout < 5)
             nTimeout = 5;
         if (nTimeout > 600)
             nTimeout = 600;
+        return nTimeout;
+    }
+
+    bool HasLiveBlockInFlight(int64_t nNow) const
+    {
+        const int64_t nTimeout = BlockInFlightTimeout();
+        for (std::map<uint256, int64_t>::const_iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); ++it)
+            if (nNow - it->second <= nTimeout)
+                return true;
+        return false;
+    }
+
+    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    {
+        const int64_t nTimeout = BlockInFlightTimeout();
         for (std::map<uint256, int64_t>::iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); )
         {
             if (nNow - it->second > nTimeout)

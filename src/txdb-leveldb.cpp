@@ -3,6 +3,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
 
+#include <atomic>
 #include <map>
 #include <set>
 #include <limits>
@@ -12,6 +13,7 @@
 #include <boost/filesystem/fstream.hpp>
 
 #include <leveldb/env.h>
+#include <leveldb/write_batch.h>
 #include <leveldb/cache.h>
 #include <leveldb/filter_policy.h>
 #include <memenv/memenv.h>
@@ -254,36 +256,114 @@ TxDBReadStatus ParseTxIndexValue(const char* pData, size_t nDataSize,
 } // namespace
 
 static int nIBDBatchSize = 0;
+static int64_t nIBDBatchMs = 0;
 static int nIBDBatchCount = 0;
-static bool fIBDBatchPending = false;
+static int64_t nIBDBatchLastSyncMs = 0;
+static std::atomic<bool> fIBDBatchPending(false);
 static CCriticalSection cs_IBDBatch;
 
 void InitIBDBatching()
 {
-    nIBDBatchSize = GetArg("-ibdbatchsize", 50);
+    nIBDBatchSize = GetArg("-ibdbatchsize", 500);
     if (nIBDBatchSize < 0) nIBDBatchSize = 0;
-    if (nIBDBatchSize > 1000) nIBDBatchSize = 1000;
+    if (nIBDBatchSize > 5000) nIBDBatchSize = 5000;
+    nIBDBatchMs = 1000 * std::max<int64_t>(1, std::min<int64_t>(GetArg("-ibdbatchseconds", 10), 300));
+    nIBDBatchLastSyncMs = GetTimeMillis();
     if (nIBDBatchSize > 0)
-        printf("IBD batching enabled: committing every %d blocks\n", nIBDBatchSize);
+        printf("IBD batching: fsync every %d blocks or %" PRId64" s\n", nIBDBatchSize, nIBDBatchMs / 1000);
 }
 
+bool IBDBatchShouldSync(bool fIBD, int nPending, int64_t nMsSinceSync, int nBatchSize, int64_t nSliceMs)
+{
+    if (!fIBD || nBatchSize <= 0)
+        return true;
+    return nPending + 1 >= nBatchSize || nMsSinceSync >= nSliceMs;
+}
+
+bool IBDBlockCommitSync()
+{
+    const bool fIBD = IsInitialBlockDownload() || (fRegTest && GetBoolArg("-ibdbatchalways", false));
+    LOCK(cs_IBDBatch);
+    const int64_t nNowMs = GetTimeMillis();
+    if (IBDBatchShouldSync(fIBD, nIBDBatchCount, nNowMs - nIBDBatchLastSyncMs, nIBDBatchSize, nIBDBatchMs))
+    {
+        nIBDBatchCount = 0;
+        fIBDBatchPending = false;
+        nIBDBatchLastSyncMs = nNowMs;
+        return true;
+    }
+    nIBDBatchCount++;
+    return false;
+}
+
+// Set after the unsynced commit lands, so a flush on another thread cannot clear it first.
+void NoteUnsyncedIBDCommit() { fIBDBatchPending = true; }
+
+bool IBDBatchPending() { return fIBDBatchPending; }
+
+// An empty synced write fsyncs the log, and every unsynced commit before it.
 void FlushIBDBatch()
 {
+    if (!fIBDBatchPending)
+        return;
     LOCK(cs_IBDBatch);
     if (fIBDBatchPending && txdb)
     {
-        printf("Flushing pending IBD batch (%d blocks)...\n", nIBDBatchCount);
-        CTxDB txdbFlush;
-        txdbFlush.TxnBegin();
-        txdbFlush.TxnCommit();
+        if (fDebug)
+            printf("Flushing pending IBD batch (%d blocks)\n", nIBDBatchCount);
+        leveldb::WriteOptions writeOptions;
+        writeOptions.sync = true;
+        leveldb::WriteBatch batch;
+        leveldb::Status status = txdb->Write(writeOptions, &batch);
+        if (!status.ok())
+        {
+            printf("FlushIBDBatch: %s\n", status.ToString().c_str());
+            return;
+        }
         fIBDBatchPending = false;
         nIBDBatchCount = 0;
+        nIBDBatchLastSyncMs = GetTimeMillis();
     }
 }
 
+// Tip time recorded at the end of IBD and at shutdown; a fresh one means the node opens synced.
+static fs::path SyncedMarkerPath() { return GetDataDir() / "txleveldb" / "INNOVA_SYNCED"; }
+
+bool OpensSynced(int64_t nMarkerTipTime, int64_t nNow)
+{
+    return nMarkerTipTime > 0 && nNow - nMarkerTipTime < 24 * 60 * 60;
+}
+
+static int64_t ReadSyncedMarker()
+{
+    int64_t nTime = 0;
+    try
+    {
+        fs::ifstream f(SyncedMarkerPath());
+        if (f)
+            f >> nTime;
+    }
+    catch (...) { nTime = 0; }
+    return nTime;
+}
+
+void WriteSyncedMarker(int64_t nTipTime)
+{
+    try
+    {
+        fs::ofstream f(SyncedMarkerPath(), std::ios::trunc);
+        if (f)
+            f << nTipTime << "\n";
+    }
+    catch (...) {}
+}
+
+int64_t DefaultDbCacheMB(bool fSynced) { return fSynced ? 64 : 300; }
+
 static leveldb::Options GetOptions() {
     leveldb::Options options;
-    int nCacheSizeMB = GetArg("-dbcache", 300);
+    const bool fSynced = OpensSynced(ReadSyncedMarker(), GetTime());
+    int nCacheSizeMB = GetArg("-dbcache", DefaultDbCacheMB(fSynced));
     if (txdbBlockCache || txdbFilterPolicy)
         ReleaseLevelDBSharedResources();
     try
@@ -299,10 +379,44 @@ static leveldb::Options GetOptions() {
     }
     options.block_cache = txdbBlockCache;
     options.filter_policy = txdbFilterPolicy;
-    options.write_buffer_size = 64 * 1048576; // 64MB write buffer (default 4MB) for smoother IBD
-    options.max_open_files = 1000;
+    options.write_buffer_size = (fSynced ? 8 : 64) * 1048576;
+    options.max_open_files = 128;
     options.compression = leveldb::kSnappyCompression;
+    printf("LevelDB: cache %d MB, write buffer %d MB, max_open_files 128%s\n", nCacheSizeMB,
+           fSynced ? 8 : 64, fSynced ? " (synced)" : "");
     return options;
+}
+
+// Called once when IBD ends: shrink the block cache to its post-IBD default and record the tip.
+void OnInitialBlockDownloadDone(int64_t nTipTime)
+{
+    if (!mapArgs.count("-dbcache") && txdbBlockCache)
+        txdbBlockCache->SetCapacity(DefaultDbCacheMB(true) * 1048576);
+    WriteSyncedMarker(nTipTime);
+    ReleaseFreeHeapMemory();
+    printf("IBD complete: block cache %d MB\n", (int)GetArg("-dbcache", DefaultDbCacheMB(true)));
+}
+
+// Polled from the message handler, outside cs_main; runs once per process when the tip is current.
+void MaybeFinishInitialBlockDownload()
+{
+    static std::atomic<bool> fDone(false);
+    static int64_t nLastCheck = 0;
+    const int64_t nNow = GetTime();
+    if (fDone || nNow - nLastCheck < 10)
+        return;
+    nLastCheck = nNow;
+    int64_t nTipTime = 0;
+    {
+        TRY_LOCK(cs_main, lockMain);
+        if (!lockMain || !pindexBest)
+            return;
+        nTipTime = pindexBest->GetBlockTime();
+    }
+    if (!OpensSynced(nTipTime, nNow) || IsInitialBlockDownload())
+        return;
+    fDone = true;
+    OnInitialBlockDownloadDone(nTipTime);
 }
 
 void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {
@@ -462,13 +576,6 @@ bool CTxDB::TxnCommit(bool fSync)
 
     leveldb::WriteOptions writeOptions;
     writeOptions.sync = fSync;
-    if (!fSync && IsInitialBlockDownload() && nIBDBatchSize > 0)
-    {
-        LOCK(cs_IBDBatch);
-        fIBDBatchPending = true;
-        nIBDBatchCount++;
-    }
-
     leveldb::Status status = pdb->Write(writeOptions, activeBatch);
     delete activeBatch;
     activeBatch = NULL;

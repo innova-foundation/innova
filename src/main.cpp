@@ -6051,6 +6051,34 @@ static void RequestOrphanAncestry(CNode* pfrom, CBlockIndex* pindexFrom, const u
     pfrom->hashAncestryStop = hashStop;
 }
 
+// At the per-peer cap, orphans a peer parked more than this long ago stop counting against it,
+// up to a hard ceiling of ORPHAN_PEER_SHARE_PERCENT of the pool's entries.
+static const int64_t ORPHAN_CAP_DECAY_SECONDS = 60;
+static const int ORPHAN_PEER_SHARE_PERCENT = 40;
+
+int OrphanPeerHardCeiling(int64_t nMaxEntries)
+{
+    return (int)std::max<int64_t>(MAX_ORPHAN_BLOCKS_PER_PEER, nMaxEntries * ORPHAN_PEER_SHARE_PERCENT / 100);
+}
+
+int OrphanCountTowardCap(NodeId id, int nHeld, int64_t nNow)
+{
+    if (nHeld < MAX_ORPHAN_BLOCKS_PER_PEER)
+        return nHeld;
+    if (nHeld >= OrphanPeerHardCeiling(GetArg("-maxorphanblocks", DEFAULT_MAX_ORPHAN_BLOCKS)))
+        return nHeld;
+    int nStale = 0;
+    for (std::map<uint256, NodeId>::const_iterator it = mapOrphanBlocksByNode.begin(); it != mapOrphanBlocksByNode.end(); ++it)
+    {
+        if (it->second != id)
+            continue;
+        std::map<uint256, COrphanBlock>::const_iterator mi = mapOrphanBlocks.find(it->first);
+        if (mi != mapOrphanBlocks.end() && nNow - mi->second.nTimeParked >= ORPHAN_CAP_DECAY_SECONDS)
+            nStale++;
+    }
+    return nHeld > nStale ? nHeld - nStale : 0;
+}
+
 // The only writer that adds to the orphan tables.
 bool AddOrphanBlock(const uint256& hash, CBlock* pblock, const uint256& hashWaitedFor,
                     NodeId owner, size_t nFootprint)
@@ -8244,6 +8272,35 @@ bool ValidatePrivacyVNextIndexPersistence(
     return true;
 }
 
+// Read-only: an in-flight entry past its timeout is ignored here, not expired.
+bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nHeight,
+                         int& nFreshPeerHeight, int64_t& nFreshPeerLastBlockRecv)
+{
+    std::vector<int> vFresh, vKnown, vBusy;
+    nFreshPeerLastBlockRecv = 0;
+    for (const CNode* pnode : vPeers)
+    {
+        if (!pnode || pnode->fClient)
+            continue;
+        if (pnode->nBestKnownHeight > 0 && pnode->nLastHeightUpdate > 0 &&
+            nNow - pnode->nLastHeightUpdate <= 120)
+            vFresh.push_back(pnode->nBestKnownHeight);
+        if (pnode->nBestKnownHeight > 0)
+            vKnown.push_back(pnode->nBestKnownHeight);
+        if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
+            nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
+        // A peer at the tip stops raising its height, so busy peers count without a fresh height.
+        if (pnode->HasLiveBlockInFlight(nNow) || !pnode->mapAskFor.empty())
+            vBusy.push_back(pnode->nBestKnownHeight);
+    }
+    nFreshPeerHeight = LowerMedianPeerHeight(vFresh);
+    const int nKnownMedian = LowerMedianPeerHeight(vKnown);
+    for (int nBusyHeight : vBusy)
+        if (std::min(nBusyHeight, nKnownMedian) > nHeight + 2)
+            return true;
+    return false;
+}
+
 bool IsInitialBlockDownload()
 {
     if (fRegTest && pindexBest != NULL)
@@ -8261,37 +8318,7 @@ bool IsInitialBlockDownload()
     {
         TRY_LOCK(cs_vNodes, lockNodes);
         if (lockNodes)
-        {
-            std::vector<int> vFresh, vKnown, vBusy;
-            for (CNode* pnode : vNodes)
-            {
-                if (!pnode || pnode->fClient)
-                    continue;
-
-                pnode->ExpireBlockInFlight(nNow);
-
-                bool fFreshHeight = pnode->nBestKnownHeight > 0 &&
-                                    pnode->nLastHeightUpdate > 0 &&
-                                    nNow - pnode->nLastHeightUpdate <= 120;
-                if (fFreshHeight)
-                    vFresh.push_back(pnode->nBestKnownHeight);
-                if (pnode->nBestKnownHeight > 0)
-                    vKnown.push_back(pnode->nBestKnownHeight);
-
-                if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
-                    nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
-
-                // Not gated on fFreshHeight: a peer at the tip stops raising its height. Outstanding
-                // requests to a peer ahead count as catch-up; its height is capped at the median.
-                if (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty())
-                    vBusy.push_back(pnode->nBestKnownHeight);
-            }
-            nFreshPeerHeight = LowerMedianPeerHeight(vFresh);
-            int nKnownMedian = LowerMedianPeerHeight(vKnown);
-            for (int nBusyHeight : vBusy)
-                if (std::min(nBusyHeight, nKnownMedian) > nBestHeight + 2)
-                    fActiveCatchup = true;
-        }
+            fActiveCatchup = ScanPeersForCatchup(vNodes, nNow, nBestHeight, nFreshPeerHeight, nFreshPeerLastBlockRecv);
     }
 
     unsigned int nTargetSpacing = GetTargetSpacingForHeight(nBestHeight + 1);
@@ -9235,6 +9262,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 {
     if (pfFeeExemptMigration)
         *pfFeeExemptMigration = false;
+    const bool fSkipSigsCheckpointed = fBlock && !fForceSigs && !fFullReplayVerify &&
+                                       Checkpoints::IsCheckpointedAncestor(pindexBlock);
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
     // fMiner is true when called from the internal bitcoin miner
@@ -9326,13 +9355,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             }
 
             {
-            // Skip ECDSA signature verification when connecting blocks (fBlock=true)
-            // before the last blockchain checkpoint. This is safe because block merkle hashes are
-            // still computed and checked, and any change will be caught at the next checkpoint.
-            // -fullreplayverify forces full ECDSA verification of all historic blocks (used by
-            // -replayblocks to re-validate mainnet history end to end, not just to the checkpoint).
-            // Merged txs always verify signatures.
-            if (fForceSigs || !(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
+            // Signatures are skipped only in blocks on the checkpointed chain at or below the last
+            // checkpoint (-fullreplayverify and merged txs always verify).
+            if (!fSkipSigsCheckpointed)
             {
                 // Verify signature
                 bool fSigOk;
@@ -15309,7 +15334,10 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     bool fCommitOk;
     {
         BLOCK_PHASE(BP_DB_COMMIT);
-        fCommitOk = txdb.TxnCommit(true);
+        const bool fSync = IBDBlockCommitSync();
+        fCommitOk = txdb.TxnCommit(fSync);
+        if (fCommitOk && !fSync)
+            NoteUnsyncedIBDCommit();
     }
     if (!fCommitOk)
     {
@@ -17381,7 +17409,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 // peer holding nothing, which is both a growing map keyed on a
                 // per-connection id and a count the erase-at-zero rule forbids.
                 std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
-                int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
+                int nOrphansFromPeer = OrphanCountTowardCap(pfrom->GetId(),
+                    (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second, GetTime());
                 // A gap root draws on the reserve above the cap, because it is the
                 // arrival that drains the pool rather than adding to it.
                 const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
@@ -17487,7 +17516,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (pfrom) {
             // Read, do not create (see the DAG park site above).
             std::map<NodeId, int>::const_iterator itCount = mapOrphanCountByNode.find(pfrom->GetId());
-            int nOrphansFromPeer = (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second;
+            int nOrphansFromPeer = OrphanCountTowardCap(pfrom->GetId(),
+                (itCount == mapOrphanCountByNode.end()) ? 0 : itCount->second, GetTime());
             // See the DAG park site: a gap root draws on the reserve above the cap.
             const bool fGapHash = IsOrphanGapHashForPeer(pfrom->GetId(), hash);
             const int nPeerOrphanCap = MAX_ORPHAN_BLOCKS_PER_PEER +
@@ -18558,6 +18588,66 @@ void static ProcessGetData(CNode* pfrom)
 // a large 4-byte int at any alignment.
 unsigned char pchMessageStart[4] = { 0xfa, 0xf4, 0x3f, 0xb7 };
 
+// Headers from the requester's fork toward a stop block off the main chain, oldest first, up to
+// nLimit. Index pointers only; stops before the first invalid block. False when not a side branch.
+bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pindexMainFork,
+                              CBlockIndex* pindexStop, unsigned int nLimit, std::vector<CBlockIndex*>& vOut)
+{
+    static const size_t MAX_SIDE_BRANCH_WALK = 10000;
+    vOut.clear();
+    if (!pindexStop || pindexStop->IsInMainChain() || nLimit == 0)
+        return false;
+    std::vector<CBlockIndex*> vBranch;
+    CBlockIndex* p = pindexStop;
+    for (; p && !p->IsInMainChain() && !setHave.count(p->GetBlockHash()); p = p->pprev)
+    {
+        if (vBranch.size() >= MAX_SIDE_BRANCH_WALK)
+            return false;
+        vBranch.push_back(p);
+    }
+    if (!p)
+        return false;
+    if (p->IsInMainChain() && !setHave.count(p->GetBlockHash()) &&
+        pindexMainFork && pindexMainFork->IsInMainChain() && pindexMainFork->nHeight < p->nHeight)
+    {
+        for (CBlockIndex* m = pindexMainFork->pnext; m && vOut.size() < nLimit; m = m->pnext)
+        {
+            vOut.push_back(m);
+            if (m == p)
+                break;
+        }
+        if (vOut.empty() || vOut.back() != p)
+            return true;
+    }
+    for (std::vector<CBlockIndex*>::reverse_iterator it = vBranch.rbegin(); it != vBranch.rend() && vOut.size() < nLimit; ++it)
+    {
+        if ((*it)->IsInvalid())
+            break;
+        vOut.push_back(*it);
+    }
+    return true;
+}
+
+// The main chain holds the checkpoint, so an unknown header at or below its height is off it.
+bool HeaderForksBelowCheckpoint(int nHeaderHeight, int nBestHeight, int nCheckpointHeight)
+{
+    return nCheckpointHeight > 0 && nBestHeight >= nCheckpointHeight && nHeaderHeight <= nCheckpointHeight;
+}
+
+// Header hashes and PoW verdicts, computed without cs_main. Legacy PoS headers carry nNonce == 0,
+// so whether the verdict applies is decided under the lock, where the parent height is known.
+void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
+                     std::vector<char>& vPowOkOut)
+{
+    vHashOut.resize(vHeaders.size());
+    vPowOkOut.resize(vHeaders.size());
+    for (size_t i = 0; i < vHeaders.size(); i++)
+    {
+        vHashOut[i] = vHeaders[i].GetHash();
+        vPowOkOut[i] = CheckProofOfWork(vHashOut[i], vHeaders[i].nBits) ? 1 : 0;
+    }
+}
+
 bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, int64_t nTimeReceived)
 {
     static map<CService, CPubKey> mapReuseKey;
@@ -18585,47 +18675,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         uint64_t nNonce = 1;
         vRecv >> pfrom->nVersion >> pfrom->nServices >> nTime >> addrMe;
 
-        // Old Node Versioning with Block Height Code
-        bool oldVersion = false;
-
         if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
-            oldVersion = true;
-
-        if (pfrom->nVersion < DAG_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
         {
-            printf("peer %s version %d is not on the DAG chain; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-dag-version");
-            return false;
-        }
-
-        if (pfrom->nVersion < MERGESET_PROTO_VERSION && IsMergesetActiveAtHeight(nBestHeight + 1))
-        {
-            printf("peer %s version %d predates the mergeset fork; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-mergeset-version");
-            return false;
-        }
-
-        if (pfrom->nVersion < V52_PROTO_VERSION && nBestHeight >= FORK_HEIGHT_DAG)
-        {
-            printf("peer %s version %d is older than v5.2.0.2; disconnecting\n",
-                   pfrom->addr.ToString().c_str(), pfrom->nVersion);
-            pfrom->MarkDisconnect("pre-v52-version");
-            return false;
-        }
-
-        /*
-        if (pfrom->nVersion < PROTO_VERSION)
-        {
-            // disconnect from peers older than this proto version
-            printf("partner %s using obsolete version %i; disconnecting\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
+            printf("peer %s version %d is below %d; disconnecting\n",
+                   pfrom->addr.ToString().c_str(), pfrom->nVersion, MIN_PEER_PROTO_VERSION);
             pfrom->MarkDisconnect("proto-version-too-old");
             return false;
-        }*/
+        }
 
-        if (pfrom->nVersion == 10300)
-            pfrom->nVersion = 300;
         if (!vRecv.empty())
             vRecv >> addrFrom >> nNonce;
         if (!vRecv.empty())
@@ -18640,30 +18697,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->UpdateBestKnownBlock(pfrom->nChainHeight, uint256(0));
         }
 
-        // Disconnect if the peer's subversion is < /Innovai:3.3.9.14/
-        // Leaving this out for now until new update is out for a bit
-        // if (pfrom->strSubVer != "/Innovai:3.3.9.14/")
-        //     oldVersion = true;
-
-        // print the current pfrom->strSubVer
-        printf("ProcessMessage(): peer=%s using SubVer=%s, oldVersion=%s\n", pfrom->addr.ToString().c_str(), pfrom->strSubVer.c_str(), oldVersion ? "true" : "false");
-
-        if (oldVersion == true)
-        {
-          printf("Partner %s using obsolete version %i; DISCONNECTING\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
-          pfrom->MarkDisconnect("subver-obsolete");
-          if (pfrom->fColLateralMaster)
-              printf("Masternode hosting node version was obsolete. This masternode should be removed from the list\n");
-          return false;
-        }
-
-        // if (pfrom->nSendBytes >= 1000000) // New arg flag per peer 1MB 1000000 bytes
-        // {
-        //     printf("data sent by peer = %i, disconnecting\n", pfrom->nSendBytes);
-        //     printf("disconnecting node from max outbound per peer target: %s\n", pfrom->addr.ToString().c_str());
-        //     pfrom->fDisconnect = true;
-        //     return false;
-        // }
+        printf("ProcessMessage(): peer=%s using SubVer=%s\n", pfrom->addr.ToString().c_str(), pfrom->strSubVer.c_str());
 
         if (pfrom->fInbound && addrMe.IsRoutable())
         {
@@ -18706,12 +18740,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushAddress(addr);
             }
 
-            // Get recent addresses
-            if (pfrom->fOneShot || pfrom->nVersion >= CADDR_TIME_VERSION || addrman.size() < 1000)
-            {
-                pfrom->PushMessage("getaddr");
-                pfrom->fGetAddr = true;
-            }
+            pfrom->PushMessage("getaddr");
+            pfrom->fGetAddr = true;
             addrman.Good(pfrom->addr);
         } else {
             if (((CNetAddr)pfrom->addr) == (CNetAddr)addrFrom)
@@ -18733,9 +18763,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Ask every eligible network peer for catch-up work. Per-peer
         // PushGetBlocks throttling keeps reconnect loops from spamming.
         if (!pfrom->fClient && !pfrom->fOneShot &&
-            (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)) &&
-            (pfrom->nVersion < NOBLKS_VERSION_START ||
-             pfrom->nVersion >= NOBLKS_VERSION_END))
+            (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)))
         {
             pfrom->PushGetBlocks(pindexBest, uint256(0));
             pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
@@ -18817,9 +18845,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             vRecv >> vAddr;
         }
 
-        // Don't want addr from older versions unless seeding
-        if (pfrom->nVersion < CADDR_TIME_VERSION && addrman.size() > 1000)
-            return true;
         if (vAddr.size() > 1000)
         {
             pfrom->Misbehaving(20, "addr message too large");
@@ -18854,7 +18879,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     multimap<uint256, CNode*> mapMix;
                     for (CNode* pnode : vNodes)
                     {
-                        if (pnode->nVersion < CADDR_TIME_VERSION)
+                        if (pnode->nVersion < MIN_PEER_PROTO_VERSION)
                             continue;
                         unsigned int nPointer;
                         memcpy(&nPointer, &pnode, sizeof(nPointer));
@@ -19162,6 +19187,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         vector<CBlock> vHeaders;
+        if (!locator.IsNull() && hashStop != 0)
+        {
+            map<uint256, CBlockIndex*>::iterator miStop = mapBlockIndex.find(hashStop);
+            std::vector<CBlockIndex*> vSide;
+            const std::set<uint256> setHave(locator.GetHave().begin(), locator.GetHave().end());
+            if (miStop != mapBlockIndex.end() &&
+                CollectSideBranchHeaders(setHave, locator.GetBlockIndex(), miStop->second, 2000, vSide))
+            {
+                for (CBlockIndex* pside : vSide)
+                    vHeaders.push_back(pside->GetBlockHeader());
+                if (fDebugNet) printf("getheaders: %u side-branch headers toward %s\n", (unsigned int)vHeaders.size(), hashStop.ToString().substr(0,20).c_str());
+                pfrom->PushMessage("headers", vHeaders);
+                return true;
+            }
+        }
         int nLimit = 2000;
         if (fDebugNet) printf("getheaders %d to %s\n", (pindex ? pindex->nHeight : -1), hashStop.ToString().substr(0,20).c_str());
         for (; pindex; pindex = pindex->pnext)
@@ -19187,6 +19227,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return error("headers message size > 2000");
         }
 
+        std::vector<uint256> vHeaderHash;
+        std::vector<char> vHeaderPowOk;
+        PrecheckHeaders(vHeaders, vHeaderHash, vHeaderPowOk);
+
         LOCK(cs_main);
 
         if (fDebug)
@@ -19204,9 +19248,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         const bool fFillPeer = !fSPVMode && IsOrphanGapGatedPeer(pfrom->GetId());
         std::vector<uint256> vFill;
         bool fFillOpen = fFillPeer;
-        for (const CBlock& header : vHeaders)
+        for (size_t nHeader = 0; nHeader < vHeaders.size(); nHeader++)
         {
-            uint256 hash = header.GetHash();
+            const CBlock& header = vHeaders[nHeader];
+            const uint256& hash = vHeaderHash[nHeader];
 
             if (mapBlockIndex.count(hash))
             {
@@ -19239,17 +19284,19 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
 
             int nHeaderHeight = nParentHeight + 1;
+            if (HeaderForksBelowCheckpoint(nHeaderHeight, nBestHeight, Checkpoints::GetTotalBlocksEstimate()))
+            {
+                pfrom->Misbehaving(20, "header forks below the last checkpoint");
+                return error("header %s at height %d forks below the last checkpoint", hash.ToString().substr(0,20).c_str(), nHeaderHeight);
+            }
             pfrom->UpdateBestKnownBlock(nHeaderHeight, hash);
 
             // PoS blocks have nNonce==0 in legacy headers, but post-DAG all
             // headers must be valid PoW headers.
-            if (nHeaderHeight >= FORK_HEIGHT_DAG || header.nNonce != 0)
+            if ((nHeaderHeight >= FORK_HEIGHT_DAG || header.nNonce != 0) && !vHeaderPowOk[nHeader])
             {
-                if (!CheckProofOfWork(hash, header.nBits))
-                {
-                    pfrom->Misbehaving(100, "header invalid proof of work");
-                    return error("header %s has invalid proof of work", hash.ToString().c_str());
-                }
+                pfrom->Misbehaving(100, "header invalid proof of work");
+                return error("header %s has invalid proof of work", hash.ToString().c_str());
             }
 
             if (header.GetBlockTime() > FutureDrift(GetAdjustedTime()))
@@ -19632,7 +19679,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
     else if (strCommand == "ping")
     {
-        if (pfrom->nVersion > BIP0031_VERSION)
         {
             uint64_t nonce = 0;
             vRecv >> nonce;
@@ -20134,13 +20180,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         }
         pto->fPingQueued = false;
         pto->nPingUsecStart = GetTimeMicros();
-        if (pto->nVersion > BIP0031_VERSION) {
-            pto->nPingNonceSent = nonce;
-            pto->PushMessage("ping", nonce);
-        } else {
-            pto->nPingNonceSent = 0;
-            pto->PushMessage("ping");
-        }
+        pto->nPingNonceSent = nonce;
+        pto->PushMessage("ping", nonce);
     }
 
     {

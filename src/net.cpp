@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "db.h"
+#include "txdb.h"
 #include "net.h"
 #include "blockprofile.h"
 #include "nullsend_driver.h"
@@ -1093,6 +1094,11 @@ static std::mutex g_mutexMsgHandlerWake;
 static std::condition_variable g_condMsgHandlerWake;
 static bool g_fMsgHandlerWake = false;
 
+bool SendDrainUnblocksGetData(size_t nBefore, size_t nAfter, size_t nLimit)
+{
+    return nBefore >= nLimit && nAfter < nLimit;
+}
+
 static void WakeMessageHandler()
 {
     {
@@ -1702,9 +1708,18 @@ void ThreadSocketHandler2(void* parg)
                 continue;
             if (FD_ISSET(pnode->hSocket, &fdsetSend))
             {
-                TRY_LOCK(pnode->cs_vSend, lockSend);
-                if (lockSend)
-                    SocketSendData(pnode);
+                bool fDrained = false;
+                {
+                    TRY_LOCK(pnode->cs_vSend, lockSend);
+                    if (lockSend)
+                    {
+                        const size_t nBefore = pnode->nSendSize;
+                        SocketSendData(pnode);
+                        fDrained = SendDrainUnblocksGetData(nBefore, pnode->nSendSize, SendBufferSize());
+                    }
+                }
+                if (fDrained)
+                    WakeMessageHandler();
             }
 
             //
@@ -1732,7 +1747,7 @@ void ThreadSocketHandler2(void* parg)
                     printf("DEBUG-DISCONNECT send-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
-                else if (nTime - pnode->nLastRecv > (pnode->nVersion > BIP0031_VERSION ? TIMEOUT_INTERVAL : 90*60))
+                else if (nTime - pnode->nLastRecv > TIMEOUT_INTERVAL)
                 {
                     printf("socket receive timeout: %" PRId64"s\n", nTime - pnode->nLastRecv);
                     printf("DEBUG-DISCONNECT recv-timeout peer=%s\n", pnode->addr.ToString().c_str());
@@ -2542,8 +2557,7 @@ void static StartSync(const vector<CNode*> &vNodes) {
         // check preconditions for allowing a sync
         if (!pnode->fClient && !pnode->fOneShot &&
             !pnode->fDisconnect && pnode->fSuccessfullyConnected &&
-            (pnode->nChainHeight > (nBestHeight - 144)) &&
-            (pnode->nVersion < NOBLKS_VERSION_START || pnode->nVersion >= NOBLKS_VERSION_END)) {
+            (pnode->nChainHeight > (nBestHeight - 144))) {
             // if ok, compare node's score with the best so far
             int64_t nScore = NodeSyncScore(pnode);
             if (pnodeNewSync == NULL || nScore > nBestScore) {
@@ -2620,6 +2634,7 @@ void ThreadMessageHandler2(void* parg)
         // Ungated on the peer count: a node that has just lost the peer holding
         // its orphans has no park and no SendMessages pass left to release them.
         PeriodicOrphanPoolSweep();
+        MaybeFinishInitialBlockDownload();
 
         bool fSleep = true;
 
