@@ -984,6 +984,14 @@ NyxOwnDevice::NyxOwnDevice()
     memset(spk, 0, sizeof(spk));
     spkId = 0;
     bundleSeq = 0;
+    spkCreated = 0;
+    memset(prevSpkSk, 0, sizeof(prevSpkSk));
+    memset(prevKemSeed, 0, sizeof(prevKemSeed));
+    prevSpkId = 0;
+    prevSpkUntil = 0;
+    opkNext = 1;
+    opkDay = 0;
+    opkMinted = 0;
     fCloneAlarm = false;
 }
 
@@ -993,6 +1001,10 @@ void NyxOwnDevice::Wipe()
     OPENSSL_cleanse(dsaSeed, sizeof(dsaSeed));
     OPENSSL_cleanse(kemSeed, sizeof(kemSeed));
     OPENSSL_cleanse(spkSk, sizeof(spkSk));
+    OPENSSL_cleanse(prevSpkSk, sizeof(prevSpkSk));
+    OPENSSL_cleanse(prevKemSeed, sizeof(prevKemSeed));
+    for (size_t i = 0; i < opks.size(); ++i)
+        OPENSSL_cleanse(opks[i].sk, sizeof(opks[i].sk));
 }
 
 NyxOwnDevice::~NyxOwnDevice()
@@ -1003,8 +1015,9 @@ NyxOwnDevice::~NyxOwnDevice()
 std::string NyxOwnDevice::Serialize() const
 {
     std::string s;
-    s.reserve(512 + certBody.size() + lastBundle.size() + keyringBody.size() + cloneReason.size());   // no secret-bearing reallocations
-    WrStr(s, std::string(1, (char)1));
+    s.reserve(1024 + opks.size() * 48 + certBody.size() + lastBundle.size() + keyringBody.size()
+              + cloneReason.size());   // no secret-bearing reallocations
+    WrStr(s, std::string(1, (char)2));
     WrRaw(s, addrHash, 20);
     WrStr(s, std::string(1, (char)mode));
     WrRaw(s, deviceId, 16);
@@ -1021,6 +1034,21 @@ std::string NyxOwnDevice::Serialize() const
     WrBytes(s, keyringBody);
     WrStr(s, std::string(1, (char)fCloneAlarm));
     WrStr(s, cloneReason);
+    WrRaw(s, &spkCreated, 8);
+    WrRaw(s, prevSpkSk, 32);
+    WrRaw(s, prevKemSeed, 64);
+    WrRaw(s, &prevSpkId, 4);
+    WrRaw(s, &prevSpkUntil, 8);
+    WrRaw(s, &opkNext, 4);
+    WrRaw(s, &opkDay, 8);
+    WrRaw(s, &opkMinted, 4);
+    const uint32_t nOpk = opks.size();
+    WrRaw(s, &nOpk, 4);
+    for (size_t i = 0; i < opks.size(); ++i)
+    {
+        WrRaw(s, &opks[i].id, 4);
+        WrRaw(s, opks[i].sk, 32);
+    }
     return s;
 }
 
@@ -1044,7 +1072,8 @@ static bool DerivePublic(NyxOwnDevice& d)
 bool NyxOwnDevice::Deserialize(const std::string& s)
 {
     NyxReader r(s);
-    if (r.Str() != std::string(1, (char)1))
+    const std::string ver = r.Str();
+    if (ver != std::string(1, (char)1) && ver != std::string(1, (char)2))
         return false;
     r.Raw(addrHash, 20);
     const std::string m = r.Str();
@@ -1068,7 +1097,36 @@ bool NyxOwnDevice::Deserialize(const std::string& s)
     if (!r.fOk || a.size() != 1)
         return false;
     fCloneAlarm = a[0] != 0;
-    return DerivePublic(*this);
+    opks.clear();
+    if (ver[0] == 2)
+    {
+        r.Raw(&spkCreated, 8);
+        r.Raw(prevSpkSk, 32);
+        r.Raw(prevKemSeed, 64);
+        r.Raw(&prevSpkId, 4);
+        r.Raw(&prevSpkUntil, 8);
+        r.Raw(&opkNext, 4);
+        r.Raw(&opkDay, 8);
+        r.Raw(&opkMinted, 4);
+        uint32_t nOpk = 0;
+        r.Raw(&nOpk, 4);
+        if (!r.fOk || nOpk > 4 * NYX_OPK_TARGET)
+            return false;
+        static const uint8_t base[32] = {9};
+        for (uint32_t i = 0; i < nOpk; ++i)
+        {
+            NyxOpk o;
+            r.Raw(&o.id, 4);
+            r.Raw(o.sk, 32);
+            const bool fOk = r.fOk && nyx_x25519(o.sk, base, o.pk) == 0;
+            if (fOk)
+                opks.push_back(o);
+            OPENSSL_cleanse(o.sk, 32);
+            if (!fOk)
+                return false;
+        }
+    }
+    return r.fOk && DerivePublic(*this);
 }
 
 bool NyxDeviceCreate(NyxOwnDevice& dev, const uint8_t addrHash[20], uint8_t mode, const uint8_t hostFp[32])
@@ -1164,11 +1222,15 @@ bool NyxBuildBundle(NyxOwnDevice& dev, const CKey& addrKey, int64_t ts, NyxBundl
     {
         out.kemId = dev.spkId;
         out.ek = dev.ek;
+        for (size_t i = 0; i < dev.opks.size() && out.opks.size() < NYX_BUNDLE_MAX_OPK; ++i)
+            out.opks.push_back(std::make_pair(dev.opks[i].id, NyxBytes(dev.opks[i].pk, dev.opks[i].pk + 32)));
         if (!NyxDsaSign(dev.dsaSeed, NyxTagged(NYX_TAG_BUNDLE, out.Fields()), out.sig))
             return false;
     }
     else
     {
+        for (size_t i = 0; i < dev.opks.size() && out.opks.size() < NYX_BUNDLE_MAX_OPK; ++i)
+            out.opks.push_back(std::make_pair(dev.opks[i].id, NyxBytes(dev.opks[i].pk, dev.opks[i].pk + 32)));
         out.sig.assign(65, 0);
         if (!NyxAddrSign(addrKey, NYX_TAG_BUNDLE, out.Fields(), &out.sig[0]))
             return false;
@@ -1176,6 +1238,102 @@ bool NyxBuildBundle(NyxOwnDevice& dev, const CKey& addrKey, int64_t ts, NyxBundl
     dev.bundleSeq = out.seq;
     dev.lastBundle = out.Serialize();
     return true;
+}
+
+bool NyxDeviceTopUpOpks(NyxOwnDevice& dev, int64_t now)
+{
+    if (dev.opks.size() >= NYX_OPK_LOW)
+        return false;
+    if (now - dev.opkDay >= 60 * 60 * 24)
+    {
+        dev.opkDay = now;
+        dev.opkMinted = 0;
+    }
+    bool fChanged = false;
+    while (dev.opks.size() < NYX_OPK_TARGET && dev.opkMinted < NYX_OPK_MINT_PER_DAY)
+    {
+        NyxOpk o;
+        o.id = dev.opkNext++;
+        if (o.id == 0xFFFFFFFFu || nyx_x25519_keygen(o.sk, o.pk) != 0)
+            break;
+        dev.opks.push_back(o);
+        OPENSSL_cleanse(o.sk, 32);
+        dev.opkMinted++;
+        fChanged = true;
+    }
+    return fChanged;
+}
+
+bool NyxDeviceRotateSpk(NyxOwnDevice& dev, int64_t now, bool fForce)
+{
+    if (dev.spkCreated == 0 && !fForce)
+    {
+        dev.spkCreated = now;
+        return false;
+    }
+    if (!fForce && now - dev.spkCreated < NYX_SPK_LIFE)
+        return false;
+    uint8_t sk[32], pk[32], kem[64];
+    NyxBytes ek(NYX_MLKEM768_EK);
+    uint32_t id = 0;
+    if (nyx_x25519_keygen(sk, pk) != 0 || nyx_random((uint8_t*)&id, 4) != 0
+        || (dev.mode == NYX_MODE_PQ && nyx_mlkem768_keygen(kem, &ek[0]) != 0))
+        return false;
+    if (id == dev.spkId)
+        id ^= 1;
+    memcpy(dev.prevSpkSk, dev.spkSk, 32);
+    memcpy(dev.prevKemSeed, dev.kemSeed, 64);
+    dev.prevSpkId = dev.spkId;
+    dev.prevSpkUntil = now + NYX_SPK_GRACE;
+    memcpy(dev.spkSk, sk, 32);
+    if (dev.mode == NYX_MODE_PQ)
+        memcpy(dev.kemSeed, kem, 64);
+    dev.spkId = id;
+    dev.spkCreated = now;
+    OPENSSL_cleanse(sk, 32);
+    OPENSSL_cleanse(kem, 64);
+    return DerivePublic(dev);
+}
+
+bool NyxDeviceSpk(const NyxOwnDevice& dev, uint32_t spkId, int64_t now, uint8_t sk[32], const uint8_t** pKemSeed)
+{
+    if (spkId == dev.spkId)
+    {
+        memcpy(sk, dev.spkSk, 32);
+        *pKemSeed = dev.kemSeed;
+        return true;
+    }
+    if (dev.prevSpkUntil > now && spkId == dev.prevSpkId && !NyxIsZero(dev.prevSpkSk, 32))
+    {
+        memcpy(sk, dev.prevSpkSk, 32);
+        *pKemSeed = dev.prevKemSeed;
+        return true;
+    }
+    return false;
+}
+
+const NyxOpk* NyxDeviceOpk(const NyxOwnDevice& dev, uint32_t id)
+{
+    for (size_t i = 0; i < dev.opks.size(); ++i)
+        if (dev.opks[i].id == id)
+            return &dev.opks[i];
+    return NULL;
+}
+
+void NyxDeviceEraseOpk(NyxOwnDevice& dev, uint32_t id)
+{
+    for (size_t i = 0; i < dev.opks.size(); ++i)
+        if (dev.opks[i].id == id)
+        {
+            OPENSSL_cleanse(dev.opks[i].sk, 32);
+            dev.opks.erase(dev.opks.begin() + i);
+            return;
+        }
+}
+
+bool NyxAddrRecover(const char* tag, const NyxBytes& fields, const uint8_t sig[65], CPubKey& out)
+{
+    return CompactCanonical(sig) && out.RecoverCompact(TaggedHash(tag, fields), std::vector<unsigned char>(sig, sig + 65));
 }
 
 std::string NyxCloneCheck(const NyxOwnDevice& dev, const uint8_t hostFpNow[32], const NyxBytes* pSeenBundle)
