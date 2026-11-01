@@ -12,9 +12,9 @@
     "upstream_package_count": 184,
     "upstream_path": "upstream/Cargo.lock",
     "upstream_sha256": "ed36d0720d8f9edd9ebc479ad84adb0763b24d739ecce3271d35bc2ca59a0747",
-    "wrapper_package_count": 84,
+    "wrapper_package_count": 114,
     "wrapper_path": "Cargo.lock",
-    "wrapper_sha256": "a9005b4d7573a5fba2e47bb06e6d346d3a800b78af1df18df9820c5fec6b7daf"
+    "wrapper_sha256": "c988d1ce2a6e7874d869cf2dbdf8027b3e6b14d227e0b4d8fa043c39fed9ad3e"
   },
   "licenses": {
     "upstream_file_count": 31,
@@ -51,7 +51,162 @@
       "tests/no-std/LICENSE",
       "tests/verify-chain/LICENSE"
     ],
-    "vendored_file_count": 285
+    "vendored_file_count": 345
+  },
+  "messenger_registry": {
+    "description": "non-consensus Nyx messenger crates outside the pinned upstream lock",
+    "packages": [
+      {
+        "name": "aead",
+        "sha256": "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0",
+        "version": "0.5.2"
+      },
+      {
+        "name": "autocfg",
+        "sha256": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+        "version": "1.5.1"
+      },
+      {
+        "name": "block-buffer",
+        "sha256": "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa",
+        "version": "0.12.1"
+      },
+      {
+        "name": "chacha20",
+        "sha256": "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818",
+        "version": "0.9.1"
+      },
+      {
+        "name": "chacha20poly1305",
+        "sha256": "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35",
+        "version": "0.10.1"
+      },
+      {
+        "name": "cipher",
+        "sha256": "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad",
+        "version": "0.4.4"
+      },
+      {
+        "name": "cmov",
+        "sha256": "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a",
+        "version": "0.5.4"
+      },
+      {
+        "name": "cpufeatures",
+        "sha256": "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566",
+        "version": "0.3.1"
+      },
+      {
+        "name": "crypto-common",
+        "sha256": "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453",
+        "version": "0.2.2"
+      },
+      {
+        "name": "ctutils",
+        "sha256": "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a",
+        "version": "0.4.7"
+      },
+      {
+        "name": "digest",
+        "sha256": "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2",
+        "version": "0.11.3"
+      },
+      {
+        "name": "hkdf",
+        "sha256": "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7",
+        "version": "0.12.4"
+      },
+      {
+        "name": "hmac",
+        "sha256": "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
+        "version": "0.12.1"
+      },
+      {
+        "name": "hybrid-array",
+        "sha256": "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17",
+        "version": "0.4.15"
+      },
+      {
+        "name": "inout",
+        "sha256": "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01",
+        "version": "0.1.4"
+      },
+      {
+        "name": "keccak",
+        "sha256": "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598",
+        "version": "0.2.2"
+      },
+      {
+        "name": "kem",
+        "sha256": "01737161ba802849cfd486b5bd209d38ba4943494c249a8126005170c7621edd",
+        "version": "0.3.0"
+      },
+      {
+        "name": "ml-dsa",
+        "sha256": "6f6d49c3f3f0e10e18ca975ffda66f8da0ec36521c1d911adcbc521bf0743f5c",
+        "version": "0.1.2"
+      },
+      {
+        "name": "ml-kem",
+        "sha256": "84ca78b66f46050d49fa21693ae8adab2081d8101b65d8067316b6b70b64a0d1",
+        "version": "0.3.4"
+      },
+      {
+        "name": "module-lattice",
+        "sha256": "c4a1e412c8ee83a1c678f427806219c49c96b2511b9f07497514f0e43fb26155",
+        "version": "0.2.4"
+      },
+      {
+        "name": "opaque-debug",
+        "sha256": "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381",
+        "version": "0.3.1"
+      },
+      {
+        "name": "poly1305",
+        "sha256": "8159bd90725d2df49889a078b54f4f79e87f1f8a8444194cdca81d38f5393abf",
+        "version": "0.8.0"
+      },
+      {
+        "name": "rand_core",
+        "sha256": "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69",
+        "version": "0.10.1"
+      },
+      {
+        "name": "sha3",
+        "sha256": "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759",
+        "version": "0.12.0"
+      },
+      {
+        "name": "shake",
+        "sha256": "09057cb2149ad4cbd2da1e26b351f9a4c354219421229c69c3063e6f61947c4a",
+        "version": "0.1.0"
+      },
+      {
+        "name": "signature",
+        "sha256": "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5",
+        "version": "3.0.0"
+      },
+      {
+        "name": "sponge-cursor",
+        "sha256": "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620",
+        "version": "0.1.0"
+      },
+      {
+        "name": "typenum",
+        "sha256": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
+        "version": "1.20.1"
+      },
+      {
+        "name": "universal-hash",
+        "sha256": "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea",
+        "version": "0.5.1"
+      },
+      {
+        "name": "x25519-dalek",
+        "sha256": "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277",
+        "version": "2.0.1"
+      }
+    ]
   },
   "parameter_digest": {
     "algorithm": "SHA-256",
@@ -132,7 +287,7 @@
   "sbom": {
     "format": "SPDX-2.3",
     "path": "sbom.spdx.json",
-    "sha256": "a4bd71a8f25e54ec6a96b3ef929d1580f83ed1789938e930adcc84b5b9599fbc"
+    "sha256": "59431bc73d09f199bdcb2e356c9769fbd9b99a242f0941d6e40a784f1c81890a"
   },
   "schema_version": 2,
   "status": "consensus_decoder_and_fcmp_proof_abi",
@@ -177,15 +332,15 @@
     "cargo_locked_required": true,
     "cargo_offline_required": true,
     "directory": "vendor",
-    "file_count": 6806,
-    "package_directory_count": 158,
-    "sha256_tree": "ad16118daaaed9d2a7a64b2e1582d52d15e845750671d3bf321cc10ff7b4793e"
+    "file_count": 7368,
+    "package_directory_count": 188,
+    "sha256_tree": "22b77bc1d8de5da736bd9fd5a129d1d84812c19dbc72e396584d721a15a7a317"
   },
   "wrapper": {
     "description": "wrapper crate sources compiled into the linked archive",
     "entries": {
       "Cargo.toml": {
-        "sha256": "426fbd44b56dd5ce968cfd48109223e5423104000d6ff00cf9cd6d7fc598d2f3"
+        "sha256": "3c736f955199b0ccbe42317971c6d3043264a3f731608d0be8c6e6336133ea36"
       },
       "abi": {
         "file_count": 2,
@@ -196,18 +351,18 @@
         "sha256_tree": "e9de35676c4437d78709996a8ac729b90dcfdc035be0fa0ae1bca4e45850c75e"
       },
       "include": {
-        "file_count": 1,
-        "sha256_tree": "3e38ea041c20b072b9a75142a069b81f44e766b07d16836d95bab7ace9a01772"
+        "file_count": 2,
+        "sha256_tree": "b2ad5932bc7ce97678b4a1fba591e62d5bc54e136126e4cb88584fb735bbea5a"
       },
       "src": {
-        "file_count": 12,
-        "sha256_tree": "5559dc6212399045505d41d291cb152ed2299e92c4ecf464bad67ae9c0e109d7"
+        "file_count": 13,
+        "sha256_tree": "213cfb791fe0ef93a0d499a102283b7621b72c7acf6252342e5a6fc79ffb6b45"
       },
       "tests": {
-        "file_count": 1,
-        "sha256_tree": "12c28b7b1d9f4eee257160edcfa2fdf1493193414721e64235fa3bae7974ca2f"
+        "file_count": 2,
+        "sha256_tree": "84c30d4b10fb73d9a23b78d83757a9c9e02263087440ea62455e86b7ecf035f6"
       }
     },
-    "file_count": 18
+    "file_count": 21
   }
 }

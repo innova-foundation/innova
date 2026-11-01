@@ -162,6 +162,7 @@ mod tests {
             LIB,
             include_str!("linkage_tests.rs"),
             include_str!("note.rs"),
+            include_str!("nyx_pq.rs"),
             include_str!("nullifier.rs"),
             include_str!("payload.rs"),
             include_str!("tree.rs"),

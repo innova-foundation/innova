@@ -26,6 +26,7 @@ mod hash_to_point;
 mod linkage_tests;
 mod note;
 mod nullifier;
+mod nyx_pq;
 mod payload;
 mod tree;
 mod value;

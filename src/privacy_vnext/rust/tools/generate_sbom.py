@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Optional
 
-from provenance_common import ROOT, UPSTREAM, VENDOR, canonical_json
+from provenance_common import MESSENGER_PACKAGES, ROOT, UPSTREAM, VENDOR, canonical_json
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -77,8 +77,13 @@ def build_sbom() -> dict[str, Any]:
     manifests = package_manifests()
     wrapper_toml = load_toml(ROOT / "Cargo.toml")
     wrapper_manifest = wrapper_toml["package"]
+    messenger = [
+        item
+        for item in load_toml(ROOT / "Cargo.lock")["package"]
+        if (item["name"], item["version"]) in MESSENGER_PACKAGES
+    ]
     locked = sorted(
-        lock["package"],
+        lock["package"] + messenger,
         key=lambda item: (item["name"], item["version"], item.get("source", "")),
     )
     records: list[dict[str, Any]] = [
