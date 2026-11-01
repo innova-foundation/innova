@@ -4,8 +4,9 @@
 # env:   PORT_BASE (29640) KILLS (20) KILL_MIN_S (60) KILL_MAX_S (600)
 #        KILL_FILES (2: blk files fed to the kill run) STEADY_S (600)
 #        INTERVAL (10000: digest interval of the kill run) REF_JSONL (optional
-#        replay_compare digest file; kill-run digests are diffed against it)
-#        PHASES ("reindex restart kill")
+#        replay_compare digest file; kill-run digests are diffed against it;
+#        needs a binary with -statedigestinterval)
+#        PHASES ("reindex restart kill") RESTART_CHECKBLOCKS (2500, the default)
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/common.sh"
@@ -73,7 +74,7 @@ if [[ " $PHASES " == *" restart "* ]]; then
     : > "$D/debug.log"; : > "$R/steady.rss"
     t0=$(date +%s.%N)
     # shellcheck disable=SC2086
-    "$BIN" $(fnd_flags "$D" $((PORT_BASE + 2))) > "$R/restart.stdout" 2>&1 & PID=$!
+    "$BIN" $(fnd_flags "$D" $((PORT_BASE + 2))) -checkblocks="${RESTART_CHECKBLOCKS:-2500}" > "$R/restart.stdout" 2>&1 & PID=$!
     ready=$(fnd_wait_rpc "$BIN" "$D" $PID 7200) || ready=null
     height=$(fnd_rpc "$BIN" "$D" getblockcount || echo null)
     vms=$(sed -n 's/.* block index *\([0-9]*\)ms.*/\1/p' "$D/debug.log" | tail -1)
@@ -115,7 +116,7 @@ if [[ " $PHASES " == *" kill "* ]]; then
     "$BIN" $(fnd_flags "$K" $((PORT_BASE + 22))) $KARGS $(loadargs "$KILL_FILES") >> "$R/kill.stdout" 2>&1; frc=$?
     final=$(grep 'SetBestChain: new best' "$K/debug.log" | tail -1 | sed -n 's/.*height=\([0-9]*\).*/\1/p')
     cmp=null
-    if [ -n "${REF_JSONL:-}" ] && [ -s "${REF_JSONL:-}" ]; then
+    if [ -n "${REF_JSONL:-}" ] && [ -s "${REF_JSONL:-}" ] && [ -s "$KDIG" ]; then
         cmp=$(python3 "$HERE/digest_diff.py" "$REF_JSONL" "$KDIG" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps({k:d[k] for k in ("common_heights","max_common_height","diff_count","diffs")}))')
     fi
     python3 - "$R/kill.rows" "$frc" "${final:-null}" "$cmp" > "$R/kill.json" <<'PY'
