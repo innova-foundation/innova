@@ -496,6 +496,8 @@ jobs:
           /opt/homebrew/opt/qt@5/bin/macdeployqt Innova.app \
             -executable=Innova.app/Contents/MacOS/innovad -always-overwrite
           bash contrib/macdeploy/bundle-libs.sh Innova.app
+          # The runner has Homebrew, so the smoke test cannot see a leaked absolute path.
+          bash contrib/macdeploy/check-bundle.sh Innova.app
           # Sign after the last edit to the bundle: a stale signature reads as "damaged".
           codesign --force --deep --sign - Innova.app
           codesign --verify --deep --strict --verbose=2 Innova.app
@@ -513,7 +515,10 @@ jobs:
           mkdir -p "$cli/bin"
           cp src/innovad src/innova-cli "$cli/bin/"
           bash contrib/macdeploy/bundle-libs.sh "$cli"
-          find "$cli" -type f \( -name '*.dylib' -o -path '*/bin/innovad' -o -path '*/bin/innova-cli' \) -exec codesign --force --sign - {} \;
+          bash contrib/macdeploy/check-bundle.sh "$cli"
+          find "$cli" -type f | while read -r f; do
+            if file -b "$f" | grep -q 'Mach-O'; then codesign --force --sign - "$f"; fi
+          done
           clismoke="$RUNNER_TEMP/clismoke"; mkdir -p "$clismoke"
           printf "rpcuser=smoke\nrpcpassword=%s\nrpcport=29997\n" "$(openssl rand -hex 16)" > "$clismoke/innova.conf"
           cargs=(-regtest -datadir="$clismoke")

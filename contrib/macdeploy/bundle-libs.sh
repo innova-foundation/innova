@@ -9,7 +9,8 @@ SEARCH=("$@" /opt/homebrew/lib /usr/local/lib)
 mkdir -p "$FW"
 
 machos() {
-    find "$ROOT" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
+    # Qt frameworks copied flat have no extension and no exec bit
+    find "$ROOT" -type f | while read -r f; do
         if file -b "$f" | grep -q 'Mach-O'; then echo "$f"; fi
     done
 }
@@ -18,6 +19,9 @@ find_lib() {
     local name="$1" d
     for d in "${SEARCH[@]}" /opt/homebrew/opt/*/lib /usr/local/opt/*/lib; do
         [ -e "$d/$name" ] && { echo "$d/$name"; return 0; }
+        for f in "$d/$name.framework/Versions/"*/"$name"; do
+            [ -e "$f" ] && { echo "$f"; return 0; }
+        done
     done
     return 1
 }
@@ -25,6 +29,9 @@ find_lib() {
 target_of() {
     case "$2" in
         /opt/homebrew/*|/usr/local/*) echo "$FW/$(basename "$2")" ;;
+        @rpath/*.framework/*)
+            # flat copy unless macdeployqt already placed the framework
+            if [ -e "$FW/${2#@rpath/}" ]; then echo "$FW/${2#@rpath/}"; else echo "$FW/$(basename "$2")"; fi ;;
         @rpath/*) echo "$FW/${2#@rpath/}" ;;
         @loader_path/*) echo "$(dirname "$1")/${2#@loader_path/}" ;;
         @executable_path/../Frameworks/*) echo "$FW/${2#@executable_path/../Frameworks/}" ;;
@@ -47,9 +54,22 @@ unresolved() {
     done
 }
 
+finish() {
+    machos | while read -r f; do
+        otool -l "$f" | awk '/cmd LC_RPATH/{getline; getline; print $2}' | while read -r rp; do
+            case "$rp" in /opt/homebrew/*|/usr/local/*) chmod u+w "$f"; install_name_tool -delete_rpath "$rp" "$f" ;; esac
+        done
+    done
+    qtconf="$ROOT/Resources/qt.conf"
+    if [ -f "$qtconf" ] && grep -qE '= */' "$qtconf"; then
+        printf '[Paths]\nPlugins = PlugIns\n' > "$qtconf"
+    fi
+    echo "all libraries resolve inside $APP"
+}
+
 for pass in 1 2 3 4 5 6 7 8; do
     todo=$(unresolved | sort -u)
-    [ -z "$todo" ] && { echo "all libraries resolve inside $APP"; exit 0; }
+    [ -z "$todo" ] && { finish; exit 0; }
     while IFS='|' read -r f dep t; do
         if [ ! -e "$t" ]; then
             case "$dep" in
@@ -62,7 +82,7 @@ for pass in 1 2 3 4 5 6 7 8; do
         fi
         case "$dep" in
             /opt/homebrew/*|/usr/local/*|@rpath/*)
-                install_name_tool -change "$dep" "@executable_path/../Frameworks/${t#$FW/}" "$f" ;;
+                chmod u+w "$f"; install_name_tool -change "$dep" "@executable_path/../Frameworks/${t#$FW/}" "$f" ;;
         esac
     done <<< "$todo"
 done
