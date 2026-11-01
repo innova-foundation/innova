@@ -21,7 +21,7 @@ from generate_provenance import (
     linked_consensus_active,
 )
 from generate_sbom import build_sbom
-from provenance_common import canonical_json, sha256_file
+from provenance_common import MESSENGER_PACKAGES, canonical_json, sha256_file
 
 
 class VerificationError(RuntimeError):
@@ -64,15 +64,28 @@ def verify_locks_and_vendor() -> None:
     upstream = load_toml(UPSTREAM / "Cargo.lock")["package"]
     wrapper = load_toml(ROOT / "Cargo.lock")["package"]
     upstream_keys = {package_key(package) for package in upstream}
+    registry = "registry+https://github.com/rust-lang/crates.io-index"
+    messenger = []
     for package in wrapper:
         if package["name"] == "innova-privacy-vnext":
             continue
+        if package_key(package) in upstream_keys:
+            continue
+        pinned = MESSENGER_PACKAGES.get((package["name"], package["version"]))
         require(
-            package_key(package) in upstream_keys,
+            pinned is not None
+            and package.get("source") == registry
+            and package.get("checksum") == pinned,
             f"wrapper lock drifted from upstream resolution: {package_key(package)}",
         )
+        messenger.append(package)
+    require(
+        {(item["name"], item["version"]) for item in messenger} == set(MESSENGER_PACKAGES),
+        "messenger package pins and the wrapper lock disagree",
+    )
 
     registry_packages = [package for package in upstream if package.get("checksum")]
+    registry_packages += messenger
     expected_dirs = {f"{item['name']}-{item['version']}" for item in registry_packages}
     actual_dirs = {path.name for path in VENDOR.iterdir() if path.is_dir()}
     require(actual_dirs == expected_dirs, "vendored registry directory set is not exact")

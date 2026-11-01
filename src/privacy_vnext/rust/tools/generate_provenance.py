@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from provenance_common import (
+    MESSENGER_PACKAGES,
     ROOT,
     UPSTREAM,
     VENDOR,
@@ -146,6 +147,15 @@ def build_manifest() -> dict[str, Any]:
             "wrapper_sha256": sha256_file(ROOT / "Cargo.lock"),
             "upstream_package_count": len(upstream_lock["package"]),
             "wrapper_package_count": len(root_lock["package"]),
+        },
+        "messenger_registry": {
+            "description": (
+                "non-consensus Nyx messenger crates outside the pinned upstream lock"
+            ),
+            "packages": [
+                {"name": name, "version": version, "sha256": checksum}
+                for (name, version), checksum in sorted(MESSENGER_PACKAGES.items())
+            ],
         },
         "vendored_registry": {
             "directory": "vendor",
