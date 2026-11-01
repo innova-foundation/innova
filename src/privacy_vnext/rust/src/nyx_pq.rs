@@ -160,14 +160,16 @@ pub unsafe extern "C" fn nyx_pq_sizes(out: *mut u32, n: usize) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn nyx_mlkem768_keygen(out_seed: *mut u8, out_ek: *mut u8) -> i32 {
     boundary(|| {
-        let seed = unsafe { output(out_seed, NYX_MLKEM768_SEED) }?;
-        os_random(seed)?;
-        // SAFETY: forwarded caller contract.
-        let rc = unsafe { nyx_mlkem768_ek_from_seed(seed.as_ptr(), out_ek) };
+        {
+            let seed = unsafe { output(out_seed, NYX_MLKEM768_SEED) }?;
+            os_random(seed)?;
+        }
+        // SAFETY: forwarded caller contract; no Rust reference to the seed is live.
+        let rc = unsafe { nyx_mlkem768_ek_from_seed(out_seed, out_ek) };
         if rc == 0 {
             Ok(())
         } else {
-            seed.zeroize();
+            unsafe { output(out_seed, NYX_MLKEM768_SEED) }?.zeroize();
             Err(rc)
         }
     })
@@ -192,9 +194,10 @@ pub unsafe extern "C" fn nyx_mlkem768_ek_from_seed(seed: *const u8, out_ek: *mut
 fn kem_encaps(ek: &[u8], m: &B32, ct: &mut [u8], ss: &mut [u8]) -> Res {
     let key = ml_kem::Key::<EncapsulationKey<MlKem768>>::try_from(ek).map_err(|_| ERR_ARG)?;
     let ek = EncapsulationKey::<MlKem768>::new(&key).map_err(|_| ERR_CRYPTO)?;
-    let (c, k) = ek.encapsulate_deterministic(m);
+    let (c, mut k) = ek.encapsulate_deterministic(m);
     ct.copy_from_slice(&c);
     ss.copy_from_slice(&k);
+    k.as_mut_slice().zeroize();
     Ok(())
 }
 
@@ -273,11 +276,12 @@ pub unsafe extern "C" fn nyx_kat_mlkem768_decaps(
         let d = unsafe { input(dk, NYX_MLKEM768_DK) }?;
         let c = unsafe { input(ct, NYX_MLKEM768_CT) }?;
         let ss = unsafe { output(out_ss, NYX_MLKEM768_SS) }?;
-        let enc = ExpandedDecapsulationKey::<MlKem768>::try_from(d).map_err(|_| ERR_ARG)?;
+        let mut enc = ExpandedDecapsulationKey::<MlKem768>::try_from(d).map_err(|_| ERR_ARG)?;
         #[allow(deprecated)]
         let dk =
-            <DecapsulationKey<MlKem768> as ml_kem::ExpandedKeyEncoding>::from_expanded_bytes(&enc)
-                .map_err(|_| ERR_CRYPTO)?;
+            <DecapsulationKey<MlKem768> as ml_kem::ExpandedKeyEncoding>::from_expanded_bytes(&enc);
+        enc.as_mut_slice().zeroize();
+        let dk = dk.map_err(|_| ERR_CRYPTO)?;
         let c = Ciphertext::<MlKem768>::try_from(c).map_err(|_| ERR_ARG)?;
         ss.copy_from_slice(&dk.decapsulate(&c));
         Ok(())
@@ -448,7 +452,7 @@ pub unsafe extern "C" fn nyx_x25519(sk: *const u8, pk: *const u8, out: *mut u8) 
 
 /// ChaCha20-Poly1305 seal: `out` receives `pt_len + 16` bytes (ciphertext then tag).
 /// # Safety
-/// Inputs readable at their lengths; `out` `pt_len + 16` writable and may not overlap inputs.
+/// Inputs readable at their lengths; `out` `pt_len + 16` writable; `out` may equal `pt`, no other overlap.
 #[no_mangle]
 pub unsafe extern "C" fn nyx_aead_seal(
     key: *const u8,
@@ -463,12 +467,18 @@ pub unsafe extern "C" fn nyx_aead_seal(
         let key_bytes = unsafe { input(key, NYX_AEAD_KEY) }?;
         let nonce_bytes = unsafe { input(nonce, NYX_AEAD_NONCE) }?;
         let aad = unsafe { input(ad, ad_len) }?;
-        let plain = unsafe { input(pt, pt_len) }?;
         let total = pt_len.checked_add(NYX_AEAD_TAG).ok_or(ERR_ARG)?;
+        if out.is_null() || (pt_len > 0 && pt.is_null()) {
+            return Err(ERR_ARG);
+        }
+        // Raw memmove before any slice exists: `out == pt` (in place) is allowed.
+        // SAFETY: both non-null and the caller guarantees `pt_len` bytes at each.
+        if pt_len > 0 {
+            unsafe { std::ptr::copy(pt, out, pt_len) };
+        }
         let sealed = unsafe { output(out, total) }?;
         let cipher = ChaCha20Poly1305::new_from_slice(key_bytes).map_err(|_| ERR_ARG)?;
         let (body, tag_out) = sealed.split_at_mut(pt_len);
-        body.copy_from_slice(plain);
         let tag = cipher
             .encrypt_in_place_detached(Nonce::from_slice(nonce_bytes), aad, body)
             .map_err(|_| ERR_CRYPTO)?;
@@ -545,6 +555,44 @@ pub unsafe extern "C" fn nyx_hkdf_sha256(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aead_seal_in_place_matches_separate() {
+        let key = [3_u8; 32];
+        let nonce = [5_u8; 12];
+        let msg = b"in place seal".to_vec();
+        let mut sep = vec![0_u8; msg.len() + 16];
+        let mut inplace = msg.clone();
+        inplace.resize(msg.len() + 16, 0);
+        unsafe {
+            assert_eq!(
+                nyx_aead_seal(
+                    key.as_ptr(),
+                    nonce.as_ptr(),
+                    b"ad".as_ptr(),
+                    2,
+                    msg.as_ptr(),
+                    msg.len(),
+                    sep.as_mut_ptr()
+                ),
+                0
+            );
+            let p = inplace.as_mut_ptr();
+            assert_eq!(
+                nyx_aead_seal(
+                    key.as_ptr(),
+                    nonce.as_ptr(),
+                    b"ad".as_ptr(),
+                    2,
+                    p,
+                    msg.len(),
+                    p
+                ),
+                0
+            );
+        }
+        assert_eq!(sep, inplace);
+    }
 
     #[test]
     fn dsa_round_trip_and_tamper() {

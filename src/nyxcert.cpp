@@ -95,6 +95,13 @@ NyxBytes NyxCert::Fields() const
     return v;
 }
 
+NyxBytes NyxCert::Signed() const
+{
+    NyxBytes v = Fields();
+    Put(v, signerId, 16);
+    return v;
+}
+
 NyxBytes NyxCert::Serialize() const
 {
     NyxBytes v = Fields();
@@ -182,6 +189,13 @@ NyxBytes NyxKeyring::Fields() const
     return v;
 }
 
+NyxBytes NyxKeyring::Signed() const
+{
+    NyxBytes v = Fields();
+    Put(v, signerId, 16);
+    return v;
+}
+
 NyxBytes NyxKeyring::Serialize() const
 {
     NyxBytes v = Fields();
@@ -248,6 +262,7 @@ NyxBytes NyxBundle::Fields() const
 {
     NyxBytes v;
     v.push_back(NYX_PO_BUNDLE);
+    v.push_back(fPq ? NYX_MODE_PQ : NYX_MODE_CLASSICAL);
     Put(v, addrHash, 20);
     Put(v, deviceId, 16);
     Put64(v, ts);
@@ -284,14 +299,14 @@ int NyxParseBundle(const uint8_t* p, size_t n, NyxBundle& out)
     const int r = NyxPoParse(p, n, info);
     if (r != 0)
         return r;
-    memcpy(out.addrHash, p + 1, 20);
-    memcpy(out.deviceId, p + 21, 16);
-    out.ts = RdLE64(p + 37);
-    out.seq = RdLE32(p + 45);
-    out.spkId = RdLE32(p + 49);
-    memcpy(out.spk, p + 53, 32);
-    size_t off = 85;
-    out.fPq = n >= off + 4 + NYX_MLKEM_EK + 1 + NYX_MLDSA_SIG;
+    out.fPq = p[1] == NYX_MODE_PQ;
+    memcpy(out.addrHash, p + 2, 20);
+    memcpy(out.deviceId, p + 22, 16);
+    out.ts = RdLE64(p + 38);
+    out.seq = RdLE32(p + 46);
+    out.spkId = RdLE32(p + 50);
+    memcpy(out.spk, p + 54, 32);
+    size_t off = 86;
     if (out.fPq)
     {
         out.kemId = RdLE32(p + off);

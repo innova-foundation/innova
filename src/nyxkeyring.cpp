@@ -29,17 +29,41 @@ static uint256 TaggedHash(const char* tag, const NyxBytes& fields)
     return r;
 }
 
+static const uint8_t SECP_N[32] = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,
+                                   0xba,0xae,0xdc,0xe6,0xaf,0x48,0xa0,0x3b,0xbf,0xd2,0x5e,0x8c,0xd0,0x36,0x41,0x41};
+static const uint8_t SECP_HALF_N[32] = {0x7f,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+                                        0x5d,0x57,0x6e,0x73,0x57,0xa4,0x50,0x1d,0xdf,0xe9,0x2f,0x46,0x68,0x1b,0x20,0xa0};
+
+// One encoding per signature: header 27..34 and s in [1, n/2].
+static bool CompactCanonical(const uint8_t sig[65])
+{
+    return sig[0] >= 27 && sig[0] <= 34 && !NyxIsZero(sig + 33, 32) && memcmp(sig + 33, SECP_HALF_N, 32) <= 0;
+}
+
 bool NyxAddrSign(const CKey& key, const char* tag, const NyxBytes& fields, uint8_t sig[65])
 {
     std::vector<unsigned char> v;
     if (!key.SignCompact(TaggedHash(tag, fields), v) || v.size() != 65)
         return false;
+    if (memcmp(&v[33], SECP_HALF_N, 32) > 0)
+    {
+        int borrow = 0;
+        for (int i = 31; i >= 0; --i)
+        {
+            const int d = (int)SECP_N[i] - (int)v[33 + i] - borrow;
+            v[33 + i] = (unsigned char)(d & 0xff);
+            borrow = d < 0;
+        }
+        v[0] ^= 1;
+    }
     memcpy(sig, &v[0], 65);
-    return true;
+    return CompactCanonical(sig);
 }
 
 bool NyxAddrVerify(const uint8_t addrHash[20], const char* tag, const NyxBytes& fields, const uint8_t sig[65])
 {
+    if (!CompactCanonical(sig))
+        return false;
     CPubKey pk;
     if (!pk.RecoverCompact(TaggedHash(tag, fields), std::vector<unsigned char>(sig, sig + 65)))
         return false;
@@ -62,21 +86,21 @@ bool NyxDsaVerify(const NyxBytes& pk, const NyxBytes& msg, const NyxBytes& sig)
 
 NyxBytes NyxCertSignerMsg(const NyxCert& c)
 {
-    NyxBytes m = NyxTagged(NYX_TAG_CERT, c.Fields());
+    NyxBytes m = NyxTagged(NYX_TAG_CERT, c.Signed());
     m.insert(m.end(), c.addrSig, c.addrSig + 65);
     return m;
 }
 
 NyxBytes NyxKeyringSignerMsg(const NyxKeyring& k)
 {
-    NyxBytes m = NyxTagged(NYX_TAG_KEYRING, k.Fields());
+    NyxBytes m = NyxTagged(NYX_TAG_KEYRING, k.Signed());
     m.insert(m.end(), k.addrSig, k.addrSig + 65);
     return m;
 }
 
 bool NyxCertAddrValid(const NyxCert& c)
 {
-    return NyxAddrVerify(c.addrHash, NYX_TAG_CERT, c.Fields(), c.addrSig);
+    return NyxAddrVerify(c.addrHash, NYX_TAG_CERT, c.Signed(), c.addrSig);
 }
 
 bool NyxCertSignerValid(const NyxCert& c, const NyxBytes& signerPk)
@@ -86,7 +110,7 @@ bool NyxCertSignerValid(const NyxCert& c, const NyxBytes& signerPk)
 
 bool NyxKeyringAddrValid(const NyxKeyring& k)
 {
-    return NyxAddrVerify(k.addrHash, NYX_TAG_KEYRING, k.Fields(), k.addrSig);
+    return NyxAddrVerify(k.addrHash, NYX_TAG_KEYRING, k.Signed(), k.addrSig);
 }
 
 bool NyxKeyringSignerValid(const NyxKeyring& k, const NyxBytes& signerPk)
@@ -158,7 +182,7 @@ static int RelayKeyring(const NyxRelayHeld& held, const NyxKeyring& kr, const ui
     }
     const uint32_t maxEpoch = MaxEpoch(held);
     if (kr.epoch > maxEpoch)
-        return kr.seq == 1 ? NYX_PO_OK : NYX_PO_BAD;
+        return kr.seq == 1 && kr.epoch - maxEpoch <= NYX_KR_MAX_SEQ_JUMP ? NYX_PO_OK : NYX_PO_BAD;
 
     uint32_t lo = 0xffffffff, hi = 0;
     const NyxKeyring* pred = NULL;
@@ -539,7 +563,8 @@ static bool StepDevices(const NyxPinInput& in, const NyxKeyring& kr, const NyxDe
         if (fPq)
         {
             NyxDeviceMap::const_iterator itS = prev.find(NyxId(d.cert.signerId));
-            if (itS == prev.end() || !NyxCertSignerValid(d.cert, itS->second.cert.dsaPk))
+            if (itS == prev.end() || itS->second.cert.expiry <= (uint64_t)now
+                || !NyxCertSignerValid(d.cert, itS->second.cert.dsaPk))
             {
                 flags |= NYX_PIN_FORGERY;
                 return false;
@@ -620,7 +645,7 @@ static bool TryStep(const NyxPin& pin, const NyxPinInput& in, const ParsedKeyrin
     if (p.kr.mode == NYX_MODE_PQ)
     {
         NyxDeviceMap::const_iterator itS = prev.find(NyxId(p.kr.signerId));
-        if (itS == prev.end() || itS->second.cert.mode != NYX_MODE_PQ
+        if (itS == prev.end() || itS->second.cert.mode != NYX_MODE_PQ || itS->second.cert.expiry <= (uint64_t)now
             || !NyxKeyringSignerValid(p.kr, itS->second.cert.dsaPk))
         {
             flags |= NYX_PIN_FORGERY;
@@ -754,7 +779,7 @@ int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now)
         }
 
         // Successors that validate; two of them fork the chain.
-        std::vector<std::pair<size_t, NyxDeviceMap> > vOk;
+        std::vector<std::pair<size_t, NyxDeviceMap> > vOk, vSide;
         for (size_t j = 0; j < vNext.size(); ++j)
         {
             const ParsedKeyring& p = v[vNext[j]];
@@ -762,20 +787,25 @@ int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now)
             NyxDeviceMap devs;
             if (fFromConflict)
             {
-                // The owner confirmed the other side of the fork: continue from it.
+                // A seq 1 sibling is address-signed only: it freezes, never becomes a base.
                 NyxPin side = pin;
                 SwitchToConflict(side);
-                if (TryStep(side, in, p, side.devices, side.revoked, side.kr.seq, now, devs, flags))
-                {
-                    SwitchToConflict(pin);
-                    vOk.clear();
-                    vOk.push_back(std::make_pair(vNext[j], devs));
-                    break;
-                }
+                if (side.kr.seq > 1 && TryStep(side, in, p, side.devices, side.revoked, side.kr.seq, now, devs, flags))
+                    vSide.push_back(std::make_pair(vNext[j], devs));
                 continue;
             }
             if (TryStep(pin, in, p, pin.devices, pin.revoked, pin.kr.seq, now, devs, flags))
                 vOk.push_back(std::make_pair(vNext[j], devs));
+        }
+        if (!vSide.empty())
+        {
+            // Both sides advanced: stay frozen.
+            if (!vOk.empty())
+                break;
+            // The owner confirmed the other side of the fork: continue from it.
+            SwitchToConflict(pin);
+            vOk.swap(vSide);
+            vOk.resize(1);
         }
         if (vOk.size() > 1 && !pin.fFrozen)
         {
@@ -814,7 +844,7 @@ int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now)
 
     // Identity reset: a later epoch at seq 1, address-signed only.
     const ParsedKeyring& top = v.back();
-    if (top.kr.epoch > pin.kr.epoch && top.kr.seq == 1
+    if (top.kr.epoch > pin.kr.epoch && top.kr.seq == 1 && top.kr.ts + NYX_FIRST_PIN_MAX_AGE >= (uint64_t)now
         && !(pin.fResetPending && top.body == pin.resetBody))
     {
         NyxDeviceMap devs;
@@ -837,7 +867,7 @@ int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now)
     return flags;
 }
 
-bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, std::string& sError)
+bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, int64_t now, std::string& sError)
 {
     if (!pin.fResetPending)
     {
@@ -862,9 +892,9 @@ bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, std::string& sError)
     NyxDeviceMap devs;
     int f = 0;
     if (!StepDevices(in, p.kr, NyxDeviceMap(), std::set<std::string>(), p.kr.mode == NYX_MODE_PQ, 0, true,
-                     (int64_t)p.kr.ts, devs, f))
+                     now, devs, f))
     {
-        sError = "Reset keyring certs are missing.";
+        sError = "Reset keyring certs are missing or expired.";
         return false;
     }
     const bool fPq = pin.fPqSeen && p.kr.mode == NYX_MODE_PQ;
@@ -973,6 +1003,7 @@ NyxOwnDevice::~NyxOwnDevice()
 std::string NyxOwnDevice::Serialize() const
 {
     std::string s;
+    s.reserve(512 + certBody.size() + lastBundle.size() + keyringBody.size() + cloneReason.size());   // no secret-bearing reallocations
     WrStr(s, std::string(1, (char)1));
     WrRaw(s, addrHash, 20);
     WrStr(s, std::string(1, (char)mode));
@@ -1080,7 +1111,7 @@ bool NyxBuildCertFor(uint8_t mode, const uint8_t addrHash[20], const uint8_t dev
     }
     if (signer)
         memcpy(out.signerId, signer->deviceId, 16);
-    if (!NyxAddrSign(addrKey, NYX_TAG_CERT, out.Fields(), out.addrSig))
+    if (!NyxAddrSign(addrKey, NYX_TAG_CERT, out.Signed(), out.addrSig))
         return false;
     if (signer && mode == NYX_MODE_PQ)
     {
@@ -1107,7 +1138,7 @@ bool NyxBuildKeyring(NyxKeyring& kr, const CKey& addrKey, const NyxOwnDevice* si
         return false;
     else
         memcpy(kr.signerId, signer->deviceId, 16);
-    if (!NyxAddrSign(addrKey, NYX_TAG_KEYRING, kr.Fields(), kr.addrSig))
+    if (!NyxAddrSign(addrKey, NYX_TAG_KEYRING, kr.Signed(), kr.addrSig))
         return false;
     kr.signerSig.clear();
     if (kr.mode == NYX_MODE_PQ && kr.seq > 1)
@@ -1187,7 +1218,11 @@ bool NyxStoreOpen(const uint8_t sk[32], const std::string& dbkey, const std::str
     if (nyx_aead_open(sk, (const uint8_t*)sealed.data(), (const uint8_t*)dbkey.data(), dbkey.size(),
                       (const uint8_t*)sealed.data() + NYX_AEAD_NONCE, n + NYX_AEAD_TAG,
                       n ? (uint8_t*)&pt[0] : NULL) != 0)
+    {
+        if (n)
+            OPENSSL_cleanse(&pt[0], n);
         return false;
+    }
     out.swap(pt);
     return true;
 }
