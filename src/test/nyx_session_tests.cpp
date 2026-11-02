@@ -6,6 +6,7 @@
 
 #include "../key.h"
 #include "../nyxcert.h"
+#include "../nyxidentity.h"
 #include "../nyxkeyring.h"
 #include "../nyxsession.h"
 #include "../util.h"
@@ -724,6 +725,129 @@ BOOST_AUTO_TEST_CASE(previous_spk_wiped_after_grace)
     BOOST_CHECK(NyxIsZero(b.dev.prevSpkSk, 32));
     BOOST_CHECK(NyxIsZero(b.dev.prevKemSeed, 64));
     BOOST_CHECK(!NyxDeviceExpirePrevSpk(b.dev, T0 + 15 + NYX_SPK_GRACE + 1));
+}
+
+BOOST_AUTO_TEST_CASE(archived_state_is_receive_only_and_expires)
+{
+    Pair p;
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("x"), pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack"), pt), NYX_DR_OK);
+    NyxSession old = p.sb;
+
+    // A later handshake replaces the established session.
+    const int64_t t1 = T0 + 3 * NYX_HS_RETRY;
+    NyxBundle b;
+    BOOST_REQUIRE(NyxBuildBundle(p.b.dev, p.b.key, t1, b));
+    NyxRatchet r;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(NyxHsInitiate(p.a.Local(), PeerOf(p.pinB), b, t1, r, err), err);
+    p.sa.Push(r);
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("new", t1 + 1), pt, t1 + 2), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack2", t1 + 3), pt, t1 + 4), NYX_DR_OK);
+    uint8_t cur[32];
+    memcpy(cur, p.sa.states[0].hsId, 32);
+
+    // A message on the old chain opens but does not move sends back onto it.
+    NyxBytes body;
+    BOOST_REQUIRE(NyxSessionSeal(old.states[0], Pt("old"), t1 + 5, body));
+    size_t idx = 9;
+    NyxRatchetMsg m;
+    BOOST_REQUIRE_EQUAL(NyxParseRatchetMsg(&body[0], body.size(), m), 0);
+    BOOST_REQUIRE_EQUAL(p.sa.Decrypt(m.tail, t1 + 6, pt, NULL, &idx), NYX_DR_OK);
+    BOOST_CHECK_EQUAL(idx, 1U);
+    BOOST_CHECK(memcmp(p.sa.states[0].hsId, cur, 32) == 0);
+
+    // The archived state stops opening anything once it is past the TTL.
+    BOOST_REQUIRE(NyxSessionSeal(old.states[0], Pt("late"), t1 + 7, body));
+    BOOST_CHECK_EQUAL(p.ToA(body, pt, t1 + NYX_SKIPPED_TTL + 10), NYX_DR_NO_HEADER);
+    BOOST_CHECK(memcmp(p.sa.states[0].hsId, cur, 32) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(decrypt_requires_matching_devices_certs_and_epochs)
+{
+    Pair p;
+    NyxBytes pt;
+    const NyxBytes h = p.FromA("x");
+    BOOST_REQUIRE_EQUAL(p.ToB(h, pt), NYX_DR_OK);
+    const NyxRatchet& rb = p.sb.states[0];
+    NyxSessBind ok;
+    memcpy(ok.localDev, rb.localDev, 16);
+    memcpy(ok.localCert, rb.localCert, 32);
+    ok.localEpoch = rb.localEpoch;
+    memcpy(ok.remoteAddr, p.a.addr, 20);
+    memcpy(ok.remoteDev, p.a.dev.deviceId, 16);
+    memcpy(ok.remoteCert, rb.remoteCert, 32);
+    ok.remoteEpoch = rb.remoteEpoch;
+    BOOST_CHECK(ok.Matches(rb));
+
+    // The repeated-handshake path: any mismatch leaves the state untouched.
+    const NyxBytes h2 = p.FromA("y");
+    NyxHandshake hs;
+    BOOST_REQUIRE_EQUAL(NyxParseHandshake(&h2[0], h2.size(), hs), 0);
+    const std::string before = p.sb.Serialize();
+    for (int k = 0; k < 7; ++k)
+    {
+        NyxSessBind bad = ok;
+        switch (k)
+        {
+        case 0: bad.localDev[0] ^= 1; break;
+        case 1: bad.localCert[0] ^= 1; break;
+        case 2: bad.localEpoch++; break;
+        case 3: bad.remoteAddr[0] ^= 1; break;
+        case 4: bad.remoteDev[0] ^= 1; break;
+        case 5: bad.remoteCert[0] ^= 1; break;
+        case 6: bad.remoteEpoch++; break;
+        }
+        BOOST_CHECK(!bad.Matches(rb));
+        BOOST_CHECK_EQUAL(p.sb.Decrypt(hs.tail, T0 + 30, pt, &bad), NYX_DR_NO_HEADER);
+        BOOST_CHECK(p.sb.Serialize() == before);
+    }
+    size_t idx = 9;
+    BOOST_REQUIRE_EQUAL(p.sb.Decrypt(hs.tail, T0 + 30, pt, &ok, &idx), NYX_DR_OK);
+    BOOST_CHECK_EQUAL(idx, 0U);
+    BOOST_CHECK_EQUAL(S(pt), "y");
+}
+
+BOOST_AUTO_TEST_CASE(storage_commits_sync_and_inbox_keys_are_per_direction_and_peer)
+{
+    BOOST_CHECK(NyxIdSyncWrites());
+    const std::string local(20, 'L');
+    uint8_t id[16], peerA[20], peerB[20];
+    memset(id, 7, 16);
+    memset(peerA, 1, 20);
+    memset(peerB, 2, 20);
+    const std::string out = NyxInboxKey(local, T0, id, true, peerA);
+    BOOST_CHECK(out != NyxInboxKey(local, T0, id, false, peerA));
+    BOOST_CHECK(out != NyxInboxKey(local, T0, id, true, peerB));
+    BOOST_CHECK(out == NyxInboxKey(local, T0, id, true, peerA));
+    BOOST_CHECK(NyxInboxKey(local, T0, id, true, peerA) < NyxInboxKey(local, T0 + 1, id, false, peerA));
+}
+
+BOOST_AUTO_TEST_CASE(erased_keys_leave_no_copy_past_the_live_elements)
+{
+    Pair p;
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("start"), pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack"), pt), NYX_DR_OK);
+    std::vector<NyxBytes> v;
+    for (int i = 0; i < 4; ++i)
+        v.push_back(p.FromA("m"));
+    BOOST_REQUIRE_EQUAL(p.ToB(v[3], pt), NYX_DR_OK);
+    std::vector<NyxSkippedKey>& sk = p.sb.states[0].skipped;
+    BOOST_REQUIRE_EQUAL(sk.size(), 3U);
+    BOOST_REQUIRE_EQUAL(p.ToB(v[0], pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(sk.size(), 2U);
+    static const uint8_t zero[sizeof(NyxSkippedKey)] = {0};
+    BOOST_CHECK(memcmp(sk.data() + sk.size(), zero, sizeof(NyxSkippedKey)) == 0);
+
+    std::vector<NyxOpk>& o = p.b.dev.opks;
+    BOOST_REQUIRE(o.size() >= 2);
+    const size_t n = o.size();
+    NyxDeviceEraseOpk(p.b.dev, o[0].id);
+    BOOST_REQUIRE_EQUAL(o.size(), n - 1);
+    static const uint8_t zo[sizeof(NyxOpk)] = {0};
+    BOOST_CHECK(memcmp(o.data() + o.size(), zo, sizeof(NyxOpk)) == 0);
 }
 
 BOOST_AUTO_TEST_CASE(envelope_and_parsers)

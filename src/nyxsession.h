@@ -141,13 +141,26 @@ int NyxRatchetDecrypt(NyxRatchet& s, const NyxBytes& tail, int64_t now, NyxBytes
 /** Drops skipped keys older than NYX_SKIPPED_TTL. */
 void NyxRatchetExpire(NyxRatchet& s, int64_t now);
 
+/** Device, cert and keyring epoch of both ends a state must carry to be used. */
+struct NyxSessBind
+{
+    uint8_t localDev[16], localCert[32];
+    uint32_t localEpoch;
+    uint8_t remoteAddr[20], remoteDev[16], remoteCert[32];
+    uint32_t remoteEpoch;
+    bool Matches(const NyxRatchet& r) const;
+};
+
 struct NyxSession
 {
     std::vector<NyxRatchet> states;     // [0] current
     std::string Serialize() const;
     bool Deserialize(const std::string& s);
-    /** Tries every state; one that decrypts becomes current. */
-    int Decrypt(const NyxBytes& tail, int64_t now, NyxBytes& pt);
+    /** Tries the states matching bind (all when NULL); idx is the one that opened it. Archived states are
+     *  receive-only and expire NYX_SKIPPED_TTL after the current one was made; one replaces the current
+     *  only as the tie-break of a simultaneous initiation (made within NYX_HS_RETRY, smaller hsId). */
+    int Decrypt(const NyxBytes& tail, int64_t now, NyxBytes& pt, const NyxSessBind* bind = NULL,
+                size_t* idx = NULL);
     /** New state becomes current; the oldest beyond NYX_SESSION_STATES is wiped. */
     void Push(const NyxRatchet& r);
     int FindHs(const uint8_t hsId[32]) const;

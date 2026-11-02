@@ -1079,8 +1079,24 @@ void NyxOwnDevice::Wipe()
     OPENSSL_cleanse(spkSk, sizeof(spkSk));
     OPENSSL_cleanse(prevSpkSk, sizeof(prevSpkSk));
     OPENSSL_cleanse(prevKemSeed, sizeof(prevKemSeed));
-    for (size_t i = 0; i < opks.size(); ++i)
-        OPENSSL_cleanse(opks[i].sk, sizeof(opks[i].sk));
+    if (opks.capacity())
+        OPENSSL_cleanse(opks.data(), opks.capacity() * sizeof(NyxOpk));
+    opks.clear();
+}
+
+// Grows into a fresh buffer and wipes the old one, so no key copy is freed uncleansed.
+static void OpkPush(std::vector<NyxOpk>& v, const NyxOpk& o)
+{
+    if (v.size() == v.capacity())
+    {
+        std::vector<NyxOpk> w;
+        w.reserve(std::max<size_t>(4 * NYX_OPK_TARGET, v.capacity() * 2));
+        w = v;
+        if (v.capacity())
+            OPENSSL_cleanse(v.data(), v.capacity() * sizeof(NyxOpk));
+        v.swap(w);
+    }
+    v.push_back(o);
 }
 
 NyxOwnDevice::~NyxOwnDevice()
@@ -1173,6 +1189,8 @@ bool NyxOwnDevice::Deserialize(const std::string& s)
     if (!r.fOk || a.size() != 1)
         return false;
     fCloneAlarm = a[0] != 0;
+    if (opks.capacity())
+        OPENSSL_cleanse(opks.data(), opks.capacity() * sizeof(NyxOpk));
     opks.clear();
     if (ver[0] == 2)
     {
@@ -1196,7 +1214,7 @@ bool NyxOwnDevice::Deserialize(const std::string& s)
             r.Raw(o.sk, 32);
             const bool fOk = r.fOk && nyx_x25519(o.sk, base, o.pk) == 0;
             if (fOk)
-                opks.push_back(o);
+                OpkPush(opks, o);
             OPENSSL_cleanse(o.sk, 32);
             if (!fOk)
                 return false;
@@ -1332,7 +1350,7 @@ bool NyxDeviceTopUpOpks(NyxOwnDevice& dev, int64_t now)
         o.id = dev.opkNext++;
         if (o.id == 0xFFFFFFFFu || nyx_x25519_keygen(o.sk, o.pk) != 0)
             break;
-        dev.opks.push_back(o);
+        OpkPush(dev.opks, o);
         OPENSSL_cleanse(o.sk, 32);
         dev.opkMinted++;
         fChanged = true;
@@ -1412,6 +1430,7 @@ void NyxDeviceEraseOpk(NyxOwnDevice& dev, uint32_t id)
         {
             OPENSSL_cleanse(dev.opks[i].sk, 32);
             dev.opks.erase(dev.opks.begin() + i);
+            OPENSSL_cleanse(dev.opks.data() + dev.opks.size(), sizeof(NyxOpk));
             return;
         }
 }

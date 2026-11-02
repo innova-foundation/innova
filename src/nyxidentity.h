@@ -48,6 +48,11 @@ bool NyxSessSend(const std::string& from, const std::string& to, const std::stri
                  std::string& sError);
 bool NyxSessList(const std::string& addr, json_spirit::Array& out, std::string& sError);
 bool NyxSessMessages(const std::string& addr, const std::string& peer, json_spirit::Array& out, std::string& sError);
+/** Session, seen-handshake and OPK commits are synced before anything is sent. */
+bool NyxIdSyncWrites();
+/** Inbox record key: one record per (time, logicalId, direction, peer). */
+std::string NyxInboxKey(const std::string& local, int64_t t, const uint8_t logicalId[16], bool fOut,
+                        const uint8_t peer[20]);
 bool NyxSessDelete(const std::string& addr, const std::string& peer, json_spirit::Object& out, std::string& sError);
 
 #endif // INNOVA_NYXIDENTITY_H
