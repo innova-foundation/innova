@@ -21,7 +21,6 @@
 #include "addrman.h"
 #include "bloom.h"
 
-class CRequestTracker;
 class CNode;
 class CBlockIndex;
 extern int nBestHeight;
@@ -126,23 +125,6 @@ enum
     MSG_COLLATERALNODE_WINNER
 };
 
-class CRequestTracker
-{
-public:
-    void (*fn)(void*, CDataStream&);
-    void* param1;
-
-    explicit CRequestTracker(void (*fnIn)(void*, CDataStream&)=NULL, void* param1In=NULL)
-    {
-        fn = fnIn;
-        param1 = param1In;
-    }
-
-    bool IsNull()
-    {
-        return fn == NULL;
-    }
-};
 
 
 /** Thread types */
@@ -451,8 +433,6 @@ protected:
 	std::vector<std::string> vecRequestsFulfilled; //keep track of what client has asked for
 
 public:
-    std::map<uint256, CRequestTracker> mapRequests;
-    CCriticalSection cs_mapRequests;
     uint256 hashContinue;
     CBlockIndex* pindexLastGetBlocksBegin;
     std::vector<CBlockIndex*> getBlocksIndex;
