@@ -586,11 +586,19 @@ int NyxSession::Decrypt(const NyxBytes& tail, int64_t now, NyxBytes& pt, const N
             continue;
         if (i > 0 && now - states[0].created > NYX_SKIPPED_TTL)
             continue;
+        // Simultaneous initiation: opposite directions, made within NYX_HS_RETRY, the initiator side unacked.
+        bool fSimul = false;
+        if (i != 0)
+        {
+            const NyxRatchet& c = states[0];
+            const NyxRatchet& o = states[i];
+            const int64_t dt = c.created > o.created ? c.created - o.created : o.created - c.created;
+            fSimul = c.fInitiator != o.fInitiator && dt < NYX_HS_RETRY && !(c.fInitiator ? c.fAcked : o.fAcked);
+        }
         const int r = NyxRatchetDecrypt(states[i], tail, now, pt);
         if (r == NYX_DR_OK)
         {
-            if (i != 0 && states[i].created + NYX_HS_RETRY >= states[0].created
-                && memcmp(states[i].hsId, states[0].hsId, 32) < 0)
+            if (fSimul && memcmp(states[i].hsId, states[0].hsId, 32) < 0)
             {
                 std::swap(states[0], states[i]);
                 i = 0;
