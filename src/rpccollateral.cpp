@@ -1392,4 +1392,3 @@ Value collateralnode(const Array& params, bool fHelp)
 
     return Value::null;
 }
-

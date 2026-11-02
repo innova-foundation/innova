@@ -4367,4 +4367,3 @@ Value revokecoldstaking(const Array& params, bool fHelp)
 
     return result;
 }
-
