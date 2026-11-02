@@ -36,7 +36,8 @@ jobs:
             git fetch --no-tags origin "${{ github.base_ref }}"
             base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
             git diff --check "$base" HEAD
-          elif [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+          elif [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]] \
+               || ! git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
             git diff-tree --check --no-commit-id -r HEAD
           else
             git diff --check "${{ github.event.before }}" HEAD
