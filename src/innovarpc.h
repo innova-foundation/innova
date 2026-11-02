@@ -338,16 +338,7 @@ extern json_spirit::Value clearwallettransactions(const json_spirit::Array& para
 extern json_spirit::Value scanforalltxns(const json_spirit::Array& params, bool fHelp);
 
 //RPC Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
-extern json_spirit::Value sendinntoanon(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sendanontoanon(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sendanontoinn(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value estimateanonfee(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value checkanonbalance(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value anonoutputs(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value anoninfo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value reloadanondata(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value txnreport(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getanonoutputinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listcompromisedoutputs(const json_spirit::Array& params, bool fHelp);
 
 // cold staking
