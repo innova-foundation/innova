@@ -122,7 +122,9 @@ static bool DbWrite(const std::string& key, const std::string& v)
     SecMsgDB db;
     if (!db.Open("cw"))
         return false;
-    return db.pdb->Put(leveldb::WriteOptions(), key, v).ok();
+    leveldb::WriteOptions wo;
+    wo.sync = NyxIdSyncWrites();
+    return db.pdb->Put(wo, key, v).ok();
 }
 
 // All writes made while it is open land in one leveldb batch on Commit, or none do.
@@ -139,9 +141,16 @@ struct DbBatch
             wb.Put(v[i].first, v[i].second);
         LOCK(cs_smsgDB);
         SecMsgDB db;
-        return db.Open("cw") && db.pdb->Write(leveldb::WriteOptions(), &wb).ok();
+        leveldb::WriteOptions wo;
+        wo.sync = NyxIdSyncWrites();
+        return db.Open("cw") && db.pdb->Write(wo, &wb).ok();
     }
 };
+
+bool NyxIdSyncWrites()
+{
+    return true;
+}
 
 static void HostFp(uint8_t out[32])
 {
@@ -205,7 +214,9 @@ void NyxIdOnWalletEncrypted(CCryptoKeyStore* ks)
             batch.Put(NYX_DB_SK, newRec);
             // Old and new values in one memtable flush to one table that compaction may never revisit.
             db.pdb->CompactRange(NULL, NULL);
-            if (db.pdb->Write(leveldb::WriteOptions(), &batch).ok())
+            leveldb::WriteOptions wo;
+            wo.sync = true;
+            if (db.pdb->Write(wo, &batch).ok())
             {
                 db.pdb->CompactRange(NULL, NULL);
                 if (fSkLoaded)
@@ -1248,9 +1259,9 @@ void NyxIdHousekeeping()
 
 // ---------------------------------------------------------------- 1:1 sessions
 
-static const char NYX_DB_SESS[] = "nys";    // local20 || remoteDev16
+static const char NYX_DB_SESS[] = "nys";    // local20 || localDev16 || remoteDev16
 static const char NYX_DB_SEEN[] = "nye";    // local20
-static const char NYX_DB_INBOX[] = "nyi";   // local20 || time BE8 || logicalId16
+static const char NYX_DB_INBOX[] = "nyi";   // local20 || time BE8 || logicalId16 || dir1 || peer20
 static const char NYX_DB_INBOXID[] = "nyj"; // local20 || H(sk, dir, peer, logicalId)16
 static const int64_t NYX_HELD_UNPINNED = 60 * 60;
 static const int64_t NYX_HELD_FROZEN = 60 * 60 * 48;
@@ -1287,8 +1298,12 @@ static void DbErase(const std::vector<std::string>& keys)
     SecMsgDB db;
     if (!db.Open("cw"))
         return;
+    leveldb::WriteBatch wb;
     for (size_t i = 0; i < keys.size(); ++i)
-        db.pdb->Delete(leveldb::WriteOptions(), keys[i]);
+        wb.Delete(keys[i]);
+    leveldb::WriteOptions wo;
+    wo.sync = true;
+    db.pdb->Write(wo, &wb);
     std::string lo = keys.front(), hi = keys.front();
     for (size_t i = 1; i < keys.size(); ++i)
     {
@@ -1314,25 +1329,50 @@ static bool OpenGet(const std::string& key, std::string& plain)
     return DbRead(key, sealed) && NyxStoreOpen(skCache, key, sealed, plain);
 }
 
-static std::string SessKey(const std::string& local, const uint8_t dev[16])
+static std::string SessKey(const std::string& local, const uint8_t localDev[16], const uint8_t dev[16])
 {
-    return NYX_DB_SESS + local + std::string((const char*)dev, 16);
+    return NYX_DB_SESS + local + std::string((const char*)localDev, 16) + std::string((const char*)dev, 16);
 }
 
-static bool LoadSess(const std::string& local, const uint8_t dev[16], NyxSession& s)
+static bool LoadSess(const std::string& local, const uint8_t localDev[16], const uint8_t dev[16], NyxSession& s)
 {
     std::string plain;
     s.states.clear();
-    const bool fOk = OpenGet(SessKey(local, dev), plain) && s.Deserialize(plain);
+    const bool fOk = OpenGet(SessKey(local, localDev, dev), plain) && s.Deserialize(plain);
     if (!plain.empty())
         OPENSSL_cleanse(&plain[0], plain.size());
     return fOk;
 }
 
-static bool SaveSess(const std::string& local, const uint8_t dev[16], const NyxSession& s)
+static bool SaveSess(const std::string& local, const uint8_t localDev[16], const uint8_t dev[16],
+                     const NyxSession& s)
 {
     std::string plain = s.Serialize();
-    return SealPut(SessKey(local, dev), plain);
+    return SealPut(SessKey(local, localDev, dev), plain);
+}
+
+static void Bind(const NyxLocalSide& me, const uint8_t addr[20], const NyxPinDevice& pd, uint32_t epoch,
+                 NyxSessBind& b)
+{
+    memcpy(b.localDev, me.dev->deviceId, 16);
+    memcpy(b.localCert, me.certHash, 32);
+    b.localEpoch = me.epoch;
+    memcpy(b.remoteAddr, addr, 20);
+    memcpy(b.remoteDev, pd.cert.deviceId, 16);
+    memcpy(b.remoteCert, pd.certHash, 32);
+    b.remoteEpoch = epoch;
+}
+
+std::string NyxInboxKey(const std::string& local, int64_t t, const uint8_t logicalId[16], bool fOut,
+                        const uint8_t peer[20])
+{
+    std::string key = NYX_DB_INBOX + local;
+    for (int i = 7; i >= 0; --i)
+        key.push_back((char)(t >> (8 * i)));
+    key.append((const char*)logicalId, 16);
+    key.push_back((char)fOut);
+    key.append((const char*)peer, 20);
+    return key;
 }
 
 // Seen handshake ids of one local address: id32 -> handshake ts.
@@ -1365,7 +1405,9 @@ static bool SaveSeen(const std::string& local, const std::map<std::string, int64
 static bool StoreInbox(const std::string& local, bool fOut, const uint8_t peer[20], const uint8_t dev[16],
                        int64_t t, const NyxEnvelope& env, uint8_t mode)
 {
-    NyxBytes idIn(skCache, skCache + 32);
+    NyxBytes idIn;
+    idIn.reserve(32 + 1 + 20 + 16);
+    idIn.insert(idIn.end(), skCache, skCache + 32);
     idIn.push_back((uint8_t)fOut);
     idIn.insert(idIn.end(), peer, peer + 20);
     idIn.insert(idIn.end(), env.logicalId, env.logicalId + 16);
@@ -1376,10 +1418,7 @@ static bool StoreInbox(const std::string& local, bool fOut, const uint8_t peer[2
     std::string probe;
     if (DbRead(idKey, probe))
         return true;
-    std::string key = NYX_DB_INBOX + local;
-    for (int i = 7; i >= 0; --i)
-        key.push_back((char)(t >> (8 * i)));
-    key.append((const char*)env.logicalId, 16);
+    const std::string key = NyxInboxKey(local, t, env.logicalId, fOut, peer);
     std::string v;
     v.reserve(70 + env.text.size());
     v.push_back((char)fOut);
@@ -1520,7 +1559,7 @@ static int SessRx(const std::string& local, const NyxBytes& body, std::string& w
             return NYX_RX_DROP;
         }
         NyxSession s;
-        if (!LoadSess(local, m.devA, s) || s.states.empty())
+        if (!LoadSess(local, d->deviceId, m.devA, s) || s.states.empty())
         {
             why = "no session with the sending device";
             return NYX_RX_DROP;
@@ -1545,22 +1584,20 @@ static int SessRx(const std::string& local, const NyxBytes& body, std::string& w
             why = "sending device is not live in the sender's pinned keyring";
             return NYX_RX_DROP;
         }
+        NyxSessBind bind;
+        Bind(me, (const uint8_t*)peer.data(), *pd, itP->second.kr.epoch, bind);
         NyxBytes pt;
-        const int r = s.Decrypt(m.tail, now, pt);
+        size_t idx = 0;
+        const int r = s.Decrypt(m.tail, now, pt, &bind, &idx);
         if (r != NYX_DR_OK)
         {
-            why = "ratchet message refused (" + boost::lexical_cast<std::string>(r) + ")";
-            return NYX_RX_DROP;
-        }
-        if (s.states[0].remoteEpoch != itP->second.kr.epoch)
-        {
-            OPENSSL_cleanse(&pt[0], pt.size());
-            why = "session predates the sender's current keyring epoch";
+            why = "ratchet message refused (" + boost::lexical_cast<std::string>(r)
+                + "): no state for this device, certs and epochs opens it";
             return NYX_RX_DROP;
         }
         DbBatch batch;
-        SaveSess(local, m.devA, s);
-        const int rv = Deliver(local, s.states[0], pt);
+        SaveSess(local, d->deviceId, m.devA, s);
+        const int rv = Deliver(local, s.states[idx], pt);
         if (!pt.empty())
             OPENSSL_cleanse(&pt[0], pt.size());
         if (!batch.Commit())
@@ -1613,21 +1650,27 @@ static int SessRx(const std::string& local, const NyxBytes& body, std::string& w
     uint8_t hsId[32];
     NyxHsId(hs, hsId);
     NyxSession s;
-    LoadSess(local, hs.devA, s);
+    LoadSess(local, d->deviceId, hs.devA, s);
     NyxBytes pt;
+    size_t idx = 0;
     DbBatch batch;
-    if (s.FindHs(hsId) >= 0)
+    const int iHs = s.FindHs(hsId);
+    if (iHs >= 0)
     {
-        const int r = s.Decrypt(hs.tail, now, pt);
-        if (r != NYX_DR_OK)
+        NyxSessBind bind;
+        Bind(me, hs.addrA, *pd, p->kr.epoch, bind);
+        if (!bind.Matches(s.states[iHs]) || memcmp(hs.certHashA, pd->certHash, 32) != 0
+            || memcmp(hs.certHashB, me.certHash, 32) != 0)
         {
-            why = "repeated handshake message refused (" + boost::lexical_cast<std::string>(r) + ")";
+            why = "repeated handshake does not match the session's sender, devices, certs or epochs";
             return NYX_RX_DROP;
         }
-        if (s.states[0].remoteEpoch != p->kr.epoch)
+        const int r = s.Decrypt(hs.tail, now, pt, &bind, &idx);
+        if (r != NYX_DR_OK || memcmp(s.states[idx].hsId, hsId, 32) != 0)
         {
-            OPENSSL_cleanse(&pt[0], pt.size());
-            why = "session predates the initiator's current keyring epoch";
+            if (!pt.empty())
+                OPENSSL_cleanse(&pt[0], pt.size());
+            why = "repeated handshake message refused (" + boost::lexical_cast<std::string>(r) + ")";
             return NYX_RX_DROP;
         }
     }
@@ -1671,8 +1714,8 @@ static int SessRx(const std::string& local, const NyxBytes& body, std::string& w
             RebuildBundle(local, *d, vPub);
         }
     }
-    SaveSess(local, hs.devA, s);
-    const int rv = Deliver(local, s.states[0], pt);
+    SaveSess(local, d->deviceId, hs.devA, s);
+    const int rv = Deliver(local, s.states[idx], pt);
     if (!pt.empty())
         OPENSSL_cleanse(&pt[0], pt.size());
     if (!batch.Commit())
@@ -1819,7 +1862,7 @@ bool NyxSessSend(const std::string& sFrom, const std::string& sTo, const std::st
             Object o;
             o.push_back(Pair("device", Hex(pd.cert.deviceId, 16)));
             NyxSession s;
-            LoadSess(local, pd.cert.deviceId, s);
+            LoadSess(local, d->deviceId, pd.cert.deviceId, s);
             if (s.NeedsHandshake(me.certHash, me.epoch, pd.certHash, p->kr.epoch, now))
             {
                 std::map<std::string, NyxBundle>::iterator itB = bundles.find(usable[i]);
@@ -1849,7 +1892,7 @@ bool NyxSessSend(const std::string& sFrom, const std::string& sTo, const std::st
                 devs.push_back(o);
                 continue;
             }
-            SaveSess(local, pd.cert.deviceId, s);
+            SaveSess(local, d->deviceId, pd.cert.deviceId, s);
             o.push_back(Pair("handshake", body[0] == NYX_BODY_HANDSHAKE));
             o.push_back(Pair("opk", s.states[0].fOpk));
             o.push_back(Pair("bytes", (int)body.size()));

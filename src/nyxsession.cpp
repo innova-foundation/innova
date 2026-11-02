@@ -242,8 +242,8 @@ void NyxRatchet::Wipe()
     OPENSSL_cleanse(HKr, 32);
     OPENSSL_cleanse(NHKs, 32);
     OPENSSL_cleanse(NHKr, 32);
-    for (size_t i = 0; i < skipped.size(); ++i)
-        OPENSSL_cleanse(&skipped[i], sizeof(NyxSkippedKey));
+    if (skipped.capacity())
+        OPENSSL_cleanse(skipped.data(), skipped.capacity() * sizeof(NyxSkippedKey));
     skipped.clear();
 }
 
@@ -393,6 +393,13 @@ static void PushSkipped(std::vector<NyxSkippedKey>& v, const NyxSkippedKey& k)
     v.push_back(k);
 }
 
+static void EraseSkipped(std::vector<NyxSkippedKey>& v, size_t i)
+{
+    OPENSSL_cleanse(&v[i], sizeof(NyxSkippedKey));
+    v.erase(v.begin() + i);
+    OPENSSL_cleanse(v.data() + v.size(), sizeof(NyxSkippedKey));
+}
+
 static int SkipKeys(NyxRatchet& s, uint32_t until, int64_t now)
 {
     if (until < s.Nr)
@@ -417,8 +424,7 @@ static int SkipKeys(NyxRatchet& s, uint32_t until, int64_t now)
         OPENSSL_cleanse(ck, 32);
         if (s.skipped.size() >= NYX_MAX_SKIPPED)
         {
-            OPENSSL_cleanse(&s.skipped[0], sizeof(NyxSkippedKey));
-            s.skipped.erase(s.skipped.begin());
+            EraseSkipped(s.skipped, 0);
         }
         PushSkipped(s.skipped, k);
         OPENSSL_cleanse(&k, sizeof(k));
@@ -459,8 +465,7 @@ void NyxRatchetExpire(NyxRatchet& s, int64_t now)
     for (size_t i = 0; i < s.skipped.size();)
         if (now - s.skipped[i].ts > NYX_SKIPPED_TTL)
         {
-            OPENSSL_cleanse(&s.skipped[i], sizeof(NyxSkippedKey));
-            s.skipped.erase(s.skipped.begin() + i);
+            EraseSkipped(s.skipped, i);
         }
         else
             ++i;
@@ -488,8 +493,7 @@ int NyxRatchetDecrypt(NyxRatchet& st, const NyxBytes& tail, int64_t now, NyxByte
             continue;
         if (!OpenBody(s, s.skipped[i].mk, tail, pt))
             return NYX_DR_AUTH;
-        OPENSSL_cleanse(&s.skipped[i], sizeof(NyxSkippedKey));
-        s.skipped.erase(s.skipped.begin() + i);
+        EraseSkipped(s.skipped, i);
         if (s.fInitiator)
             s.fAcked = true;
         s.lastUsed = now;
@@ -565,16 +569,34 @@ bool NyxSession::Deserialize(const std::string& s)
     return off == s.size();
 }
 
-int NyxSession::Decrypt(const NyxBytes& tail, int64_t now, NyxBytes& pt)
+bool NyxSessBind::Matches(const NyxRatchet& r) const
+{
+    return memcmp(r.localDev, localDev, 16) == 0 && memcmp(r.localCert, localCert, 32) == 0
+        && r.localEpoch == localEpoch && memcmp(r.remoteAddr, remoteAddr, 20) == 0
+        && memcmp(r.remoteDev, remoteDev, 16) == 0 && memcmp(r.remoteCert, remoteCert, 32) == 0
+        && r.remoteEpoch == remoteEpoch;
+}
+
+int NyxSession::Decrypt(const NyxBytes& tail, int64_t now, NyxBytes& pt, const NyxSessBind* bind, size_t* idx)
 {
     int best = NYX_DR_NO_HEADER;
     for (size_t i = 0; i < states.size(); ++i)
     {
+        if (bind && !bind->Matches(states[i]))
+            continue;
+        if (i > 0 && now - states[0].created > NYX_SKIPPED_TTL)
+            continue;
         const int r = NyxRatchetDecrypt(states[i], tail, now, pt);
         if (r == NYX_DR_OK)
         {
-            if (i != 0)
+            if (i != 0 && states[i].created + NYX_HS_RETRY >= states[0].created
+                && memcmp(states[i].hsId, states[0].hsId, 32) < 0)
+            {
                 std::swap(states[0], states[i]);
+                i = 0;
+            }
+            if (idx)
+                *idx = i;
             return r;
         }
         if (r != NYX_DR_NO_HEADER)
