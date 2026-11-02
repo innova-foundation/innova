@@ -81,7 +81,6 @@ int nCollateralNRounds = 2;
 
 int nMinStakeInterval = 30;         // in seconds, min time between successful stakes
 
-/** Spork enforcement enabled time */
 int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 

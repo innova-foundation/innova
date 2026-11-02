@@ -20,7 +20,6 @@
 #include "checkpoints.h"
 #include "activecollateralnode.h"
 #include "collateralnodeconfig.h"
-#include "spork.h"
 #include "smessage.h"
 #include "ringsig.h"
 #include "nullsend.h"
@@ -39,6 +38,7 @@
 #include "idnsdescriptor.h" // NATIVETOR_HOSTNAME_TIMEOUT_SECS
 #endif
 
+#include <boost/lexical_cast.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
@@ -1969,8 +1969,6 @@ bool AppInit2()
     {
         if (!collateralnodePayments.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
             return InitError(_("Unable to sign collateralnode payment winner, wrong key?"));
-        if (!sporkManager.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
-            return InitError(_("Unable to sign spork message, wrong key?"));
     }
 
     //ignore collateralnodes below protocol version

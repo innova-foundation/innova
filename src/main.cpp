@@ -18333,7 +18333,7 @@ bool static AlreadyHave(CTxDB& txdb, const CInv& inv)
                mapOrphanBlocks.count(inv.hash) ||
                IsTransientlyHeld(inv.hash);
     case MSG_SPORK:
-        return mapSporks.count(inv.hash);
+        return true;
     case MSG_COLLATERALNODE_WINNER:
         return mapSeenCollateralnodeVotes.count(inv.hash);
     }
@@ -18465,15 +18465,6 @@ void static ProcessGetData(CNode* pfrom)
                                        inv.hash.ToString().substr(0,10).c_str(),
                                        pfrom->addr.ToString().c_str());
                         }
-                    }
-                }
-                if (!pushed && inv.type == MSG_SPORK) {
-                    if(mapSporks.count(inv.hash)){
-                        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-                        ss.reserve(1000);
-                        ss << mapSporks[inv.hash];
-                        pfrom->PushMessage("spork", ss);
-                        pushed = true;
                     }
                 }
                 if (!pushed && inv.type == MSG_COLLATERALNODE_WINNER) {

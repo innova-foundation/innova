@@ -839,7 +839,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
 
         if(bCollateralNodePayment) {
             bool hasPayment = true;
-            //spork
             bool found = false;
             CScript payee;
             if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
