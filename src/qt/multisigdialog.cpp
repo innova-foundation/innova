@@ -22,7 +22,7 @@
 #ifdef USE_LEVELDB
 #include "txdb-leveldb.h"
 #else
-#include "txdb-bdb.h"
+#include "txdb.h"
 #endif
 
 MultisigDialog::MultisigDialog(QWidget *parent) : QDialog(parent), ui(new Ui::MultisigDialog), model(0)

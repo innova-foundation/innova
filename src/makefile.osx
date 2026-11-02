@@ -661,9 +661,6 @@ leveldb/libleveldb.a: FORCE
 		libleveldb.a libmemenv.a
 obj/txdb-leveldb.o: leveldb/libleveldb.a
 endif
-ifneq (${USE_LEVELDB}, 1)
-OBJS += obj/txdb-bdb.o
-endif
 
 # auto-generated dependencies:
 # Keep nested test/minizip objects header-correct.  Omitting obj/test/*.P can

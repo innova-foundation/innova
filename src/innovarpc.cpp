@@ -211,7 +211,7 @@ static int HelpGroup(const string& m)
         {"getwork", 4}, {"getblocktemplate", 4}, {"submitblock", 4}, {"setgenerate", 4}, {"startmining", 4},
         {"stopmining", 4}, {"getmining", 4}, {"gethashes", 4}, {"getpool", 4},
         {"reservebalance", 5}, {"delegatestake", 5}, {"listcold", 5}, {"getcoldstaking", 5},
-        {"revokecoldstaking", 5}, {"getnewstaking", 5}, {"masternode", 5}, {"collateralnode", 5},
+        {"revokecoldstaking", 5}, {"getnewstaking", 5}, {"collateralnode", 5},
         {"smsg", 6}, {"name_", 6}, {"sendtoname", 6}, {"hyperfile", 6}, {"proofofdata", 6}, {"podverify", 6},
         {"nyx", 6},
         {"help", 7}, {"stop", 7}, {"getinfo", 7}, {"setdebug", 7},
@@ -383,7 +383,6 @@ static const CRPCCommand vRPCCommands[] =
     { "invalidateblock",        &invalidateblock,        false,  false },
     { "reconsiderblock",        &reconsiderblock,        false,  false },
     { "erasedagvertex",        &erasedagvertex,        false,  false },
-    { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblockhash",           &getblockhash,           false,  false },
     { "gettransaction",         &gettransaction,         false,  false },
@@ -462,7 +461,6 @@ static const CRPCCommand vRPCCommands[] =
     { "downloadbootstrap",      &downloadbootstrap,      false,  false},
 
     /* Collateralnode features */
-    { "masternode",           	&masternode,             true,   false},
     { "collateralnode",           &collateralnode,           true,   false},
 
     /* NullSend Mixing */
@@ -1702,7 +1700,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getbalance"             && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblock"               && n > 1) ConvertToBoolOrInt(params[1]);
 	if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "getblock_old"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockhash"           && n > 0) ConvertTo<int64_t>(params[0]);

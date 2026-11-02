@@ -293,25 +293,7 @@ contains(BITCOIN_NEED_QT_PLUGINS, 1) {
     # Qt4-era text codec / accessibility plugins removed in Qt6 (were dead here: block is off by default)
 }
 
-# use: qmake "USE_LEVELDB=1" ( enabled by default; default)
-#  or: qmake "USE_LEVELDB=0" (disabled by default)
-#  or: qmake "USE_LEVELDB=-" (not supported)
-contains(USE_LEVELDB, -) {
-	message(Building with Berkeley DB transaction index)
-
-	    SOURCES += src/txdb-bdb.cpp \
-		src/hash.cpp \
-		src/aes_helper.c \
-		src/echo.c \
-		src/jh.c \
-		src/keccak.c
-
-} else {
-	message(Building with LevelDB transaction index)
-	count(USE_LEVELDB, 0) {
-        USE_LEVELDB=1
-    }
-
+true {
 	DEFINES += USE_LEVELDB
 
     INCLUDEPATH += src/leveldb/include src/leveldb/helpers
