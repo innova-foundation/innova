@@ -3318,7 +3318,8 @@ bool CatchUpNameIndex(CBlockIndex* pindexTip, std::string& strError)
             strError = strprintf("canonical block missing/corrupt at height %d", nHeight);
             return false;
         }
-        if (!ApplyNameIndexRebuildBlock(txdb, block, pindex, strError))
+        if (nHeight >= RELEASE_HEIGHT &&
+            !ApplyNameIndexRebuildBlock(txdb, block, pindex, strError))
             return false;
     }
     return CommitNameIndexTip(pindexTip, strError);
@@ -4059,6 +4060,8 @@ namespace {
 // Nothing else is retained: the intermediate blocks wrote only the same two
 // keys, so replaying the last block alone reaches the same bytes.
 bool g_fPendingNameCursor = false;
+// A pre-release block commits only its cursor, never a transition.
+bool g_fPendingNameCursorOnly = false;
 CBlockIndex* g_pPendingNameIndex = NULL;
 CNameIndexCursor g_pendingNameCursor;
 std::set<uint256> g_setPendingNameSkipped;
@@ -4103,6 +4106,7 @@ int PendingNameIndexCursorBlocks()
 void DiscardNameIndexCursorBatch()
 {
     g_fPendingNameCursor = false;
+    g_fPendingNameCursorOnly = false;
     g_pPendingNameIndex = NULL;
     g_pendingNameCursor = CNameIndexCursor();
     g_setPendingNameSkipped.clear();
@@ -4142,6 +4146,29 @@ bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
     g_setPendingNameSkipped = setDAGSkippedTxs;
     g_nPendingNameBlocks++;
     g_fPendingNameCursor = true;
+    g_fPendingNameCursorOnly = false;
+    return true;
+}
+
+bool DeferNameIndexTip(CBlockIndex* pindex, std::string& strError)
+{
+    strError.clear();
+    if (!pindex || !pindex->phashBlock)
+    {
+        strError = "name-index cursor defer is missing a block index";
+        return false;
+    }
+    if (g_fPendingNameCursor && !g_fPendingNameCursorOnly &&
+        !FlushNameIndexCursorBatch(strError))
+        return false;
+    if (!g_fPendingNameCursor)
+        g_nPendingNameStarted = GetTime();
+    g_pPendingNameIndex = pindex;
+    g_pendingNameCursor = MakeNameIndexCursor(pindex);
+    g_setPendingNameSkipped.clear();
+    g_nPendingNameBlocks++;
+    g_fPendingNameCursor = true;
+    g_fPendingNameCursorOnly = true;
     return true;
 }
 
@@ -4154,6 +4181,13 @@ bool FlushNameIndexCursorBatch(std::string& strError)
     {
         strError = "deferred name-index cursor lost its block index";
         return false;
+    }
+    if (g_fPendingNameCursorOnly)
+    {
+        if (!CommitNameIndexTip(g_pPendingNameIndex, strError))
+            return false;
+        DiscardNameIndexCursorBatch();
+        return true;
     }
 
     // Rebuild the effect-free transition the deferred block would have

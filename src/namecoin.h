@@ -408,6 +408,7 @@ bool NameIndexCursorBatchDue();
 bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
                           const std::set<uint256>& setDAGSkippedTxs,
                           std::string& strError);
+bool DeferNameIndexTip(CBlockIndex* pindex, std::string& strError);
 bool FlushNameIndexCursorBatch(std::string& strError);
 void DiscardNameIndexCursorBatch();
 bool HasPendingNameIndexCursor();

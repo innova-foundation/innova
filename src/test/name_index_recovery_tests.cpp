@@ -337,6 +337,27 @@ BOOST_AUTO_TEST_CASE(cursor_requires_exact_tip)
     BOOST_CHECK(strError.find("does not match canonical tip") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(deferred_tip_cursor_commits_only_on_flush)
+{
+    uint256 hashA, hashB, hashC;
+    CBlockIndex a = MakeTestTip(hashA, 500, 0x500);
+    CBlockIndex b = MakeTestTip(hashB, 501, 0x501);
+    CBlockIndex c = MakeTestTip(hashC, 502, 0x502);
+    std::string strError;
+    DiscardNameIndexCursorBatch();
+    BOOST_REQUIRE_MESSAGE(CommitNameIndexTip(&a, strError), strError);
+
+    BOOST_REQUIRE_MESSAGE(DeferNameIndexTip(&b, strError), strError);
+    BOOST_REQUIRE_MESSAGE(DeferNameIndexTip(&c, strError), strError);
+    BOOST_CHECK(HasPendingNameIndexCursor());
+    BOOST_CHECK_EQUAL(PendingNameIndexCursorBlocks(), 2);
+    BOOST_CHECK_MESSAGE(ValidateNameIndexTip(&a, strError), strError);
+
+    BOOST_REQUIRE_MESSAGE(FlushNameIndexCursorBatch(strError), strError);
+    BOOST_CHECK(!HasPendingNameIndexCursor());
+    BOOST_CHECK_MESSAGE(ValidateNameIndexTip(&c, strError), strError);
+}
+
 BOOST_AUTO_TEST_CASE(cursor_rejects_missing_schema_and_wrong_era)
 {
     uint256 hashTip;

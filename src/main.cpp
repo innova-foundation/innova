@@ -14160,10 +14160,18 @@ public:
                     else
                     {
                         BLOCK_PHASE(BP_NAME_INDEX);
-                        if (!FlushNameIndexCursorBatch(strNameError))
-                            return FailClosed(entry, strNameError.c_str());
-                        if (!CommitNameIndexTip(entry.pindex, strNameError))
-                            return FailClosed(entry, strNameError.c_str());
+                        if (NameIndexBatchingEnabled())
+                        {
+                            if (!DeferNameIndexTip(entry.pindex, strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                        }
+                        else
+                        {
+                            if (!FlushNameIndexCursorBatch(strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                            if (!CommitNameIndexTip(entry.pindex, strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                        }
                     }
 
                     {
