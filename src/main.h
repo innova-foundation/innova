@@ -63,7 +63,6 @@ class COutPoint;
 
 class CAddress;
 class CInv;
-class CRequestTracker;
 class CNode;
 class CFinalityVote;
 
@@ -296,8 +295,6 @@ inline const uint256& GetGenesisBlockHash()
     return hashGenesisBlock;
 }
 
-//inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
-//inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool V3(int64_t nTime) { return fTestNet || nTime > 1524196491; } //nTime April 20th 2018
 
 // Hard fork height for tighter timestamp drift rules
@@ -1019,7 +1016,6 @@ inline int64_t FutureDrift(int64_t nTime, int nHeight) {
 inline int64_t PastDrift(int64_t nTime)   { return nTime - 10 * 60; } // up to 10 minutes from the past
 inline int64_t FutureDrift(int64_t nTime) { return nTime + 10 * 60; } // up to 10 minutes from the future
 
-//inline unsigned int GetTargetSpacing(int nHeight) { return IsProtocolV2(nHeight) ? 60 : 60; }
 
 inline int64_t GetMNCollateral() { return 25000; }
 

@@ -21,7 +21,6 @@
 #include "addrman.h"
 #include "bloom.h"
 
-class CRequestTracker;
 class CNode;
 class CBlockIndex;
 extern int nBestHeight;
@@ -126,23 +125,6 @@ enum
     MSG_COLLATERALNODE_WINNER
 };
 
-class CRequestTracker
-{
-public:
-    void (*fn)(void*, CDataStream&);
-    void* param1;
-
-    explicit CRequestTracker(void (*fnIn)(void*, CDataStream&)=NULL, void* param1In=NULL)
-    {
-        fn = fnIn;
-        param1 = param1In;
-    }
-
-    bool IsNull()
-    {
-        return fn == NULL;
-    }
-};
 
 
 /** Thread types */
@@ -451,8 +433,6 @@ protected:
 	std::vector<std::string> vecRequestsFulfilled; //keep track of what client has asked for
 
 public:
-    std::map<uint256, CRequestTracker> mapRequests;
-    CCriticalSection cs_mapRequests;
     uint256 hashContinue;
     CBlockIndex* pindexLastGetBlocksBegin;
     std::vector<CBlockIndex*> getBlocksIndex;
@@ -482,7 +462,6 @@ public:
     bool fGetAddr;
     bool fWantsAddrV2;
     std::set<uint256> setKnown;
-    uint256 hashCheckpointKnown; // ppcoin: known sent sync-checkpoint
 
     // inventory based relay
     mruset<CInv> setInventoryKnown;
@@ -593,7 +572,6 @@ public:
         fGetAddr = false;
         fWantsAddrV2 = false;
         nMisbehavior = 0;
-        hashCheckpointKnown = 0;
         setInventoryKnown.max_size(SendBufferSize() / 1000);
         nMigrationWindowStart = 0;
         nMigrationInWindow = 0;
@@ -1248,15 +1226,10 @@ void RelayTransaction(const CTransaction& tx, const uint256& hash, bool fForceRe
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss);
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss, bool fForceRelay);
 void RelayTransactionLockReq(const CTransaction& tx, const uint256& hash, bool relayToAll=false);
-void RelayCollaTeralFinalTransaction(const int sessionID, const CTransaction& txNew);
-void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out);
-void RelayCollaTeralStatus(const int sessionID, const int newState, const int newEntriesCount, const int newAccepted, const std::string error="");
 void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage = 0, const std::string strPoolPayout = "");
 void SendCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage = 0, const std::string strPoolPayout = "");
 void RelayCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void SendCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
-void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
-void RelayCollaTeralCollateralNodeContestant();
 
 
 /** Access to the banlist database (banlist.dat) */

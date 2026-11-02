@@ -20,7 +20,6 @@
 #include "checkpoints.h"
 #include "activecollateralnode.h"
 #include "collateralnodeconfig.h"
-#include "spork.h"
 #include "smessage.h"
 #include "ringsig.h"
 #include "nullsend.h"
@@ -39,6 +38,7 @@
 #include "idnsdescriptor.h" // NATIVETOR_HOSTNAME_TIMEOUT_SECS
 #endif
 
+#include <boost/lexical_cast.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
@@ -97,7 +97,6 @@ unsigned int nBlockMinSize;
 int64_t nMinTxFee = MIN_TX_FEE;
 
 bool fUseFastIndex;
-enum Checkpoints::CPMode CheckpointsMode;
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -748,7 +747,6 @@ std::string HelpMessage()
         "  -dagheadersserve       " + _("Serve headers with their coinbase and DAG parents to peers (default: 1)") + "\n" +
         "  -dagheaderswindow=<n>  " + _("Maximum headers held ahead of block bodies by -dagheaderssync (default: 100000)") + "\n" +
         "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
-        "  -mixingpoolsize=<n>   " + _("NullSend mixing pool size (2-16, default: 5)") + "\n" +
         "  -mixdir=<onion:port>   " + _("A NullSend v2008 announcement directory; may be given more than once. Seats fetch rounds from these and coordinators upload to them") + "\n" +
         "  -mixproxy=<ip:port>    " + _("SOCKS5 proxy every NullSend v2008 exchange goes through; it must accept per-exchange credentials (default: the bundled tor's with -nativetor, else 127.0.0.1:9050)") + "\n" +
         "  -mixcoordinatorport=<n> " + _("Run a NullSend v2008 coordinator listening on this local port, for an onion service of its own (default: 0, off)") + "\n" +
@@ -759,7 +757,6 @@ std::string HelpMessage()
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
         "  -synctime              " + _("Sync time with other nodes. Disable if time on your system is precise e.g. syncing with NTP (default: 1)") + "\n" +
-        "  -cppolicy              " + _("Sync checkpoints policy (default: strict)") + "\n" +
         "  -banscore=<n>          " + _("Threshold for disconnecting misbehaving peers (default: 100)") + "\n" +
         "  -bantime=<n>           " + _("Number of seconds to keep misbehaving peers from reconnecting (default: 86400)") + "\n" +
         "  -softbantime=<n>       " + _("Number of seconds to keep soft banned peers from reconnecting (default: 3600)") + "\n" +
@@ -1384,18 +1381,6 @@ bool AppInit2()
     if (fDebug)
         printf("nMinerSleep %u\n", nMinerSleep);
 
-    CheckpointsMode = Checkpoints::STRICT;
-    std::string strCpMode = GetArg("-cppolicy", "strict");
-
-    if (strCpMode == "strict")
-        CheckpointsMode = Checkpoints::STRICT;
-
-    if (strCpMode == "advisory")
-        CheckpointsMode = Checkpoints::ADVISORY;
-
-    if (strCpMode == "permissive")
-        CheckpointsMode = Checkpoints::PERMISSIVE;
-
     nDerivationMethodIndex = 0;
 
     fTestNet = GetBoolArg("-testnet");
@@ -1984,8 +1969,6 @@ bool AppInit2()
     {
         if (!collateralnodePayments.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
             return InitError(_("Unable to sign collateralnode payment winner, wrong key?"));
-        if (!sporkManager.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
-            return InitError(_("Unable to sign spork message, wrong key?"));
     }
 
     //ignore collateralnodes below protocol version
@@ -2264,12 +2247,6 @@ bool AppInit2()
             InitError(_("Invalid amount for -reservebalance=<amount>"));
             return false;
         };
-    };
-
-    if (mapArgs.count("-checkpointkey")) // ppcoin: checkpoint master priv key
-    {
-        if (!Checkpoints::SetCheckpointPrivKey(GetArg("-checkpointkey", "")))
-            InitError(_("Unable to sign checkpoint, wrong checkpointkey?\n"));
     };
 
     for (string strDest : mapMultiArgs["-seednode"])
@@ -3243,7 +3220,6 @@ bool AppInit2()
     // guard above has passed.
     LoadCollateralnodeAnnouncements();
     NewThread(ThreadCheckCollaTeralPool, NULL);
-    NewThread(ThreadNullSend, NULL);
     // Closes a recorded IV5 scan gap once a seed exists. The unlock path must not: it runs
     // under cs_main and cs_wallet.
     NewThread(ThreadPrivacyVNextScanGapCloser, NULL);

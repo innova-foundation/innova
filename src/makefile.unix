@@ -292,7 +292,6 @@ OBJS= \
     obj/collateralnodeconfig.o \
     obj/collateralnode.o \
     obj/rpccollateral.o \
-    obj/spork.o \
     obj/collateral.o \
     obj/eccryptoverify.o \
     obj/ringsig.o \
@@ -779,9 +778,6 @@ leveldb/libleveldb.a: FORCE
 		CFLAGS="$(xCFLAGS)" CXXFLAGS="$(xCXXFLAGS)" LDFLAGS="$(xLDFLAGS)" \
 		libleveldb.a libmemenv.a
 obj/txdb-leveldb.o: leveldb/libleveldb.a
-endif
-ifneq (${USE_LEVELDB}, 1)
-OBJS += obj/txdb-bdb.o
 endif
 
 # auto-generated dependencies:

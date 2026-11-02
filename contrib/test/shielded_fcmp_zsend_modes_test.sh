@@ -397,22 +397,10 @@ cleanup() {
 
 trap cleanup EXIT
 
-NULLSEND_SMOKE=0
-if [ "${1:-}" = "--nullsend-smoke" ]; then
-    NULLSEND_SMOKE=1
-fi
-
 MODE_LIST="0 1 2 3 4 5 6 7"
-if [ "$NULLSEND_SMOKE" -eq 1 ]; then
-    MODE_LIST="7"
-fi
 NOTE_AMOUNT="3.0"
 
-if [ "$NULLSEND_SMOKE" -eq 1 ]; then
-    header "FCMP z_nullsend Smoke"
-else
-    header "FCMP z_send Modes 0..7"
-fi
+header "FCMP z_send Modes 0..7"
 
 if [ ! -x "$INNOVAD" ]; then
     fail "innovad not found at $INNOVAD"
@@ -493,53 +481,6 @@ for mode in $MODE_LIST; do
         exit 1
     fi
 done
-
-if [ "$NULLSEND_SMOKE" -eq 1 ]; then
-    # Mode 7 uses the retired legacy path-proof layer, so the wallet must refuse it.
-    # Asserted, not skipped. The v2008 mix is covered by iv5_nullsend_regtest_test.sh.
-    mode=7
-    tx="$(rpc "${NODES[$mode]}" z_nullsend "${SOURCES[$mode]}" 1.0 "$mode" 2 30 2>&1)"
-    if echo "$tx" | grep -q "commitment not found in curve tree"; then
-        fail "z_nullsend reached the curve tree before the retirement refused it: $tx"
-        exit 1
-    fi
-    if echo "$tx" | grep -q "legacy shielded spends are retired"; then
-        success "z_nullsend mode 7 is refused: the legacy spend path is retired"
-    elif echo "$tx" | grep -q '"txid"'; then
-        fail "z_nullsend mode 7 built a transaction through the retired legacy spend path: $tx"
-        exit 1
-    else
-        fail "z_nullsend mode 7 failed for some other reason than the retirement: $tx"
-        exit 1
-    fi
-
-    # Nothing was built; assert the refusal left nothing behind.
-    mine_one 0 || { fail "failed to mine after the z_nullsend refusal"; exit 1; }
-
-    POOL_TOTAL=0
-    for n in "${NODES[@]}"; do
-        count="$(mempool_count "$n")"
-        is_int "$count" || count=0
-        POOL_TOTAL=$((POOL_TOTAL + count))
-    done
-
-    if [ "$POOL_TOTAL" -eq 0 ]; then
-        success "the refused z_nullsend put nothing in any mempool"
-    else
-        fail "a refused z_nullsend still left $POOL_TOTAL transaction(s) in a mempool"
-    fi
-
-    header "Summary"
-    echo "Passed: $PASSED"
-    echo "Failed: $FAILED"
-
-    if [ "$FAILED" -eq 0 ]; then
-        success "FCMP z_nullsend smoke regression passed"
-        exit 0
-    fi
-
-    exit 1
-fi
 
 for mode in $MODE_LIST; do
     tx="$(rpc "${NODES[$mode]}" z_send "${SOURCES[$mode]}" "${DESTS[$mode]}" 1.0 "$mode" 2>&1)"

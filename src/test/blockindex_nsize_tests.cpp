@@ -570,7 +570,6 @@ struct ChainStateGuard
     CBlockIndex* pindexGenesisSaved;
     CBlockIndex* pindexBestSaved;
     uint256 hashBestChainSaved;
-    uint256 hashSyncCheckpointSaved;
     uint256 nBestChainTrustSaved;
     uint256 nBestInvalidTrustSaved;
     int nBestHeightSaved;
@@ -599,7 +598,6 @@ struct ChainStateGuard
         pindexGenesisSaved = pindexGenesisBlock;
         pindexBestSaved = pindexBest;
         hashBestChainSaved = hashBestChain;
-        hashSyncCheckpointSaved = Checkpoints::hashSyncCheckpoint;
         nBestChainTrustSaved = nBestChainTrust;
         nBestInvalidTrustSaved = nBestInvalidTrust;
         nBestHeightSaved = nBestHeight;
@@ -619,7 +617,6 @@ struct ChainStateGuard
         pindexGenesisBlock = pindexGenesisSaved;
         pindexBest = pindexBestSaved;
         hashBestChain = hashBestChainSaved;
-        Checkpoints::hashSyncCheckpoint = hashSyncCheckpointSaved;
         nBestChainTrust = nBestChainTrustSaved;
         nBestInvalidTrust = nBestInvalidTrustSaved;
         nBestHeight = nBestHeightSaved;

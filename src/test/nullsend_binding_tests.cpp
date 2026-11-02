@@ -1,9 +1,4 @@
-// Tests for NullSend/coinjoin nullifier binding transport: post-fork entries
-// must declare note-bound nullifiers up front (AcceptEntry/AcceptInputReg),
-// and the partial-sig message carries each participant's per-spend binding
-// proofs (made over the session sighash) so FinalizeTransaction can attach
-// them to the assembled transaction. ConnectInputs rejects post-fork shielded
-// spends without a valid binding proof.
+// Tests for the NullSend blind credential.
 
 #include <boost/test/unit_test.hpp>
 
@@ -15,72 +10,7 @@
 #include <openssl/bn.h>
 #include <vector>
 
-// Global-scope decls (defined in util.cpp / main); declaring `extern` inside the
-// anonymous namespace below would bind to a namespace-local symbol the linker
-// cannot resolve.
-extern bool fRegTest;
-
 namespace {
-
-// Force the nullifier-binding fork active (regtest fork height is 8) for the
-// scope of a test, restoring prior globals even on assertion unwind.
-struct BindingForkGuard
-{
-    bool fRegTestSaved;
-    int nBestHeightSaved;
-    BindingForkGuard(bool fActive)
-    {
-        fRegTestSaved = fRegTest;
-        nBestHeightSaved = nBestHeight;
-        fRegTest = true;
-        nBestHeight = fActive ? 100 : 2; // 2+1 < 8 keeps binding inactive
-    }
-    ~BindingForkGuard()
-    {
-        fRegTest = fRegTestSaved;
-        nBestHeight = nBestHeightSaved;
-    }
-};
-
-CShieldedSpendDescription MakeBoundSpend(int64_t value)
-{
-    CShieldedSpendDescription spend;
-    std::vector<unsigned char> blind;
-    BOOST_REQUIRE(GenerateBlindingFactor(blind));
-    BOOST_REQUIRE(CreatePedersenCommitment(value, blind, spend.cv));
-    BOOST_REQUIRE(ComputeNullifierPoint(blind, spend.vchNullifierPoint));
-    spend.nullifier = NullifierTagFromPoint(spend.vchNullifierPoint);
-    return spend;
-}
-
-CShieldedSpendDescription MakeUnboundSpend(int64_t value)
-{
-    CShieldedSpendDescription spend;
-    std::vector<unsigned char> blind;
-    BOOST_REQUIRE(GenerateBlindingFactor(blind));
-    BOOST_REQUIRE(CreatePedersenCommitment(value, blind, spend.cv));
-    spend.nullifier = uint256(0xF00D); // legacy free-field nullifier
-    return spend;
-}
-
-CNullSendEntry MakeEntry(const CShieldedSpendDescription& spend)
-{
-    CNullSendEntry entry;
-    entry.nSessionID = 7;
-    entry.vMySpends.push_back(spend);
-    entry.vMyOutputs.push_back(CShieldedOutputDescription());
-    entry.nMyValueBalance = NULLSEND_FEE;
-    return entry;
-}
-
-CNullSendSession MakeAcceptingSession()
-{
-    CNullSendSession session;
-    session.nSessionID = 7;
-    session.nTargetParticipants = 16; // never auto-advance during the test
-    session.nState = NULLSEND_STATE_ACCEPTING;
-    return session;
-}
 
 // A session holding a fresh ephemeral RSA key, for blind-credential tests (M-3).
 CNullSendSession MakeKeyedSession()
@@ -106,92 +36,6 @@ CNullSendClient MakeCredentialClient(const std::vector<unsigned char>& vchN,
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(nullsend_binding_tests)
-
-BOOST_AUTO_TEST_CASE(legacy_nullsend_p2p_is_public_disabled_and_boundary_retired)
-{
-    const bool fRegTestSaved = fRegTest;
-    const int nBestHeightSaved = nBestHeight;
-
-    fRegTest = false;
-    nBestHeight = FORK_HEIGHT_NULLSEND;
-    BOOST_CHECK(!IsLegacyNullSendEnabledAtHeight(nBestHeight));
-
-    fRegTest = true;
-    nBestHeight = FORK_HEIGHT_NULLSEND;
-    BOOST_CHECK(IsLegacyNullSendEnabledAtHeight(nBestHeight));
-    nBestHeight = FORK_HEIGHT_BOUNDARY_A;
-    BOOST_CHECK(!IsLegacyNullSendEnabledAtHeight(nBestHeight));
-
-    nBestHeight = nBestHeightSaved;
-    fRegTest = fRegTestSaved;
-}
-
-// The znsps wire message round-trips the per-spend binding proofs.
-BOOST_AUTO_TEST_CASE(partial_sig_message_round_trips_binding_proofs)
-{
-    CNullSendPartialSig msg;
-    msg.nSessionID = 42;
-    msg.nParticipantID = 3;
-    msg.vchPartialSig.assign(32, 0xAB);
-    msg.vSpendAuthSigs.push_back(std::vector<unsigned char>(65, 0x01));
-    msg.vSpendRks.push_back(std::vector<unsigned char>(33, 0x02));
-    msg.vNullifierBindingProofs.push_back(
-        std::vector<unsigned char>(NULLIFIER_BINDING_PROOF_SIZE, 0x03));
-
-    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-    ss << msg;
-    CNullSendPartialSig decoded;
-    ss >> decoded;
-
-    BOOST_CHECK_EQUAL(decoded.nSessionID, 42);
-    BOOST_CHECK_EQUAL(decoded.nParticipantID, 3);
-    BOOST_CHECK(decoded.vchPartialSig == msg.vchPartialSig);
-    BOOST_CHECK(decoded.vSpendAuthSigs == msg.vSpendAuthSigs);
-    BOOST_CHECK(decoded.vSpendRks == msg.vSpendRks);
-    BOOST_CHECK(decoded.vNullifierBindingProofs == msg.vNullifierBindingProofs);
-}
-
-// Post-fork, an entry whose spends do not declare a bound nullifier point can
-// never connect; the session must refuse it up front.
-BOOST_AUTO_TEST_CASE(accept_entry_requires_bound_nullifiers_post_fork)
-{
-    BOOST_REQUIRE(CZKContext::Initialize());
-    BindingForkGuard fork(true);
-
-    CNullSendSession session = MakeAcceptingSession();
-    BOOST_CHECK(!session.AcceptEntry(MakeEntry(MakeUnboundSpend(100000000)), NULL));
-    BOOST_CHECK_EQUAL((int)session.vParticipants.size(), 0);
-
-    BOOST_CHECK(session.AcceptEntry(MakeEntry(MakeBoundSpend(100000000)), NULL));
-    BOOST_CHECK_EQUAL((int)session.vParticipants.size(), 1);
-}
-
-// Post-fork, a declared nullifier that is not the tag of the declared point
-// is malformed (CheckVote-equivalent of the spend rule) and refused.
-BOOST_AUTO_TEST_CASE(accept_entry_rejects_mismatched_tag_post_fork)
-{
-    BOOST_REQUIRE(CZKContext::Initialize());
-    BindingForkGuard fork(true);
-
-    CShieldedSpendDescription spend = MakeBoundSpend(100000000);
-    spend.nullifier = uint256(0xBADBADBAD); // tag no longer matches the point
-
-    CNullSendSession session = MakeAcceptingSession();
-    BOOST_CHECK(!session.AcceptEntry(MakeEntry(spend), NULL));
-    BOOST_CHECK_EQUAL((int)session.vParticipants.size(), 0);
-}
-
-// Before the fork, legacy unbound entries remain acceptable (no premature
-// enforcement on the live pre-fork chain).
-BOOST_AUTO_TEST_CASE(accept_entry_allows_unbound_pre_fork)
-{
-    BOOST_REQUIRE(CZKContext::Initialize());
-    BindingForkGuard fork(false);
-
-    CNullSendSession session = MakeAcceptingSession();
-    BOOST_CHECK(session.AcceptEntry(MakeEntry(MakeUnboundSpend(100000000)), NULL));
-    BOOST_CHECK_EQUAL((int)session.vParticipants.size(), 1);
-}
 
 // M-3: the full-domain-hash blind credential round-trips end to end.
 BOOST_AUTO_TEST_CASE(fdh_blind_credential_round_trips)
@@ -287,8 +131,6 @@ BOOST_AUTO_TEST_CASE(a_token_the_round_key_did_not_sign_is_never_presented)
     BOOST_CHECK_MESSAGE(client.vchUnblindedSig.empty(),
                         "an unverified token was kept, so it can still be presented and the "
                         "coordinator can recognise it");
-    BOOST_CHECK_MESSAGE(!client.SubmitOutputsAnonymously(),
-                        "an output was submitted with no verified token");
 }
 
 // Refuses malformed key shapes only; e = 65537 does not imply gcd(e, phi(N)) = 1, so

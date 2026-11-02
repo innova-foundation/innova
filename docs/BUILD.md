@@ -440,7 +440,7 @@ compile the feature out entirely. Defaults differ per makefile, as noted.
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `USE_LEVELDB` | `1` | Use the vendored LevelDB block/transaction index (`src/leveldb`). Set to `-`/`0` to fall back to the Berkeley-DB transaction index (`txdb-bdb`) instead. LevelDB is the supported default. |
+| `USE_LEVELDB` | `1` | Use the vendored LevelDB block/transaction index (`src/leveldb`). It is the only transaction index. |
 | `USE_UPNP` | `1` (unix/osx), `0` (mingw) | Link miniupnpc for automatic UPnP port mapping. `-` compiles it out. |
 | `USE_NATIVETOR` | `1` (unix), `-` (osx/mingw) | Compile the bundled Tor client (`src/tor`) for built-in onion routing. **Requires OpenSSL 1.x** — `makefile.unix` auto-disables it when it detects OpenSSL 3.x, and macOS disables it by default. On any OpenSSL 3 system, build with `USE_NATIVETOR=-`. |
 | `USE_IPFS` | `1` | Compile the vendored IPFS C library (`src/ipfs`) for hyperfile / content-addressed storage features. `-` builds without it. |

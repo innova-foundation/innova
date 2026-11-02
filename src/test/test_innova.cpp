@@ -31,7 +31,6 @@ bool fUseFastIndex = true;
 unsigned int nDerivationMethodIndex = 0;
 unsigned int nMinerSleep = 5000;
 unsigned int nNodeLifespan = 7;
-enum Checkpoints::CPMode CheckpointsMode = Checkpoints::STRICT;
 
 extern bool fPrintToConsole;
 extern void noui_connect();

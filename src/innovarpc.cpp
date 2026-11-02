@@ -198,12 +198,11 @@ static int HelpGroup(const string& m)
 {
     static const struct { const char* prefix; int group; } table[] = {
         {"getstakinginfo", 5}, {"getfinalitystaking", 5},
-        {"z_", 1}, {"n_", 1}, {"iv5", 1}, {"anon", 1}, {"sendanon", 1}, {"sendinntoanon", 1}, {"checkanon", 1},
-        {"estimateanon", 1}, {"reloadanon", 1}, {"getanon", 1}, {"mix", 1}, {"startmixing", 1}, {"stopmixing", 1},
-        {"getmixing", 1}, {"listcompromised", 1}, {"getforkinfo", 1}, {"getv5migration", 1}, {"getnewstealth", 1},
+        {"z_", 1}, {"n_", 1}, {"iv5", 1}, {"anon", 1}, {"mix", 1},
+        {"listcompromised", 1}, {"getforkinfo", 1}, {"getv5migration", 1}, {"getnewstealth", 1},
         {"liststealth", 1}, {"importstealth", 1}, {"sendtostealth", 1},
         {"getdag", 2}, {"getepoch", 2}, {"getfinality", 2}, {"submitfinality", 2}, {"isblockfinalized", 2},
-        {"getblock", 2}, {"getbestblock", 2}, {"getrawmempool", 2}, {"getdifficulty", 2}, {"getcheckpoint", 2},
+        {"getblock", 2}, {"getbestblock", 2}, {"getrawmempool", 2}, {"getdifficulty", 2},
         {"getstakemodifier", 2}, {"invalidateblock", 2}, {"reconsiderblock", 2}, {"setbestblock", 2},
         {"erasedag", 2}, {"gettxout", 2}, {"getsubsidy", 2}, {"searchrawtransactions", 2}, {"dumpbootstrap", 2},
         {"downloadbootstrap", 2}, {"getspv", 2}, {"spvrescan", 2},
@@ -212,7 +211,7 @@ static int HelpGroup(const string& m)
         {"getwork", 4}, {"getblocktemplate", 4}, {"submitblock", 4}, {"setgenerate", 4}, {"startmining", 4},
         {"stopmining", 4}, {"getmining", 4}, {"gethashes", 4}, {"getpool", 4},
         {"reservebalance", 5}, {"delegatestake", 5}, {"listcold", 5}, {"getcoldstaking", 5},
-        {"revokecoldstaking", 5}, {"getnewstaking", 5}, {"masternode", 5}, {"collateralnode", 5},
+        {"revokecoldstaking", 5}, {"getnewstaking", 5}, {"collateralnode", 5},
         {"smsg", 6}, {"name_", 6}, {"sendtoname", 6}, {"hyperfile", 6}, {"proofofdata", 6}, {"podverify", 6},
         {"nyx", 6},
         {"help", 7}, {"stop", 7}, {"getinfo", 7}, {"setdebug", 7},
@@ -225,8 +224,6 @@ static int HelpGroup(const string& m)
 
 string CRPCTable::help(string strCommand) const
 {
-    //Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
-    bool fAllAnon = strCommand == "anon" ? true : false;
     const bool fList = strCommand.empty();
     const size_t nGroups = sizeof(HELP_GROUPS) / sizeof(HELP_GROUPS[0]);
     vector<string> vGroup(nGroups);
@@ -241,13 +238,6 @@ string CRPCTable::help(string strCommand) const
         if (strMethod.find("label") != string::npos)
             continue;
 
-        if (fAllAnon)
-        {
-                if(strMethod != "anonoutputs"
-                && strMethod != "anoninfo"
-                && strMethod != "reloadanondata")
-            continue;
-        } else
         if (strCommand != "" && strMethod != strCommand)
             continue;
 
@@ -261,7 +251,7 @@ string CRPCTable::help(string strCommand) const
         {
             // Help text is returned in an exception
             string strHelp = string(e.what());
-            if (fAllAnon || strCommand == "")
+            if (strCommand == "")
                 if (strHelp.find('\n') != string::npos)
                     strHelp = strHelp.substr(0, strHelp.find('\n'));
             if (fList)
@@ -393,7 +383,6 @@ static const CRPCCommand vRPCCommands[] =
     { "invalidateblock",        &invalidateblock,        false,  false },
     { "reconsiderblock",        &reconsiderblock,        false,  false },
     { "erasedagvertex",        &erasedagvertex,        false,  false },
-    { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblockhash",           &getblockhash,           false,  false },
     { "gettransaction",         &gettransaction,         false,  false },
@@ -426,7 +415,6 @@ static const CRPCCommand vRPCCommands[] =
     { "sendrawtransaction",     &sendrawtransaction,     false,  false },
     { "sweepburnoutputs",       &sweepburnoutputs,       false,  false },
     { "searchrawtransactions",  &searchrawtransactions,  false,  false },
-    { "getcheckpoint",          &getcheckpoint,          true,   false },
     { "reservebalance",         &reservebalance,         false,  true},
     { "checkwallet",            &checkwallet,            false,  true},
     { "repairwallet",           &repairwallet,           false,  true},
@@ -456,16 +444,7 @@ static const CRPCCommand vRPCCommands[] =
     { "scanforalltxns",         &scanforalltxns,         false,  false},
 
     // Ring Signatures - I n n o v a - v3.1.0
-    { "sendinntoanon",          	&sendinntoanon,          	 false,  false},
-    { "sendanontoanon",         &sendanontoanon,         false,  false},
-    { "sendanontoinn",          	&sendanontoinn,         	 false,  false},
-    { "estimateanonfee",        &estimateanonfee,        false,  false},
-    { "checkanonbalance",       &checkanonbalance,       true,   false},
     { "txnreport",              &txnreport,              false,  false},
-    { "anonoutputs",            &anonoutputs,            false,  false},
-    { "anoninfo",               &anoninfo,               false,  false},
-    { "reloadanondata",         &reloadanondata,         false,  false},
-    { "getanonoutputinfo",      &getanonoutputinfo,      false,  false},
     { "listcompromisedoutputs", &listcompromisedoutputs, false,  false},
 
     /* Cold Staking */
@@ -482,14 +461,9 @@ static const CRPCCommand vRPCCommands[] =
     { "downloadbootstrap",      &downloadbootstrap,      false,  false},
 
     /* Collateralnode features */
-    { "getpoolinfo",            &getpoolinfo,            true,   false},
-    { "masternode",           	&masternode,             true,   false},
     { "collateralnode",           &collateralnode,           true,   false},
 
     /* NullSend Mixing */
-    { "startmixing",            &startmixing,            false,  true},
-    { "stopmixing",             &stopmixing,             false,  false},
-    { "getmixingstatus",        &getmixingstatus,        true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},
@@ -562,8 +536,6 @@ static const CRPCCommand vRPCCommands[] =
     { "z_getshieldedinfo",      &z_getshieldedinfo,      true,   false },
     { "z_migrateanon",          &z_migrateanon,          false,  true },
     { "z_send",                 &z_send,                 false,  true },
-    { "z_nullsend",             &z_nullsend,             false,  true },
-    { "z_nullsendinfo",         &z_nullsendinfo,         true,   false },
 
     /* Cold Staking Delegation Commands (NullStake V3) */
     { "n_delegatestake",        &n_delegatestake,        false,  true },
@@ -1728,7 +1700,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getbalance"             && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblock"               && n > 1) ConvertToBoolOrInt(params[1]);
 	if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "getblock_old"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockhash"           && n > 0) ConvertTo<int64_t>(params[0]);
@@ -1777,10 +1748,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_mintmofncoldstake"   && n > 3) ConvertTo<json_spirit::Array>(params[3]);
     if (strMethod == "z_mintmofncoldstake"   && n > 4) ConvertTo<int64_t>(params[4]);
     if (strMethod == "n_delegatestake"       && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "z_nullsend"            && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "z_nullsend"            && n > 2) ConvertTo<int64_t>(params[2]);
-    if (strMethod == "z_nullsend"            && n > 3) ConvertTo<int64_t>(params[3]);
-    if (strMethod == "z_nullsend"            && n > 4) ConvertTo<int64_t>(params[4]);
 
 
 
@@ -1809,17 +1776,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "setban"                 && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "setban"                 && n == 4) ConvertTo<bool>(params[3]);
 
-    if (strMethod == "sendinntoanon"         	  && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "sendanontoanon"         && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "sendanontoanon"         && n > 2) ConvertTo<int64_t>(params[2]);
-    if (strMethod == "sendanontoinn"        	  && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "sendanontoinn"        	  && n > 2) ConvertTo<int64_t>(params[2]);
-	if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
-	if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
-    if (strMethod == "checkanonbalance"       && n > 0) ConvertTo<double>(params[0]);
-    if (strMethod == "checkanonbalance"       && n > 1) ConvertTo<int64_t>(params[1]);
-
-    if (strMethod == "getpoolinfo"            && n > 0) ConvertTo<int64_t>(params[0]);
 
     if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);

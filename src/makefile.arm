@@ -365,7 +365,6 @@ OBJS= \
     obj/collateralnodeconfig.o \
     obj/collateralnode.o \
     obj/rpccollateral.o \
-    obj/spork.o \
     obj/collateral.o \
     obj/eccryptoverify.o \
     obj/ringsig.o \
@@ -465,7 +464,6 @@ OBJS= \
     obj/collateralnodeconfig.o \
     obj/collateralnode.o \
     obj/rpccollateral.o \
-    obj/spork.o \
     obj/collateral.o \
     obj/eccryptoverify.o \
     obj/ringsig.o \
@@ -504,9 +502,6 @@ OBJS += obj/txdb-leveldb.o
 leveldb/libleveldb.a: FORCE
 	@echo "Building LevelDB ..."; cd leveldb; CC=$(CC) CXX=$(CXX) make libleveldb.a libmemenv.a; cd ..;
 obj/txdb-leveldb.o: leveldb/libleveldb.a
-endif
-ifneq (${USE_LEVELDB}, 1)
-OBJS += obj/txdb-bdb.o
 endif
 
 # auto-generated dependencies:

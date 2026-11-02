@@ -637,7 +637,6 @@ set(INNOVA_CXX_SOURCES
     src/activecollateralnode.cpp
     src/collateralnode.cpp
     src/collateralnodeconfig.cpp
-    src/spork.cpp
     src/shielded.cpp
     src/privacy_vnext_ffi.cpp
     src/nullsend.cpp
@@ -752,7 +751,6 @@ set(INNOVA_HEADERS
     src/activecollateralnode.h
     src/collateralnode.h
     src/collateralnodeconfig.h
-    src/spork.h
     src/shielded.h
     src/nullsend.h
     src/nullsend_v2008.h

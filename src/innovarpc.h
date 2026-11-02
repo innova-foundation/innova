@@ -280,9 +280,7 @@ extern json_spirit::Value getrawmempool(const json_spirit::Array& params, bool f
 extern json_spirit::Value getblockhash(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockheader(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getblock_old(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockbynumber(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
@@ -339,16 +337,7 @@ extern json_spirit::Value clearwallettransactions(const json_spirit::Array& para
 extern json_spirit::Value scanforalltxns(const json_spirit::Array& params, bool fHelp);
 
 //RPC Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
-extern json_spirit::Value sendinntoanon(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sendanontoanon(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value sendanontoinn(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value estimateanonfee(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value checkanonbalance(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value anonoutputs(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value anoninfo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value reloadanondata(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value txnreport(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getanonoutputinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listcompromisedoutputs(const json_spirit::Array& params, bool fHelp);
 
 // cold staking
@@ -364,14 +353,9 @@ extern json_spirit::Value getstakemodifiercheckpoints(const json_spirit::Array& 
 extern json_spirit::Value downloadbootstrap(const json_spirit::Array& params, bool fHelp);
 
 //rpccollateral.cpp
-extern json_spirit::Value getpoolinfo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value masternode(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value collateralnode(const json_spirit::Array& params, bool fHelp);
 
 // Enhanced NullSend mixing (rpcwallet.cpp)
-extern json_spirit::Value startmixing(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value stopmixing(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getmixingstatus(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value smsgenable(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value smsgdisable(const json_spirit::Array& params, bool fHelp);
@@ -427,10 +411,6 @@ extern json_spirit::Value z_importviewingkey(const json_spirit::Array& params, b
 extern json_spirit::Value z_getshieldedinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_migrateanon(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_send(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value z_nullsend(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value z_nullsendinfo(const json_spirit::Array& params, bool fHelp);
-#define z_coinjoin z_nullsend
-#define z_coinjoininfo z_nullsendinfo
 extern json_spirit::Value n_delegatestake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_importdelegation(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_revokecoldstake(const json_spirit::Array& params, bool fHelp);

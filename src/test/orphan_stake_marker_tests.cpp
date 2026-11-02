@@ -60,8 +60,7 @@ static bool WouldRejectDuplicateStakeOrphan(const CBlock* pblock)
 {
     return pblock->IsProofOfStake() &&
            setStakeSeenOrphan.count(pblock->GetProofOfStake()) != 0 &&
-           mapOrphanBlocksByPrev.count(pblock->GetHash()) == 0 &&
-           !Checkpoints::WantedByPendingSyncCheckpoint(pblock->GetHash());
+           mapOrphanBlocksByPrev.count(pblock->GetHash()) == 0;
 }
 
 typedef std::pair<COutPoint, unsigned int> Stake;

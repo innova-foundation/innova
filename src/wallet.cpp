@@ -26,7 +26,6 @@
 #include "base58.h"
 #include "kernel.h"
 #include "coincontrol.h"
-#include "spork.h"
 #include "collateral.h"
 #include "collateralnode.h"
 #include "bloom.h"
@@ -6706,7 +6705,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     CScript payee;
     bool hasPayment = false;
     if(bCollateralNodePayment) {
-        //spork
         if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
             int winningNode = GetCollateralnodeByRank(1);
                 if(winningNode >= 0){

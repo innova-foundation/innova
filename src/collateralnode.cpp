@@ -209,9 +209,6 @@ void ProcessCollateralnodeConnections(){
 
     for (CNode* pnode : vNodes)
     {
-        //if it's our collateralnode, let it be
-        if(colLateralPool.submittedToCollateralnode == pnode->addr) continue;
-
         if( pnode->fColLateralMaster ||
             (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect collateralnodes that were in sync when they connected recently
                 )
@@ -2227,7 +2224,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 CTransaction txCollateral;
-                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
+                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, CScript());
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
@@ -2265,7 +2262,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 CTransaction txCollateral;
-                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
+                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, CScript());
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
