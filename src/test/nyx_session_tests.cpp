@@ -764,6 +764,43 @@ BOOST_AUTO_TEST_CASE(archived_state_is_receive_only_and_expires)
     BOOST_CHECK(memcmp(p.sa.states[0].hsId, cur, 32) == 0);
 }
 
+BOOST_AUTO_TEST_CASE(established_state_never_promoted_by_resync_tie_break)
+{
+    Pair p;
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("x"), pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack"), pt), NYX_DR_OK);
+    BOOST_REQUIRE(p.sa.states[0].fAcked);
+    NyxSession oldB = p.sb;
+
+    // B starts a new session soon after; A answers it, archiving its acked initiator state.
+    BOOST_REQUIRE(NyxDeviceTopUpOpks(p.a.dev, T0));
+    NyxRatchet rb;
+    std::string err;
+    BOOST_REQUIRE(NyxHsInitiate(p.b.Local(), PeerOf(p.pinA), p.a.Bundle(), T0 + 40, rb, err));
+    NyxBytes hb;
+    BOOST_REQUIRE(NyxSessionSeal(rb, Pt("new"), T0 + 41, hb));
+    NyxHandshake hs;
+    BOOST_REQUIRE_EQUAL(NyxParseHandshake(&hb[0], hb.size(), hs), 0);
+    NyxRatchet ra;
+    uint32_t opk;
+    BOOST_REQUIRE(NyxHsRespond(p.a.Local(), PeerOf(p.pinB), hs, T0 + 42, ra, opk, err));
+    BOOST_REQUIRE_EQUAL(NyxRatchetDecrypt(ra, hs.tail, T0 + 42, pt), NYX_DR_OK);
+    p.sa.Push(ra);
+    uint8_t cur[32];
+    memcpy(cur, p.sa.states[0].hsId, 32);
+
+    // A message on the old chain opens on the archive whatever the hsId order, and sends stay on the new one.
+    NyxBytes body;
+    BOOST_REQUIRE(NyxSessionSeal(oldB.states[0], Pt("old"), T0 + 43, body));
+    NyxRatchetMsg m;
+    BOOST_REQUIRE_EQUAL(NyxParseRatchetMsg(&body[0], body.size(), m), 0);
+    size_t idx = 9;
+    BOOST_REQUIRE_EQUAL(p.sa.Decrypt(m.tail, T0 + 44, pt, NULL, &idx), NYX_DR_OK);
+    BOOST_CHECK_EQUAL(idx, 1U);
+    BOOST_CHECK(memcmp(p.sa.states[0].hsId, cur, 32) == 0);
+}
+
 BOOST_AUTO_TEST_CASE(decrypt_requires_matching_devices_certs_and_epochs)
 {
     Pair p;
