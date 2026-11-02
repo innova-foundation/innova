@@ -233,7 +233,7 @@ static size_t WriteStringCallbackLimited(void* ptr, size_t size, size_t nmemb, v
     return totalSize;
 }
 
-static bool FetchString(const std::string& url, std::string& response, bool fGitHubApi)
+static bool FetchString(const std::string& url, std::string& response, bool fGitHubApi, long nTimeoutSecs = 30)
 {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -249,7 +249,8 @@ static bool FetchString(const std::string& url, std::string& response, bool fGit
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     SetHttpsOnlyRedirects(curl);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, nTimeoutSecs);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, nTimeoutSecs);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Core");
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -715,6 +716,8 @@ static void UndoEntries(const boost::filesystem::path& stage, const boost::files
         if (fs::exists(old)) {
             fs::remove_all(target, ec);
             fs::rename(old, target, ec);
+            if (ec)
+                printf("Bootstrap: Could not restore %s: %s\n", target.string().c_str(), ec.message().c_str());
         }
     }
     SyncDir(dataDir);
@@ -774,6 +777,12 @@ bool RecoverJournal(const boost::filesystem::path& dataDir)
     return true;
 }
 
+// Built from the old chain; stale against the new one
+static bool IsDerivedName(const std::string& name)
+{
+    return name == "spvutxos.dat" || name == "cnannounce.dat" || name == "txleveldb_backup";
+}
+
 bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem::path& dataDir,
                   const std::string& strFailOn, int nCrashAt)
 {
@@ -782,8 +791,13 @@ bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem:
     std::vector<fs::path> vItems;
     std::set<std::string> setNames;
     for (fs::directory_iterator it(stage), end; it != end; ++it) {
-        if (it->path().filename() == "wallet.dat")
+        std::string name = it->path().filename().string();
+        bool fChain = (IsBlkName(name) && fs::is_regular_file(it->path())) ||
+                      (name == "txleveldb" && fs::is_directory(it->path()));
+        if (!fChain) {
+            printf("Bootstrap: Skipping archive entry %s, not chain data\n", name.c_str());
             continue;
+        }
         vItems.push_back(it->path());
         setNames.insert(it->path().filename().string());
     }
@@ -795,7 +809,7 @@ bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem:
     std::vector<fs::path> vStale;
     for (fs::directory_iterator it(dataDir), end; it != end; ++it) {
         std::string name = it->path().filename().string();
-        if (IsBlkName(name) && !setNames.count(name))
+        if ((IsBlkName(name) && !setNames.count(name)) || IsDerivedName(name))
             vStale.push_back(it->path());
     }
 
@@ -930,9 +944,9 @@ Offer Decide(bool fEmpty, int nLocalHeight, int64_t nTipTime, int nManifestHeigh
 {
     if (fEmpty)
         return OFFER_EMPTY;
-    if (nNow - nTipTime <= STALE_TIP_SECONDS)
+    if (nNow - nTipTime <= STALE_TIP_SECONDS || nManifestHeight < 0)
         return OFFER_NONE;
-    if (nManifestHeight >= 0 && nLocalHeight >= nManifestHeight - FAR_BEHIND_BLOCKS)
+    if (nLocalHeight >= nManifestHeight - FAR_BEHIND_BLOCKS)
         return OFFER_NONE;
     return OFFER_BEHIND;
 }
@@ -997,15 +1011,22 @@ int ParseManifestHeight(const std::string& manifest)
     return -1;
 }
 
-int FetchManifestHeight()
+int FetchManifestHeight(const std::string& url, long nTimeoutSecs)
 {
+    std::string manifestUrl = url.empty() ? LATEST_MANIFEST_URL : url;
+    const std::string suffix = "/" + BOOTSTRAP_MANIFEST;
+    if (manifestUrl.size() <= suffix.size() ||
+        manifestUrl.compare(manifestUrl.size() - suffix.size(), suffix.size(), suffix) != 0 ||
+        !IsUrlAllowed(manifestUrl))
+        return -1;
     std::string manifest;
-    if (!FetchString(LATEST_MANIFEST_URL, manifest, false))
+    if (!FetchString(manifestUrl, manifest, false, nTimeoutSecs))
         return -1;
     return ParseManifestHeight(manifest);
 }
 
-Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLocalHeight, int* pnManifestHeight)
+Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLocalHeight, int* pnManifestHeight,
+               const std::string& url, long nTimeoutSecs)
 {
     int nLocal = 0, nManifest = -1;
     int64_t nTipTime = 0;
@@ -1013,7 +1034,7 @@ Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLoca
     if (!fEmpty)
         ReadLocalTip(dataDir, nLocal, nTipTime);
     if (!fEmpty && nNow - nTipTime > STALE_TIP_SECONDS)
-        nManifest = FetchManifestHeight();
+        nManifest = FetchManifestHeight(url, nTimeoutSecs);
     if (pnLocalHeight)
         *pnLocalHeight = nLocal;
     if (pnManifestHeight)
@@ -1146,6 +1167,20 @@ static bool HasSpaceFor(const boost::filesystem::path& dataDir, int64_t nPartSiz
     return true;
 }
 
+bool IsNewerThanLocal(const boost::filesystem::path& dataDir, int nManifestHeight)
+{
+    if (nManifestHeight < 0 || IsNeeded(dataDir))
+        return true;
+    int nLocal = 0;
+    int64_t nTipTime = 0;
+    ReadLocalTip(dataDir, nLocal, nTipTime);
+    if (nManifestHeight > nLocal)
+        return true;
+    printf("Bootstrap: bootstrap height %d is not above the local height %d, keeping the local chain\n",
+           nManifestHeight, nLocal);
+    return false;
+}
+
 bool ApplyManifest(const std::string& manifestUrl,
                    const boost::filesystem::path& dataDir,
                    ProgressCallback progressCallback,
@@ -1188,6 +1223,11 @@ bool ApplyManifest(const std::string& manifestUrl,
             printf("Bootstrap: Unexpected file in manifest: %s\n", name.c_str());
             return false;
         }
+    }
+
+    if (!IsNewerThanLocal(dataDir, ParseManifestHeight(manifest))) {
+        fTryOlder = false;
+        return false;
     }
 
     if (mapParts.empty() || strZipHash.empty() || mapParts.size() > 999) {

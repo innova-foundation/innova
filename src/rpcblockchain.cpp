@@ -2040,10 +2040,10 @@ Value downloadbootstrap(const Array& params, bool fHelp)
         }
     }
     const int64_t nNow = GetTime();
-    int nPublished = nNow - nTipTime > Bootstrap::STALE_TIP_SECONDS ? Bootstrap::FetchManifestHeight() : -1;
+    int nPublished = nNow - nTipTime > Bootstrap::STALE_TIP_SECONDS ? Bootstrap::FetchManifestHeight(url) : -1;
     if (!force && Bootstrap::Decide(false, nLocal, nTipTime, nPublished, nNow) != Bootstrap::OFFER_BEHIND) {
         throw runtime_error(strprintf(
-            "The local chain (height %d) is not far behind the bootstrap, so it is kept.\n"
+            "The local chain (height %d) is not known to be far behind the bootstrap, so it is kept.\n"
             "To replace it anyway:\n"
             "  downloadbootstrap \"\" true", nLocal));
     }

@@ -62,7 +62,7 @@ static const int FAR_BEHIND_BLOCKS = 10000;
 
 enum Offer { OFFER_NONE, OFFER_EMPTY, OFFER_BEHIND };
 
-// nManifestHeight < 0 = unknown
+// nManifestHeight < 0 = unknown: only an empty datadir is offered
 Offer Decide(bool fEmpty, int nLocalHeight, int64_t nTipTime, int nManifestHeight, int64_t nNow);
 
 // Best-chain height and tip time read straight from txleveldb, before the block index loads
@@ -70,10 +70,18 @@ bool ReadLocalTip(const boost::filesystem::path& dataDir, int& nHeight, int64_t&
 
 // '# height N' in the manifest, -1 if absent
 int ParseManifestHeight(const std::string& manifest);
-int FetchManifestHeight();
+// Height of the manifest at url (empty = latest release); -1 for a plain zip or no height
+int FetchManifestHeight(const std::string& url = "", long nTimeoutSecs = 30);
+
+// False when the local chain is at or past nManifestHeight (unknown height = true)
+bool IsNewerThanLocal(const boost::filesystem::path& dataDir, int nManifestHeight);
+
+// Set after a bootstrap over an existing chain; cleared once the wallet rescan completes
+static const std::string RESCAN_FILENAME = "bootstrap.rescan";
 
 // Reads the local tip and, only for a stale tip, the published height
-Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLocalHeight = nullptr, int* pnManifestHeight = nullptr);
+Offer Evaluate(const boost::filesystem::path& dataDir, int64_t nNow, int* pnLocalHeight = nullptr, int* pnManifestHeight = nullptr,
+               const std::string& url = "", long nTimeoutSecs = 30);
 
 bool WriteRequest(const boost::filesystem::path& dataDir, const std::string& url);
 bool ReadRequest(const boost::filesystem::path& dataDir, std::string& url);

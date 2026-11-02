@@ -30,6 +30,9 @@
 #include <QEventLoop>
 #include <QThread>
 #include <QProcess>
+#include <QSettings>
+
+#include <boost/interprocess/sync/file_lock.hpp>
 
 #if defined(BITCOIN_NEED_QT_PLUGINS) && !defined(_BITCOIN_QT_PLUGINS_INCLUDED)
 #define _BITCOIN_QT_PLUGINS_INCLUDED
@@ -124,6 +127,24 @@ static void handleRunawayException(std::exception *e)
 }
 
 #ifndef BITCOIN_QT_TEST
+// Another instance holds the datadir: its chain is not this process's to judge
+static bool DataDirUnlocked()
+{
+    boost::filesystem::path pathLock = GetDataDir() / ".lock";
+    FILE* f = fopen(pathLock.string().c_str(), "a");
+    if (f)
+        fclose(f);
+    try {
+        boost::interprocess::file_lock lock(pathLock.string().c_str());
+        if (!lock.try_lock())
+            return false;
+        lock.unlock();
+        return true;
+    } catch (const boost::interprocess::interprocess_exception&) {
+        return false;
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // Do this early as we don't want to bother initializing if we are just calling IPC
@@ -231,10 +252,14 @@ int main(int argc, char *argv[])
 
     if (!GetBoolArg("-testnet", false) && !GetBoolArg("-regtest", false) &&
         !mapArgs.count("-getbootstrap") && !GetBoolArg("-nobootstrap", false) &&
-        !boost::filesystem::exists(GetDataDir() / Bootstrap::REQUEST_FILENAME))
+        !boost::filesystem::exists(GetDataDir() / Bootstrap::REQUEST_FILENAME) &&
+        !GetBoolArg("-waitforlock", false) && DataDirUnlocked())
     {
         int nLocal = 0, nPublished = -1;
-        Bootstrap::Offer offer = Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished);
+        Bootstrap::Offer offer = Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished, "", 5);
+        QSettings settings;
+        if (offer == Bootstrap::OFFER_BEHIND && nPublished <= settings.value("nBootstrapDeclinedHeight", -1).toInt())
+            offer = Bootstrap::OFFER_NONE;
         if (offer == Bootstrap::OFFER_EMPTY)
         {
             QMessageBox box(QMessageBox::Question, "Innova",
@@ -250,9 +275,7 @@ int main(int argc, char *argv[])
         }
         else if (offer == Bootstrap::OFFER_BEHIND)
         {
-            QString strBehind = nPublished >= 0
-                ? QObject::tr("Your node is %1 blocks behind.").arg(nPublished - nLocal)
-                : QObject::tr("Your node's chain is more than two days behind.");
+            QString strBehind = QObject::tr("Your node is %1 blocks behind.").arg(nPublished - nLocal);
             QMessageBox box(QMessageBox::Question, "Innova",
                             strBehind + "\n\n" +
                             QObject::tr("Replace the partial chain with the bootstrap from the latest Innova release "
@@ -263,6 +286,8 @@ int main(int argc, char *argv[])
             box.exec();
             if (box.clickedButton() == bootstrap)
                 Bootstrap::WriteRequest(GetDataDir(), "");
+            else
+                settings.setValue("nBootstrapDeclinedHeight", nPublished);
         }
     }
 
@@ -369,8 +394,12 @@ int main(int argc, char *argv[])
 
             // Shutdown the core and its threads, but don't exit Bitcoin-Qt here
             Shutdown(NULL);
-            if (fRestartRequested)
-                QProcess::startDetached(QCoreApplication::applicationFilePath(), QCoreApplication::arguments().mid(1));
+            if (fRestartRequested) {
+                QStringList args = QCoreApplication::arguments().mid(1);
+                if (!args.contains("-waitforlock"))
+                    args << "-waitforlock";
+                QProcess::startDetached(QCoreApplication::applicationFilePath(), args);
+            }
         }
         else
         {

@@ -1950,8 +1950,8 @@ bool AppInit2()
 
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     bool fLocked = lock.try_lock();
-    // A GUI restart for a scheduled bootstrap starts before the old process exits
-    for (int nWait = 0; !fLocked && nWait < 60 && fs::exists(GetDataDir() / Bootstrap::REQUEST_FILENAME); ++nWait) {
+    // A GUI restart starts before the old process exits
+    for (int nWait = 0; !fLocked && nWait < 120 && GetBoolArg("-waitforlock", false); ++nWait) {
         MilliSleep(500);
         fLocked = lock.try_lock();
     }
@@ -2315,7 +2315,8 @@ bool AppInit2()
         if (fGetBootstrap && !fNoBootstrap && !fEmpty && !fRequested)
         {
             int nLocal = 0, nPublished = -1;
-            if (Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished) != Bootstrap::OFFER_BEHIND)
+            if (Bootstrap::Evaluate(GetDataDir(), GetTime(), &nLocal, &nPublished,
+                                    GetArg("-bootstrapurl", "")) != Bootstrap::OFFER_BEHIND)
             {
                 printf("Bootstrap: local chain (height %d) is not far behind, keeping it\n", nLocal);
                 fGetBootstrap = false;
@@ -2357,7 +2358,11 @@ bool AppInit2()
             {
                 // The wallet's best-block locator points into the replaced chain
                 printf("Bootstrap: applied over existing chain data, rescanning the wallet\n");
-                mapArgs["-rescan"] = "1";
+                FILE* fRescan = fopen((GetDataDir() / Bootstrap::RESCAN_FILENAME).string().c_str(), "wb");
+                if (fRescan) {
+                    FileCommit(fRescan);
+                    fclose(fRescan);
+                }
             }
             if (!fApplied)
             {
@@ -2371,6 +2376,10 @@ bool AppInit2()
             printf("\n");
         }
     }
+
+    const bool fBootstrapRescan = fs::exists(GetDataDir() / Bootstrap::RESCAN_FILENAME);
+    if (fBootstrapRescan)
+        mapArgs["-rescan"] = "1";
 
     // ********************************************************* Step 7: load blockchain
 
@@ -2805,6 +2814,11 @@ bool AppInit2()
     if (fRepairWalletLocator && !fBlockDataRepair &&
         !pwalletMain->SetBestChainChecked(CBlockLocator(pindexBest)))
         return InitError("Wallet rescan completed but its best-block locator could not be persisted; check wallet storage and restart with -rescan.");
+    if (fBootstrapRescan && !fBlockDataRepair)
+    {
+        boost::system::error_code ecRescan;
+        fs::remove(GetDataDir() / Bootstrap::RESCAN_FILENAME, ecRescan);
+    }
 
     // Close a recorded IV5 scan gap here: its notes are unrecoverable by any other route now
     // that unshield is retired.

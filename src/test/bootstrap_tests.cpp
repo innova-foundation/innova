@@ -43,6 +43,19 @@ struct Dirs
         Put(stage / "blk0001.dat", "new1");
         Put(stage / "blk0002.dat", "new2");
         Put(stage / "txleveldb" / "000009.ldb", "newidx");
+        Put(data / "cnannounce.dat", "cn");
+        Put(data / "spvutxos.dat", "spv");
+        Put(data / "txleveldb_backup" / "000001.ldb", "bak");
+    }
+    bool HasDerived()
+    {
+        return fs::exists(data / "cnannounce.dat") && fs::exists(data / "spvutxos.dat") &&
+               fs::exists(data / "txleveldb_backup" / "000001.ldb");
+    }
+    bool NoDerived()
+    {
+        return !fs::exists(data / "cnannounce.dat") && !fs::exists(data / "spvutxos.dat") &&
+               !fs::exists(data / "txleveldb_backup");
     }
     ~Dirs() { boost::system::error_code ec; fs::remove_all(root, ec); }
     void CheckKept()
@@ -91,7 +104,9 @@ BOOST_AUTO_TEST_CASE(decide_near_tip)
 
 BOOST_AUTO_TEST_CASE(decide_unknown_height)
 {
-    BOOST_CHECK(Bootstrap::Decide(false, 7999999, NOW - 2 * DAY - 1, -1, NOW) == Bootstrap::OFFER_BEHIND);
+    BOOST_CHECK(Bootstrap::Decide(false, 7999999, NOW - 2 * DAY - 1, -1, NOW) == Bootstrap::OFFER_NONE);
+    BOOST_CHECK(Bootstrap::Decide(false, 0, 0, -1, NOW) == Bootstrap::OFFER_NONE);
+    BOOST_CHECK(Bootstrap::Decide(false, 100, NOW - 30 * DAY, -1, NOW) == Bootstrap::OFFER_NONE);
     BOOST_CHECK(Bootstrap::Decide(false, 7999999, NOW - DAY, -1, NOW) == Bootstrap::OFFER_NONE);
 }
 
@@ -115,7 +130,33 @@ BOOST_AUTO_TEST_CASE(swap_replaces_chain_only)
     BOOST_CHECK_EQUAL(Get(d.data / "txleveldb" / "000009.ldb"), "newidx");
     BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000005.ldb"));
     BOOST_CHECK_EQUAL(d.Leftovers(), 0u);
+    BOOST_CHECK(d.NoDerived());
     d.CheckKept();
+}
+
+BOOST_AUTO_TEST_CASE(swap_takes_only_chain_entries)
+{
+    Dirs d;
+    Put(d.stage / "wallet.dat", "evil");
+    Put(d.stage / "innova.conf", "evil");
+    Put(d.stage / "smsgDB" / "000001.log", "evil");
+    Put(d.stage / "blk0009.dat" / "x", "dir");
+    BOOST_REQUIRE(Bootstrap::SwapInStaged(d.stage, d.data));
+    BOOST_CHECK_EQUAL(Get(d.data / "blk0001.dat"), "new1");
+    BOOST_CHECK(!fs::exists(d.data / "blk0009.dat"));
+    BOOST_CHECK_EQUAL(d.Leftovers(), 0u);
+    d.CheckKept();
+}
+
+BOOST_AUTO_TEST_CASE(apply_refuses_bootstrap_not_above_local)
+{
+    Dirs d;
+    BOOST_CHECK(Bootstrap::IsNewerThanLocal(d.data, -1));
+    BOOST_CHECK(!Bootstrap::IsNewerThanLocal(d.data, 0));
+    BOOST_CHECK(Bootstrap::IsNewerThanLocal(d.data, 1));
+    fs::remove_all(d.data / "txleveldb");
+    fs::remove(d.data / "blk0001.dat");
+    BOOST_CHECK(Bootstrap::IsNewerThanLocal(d.data, 0));
 }
 
 BOOST_AUTO_TEST_CASE(swap_failure_restores_everything)
@@ -128,6 +169,7 @@ BOOST_AUTO_TEST_CASE(swap_failure_restores_everything)
     BOOST_CHECK_EQUAL(Get(d.data / "txleveldb" / "000005.ldb"), "oldidx");
     BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000009.ldb"));
     BOOST_CHECK_EQUAL(d.Leftovers(), 0u);
+    BOOST_CHECK(d.HasDerived());
     d.CheckKept();
 }
 
@@ -163,6 +205,7 @@ BOOST_AUTO_TEST_CASE(swap_crash_at_every_step_recovers)
             BOOST_CHECK_EQUAL(Get(d.data / "blk0002.dat"), "new2");
             BOOST_CHECK(!fs::exists(d.data / "blk0003.dat"));
             BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000005.ldb"));
+            BOOST_CHECK(d.NoDerived());
         } else {
             ++nOld;
             BOOST_CHECK_EQUAL(Get(d.data / "blk0001.dat"), "old1");
@@ -170,6 +213,7 @@ BOOST_AUTO_TEST_CASE(swap_crash_at_every_step_recovers)
             BOOST_CHECK_EQUAL(Get(d.data / "blk0003.dat"), "old3");
             BOOST_CHECK_EQUAL(Get(d.data / "txleveldb" / "000005.ldb"), "oldidx");
             BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000009.ldb"));
+            BOOST_CHECK(d.HasDerived());
         }
     }
     BOOST_CHECK_GT(nOld, 0);
