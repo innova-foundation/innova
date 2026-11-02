@@ -301,11 +301,21 @@ void NoteUnsyncedIBDCommit() { fIBDBatchPending = true; }
 
 bool IBDBatchPending() { return fIBDBatchPending; }
 
+bool fIBDFlushFailForTest = false;
+
+static void AbortOnFlushFailure(const std::string& strMessage)
+{
+    if (!fRequestShutdown)
+        AbortNode(strMessage);
+}
+void (*pIBDFlushFailed)(const std::string&) = AbortOnFlushFailure;
+
 // An empty synced write fsyncs the log, and every unsynced commit before it.
-void FlushIBDBatch()
+// False (and the node shuts down) if the chain could not be made durable.
+bool FlushIBDBatch()
 {
     if (!fIBDBatchPending)
-        return;
+        return true;
     LOCK(cs_IBDBatch);
     if (fIBDBatchPending && txdb)
     {
@@ -314,16 +324,18 @@ void FlushIBDBatch()
         leveldb::WriteOptions writeOptions;
         writeOptions.sync = true;
         leveldb::WriteBatch batch;
-        leveldb::Status status = txdb->Write(writeOptions, &batch);
+        leveldb::Status status = fIBDFlushFailForTest ? leveldb::Status::IOError("injected")
+                                                      : txdb->Write(writeOptions, &batch);
         if (!status.ok())
         {
-            printf("FlushIBDBatch: %s\n", status.ToString().c_str());
-            return;
+            pIBDFlushFailed("FlushIBDBatch: block database sync failed: " + status.ToString());
+            return false;
         }
         fIBDBatchPending = false;
         nIBDBatchCount = 0;
         nIBDBatchLastSyncMs = GetTimeMillis();
     }
+    return true;
 }
 
 // Tip time recorded at the end of IBD and at shutdown; a fresh one means the node opens synced.

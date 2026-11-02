@@ -211,6 +211,33 @@ BOOST_AUTO_TEST_CASE(a_bdb_write_fsyncs_the_pending_ibd_batch_first)
     InitIBDBatching();
 }
 
+static std::string strIBDFlushFailure;
+static void RecordIBDFlushFailure(const std::string& s) { strIBDFlushFailure = s; }
+
+BOOST_AUTO_TEST_CASE(failed_ibd_flush_refuses_the_wallet_write)
+{
+    mapArgs["-ibdbatchalways"] = "1";
+    InitIBDBatching();
+    void (*pPrev)(const std::string&) = pIBDFlushFailed;
+    pIBDFlushFailed = RecordIBDFlushFailure;
+    strIBDFlushFailure.clear();
+    NoteUnsyncedIBDCommit();
+    fIBDFlushFailForTest = true;
+    {
+        CWalletDB walletdb(pwalletMain->strWalletFile);
+        BOOST_CHECK(!walletdb.WriteName("ibd-flush-fail", "x"));
+    }
+    BOOST_CHECK(strIBDFlushFailure.find("sync failed") != std::string::npos);
+    BOOST_CHECK(IBDBatchPending());
+    BOOST_CHECK(!FlushIBDBatch());
+    fIBDFlushFailForTest = false;
+    BOOST_CHECK(FlushIBDBatch());
+    BOOST_CHECK(!IBDBatchPending());
+    pIBDFlushFailed = pPrev;
+    mapArgs.erase("-ibdbatchalways");
+    InitIBDBatching();
+}
+
 BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)
 {
     LOCK(cs_main);

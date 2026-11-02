@@ -779,7 +779,10 @@ private:
 };
 
 void InitIBDBatching();
-void FlushIBDBatch();
+bool FlushIBDBatch();
+// Tests: force the flush to fail, and replace the shutdown on failure
+extern bool fIBDFlushFailForTest;
+extern void (*pIBDFlushFailed)(const std::string&);
 bool IBDBatchPending();
 void NoteUnsyncedIBDCommit();
 bool IBDBlockCommitSync();
