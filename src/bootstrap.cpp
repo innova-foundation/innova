@@ -17,6 +17,11 @@
 #include <map>
 #include <vector>
 
+#ifndef WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
@@ -670,14 +675,115 @@ static bool IsBlkName(const std::string& name)
            std::all_of(name.begin() + 3, name.begin() + 7, [](char c) { return isdigit((unsigned char)c); });
 }
 
+static void SyncDir(const boost::filesystem::path& dir)
+{
+#ifndef WIN32
+    int fd = open(dir.string().c_str(), O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+#endif
+}
+
+static bool WriteJournal(const boost::filesystem::path& dataDir, const std::string& body)
+{
+    boost::filesystem::path tmp = dataDir / (JOURNAL_FILENAME + ".tmp");
+    FILE* f = OpenFile(tmp, "wb");
+    if (!f)
+        return false;
+    bool fOk = fwrite(body.data(), 1, body.size(), f) == body.size();
+    FileCommit(f);
+    fOk = fclose(f) == 0 && fOk;
+    if (fOk)
+        fOk = RenameOver(tmp, dataDir / JOURNAL_FILENAME);
+    SyncDir(dataDir);
+    return fOk;
+}
+
+static void UndoEntries(const boost::filesystem::path& stage, const boost::filesystem::path& dataDir,
+                        const std::vector<std::pair<std::string, bool> >& vEntries)
+{
+    namespace fs = boost::filesystem;
+    boost::system::error_code ec;
+    for (auto it = vEntries.rbegin(); it != vEntries.rend(); ++it) {
+        fs::path target = dataDir / it->first;
+        fs::path old = target.string() + ".bootstrap-old";
+        // rename is atomic: a staged item gone from the stage is the one at target
+        if (it->second && !fs::exists(stage / it->first))
+            fs::remove_all(target, ec);
+        if (fs::exists(old)) {
+            fs::remove_all(target, ec);
+            fs::rename(old, target, ec);
+        }
+    }
+    SyncDir(dataDir);
+}
+
+static void DropBackups(const boost::filesystem::path& dataDir,
+                        const std::vector<std::pair<std::string, bool> >& vEntries)
+{
+    boost::system::error_code ec;
+    for (const auto& e : vEntries)
+        boost::filesystem::remove_all(dataDir / (e.first + ".bootstrap-old"), ec);
+    SyncDir(dataDir);
+}
+
+bool RecoverJournal(const boost::filesystem::path& dataDir)
+{
+    namespace fs = boost::filesystem;
+    boost::system::error_code ec;
+    fs::remove(dataDir / (JOURNAL_FILENAME + ".tmp"), ec);
+    FILE* f = OpenFile(dataDir / JOURNAL_FILENAME, "rb");
+    if (!f)
+        return false;
+    std::string body;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        body.append(buf, n);
+    fclose(f);
+
+    fs::path stage;
+    bool fCommit = false;
+    std::vector<std::pair<std::string, bool> > vEntries;
+    std::vector<std::string> vLines;
+    boost::split(vLines, body, boost::is_any_of("\n"));
+    for (const auto& line : vLines) {
+        size_t sp = line.find(' ');
+        std::string op = line.substr(0, sp), arg = sp == std::string::npos ? "" : line.substr(sp + 1);
+        if (op == "stage")
+            stage = arg;
+        else if ((op == "aside" || op == "place") && !arg.empty() && arg.find('/') == std::string::npos &&
+                 arg.find('\\') == std::string::npos && arg != "." && arg != ".." && arg != "wallet.dat")
+            vEntries.push_back(std::make_pair(arg, op == "place"));
+        else if (op == "commit")
+            fCommit = true;
+    }
+    if (stage.empty())
+        stage = dataDir / "bootstrap_extract";
+    if (fCommit) {
+        printf("Bootstrap: finishing an interrupted apply\n");
+        DropBackups(dataDir, vEntries);
+    } else {
+        printf("Bootstrap: rolling back an interrupted apply\n");
+        UndoEntries(stage, dataDir, vEntries);
+    }
+    fs::remove(dataDir / JOURNAL_FILENAME, ec);
+    SyncDir(dataDir);
+    return true;
+}
+
 bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem::path& dataDir,
-                  const std::string& strFailOn)
+                  const std::string& strFailOn, int nCrashAt)
 {
     namespace fs = boost::filesystem;
     boost::system::error_code ec;
     std::vector<fs::path> vItems;
     std::set<std::string> setNames;
     for (fs::directory_iterator it(stage), end; it != end; ++it) {
+        if (it->path().filename() == "wallet.dat")
+            continue;
         vItems.push_back(it->path());
         setNames.insert(it->path().filename().string());
     }
@@ -693,15 +799,31 @@ bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem:
             vStale.push_back(it->path());
     }
 
-    std::vector<std::pair<fs::path, bool> > vTouched; // target, placed from the stage
+    std::vector<std::pair<std::string, bool> > vEntries;
+    std::string strJournal = "stage " + fs::absolute(stage).string() + "\n";
+    for (const auto& p : vStale) {
+        vEntries.push_back(std::make_pair(p.filename().string(), false));
+        strJournal += "aside " + p.filename().string() + "\n";
+    }
+    for (const auto& p : vItems) {
+        vEntries.push_back(std::make_pair(p.filename().string(), true));
+        strJournal += "place " + p.filename().string() + "\n";
+    }
+
+    int nStep = 0;
+    auto crash = [&]() { return nCrashAt >= 0 && nStep++ == nCrashAt; };
+
+    if (crash())
+        return false;
+    if (!WriteJournal(dataDir, strJournal)) {
+        printf("Bootstrap: Could not write %s\n", JOURNAL_FILENAME.c_str());
+        return false;
+    }
+    std::vector<std::pair<std::string, bool> > vTouched;
     auto rollback = [&]() {
-        for (auto it = vTouched.rbegin(); it != vTouched.rend(); ++it) {
-            if (it->second)
-                fs::remove_all(it->first, ec);
-            fs::path old = it->first.string() + ".bootstrap-old";
-            if (fs::exists(old))
-                fs::rename(old, it->first, ec);
-        }
+        UndoEntries(stage, dataDir, vTouched);
+        fs::remove(dataDir / JOURNAL_FILENAME, ec);
+        SyncDir(dataDir);
     };
     auto aside = [&](const fs::path& target) {
         fs::path backup = target.string() + ".bootstrap-old";
@@ -717,19 +839,25 @@ bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem:
     };
 
     for (const auto& target : vStale) {
+        if (crash())
+            return false;
+        vTouched.push_back(std::make_pair(target.filename().string(), false));
         if (!aside(target)) {
             rollback();
             return false;
         }
-        vTouched.push_back(std::make_pair(target, false));
     }
     for (const auto& item : vItems) {
         fs::path target = dataDir / item.filename();
+        if (crash())
+            return false;
+        vTouched.push_back(std::make_pair(item.filename().string(), true));
         if (!aside(target)) {
             rollback();
             return false;
         }
-        vTouched.push_back(std::make_pair(target, true));
+        if (crash())
+            return false;
         if (item.filename().string() == strFailOn) {
             ec = boost::system::errc::make_error_code(boost::system::errc::io_error);
         } else {
@@ -747,8 +875,21 @@ bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem:
             return false;
         }
     }
-    for (const auto& t : vTouched)
-        fs::remove_all(t.first.string() + ".bootstrap-old", ec);
+    SyncDir(dataDir);
+    if (crash())
+        return false;
+    if (!WriteJournal(dataDir, strJournal + "commit\n")) {
+        printf("Bootstrap: Could not commit %s\n", JOURNAL_FILENAME.c_str());
+        rollback();
+        return false;
+    }
+    if (crash())
+        return false;
+    DropBackups(dataDir, vEntries);
+    if (crash())
+        return false;
+    fs::remove(dataDir / JOURNAL_FILENAME, ec);
+    SyncDir(dataDir);
     if (!vStale.empty())
         printf("Bootstrap: Removed %u block files past the bootstrap\n", (unsigned)vStale.size());
     return true;

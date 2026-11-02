@@ -2277,12 +2277,12 @@ bool AppInit2()
 
     // ********************************************************* Step 6.5: Bootstrap download (optional)
 
+    Bootstrap::RecoverJournal(GetDataDir());
     if (!fTestNet && !fRegTest)
     {
         std::string strRequestUrl;
-        // One attempt per request, so a failing bootstrap cannot loop restarts
+        // Cleared once the apply returns: a crash mid-apply retries, a failure does not
         bool fRequested = Bootstrap::ReadRequest(GetDataDir(), strRequestUrl);
-        Bootstrap::ClearRequest(GetDataDir());
         bool fEmpty = Bootstrap::IsNeeded(GetDataDir());
         bool fGetBootstrap = GetBoolArg("-getbootstrap", false) || fRequested;
         bool fNoBootstrap = GetBoolArg("-nobootstrap", false);
@@ -2322,6 +2322,9 @@ bool AppInit2()
             }
         }
 
+        if (fRequested && (!fGetBootstrap || fNoBootstrap))
+            Bootstrap::ClearRequest(GetDataDir());
+
         if (fGetBootstrap && !fNoBootstrap)
         {
             std::string url = GetArg("-bootstrapurl", strRequestUrl);
@@ -2349,6 +2352,7 @@ bool AppInit2()
             };
 
             bool fApplied = Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback);
+            Bootstrap::ClearRequest(GetDataDir());
             if (fApplied && !fEmpty)
             {
                 // The wallet's best-block locator points into the replaced chain

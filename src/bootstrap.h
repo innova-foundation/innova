@@ -79,10 +79,16 @@ bool WriteRequest(const boost::filesystem::path& dataDir, const std::string& url
 bool ReadRequest(const boost::filesystem::path& dataDir, std::string& url);
 void ClearRequest(const boost::filesystem::path& dataDir);
 
+static const std::string JOURNAL_FILENAME = "bootstrap.journal";
+
 // Moves the staged chain into dataDir. Existing targets and blk*.dat the stage lacks go aside
-// as *.bootstrap-old and come back on any failure. strFailOn forces a failure (tests).
+// as *.bootstrap-old and come back on any failure; a fsync'd journal covers a crash.
+// strFailOn forces a failure, nCrashAt stops dead at that step (tests).
 bool SwapInStaged(const boost::filesystem::path& stage, const boost::filesystem::path& dataDir,
-                  const std::string& strFailOn = "");
+                  const std::string& strFailOn = "", int nCrashAt = -1);
+
+// Rolls an interrupted apply back, or finishes it once committed. False if no journal.
+bool RecoverJournal(const boost::filesystem::path& dataDir);
 
 }
 

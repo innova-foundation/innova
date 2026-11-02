@@ -141,6 +141,51 @@ BOOST_AUTO_TEST_CASE(swap_failure_on_first_item)
     d.CheckKept();
 }
 
+BOOST_AUTO_TEST_CASE(swap_crash_at_every_step_recovers)
+{
+    int nOld = 0, nNew = 0;
+    for (int n = 0;; ++n) {
+        Dirs d;
+        bool fDone = Bootstrap::SwapInStaged(d.stage, d.data, "", n);
+        if (fDone) {
+            BOOST_CHECK(!Bootstrap::RecoverJournal(d.data));
+            BOOST_CHECK_GE(n, 8);
+            break;
+        }
+        BOOST_REQUIRE_LT(n, 50);
+        Bootstrap::RecoverJournal(d.data);
+        BOOST_CHECK(!fs::exists(d.data / Bootstrap::JOURNAL_FILENAME));
+        BOOST_CHECK_EQUAL(d.Leftovers(), 0u);
+        d.CheckKept();
+        if (Get(d.data / "txleveldb" / "000009.ldb") == "newidx") {
+            ++nNew;
+            BOOST_CHECK_EQUAL(Get(d.data / "blk0001.dat"), "new1");
+            BOOST_CHECK_EQUAL(Get(d.data / "blk0002.dat"), "new2");
+            BOOST_CHECK(!fs::exists(d.data / "blk0003.dat"));
+            BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000005.ldb"));
+        } else {
+            ++nOld;
+            BOOST_CHECK_EQUAL(Get(d.data / "blk0001.dat"), "old1");
+            BOOST_CHECK_EQUAL(Get(d.data / "blk0002.dat"), "old2");
+            BOOST_CHECK_EQUAL(Get(d.data / "blk0003.dat"), "old3");
+            BOOST_CHECK_EQUAL(Get(d.data / "txleveldb" / "000005.ldb"), "oldidx");
+            BOOST_CHECK(!fs::exists(d.data / "txleveldb" / "000009.ldb"));
+        }
+    }
+    BOOST_CHECK_GT(nOld, 0);
+    BOOST_CHECK_GT(nNew, 0);
+}
+
+BOOST_AUTO_TEST_CASE(journal_recovery_ignores_wallet)
+{
+    Dirs d;
+    Put(d.data / "wallet.dat.bootstrap-old", "x");
+    Put(d.data / Bootstrap::JOURNAL_FILENAME, "stage " + d.stage.string() + "\nplace wallet.dat\nplace ../wallet.dat\n");
+    BOOST_CHECK(Bootstrap::RecoverJournal(d.data));
+    BOOST_CHECK_EQUAL(Get(d.data / "wallet.dat"), "wallet");
+    BOOST_CHECK(!fs::exists(d.data / Bootstrap::JOURNAL_FILENAME));
+}
+
 BOOST_AUTO_TEST_CASE(request_roundtrip)
 {
     Dirs d;
