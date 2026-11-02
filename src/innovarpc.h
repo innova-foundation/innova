@@ -368,9 +368,6 @@ extern json_spirit::Value masternode(const json_spirit::Array& params, bool fHel
 extern json_spirit::Value collateralnode(const json_spirit::Array& params, bool fHelp);
 
 // Enhanced NullSend mixing (rpcwallet.cpp)
-extern json_spirit::Value startmixing(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value stopmixing(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getmixingstatus(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value smsgenable(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value smsgdisable(const json_spirit::Array& params, bool fHelp);
@@ -426,10 +423,6 @@ extern json_spirit::Value z_importviewingkey(const json_spirit::Array& params, b
 extern json_spirit::Value z_getshieldedinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_migrateanon(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_send(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value z_nullsend(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value z_nullsendinfo(const json_spirit::Array& params, bool fHelp);
-#define z_coinjoin z_nullsend
-#define z_coinjoininfo z_nullsendinfo
 extern json_spirit::Value n_delegatestake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_importdelegation(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_revokecoldstake(const json_spirit::Array& params, bool fHelp);

@@ -19,7 +19,6 @@
 #include "nullsend_v2008.h"
 #include "collateralnode.h"
 #include "nullsend.h"
-#include "spork.h"
 #include "smessage.h"
 #include "namecoin.h"
 #include "dandelion.h"
@@ -19838,11 +19837,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (fSecMsgEnabled)
             SecureMsgReceiveData(pfrom, strCommand, vRecv);
 
-        //ProcessMessageCollateralN(pfrom, strCommand, vRecv);
         ProcessMessageCollateralnode(pfrom, strCommand, vRecv);
-        ProcessMessageNullSend(pfrom, strCommand, vRecv);
         ProcessMessageFinality(pfrom, strCommand, vRecv);
-        //ProcessSpork(pfrom, strCommand, vRecv);
 
         ProcessDAGHeadersMessage(pfrom, strCommand, vRecv);
 

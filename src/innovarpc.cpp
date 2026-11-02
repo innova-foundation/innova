@@ -486,9 +486,6 @@ static const CRPCCommand vRPCCommands[] =
     { "collateralnode",           &collateralnode,           true,   false},
 
     /* NullSend Mixing */
-    { "startmixing",            &startmixing,            false,  true},
-    { "stopmixing",             &stopmixing,             false,  false},
-    { "getmixingstatus",        &getmixingstatus,        true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},
@@ -561,8 +558,6 @@ static const CRPCCommand vRPCCommands[] =
     { "z_getshieldedinfo",      &z_getshieldedinfo,      true,   false },
     { "z_migrateanon",          &z_migrateanon,          false,  true },
     { "z_send",                 &z_send,                 false,  true },
-    { "z_nullsend",             &z_nullsend,             false,  true },
-    { "z_nullsendinfo",         &z_nullsendinfo,         true,   false },
 
     /* Cold Staking Delegation Commands (NullStake V3) */
     { "n_delegatestake",        &n_delegatestake,        false,  true },
@@ -1776,10 +1771,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_mintmofncoldstake"   && n > 3) ConvertTo<json_spirit::Array>(params[3]);
     if (strMethod == "z_mintmofncoldstake"   && n > 4) ConvertTo<int64_t>(params[4]);
     if (strMethod == "n_delegatestake"       && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "z_nullsend"            && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "z_nullsend"            && n > 2) ConvertTo<int64_t>(params[2]);
-    if (strMethod == "z_nullsend"            && n > 3) ConvertTo<int64_t>(params[3]);
-    if (strMethod == "z_nullsend"            && n > 4) ConvertTo<int64_t>(params[4]);
 
 
 

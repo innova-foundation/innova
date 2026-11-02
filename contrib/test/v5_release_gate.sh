@@ -68,7 +68,6 @@ RELEASE_POLICY="$SCRIPT_DIR/check_v5_release_policy.py"
 INTEGRATION_SUITES=(
     "$SCRIPT_DIR/full_milestone_test.sh"
     "$SCRIPT_DIR/privacy_integration_test.sh"
-    "$SCRIPT_DIR/shielded_fcmp_zsend_modes_test.sh --nullsend-smoke"
     "$SCRIPT_DIR/idag_1s_sync_regression_test.sh"
     "$SCRIPT_DIR/idag_tx_relay_test.sh"
     "$SCRIPT_DIR/idag_finality_2of3_test.sh"

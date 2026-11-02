@@ -747,7 +747,6 @@ std::string HelpMessage()
         "  -dagheadersserve       " + _("Serve headers with their coinbase and DAG parents to peers (default: 1)") + "\n" +
         "  -dagheaderswindow=<n>  " + _("Maximum headers held ahead of block bodies by -dagheaderssync (default: 100000)") + "\n" +
         "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
-        "  -mixingpoolsize=<n>   " + _("NullSend mixing pool size (2-16, default: 5)") + "\n" +
         "  -mixdir=<onion:port>   " + _("A NullSend v2008 announcement directory; may be given more than once. Seats fetch rounds from these and coordinators upload to them") + "\n" +
         "  -mixproxy=<ip:port>    " + _("SOCKS5 proxy every NullSend v2008 exchange goes through; it must accept per-exchange credentials (default: the bundled tor's with -nativetor, else 127.0.0.1:9050)") + "\n" +
         "  -mixcoordinatorport=<n> " + _("Run a NullSend v2008 coordinator listening on this local port, for an onion service of its own (default: 0, off)") + "\n" +
@@ -3205,7 +3204,6 @@ bool AppInit2()
     // guard above has passed.
     LoadCollateralnodeAnnouncements();
     NewThread(ThreadCheckCollaTeralPool, NULL);
-    NewThread(ThreadNullSend, NULL);
     // Closes a recorded IV5 scan gap once a seed exists. The unlock path must not: it runs
     // under cs_main and cs_wallet.
     NewThread(ThreadPrivacyVNextScanGapCloser, NULL);

@@ -350,8 +350,6 @@ grep -A2 'if (IsShielded() &&' "$main_cpp" | \
 if grep -q 'nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()' "$ROOT/src/finality.cpp"; then
     fail "legacy private finality is disabled only at relay, not at public-network consensus"
 fi
-grep -q '!IsLegacyNullSendEnabledAtHeight(nBestHeight)' "$ROOT/src/nullsend.cpp" || \
-    fail "legacy NullSend P2P traffic bypasses the shared retirement gate"
 grep -q 'IsBoundaryBActiveAtHeight(nCurrentHeight) && fVNextReady' "$ROOT/src/rpcshielded.cpp" || \
     fail "privacy RPC can claim Boundary-B activation without a ready vNext implementation"
 grep -q 'SHIELDED_VNEXT_PRIVACY_MODE_COUNT = 8' "$ROOT/src/shielded.h" || \
