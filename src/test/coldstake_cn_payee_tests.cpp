@@ -362,32 +362,101 @@ bool EnsureFixture()
 
 } // namespace
 
-// The CN payee is not a validity rule: the same cold-stake block connects with an empty or a
-// populated CN list, inside or outside the clock window, with IBD forced on or off.
-struct IBDOverrideGuard
+// The gate. It is the payment rule's window applied to the payee check, so a block
+// old enough that no node can still resolve its payee is not judged on the payee
+// at all -- which is what stops a refusal from being retried forever.
+BOOST_AUTO_TEST_CASE(the_payee_check_runs_only_inside_the_node_local_window)
 {
-    ~IBDOverrideGuard() { nIBDTestOverride = -1; }
-};
+    const int nSaved = nCoinbaseMaturity;
+    nCoinbaseMaturity = 65;
+    const int64_t nWindow = CollateralnodePaymentWindowSeconds();
+    const int64_t nBlockTime = 1750000000;
+    const int nHeight = FORK_HEIGHT_CN_PAYMENT_VALIDATION + 10;
 
-BOOST_AUTO_TEST_CASE(connect_result_ignores_cn_list_clock_and_ibd)
+    BOOST_CHECK(ColdStakeCNPayeeRuleApplies(false, nHeight, 1, nBlockTime, nBlockTime));
+
+    // No payment output, nothing to judge.
+    BOOST_CHECK(!ColdStakeCNPayeeRuleApplies(false, nHeight, 0, nBlockTime, nBlockTime));
+
+    // Before the fork height the rule does not exist.
+    BOOST_CHECK(!ColdStakeCNPayeeRuleApplies(false, FORK_HEIGHT_CN_PAYMENT_VALIDATION - 1,
+                                             1, nBlockTime, nBlockTime));
+
+    // A re-check that is not connecting the block never judges the payee.
+    BOOST_CHECK(!ColdStakeCNPayeeRuleApplies(true, nHeight, 1, nBlockTime, nBlockTime));
+
+    // The last clock reading that still judges it, and the first that does not.
+    BOOST_CHECK(ColdStakeCNPayeeRuleApplies(false, nHeight, 1, nBlockTime,
+                                            nBlockTime + nWindow - 1));
+    BOOST_CHECK(!ColdStakeCNPayeeRuleApplies(false, nHeight, 1, nBlockTime,
+                                             nBlockTime + nWindow));
+
+    // Past some clock reading the rule stops applying, so a transient refusal
+    // cannot become an unbounded re-download loop on nodes that never learn the payee.
+    BOOST_CHECK(!ColdStakeCNPayeeRuleApplies(false, nHeight, 1, nBlockTime,
+                                             nBlockTime + nWindow + 86400));
+
+    nCoinbaseMaturity = nSaved;
+}
+
+// The verdict is read out of state the chain does not carry. Same height, same
+// script, two answers -- which is what makes persisting it a permanent split.
+BOOST_AUTO_TEST_CASE(the_payee_verdict_is_read_from_gossiped_state)
+{
+    CollateralnodeViewGuard guard;
+
+    CKey payeeKey;
+    payeeKey.MakeNewKey(true);
+    const CScript payeeScript = PayToKey(payeeKey);
+    const int nHeight = FORK_HEIGHT_CN_PAYMENT_VALIDATION + 10;
+
+    BOOST_CHECK_MESSAGE(!ColdStakeCNPayeeIsRegistered(nHeight, payeeScript),
+                        "a node that has not yet received a collateralnode list "
+                        "recognises no payee -- the state of every node for the "
+                        "first minutes after start-up");
+
+    // A disabled entry is not a registration.
+    AnnounceCollateralnode(payeeKey, false);
+    BOOST_CHECK(!ColdStakeCNPayeeIsRegistered(nHeight, payeeScript));
+
+    ClearCollateralnodeView();
+    AnnounceCollateralnode(payeeKey, true);
+    BOOST_CHECK_MESSAGE(ColdStakeCNPayeeIsRegistered(nHeight, payeeScript),
+                        "the same height and the same script now resolve -- "
+                        "nothing about the block changed, only what this node "
+                        "has heard");
+
+    // Another node's payee is still not this one's.
+    CKey otherKey;
+    otherKey.MakeNewKey(true);
+    BOOST_CHECK(!ColdStakeCNPayeeIsRegistered(nHeight, PayToKey(otherKey)));
+}
+
+// Connect the same cold-stake block three times, changing only node-local state:
+// unknown payee in window -> transient refusal; payee announced -> connects;
+// clock past window -> connects.
+BOOST_AUTO_TEST_CASE(a_gossip_derived_refusal_is_never_persistable)
 {
     BOOST_REQUIRE(fRegTest);
     BOOST_REQUIRE(pindexBest != NULL);
+    BOOST_REQUIRE(FORK_HEIGHT_CN_PAYMENT_VALIDATION <= 1);
 
     CollateralnodeViewGuard guard;
     MockClockGuard clockGuard;
     DetachedWalletGuard walletGuard;
     ColdStakingGateGuard gateGuard;
-    IBDOverrideGuard ibdGuard;
 
     BOOST_REQUIRE(EnsureFixture());
     const CScript& p2csScript = g_fixture.p2csScript;
     const CTransaction& txFund = g_fixture.txFund;
 
+    // The payee is whoever the block claims is a collateralnode.
     CKey payeeKey;
     payeeKey.MakeNewKey(true);
     const CScript payeeScript = PayToKey(payeeKey);
 
+    // The plain leg funds the whole cold-stake reward, so the coinstake mints
+    // nothing and the reward cap holds at any height on any chain.
     const int64_t nP2CSIn = nLegValues[LEG_P2CS_SMALL];
     const int64_t nPlainIn = nLegValues[LEG_PLAIN_SMALL];
     const int64_t nCNPayment = nPlainIn / 10;
@@ -400,33 +469,54 @@ BOOST_AUTO_TEST_CASE(connect_result_ignores_cn_list_clock_and_ibd)
     vOutputs.push_back(CTxOut(nCNPayment, payeeScript));
 
     ColdStakeBlock cs;
-    BOOST_REQUIRE(BuildStakeBlock(txFund, vLegs, vOutputs, cs));
-    BOOST_REQUIRE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING && cs.nHeight < FORK_HEIGHT_DAG);
-    BOOST_REQUIRE(InterpreterAcceptsLeg(txFund, cs, 0));
+    BOOST_REQUIRE_MESSAGE(BuildStakeBlock(txFund, vLegs, vOutputs, cs),
+                          "could not build the cold-stake block");
+    BOOST_REQUIRE(cs.nHeight < FORK_HEIGHT_DAG);
+    BOOST_REQUIRE_MESSAGE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING,
+                          "the block sits below the cold-staking gate, so the "
+                          "payee check is not the branch it would take");
+    BOOST_REQUIRE_MESSAGE(InterpreterAcceptsLeg(txFund, cs, 0),
+                          "the interpreter refused the delegation input, so every "
+                          "arm below would be judging a script failure");
 
-    const int64_t vClock[2] = { cs.block.GetBlockTime(),
-                                cs.block.GetBlockTime() + CollateralnodePaymentWindowSeconds() + 60 };
-    int nRuns = 0;
-    for (int fFullList = 0; fFullList < 2; fFullList++)
-    {
-        ClearCollateralnodeView();
-        if (fFullList)
-            AnnounceCollateralnode(payeeKey, true);
-        for (int fIBD = 0; fIBD < 2; fIBD++)
-        {
-            nIBDTestOverride = fIBD;
-            for (int c = 0; c < 2; c++)
-            {
-                SetMockTime(vClock[c]);
-                const CBlock::ConnectResult r = ConnectAndRollBack(cs);
-                BOOST_CHECK_MESSAGE(r == CBlock::CONNECT_RESULT_OK,
-                                    "list=" << fFullList << " ibd=" << fIBD << " clock=" << c
-                                        << " result=" << (int)r);
-                nRuns++;
-            }
-        }
-    }
-    BOOST_CHECK_EQUAL(nRuns, 8);
+    // Pin the clock inside the window, so the rule is live for the first two arms.
+    SetMockTime(cs.block.GetBlockTime());
+    BOOST_REQUIRE(ColdStakeCNPayeeRuleApplies(false, cs.nHeight, 1,
+                                              cs.block.GetBlockTime(), GetTime()));
+
+    // Arm 1: payee unknown to this node. Must be transient, not DoS(100), which
+    // would persist BLOCK_FAILED_VALID.
+    BOOST_REQUIRE(!ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
+    const CBlock::ConnectResult refused = ConnectAndRollBack(cs);
+    BOOST_CHECK_MESSAGE(refused == CBlock::CONNECT_RESULT_TRANSIENT,
+                        "a payee this node has not heard of must produce a "
+                        "transient refusal, got result " << (int)refused);
+    BOOST_CHECK_MESSAGE(!ConnectResultMayPersistVerdict(refused),
+                        "the refusal reached SetFailedValid(); one unsynced "
+                        "collateralnode list would then permanently condemn a "
+                        "block the rest of the network accepted");
+
+    // Arm 2: nothing about the block changes; this node only hears about the
+    // payee. The same bytes now connect -- the split stated as an experiment.
+    AnnounceCollateralnode(payeeKey, true);
+    BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
+    const CBlock::ConnectResult announced = ConnectAndRollBack(cs);
+    BOOST_CHECK_MESSAGE(announced == CBlock::CONNECT_RESULT_OK,
+                        "the same block must connect once the payee is known, "
+                        "got result " << (int)announced);
+
+    // Arm 3: the payee is unknown again and the clock has moved past the window.
+    // A node that never resolves the payee stops refusing the block instead of
+    // re-downloading it forever.
+    ClearCollateralnodeView();
+    BOOST_REQUIRE(!ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
+    SetMockTime(cs.block.GetBlockTime() + CollateralnodePaymentWindowSeconds() + 60);
+    BOOST_REQUIRE(!ColdStakeCNPayeeRuleApplies(false, cs.nHeight, 1,
+                                               cs.block.GetBlockTime(), GetTime()));
+    const CBlock::ConnectResult aged = ConnectAndRollBack(cs);
+    BOOST_CHECK_MESSAGE(aged == CBlock::CONNECT_RESULT_OK,
+                        "a block past the window must not be judged on a payee no "
+                        "node can still resolve, got result " << (int)aged);
 }
 
 // The rehearsal knob's own arithmetic, and its fail-closed default. Without a
@@ -544,6 +634,7 @@ BOOST_AUTO_TEST_CASE(a_cold_stake_may_not_return_less_than_it_delegated)
         BOOST_REQUIRE(BuildStakeBlock(g_fixture.txFund, vLegs, vOutputs, cs));
         BOOST_REQUIRE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING &&
                       cs.nHeight < FORK_HEIGHT_DAG);
+        BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
         BOOST_REQUIRE_MESSAGE(nTotalIn - nCNPayment >= nP2CSIn,
                               "the control does not repay the delegation");
         BOOST_REQUIRE(InterpreterAcceptsLeg(g_fixture.txFund, cs, 0));
@@ -567,6 +658,7 @@ BOOST_AUTO_TEST_CASE(a_cold_stake_may_not_return_less_than_it_delegated)
         BOOST_REQUIRE(BuildStakeBlock(g_fixture.txFund, vLegs, vOutputs, cs));
         BOOST_REQUIRE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING &&
                       cs.nHeight < FORK_HEIGHT_DAG);
+        BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
         BOOST_REQUIRE_MESSAGE(nP2CSOut < nP2CSIn,
                               "the arm repays the delegation in full; it is not "
                               "adversarial");
@@ -665,6 +757,7 @@ BOOST_AUTO_TEST_CASE(a_cold_stake_collateralnode_payment_is_capped_at_a_share_of
         BOOST_REQUIRE(BuildStakeBlock(g_fixture.txFund, vLegs, vOutputs, cs));
         BOOST_REQUIRE(cs.nHeight >= FORK_HEIGHT_COLD_STAKING &&
                       cs.nHeight < FORK_HEIGHT_DAG);
+        BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cs.nHeight, payeeScript));
         BOOST_REQUIRE_MESSAGE(InterpreterAcceptsLeg(g_fixture.txFund, cs, 0),
                               vArms[i].pszWhat << ": OP_CHECKCOLDSTAKEVERIFY "
                               "refused this coinstake, so the verdict below is "

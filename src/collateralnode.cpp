@@ -2394,35 +2394,3 @@ bool CollateralnodeAnnouncementsDirty()
 {
     return fAnnouncementsDirty;
 }
-
-void RecordCollateralnodePayments(const CBlock& block, const CBlockIndex* pindex)
-{
-    if (!pindex || pindexBest == NULL || pindexBest->GetBlockHash() != block.hashPrevBlock)
-        return;
-    if (!CollateralnodePaymentRuleApplies(false, pindex->GetBlockTime(), GetTime(),
-                                          CollateralnodePaymentsEnabledAtHeight(pindex->nHeight),
-                                          IsInitialBlockDownload()))
-        return;
-    const bool fStake = block.IsProofOfStake();
-    if (block.vtx.size() < (fStake ? 2u : 1u))
-        return;
-    const CTransaction& tx = block.vtx[fStake ? 1 : 0];
-
-    LOCK(cs_collateralnodes);
-    for (const CTxOut& out : tx.vout)
-    {
-        for (CCollateralNode& mn : vecCollateralnodes)
-        {
-            if (out.scriptPubKey != GetScriptForDestination(mn.pubkey.GetID()))
-                continue;
-            mn.nBlockLastPaid = pindex->nHeight;
-            CCollateralNPayData data;
-            data.height = pindex->nHeight;
-            data.amount = out.nValue;
-            data.hash = pindex->GetBlockHash();
-            mn.payData.push_back(data);
-            mn.SetPayRate(pindex->nHeight);
-            break;
-        }
-    }
-}

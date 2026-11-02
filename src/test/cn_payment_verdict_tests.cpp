@@ -2,8 +2,9 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// No ConnectBlock verdict may depend on node-local state, and only a DoS-scored verdict
-// may persist as BLOCK_FAILED_VALID.
+// No ConnectBlock verdict reached under a node-local gate may persist as BLOCK_FAILED_VALID.
+// The rule is tested directly; the gated scopes are pinned by scanning the source for
+// returns not routed through TransientFailure.
 
 #include <boost/test/unit_test.hpp>
 
@@ -179,7 +180,8 @@ struct ConnectBlockSource
     }
 };
 
-const char* const kGatePredicates[] = { "CollateralnodePaymentRuleApplies" };
+const char* const kGatePredicates[] = { "CollateralnodePaymentRuleApplies",
+                                        "ColdStakeCNPayeeRuleApplies" };
 const size_t kGateCount = sizeof(kGatePredicates) / sizeof(kGatePredicates[0]);
 
 // Every gated scope inside ConnectBlock's own body. Restricting the search to that
@@ -213,7 +215,7 @@ bool LoadGatedScopes(ConnectBlockSource& out)
             pos = out.strMasked.find(strCall, pos + 1);
         }
     }
-    return true;
+    return !out.vScopes.empty();
 }
 
 // Every whole-identifier `return` in strBody, as (offset, following token).
@@ -296,23 +298,145 @@ BOOST_AUTO_TEST_CASE(only_a_consensus_invalid_result_may_be_persisted)
     BOOST_CHECK(!ConnectResultMayPersistVerdict(CBlock::CONNECT_RESULT_OK));
 }
 
-// ConnectBlock reads no gossiped CN state, wall clock, IBD flag or local tip, so its
-// verdict depends only on the chain.
-BOOST_AUTO_TEST_CASE(connectblock_reads_no_node_local_state)
+// Every return inside a node-local gated scope in ConnectBlock yields
+// CONNECT_RESULT_TRANSIENT, which is never persistable.
+BOOST_AUTO_TEST_CASE(no_return_under_a_node_local_gate_is_persistable)
+{
+    ConnectBlockSource src;
+    BOOST_REQUIRE_MESSAGE(LoadGatedScopes(src),
+                          "could not locate the node-local gated scopes in "
+                          "ConnectBlock; a gate call or its braces moved");
+
+    // One scope per gate predicate: the collateralnode payment rule and the
+    // cold-stake payee rule. Losing one is losing the invariant over it.
+    BOOST_REQUIRE_EQUAL(src.vScopes.size(), (size_t)2);
+
+    size_t nTotalReturns = 0;
+    for (size_t s = 0; s < src.vScopes.size(); s++)
+    {
+        const GatedScope& scope = src.vScopes[s];
+        const std::string strBody = src.Body(scope);
+
+        std::vector<std::pair<size_t, std::string> > vReturns;
+        CollectReturns(strBody, vReturns);
+        nTotalReturns += vReturns.size();
+
+        BOOST_CHECK_MESSAGE(!vReturns.empty(),
+                            "main.cpp:" << LineOf(src.strFile, scope.nBegin)
+                                << ": the " << scope.strGate << " scope has no "
+                                   "returns -- the extracted scope is wrong");
+
+        for (size_t r = 0; r < vReturns.size(); r++)
+        {
+            const std::string& strToken = vReturns[r].second;
+            BOOST_CHECK_MESSAGE(
+                strToken == "TransientFailure",
+                "main.cpp:" << LineOf(src.strFile, scope.nBegin + vReturns[r].first)
+                    << ": return under " << scope.strGate << " yields '"
+                    << (strToken.empty() ? std::string("<non-identifier>") : strToken)
+                    << "', not TransientFailure. The gate is entered on state this "
+                       "validator happens to hold, so the result keeps "
+                       "ConnectBlock's CONNECT_RESULT_INVALID default, reaches "
+                       "SetFailedValid() and is serialized: a clock offset or an "
+                       "unsynced collateralnode list then condemns the block "
+                       "permanently on this node and nowhere else.");
+        }
+    }
+
+    // Guards against the scan passing because it found nothing to check.
+    BOOST_CHECK_MESSAGE(nTotalReturns >= 6,
+                        "expected at least 6 returns across the node-local gated "
+                        "scopes, found " << nTotalReturns
+                        << " -- the extracted scopes are wrong");
+}
+
+// And that each scope really is the node-local one its invariant claims, so the
+// check above is guarding what its message says.
+BOOST_AUTO_TEST_CASE(each_gated_scope_reads_state_the_chain_does_not_supply)
 {
     ConnectBlockSource src;
     BOOST_REQUIRE(LoadGatedScopes(src));
-    BOOST_CHECK_EQUAL(src.vScopes.size(), (size_t)0);
-    const std::string strBody =
-        src.strMasked.substr(src.nBodyBegin, src.nBodyEnd - src.nBodyBegin + 1);
-    static const char* const kNodeLocal[] = {
-        "CollateralnodePaymentRuleApplies", "ColdStakeCNPayeeIsRegistered", "GetBlockPayee",
-        "vecCollateralnodes", "GetCollateralnodeRanks", "CheckCNPayment", "CheckPoSCNPayment",
-        "FindCNPayment", "IsInitialBlockDownload", "GetTime", "pindexBest" };
-    for (size_t k = 0; k < sizeof(kNodeLocal) / sizeof(kNodeLocal[0]); k++)
-        BOOST_CHECK_MESSAGE(CountIdentifier(strBody, kNodeLocal[k]) == 0,
-                            "ConnectBlock reads " << kNodeLocal[k]);
+    BOOST_REQUIRE_EQUAL(src.vScopes.size(), (size_t)2);
+
+    bool fSawPayment = false;
+    bool fSawColdStake = false;
+    for (size_t s = 0; s < src.vScopes.size(); s++)
+    {
+        const GatedScope& scope = src.vScopes[s];
+        const std::string strBody = src.Body(scope);
+        const std::string strCond = src.Condition(scope);
+
+        // Both gates read this validator's wall clock.
+        BOOST_CHECK_MESSAGE(strCond.find("GetTime()") != std::string::npos,
+                            "main.cpp:" << LineOf(src.strFile, scope.nGate)
+                                << ": " << scope.strGate << " no longer reads the "
+                                   "validator's wall clock; re-derive the invariant");
+
+        if (scope.strGate == std::string("CollateralnodePaymentRuleApplies"))
+        {
+            fSawPayment = true;
+            BOOST_CHECK_MESSAGE(strBody.size() > 4000,
+                                "the collateralnode payment scope is too small -- "
+                                "the match is wrong, not the code");
+            BOOST_CHECK_MESSAGE(
+                strBody.find("pindexBest->GetBlockHash() == hashPrevBlock") != std::string::npos,
+                "the collateralnode payment scope no longer reads the validator's "
+                "own tip; re-derive this invariant");
+            BOOST_CHECK_MESSAGE(strBody.find("vecCollateralnodes") != std::string::npos,
+                                "the collateralnode payment scope no longer reads "
+                                "the gossiped node list; re-derive this invariant");
+        }
+        else if (scope.strGate == std::string("ColdStakeCNPayeeRuleApplies"))
+        {
+            fSawColdStake = true;
+            BOOST_CHECK_MESSAGE(
+                strCond.find("ColdStakeCNPayeeIsRegistered") != std::string::npos,
+                "main.cpp:" << LineOf(src.strFile, scope.nGate)
+                    << ": the cold-stake scope no longer decides on the gossiped "
+                       "payee view; re-derive this invariant");
+            BOOST_CHECK_MESSAGE(
+                strCond.find("pindex->GetBlockTime()") != std::string::npos,
+                "the cold-stake gate must be measured against the block's own "
+                "header time");
+        }
+    }
+    BOOST_CHECK(fSawPayment);
+    BOOST_CHECK(fSawColdStake);
 }
+
+// The gossiped payee view may only be consulted from inside a gated scope. Reading
+// it anywhere else in ConnectBlock puts a node-local answer back on the persistable
+// path, which is the defect this file exists for.
+BOOST_AUTO_TEST_CASE(the_gossiped_payee_view_is_read_only_under_a_gate)
+{
+    ConnectBlockSource src;
+    BOOST_REQUIRE(LoadGatedScopes(src));
+
+    static const char* const kNodeLocalReads[] = { "ColdStakeCNPayeeIsRegistered",
+                                                   "GetBlockPayee" };
+    for (size_t k = 0; k < 2; k++)
+    {
+        size_t pos = src.strMasked.find(kNodeLocalReads[k], src.nBodyBegin);
+        while (pos != std::string::npos && pos < src.nBodyEnd)
+        {
+            bool fInsideGate = false;
+            for (size_t s = 0; s < src.vScopes.size(); s++)
+            {
+                const GatedScope& scope = src.vScopes[s];
+                // The condition of the gated `if` counts as inside: it is only
+                // evaluated when the gate predicate already said yes.
+                if (pos >= scope.nGate && pos <= scope.nEnd)
+                    fInsideGate = true;
+            }
+            BOOST_CHECK_MESSAGE(fInsideGate,
+                "main.cpp:" << LineOf(src.strFile, pos) << ": " << kNodeLocalReads[k]
+                    << " is read outside every node-local gate; a verdict derived "
+                       "from it there keeps CONNECT_RESULT_INVALID and is persisted");
+            pos = src.strMasked.find(kNodeLocalReads[k], pos + 1);
+        }
+    }
+}
+
 
 // The persistence rule has to exist once. A second inline `== CONNECT_RESULT_INVALID`
 // is how the two best-chain sites drift apart.

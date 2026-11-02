@@ -8299,12 +8299,8 @@ bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nH
     return false;
 }
 
-int nIBDTestOverride = -1;
-
 bool IsInitialBlockDownload()
 {
-    if (nIBDTestOverride >= 0)
-        return nIBDTestOverride != 0;
     if (fRegTest && pindexBest != NULL)
         return false;
     if (fImporting || fReindex || pindexBest == NULL)
@@ -10579,6 +10575,37 @@ bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
            nBlockTime > nNow - CollateralnodePaymentWindowSeconds();
 }
 
+// The cold-stake CN payee check reads the same gossiped state, so it carries the same
+// window. fPaymentsEnabled is true: the fork height scopes activation.
+bool ColdStakeCNPayeeRuleApplies(bool fJustCheck, int nHeight, int64_t nCNPayment,
+                                 int64_t nBlockTime, int64_t nNow)
+{
+    return nCNPayment > 0 && nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION &&
+           CollateralnodePaymentRuleApplies(fJustCheck, nBlockTime, nNow, true);
+}
+
+// Whether this node's gossiped view recognises the payee. Not derivable from the chain,
+// so two nodes can answer differently for the same block.
+bool ColdStakeCNPayeeIsRegistered(int nHeight, const CScript& payeeScript)
+{
+    CScript expectedPayee;
+    if (collateralnodePayments.GetBlockPayee(nHeight, expectedPayee) &&
+        payeeScript == expectedPayee)
+        return true;
+
+    LOCK(cs_collateralnodes);
+    for (CCollateralNode& mn : vecCollateralnodes)
+    {
+        if (!mn.IsEnabled())
+            continue;
+        CScript mnPayee;
+        mnPayee.SetDestination(mn.pubkey.GetID());
+        if (payeeScript == mnPayee)
+            return true;
+    }
+    return false;
+}
+
 // Whether a ConnectBlock result may be persisted as BLOCK_FAILED_VALID: only a
 // DoS-scored verdict every node reproduces. Both best-chain sites call this.
 bool ConnectResultMayPersistVerdict(CBlock::ConnectResult result)
@@ -12555,6 +12582,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                             return DoS(100, error("ConnectBlock() : cold stake CN payment %" PRId64 " exceeds 30%% of reward %" PRId64,
                                                   nCNPayment, nReward));
 
+                        // The payee comes from gossiped state, so it has the same node-local gate as the
+                        // payment rule and its refusal is never written into the block index.
+                        if (ColdStakeCNPayeeRuleApplies(fJustCheck, pindex->nHeight, nCNPayment,
+                                                        pindex->GetBlockTime(), GetTime()) &&
+                            !ColdStakeCNPayeeIsRegistered(pindex->nHeight,
+                                                          coinstake.vout[i].scriptPubKey))
+                        {
+                            return TransientFailure(error("ConnectBlock() : cold stake CN payment to invalid payee (not a registered collateralnode)"));
+                        }
                         continue;
                     }
 
@@ -12577,8 +12613,322 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
-    if (!fJustCheck)
-        RecordCollateralnodePayments(*this, pindex);
+    const bool CollateralnodePayments =
+        CollateralnodePaymentsEnabledAtHeight(pindex->nHeight);
+    bool fIsInitialDownload = IsInitialBlockDownload();
+
+    if(fDebug) { printf("CheckBlock() : Collateralnode payments %s\n",
+                        CollateralnodePayments ? "enabled" : "disabled"); }
+
+    if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
+                                         CollateralnodePayments, fIsInitialDownload))
+    {
+        BLOCK_PHASE(BP_CB_CNPAY);
+        LOCK2(cs_main, mempool.cs);
+
+        CScript burnPayee;
+        CBitcoinAddress burnDestination;
+        burnDestination.SetString(fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
+        burnPayee = GetScriptForDestination(burnDestination.Get());
+
+        const int nCNEnforcementHeight = CollateralnodeEnforcementHeight();
+
+        if(IsProofOfStake() && pindexBest != NULL){
+            // (reward goes entirely to shielded pool, no MN payment)
+            if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            {
+                // NullStake/V3: no collateralnode payments
+            }
+            else if(pindexBest->GetBlockHash() == hashPrevBlock){
+
+                // make sure the ranks are updated to prev block
+                GetCollateralnodeRanks(pindexBest);
+                // Calculate Coin Age for Collateralnode Reward Calculation
+                uint64_t nCoinAge;
+                if (!vtx[1].GetCoinAge(txdb, nCoinAge, pindex->nHeight))
+                    return TransientFailure(error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n",
+                                                  vtx[1].GetHash().ToString().substr(0,10).c_str()));
+                const CBlockSubsidySplit stakeSplit = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex);
+                int64_t nCalculatedStakeReward = stakeSplit.PaidToBlock();
+
+                // Expected collateralnode payment: the split's own leg, never a share
+                // this site sized against a base it picked itself.
+                int64_t collateralnodePaymentAmount = stakeSplit.Collateralnode();
+
+                // If we don't already have its previous block, skip collateralnode payment step
+                if (pindex != NULL)
+                {
+                    bool foundPaymentAmount = false;
+                    bool foundPayee = false;
+                    bool paymentOK = false;
+
+                    CScript payee;
+                    if(fDebug) { printf("CheckBlock-POS() : Using collateralnode payments for block %d\n", pindex->nHeight); }
+
+                    // Check transaction for payee and if contains collateralnode reward payment
+                    if(fDebug) { printf("CheckBlock-POS(): Transaction 1 Size : %zu\n", vtx[1].vout.size()); }
+                    if(fDebug) { printf("CheckBlock-POS() : Expected Collateralnode reward of: %" PRId64 "\n", collateralnodePaymentAmount); }
+                    for (unsigned int i = 0; i < vtx[1].vout.size(); i++) {
+                        if(fDebug) { printf("CheckBlock-POS() : Payment vout number: %u , Amount: %" PRId64 "\n", i, vtx[1].vout[i].nValue); }
+                        if(vtx[1].vout[i].nValue == collateralnodePaymentAmount )
+                        {
+                            foundPaymentAmount = true;
+                            payee = vtx[1].vout[i].scriptPubKey;
+                            CScript pubScript;
+
+                            if (pubScript == payee) {
+                                printf("CheckBlock-POS() : Found collateralnode payment: %s INN to anonymous payee.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                                foundPayee = true;
+                            } else if (payee == burnPayee) {
+                                printf("CheckBlock-POS() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                                foundPayee = true;
+                            } else {
+                                CTxDestination mnDest;
+                                ExtractDestination(vtx[1].vout[i].scriptPubKey, mnDest);
+                                CBitcoinAddress mnAddress(mnDest);
+                                if (fDebug) printf("CheckBlock-POS() : Found collateralnode payment: %s INN to %s.\n",FormatMoney(vtx[1].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
+                                for (CCollateralNode& mn : vecCollateralnodes)
+                                {
+                                    pubScript = GetScriptForDestination(mn.pubkey.GetID());
+                                    CTxDestination address1;
+                                    ExtractDestination(pubScript, address1);
+                                    CBitcoinAddress address2(address1);
+
+                                    if (vtx[1].vout[i].scriptPubKey == pubScript)
+                                    {
+                                        int64_t value = vtx[1].vout[i].nValue;
+                                        if (fDebug) printf("CheckBlock-POS() : Collateralnode PoS payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(value).c_str(), mn.payRate, mn.nRank, mn.nBlockLastPaid);
+
+                                        if (!fIsInitialDownload) {
+                                            if (!CheckPoSCNPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSCNPayment()
+                                            {
+                                                if (pindex->nHeight >= nCNEnforcementHeight) {
+                                                    printf("CheckBlock-POS() : Out-of-cycle CollateralNode payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
+                                                } else {
+                                                    printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", nCNEnforcementHeight);
+                                                }
+                                                //break;
+                                            } else {
+                                                if (fDebug) printf("CheckBlock-POS() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
+                                            }
+                                        } else {
+                                            if (fDebug) printf("CheckBlock-POS() : Wallet currently in startup mode, ignoring rate requirements.");
+                                        }
+                                        // add mn payment data
+                                        mn.nBlockLastPaid = pindex->nHeight;
+                                        CCollateralNPayData data;
+                                        data.height = pindex->nHeight;
+                                        data.amount = value;
+                                        data.hash = pindex->GetBlockHash();
+                                        mn.payData.push_back(data);
+                                        mn.SetPayRate(pindex->nHeight);
+                                        foundPayee = true;
+                                        paymentOK = true;
+                                        break;
+                                    }
+                                }
+                                // if payee not found in mn list, check if the pubkey holds a 5K transaction
+                                if (!foundPayee) {
+                                    if (FindCNPayment(payee, pindex)) {
+                                        if (fDebug) printf("CheckBlock-POS() : WARNING: Payee was not found in MN list, but confirmed to hold collateral.\n");
+                                        foundPayee = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+
+
+                    if (!foundPayee) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
+                                    LOCK(cs_vNodes);
+                                    for (CNode* pnode : vNodes)
+                                    {
+                                        if (pnode->nVersion >= COLLATERALN_LIST_MIN_PEER_VERSION) {
+                                                printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
+                                                PushCollateralnodeListRequest(pnode); //request full mn list
+                                        }
+                                    }
+                            return TransientFailure(error("CheckBlock-POS() : collateralnode payee is not present in the local list yet"));
+                        } else {
+                            if (fDebug) printf("WARNING: Did not find this payee in the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
+                            foundPayee = true;
+                        }
+                    } else if (paymentOK) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
+                            if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed.\n");
+                        } else {
+                            if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed after block %d.\n", nCNEnforcementHeight);
+                        }
+                    }
+
+                    if(!(foundPaymentAmount && foundPayee)) {
+                        CTxDestination address1;
+                        ExtractDestination(payee, address1);
+                        CBitcoinAddress address2(address1);
+                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
+                        // Node-local verdict: refuse this attempt without writing it down.
+                        return TransientFailure(error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
+                    } else {
+                        if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindex->nHeight+1); }
+                    }
+                } else {
+                    if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping collateralnode payment check %d\n", pindexBest->nHeight+1); }
+                }
+            } else {
+                if(fDebug) { printf("CheckBlock-POS() : Skipping collateralnode payment check - nHeight %d Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
+            }
+        }else if(IsProofOfWork() && pindexBest != NULL && !fCNSharedToStakers){
+            if(pindexBest->GetBlockHash() == hashPrevBlock){
+
+                // make sure the ranks are updated
+                GetCollateralnodeRanks(pindexBest);
+
+                // Subsidy only: the finality settlement in the coinbase is owed to voters. Uses the
+                // same nFinalityRewardOut as the coinbase cap so miner and validator agree.
+                int64_t nCNPaymentBase =
+                    FinalityCollateralnodePaymentBase(vtx[0].GetValueOut(), nFinalityRewardOut);
+                int64_t collateralnodePaymentAmount =
+                    CBlockSubsidySplit::CollateralnodeShareOfBase(nCNPaymentBase);
+
+                // If we don't already have its previous block, skip collateralnode payment step
+                if (pindex != NULL)
+                {
+                    bool foundPaymentAmount = false;
+                    bool foundPayee = false;
+                    bool paymentOK = true;
+                    CScript payee;
+
+                    if(fDebug) { printf("CheckBlock-POW() : Using non-specific collateralnode payments %d\n", pindex->nHeight); }
+
+                    // Check transaction for payee and if contains collateralnode reward payment
+                    if (fDebug) { printf("CheckBlock-POW(): Transaction 0 Size : %zu\n", vtx[0].vout.size()); }
+                    if (fDebug) { printf("CheckBlock-POW() : Expected Collateralnode reward of: %" PRId64 "\n", collateralnodePaymentAmount); }
+                    for (unsigned int i = 0; i < vtx[0].vout.size(); i++) {
+                        if(fDebug) { printf("CheckBlock-POW() : Payment vout number: %u , Amount: %lld\n",
+                                             i, (long long)vtx[0].vout[i].nValue); }
+                        if(vtx[0].vout[i].nValue == collateralnodePaymentAmount )
+                        {
+                            CTxDestination mnDest;
+                            payee = vtx[0].vout[i].scriptPubKey;
+                            ExtractDestination(payee, mnDest);
+                            CBitcoinAddress mnAddress(mnDest);
+                            if (fDebug) printf("CheckBlock-POW() : Found collateralnode payment: %s INN to %s.\n",FormatMoney(vtx[0].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
+
+                            foundPaymentAmount = true;
+
+                            CScript pubScript;
+
+                            // Checked before the list walk: an empty local list
+                            // must not push a burn payment onto the chain scan.
+                            if (payee == burnPayee) {
+                                printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[0].vout[i].nValue).c_str());
+                                foundPayee = true;
+                                continue;
+                            }
+
+                            for (CCollateralNode& mn : vecCollateralnodes)
+                            {
+                                pubScript = GetScriptForDestination(mn.pubkey.GetID());
+                                CTxDestination address1;
+                                ExtractDestination(pubScript, address1);
+                                CBitcoinAddress address2(address1);
+
+                                if (payee == pubScript)
+                                {
+                                    if (fDebug) printf("CheckBlock-POW() : Collateralnode PoW payee found at block %d: %s who got paid %s INN rate:%s rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(vtx[0].vout[i].nValue).c_str(), FormatMoney(mn.payRate).c_str(), mn.nRank, mn.nBlockLastPaid);
+                                    if (!fIsInitialDownload) {
+                                        if (!CheckCNPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
+                                        {
+                                            if (pindex->nHeight >= nCNEnforcementHeight)
+                                            {
+                                                printf("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
+                                            } else {
+                                                printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", nCNEnforcementHeight);
+                                            }
+                                            //break;
+                                        } else {
+                                            if (fDebug) printf("CheckBlock-POW() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
+                                        }
+                                    } else {
+                                        if (fDebug) printf("CheckBlock-POW() : Wallet currently in startup mode, ignoring rate requirements.");
+                                    }
+
+                                    mn.nBlockLastPaid = pindex->nHeight;
+                                    CCollateralNPayData data;
+                                    data.height = pindex->nHeight;
+                                    data.amount = vtx[0].vout[i].nValue;
+                                    data.hash = pindex->GetBlockHash();
+                                    mn.payData.push_back(data);
+                                    mn.SetPayRate(pindex->nHeight);
+                                    foundPayee = true;
+                                    paymentOK = true;
+                                    break;
+                                }
+                            }
+
+                            // if payee not found in mn list, check if the pubkey holds a 5K transaction
+                            if (!foundPayee) {
+                                if (FindCNPayment(payee, pindex)) {
+                                    if (fDebug) printf("CheckBlock-POW() : WARNING: Payee was not found in MN list, but confirmed to hold collateral.\n");
+                                    foundPayee = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!foundPayee) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
+                                LOCK(cs_vNodes);
+                                for (CNode* pnode : vNodes)
+                                {
+                                    if (pnode->nVersion >= COLLATERALN_LIST_MIN_PEER_VERSION) {
+                                            printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
+                                            PushCollateralnodeListRequest(pnode); //request full mn list
+                                    }
+                                }
+                                return TransientFailure(error("CheckBlock-POW() : collateralnode payee is not present in the local list yet"));
+                        } else {
+                            if (fDebug) printf("WARNING: Did not find this payee in  the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
+                            foundPayee = true;
+                        }
+                    } else if (paymentOK) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
+                            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed.\n");
+                        } else {
+                            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed after block %d.\n", nCNEnforcementHeight);
+                        }
+                    }
+
+                    if(fDebug) {printf("CheckBlock-POW(): foundPaymentAmount= %i ; foundPayee = %i\n", foundPaymentAmount, foundPayee); }
+                    if(!(foundPaymentAmount && foundPayee)) {
+                        CScript payee;
+                        CTxDestination address1;
+                        ExtractDestination(payee, address1);
+                        CBitcoinAddress address2(address1);
+                        if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
+                        // Node-local verdict: refuse this attempt without writing it down.
+                        return TransientFailure(error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
+                    } else {
+                        if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %d\n", pindex->nHeight+1); }
+                    }
+                } else {
+                    if(fDebug) { printf("CheckBlock-POW() : Is initial download, skipping collateralnode payment check %d\n", pindex->nHeight+1); }
+                }
+            } else {
+                if(fDebug) { printf("CheckBlock-POW() : Skipping collateralnode payment check - nHeight %d Hash %s\n", pindex->nHeight+1, GetHash().ToString().c_str()); }
+            }
+        }
+
+         else {
+            if(fDebug) { printf("CheckBlock() : pindex is null, skipping collateralnode payment check\n"); }
+        }
+    } else {
+        if(fDebug) {
+                printf("CheckBlock() : skipping collateralnode payment checks\n");
+        }
+    }
 
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {
