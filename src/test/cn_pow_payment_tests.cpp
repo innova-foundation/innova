@@ -324,7 +324,7 @@ BOOST_AUTO_TEST_CASE(the_knob_does_not_reach_mainnet_or_testnet)
 // validator builds blocks the validator rejects, which on regtest is a silent stall.
 BOOST_AUTO_TEST_CASE(the_era_condition_has_a_single_definition)
 {
-    static const char* const kConsumers[] = { "main.cpp", "miner.cpp",
+    static const char* const kConsumers[] = { "miner.cpp",
                                               "rpcmining.cpp", "wallet.cpp" };
     for (size_t i = 0; i < sizeof(kConsumers) / sizeof(kConsumers[0]); i++)
     {
@@ -338,12 +338,6 @@ BOOST_AUTO_TEST_CASE(the_era_condition_has_a_single_definition)
             strFile.find("CollateralnodePaymentsEnabledAtHeight") != std::string::npos,
             "src/" << kConsumers[i] << " no longer reads the shared era condition");
     }
-
-    // The enforcement height reaches consensus through one function too.
-    const std::string strMain = ReadSourceFile("main.cpp");
-    BOOST_CHECK_MESSAGE(
-        strMain.find("CollateralnodeEnforcementHeight()") != std::string::npos,
-        "ConnectBlock no longer reads the shared enforcement height");
 }
 
 // The producer's half, and the positive control for every arm below: with the
@@ -402,10 +396,9 @@ BOOST_AUTO_TEST_CASE(a_block_the_producer_built_carries_the_payment_and_connects
     BOOST_CHECK_EQUAL(pindexBest->nHeight, cb.Height());
 }
 
-// The amount. One satoshi moves from the producer's output into the payment
-// output, so the coinbase value out -- and with it the payment the validator
-// recomputes -- is unchanged: only the split is wrong.
-BOOST_AUTO_TEST_CASE(a_coinbase_paying_the_wrong_collateralnode_amount_is_refused)
+// The CN split is not a validity rule: a coinbase with a wrong CN amount or an unknown
+// payee connects, since only the total is capped.
+BOOST_AUTO_TEST_CASE(a_cn_split_within_the_coinbase_cap_connects)
 {
     CNPaymentEraGuard eraGuard;
     CollateralnodeViewGuard cnGuard;
@@ -418,81 +411,31 @@ BOOST_AUTO_TEST_CASE(a_coinbase_paying_the_wrong_collateralnode_amount_is_refuse
     CandidateBlock cb;
     BOOST_REQUIRE(BuildCandidate(cb));
     BOOST_REQUIRE(cb.Coinbase().vout.size() >= 2);
-
     const int64_t nValueOutBefore = cb.Coinbase().GetValueOut();
-    const int64_t nExpected = ExpectedPayment(cb.Coinbase());
-    BOOST_REQUIRE(nExpected > 0);
-    BOOST_REQUIRE(cb.Coinbase().vout[0].nValue > 0);
-
     cb.Coinbase().vout[0].nValue -= 1;
     cb.Coinbase().vout.back().nValue += 1;
     BOOST_REQUIRE_EQUAL(cb.Coinbase().GetValueOut(), nValueOutBefore);
-    for (unsigned int i = 0; i < cb.Coinbase().vout.size(); i++)
-        BOOST_REQUIRE_MESSAGE(cb.Coinbase().vout[i].nValue != nExpected,
-                              "coinbase output " << i << " still carries the "
-                              "expected payment; the arm is not adversarial");
     BOOST_REQUIRE(Seal(cb));
-
     RequirePaymentBranchEntered(cb);
-    const CBlock::ConnectResult refused = ConnectAndRollBack(cb);
-    BOOST_CHECK_MESSAGE(refused == CBlock::CONNECT_RESULT_TRANSIENT,
-                        "a coinbase carrying no output equal to the collateralnode "
-                        "share must be refused, got result " << (int)refused);
-    BOOST_CHECK_MESSAGE(!ConnectResultMayPersistVerdict(refused),
-                        "the refusal is read off this node's gossiped list and its "
-                        "own clock, so it may never be written into the index");
-
-    // The tip is where it was: a refused attempt changes nothing.
-    BOOST_CHECK_EQUAL(pindexBest->nHeight + 1, cb.Height());
-}
-
-// The payee. Same value, same coinbase, a script this node has not heard of.
-// Above the enforcement height that is a refusal; announce the payee and the
-// identical bytes connect, which is what makes the verdict node-local.
-BOOST_AUTO_TEST_CASE(a_payee_this_node_does_not_recognise_is_refused)
-{
-    CNPaymentEraGuard eraGuard;
-    CollateralnodeViewGuard cnGuard;
-    MockClockGuard clockGuard;
-    DetachedWalletGuard walletGuard;
-
-    BOOST_REQUIRE(pindexBest != NULL);
-    nRegtestCNPaymentsHeight = pindexBest->nHeight + 1;
+    BOOST_CHECK_EQUAL((int)ConnectAndRollBack(cb), (int)CBlock::CONNECT_RESULT_OK);
 
     CKey payeeKey;
     payeeKey.MakeNewKey(true);
-    const CScript payeeScript = PayToKey(payeeKey);
+    CandidateBlock other;
+    BOOST_REQUIRE(BuildCandidate(other));
+    other.Coinbase().vout.back().scriptPubKey = PayToKey(payeeKey);
+    BOOST_REQUIRE(Seal(other));
+    RequirePaymentBranchEntered(other);
+    BOOST_CHECK_EQUAL((int)ConnectAndRollBack(other), (int)CBlock::CONNECT_RESULT_OK);
 
-    CandidateBlock cb;
-    BOOST_REQUIRE(BuildCandidate(cb));
-    BOOST_REQUIRE(cb.Coinbase().vout.size() >= 2);
-    const int64_t nExpected = ExpectedPayment(cb.Coinbase());
-    BOOST_REQUIRE(nExpected > 0);
-    BOOST_REQUIRE_EQUAL(cb.Coinbase().vout.back().nValue, nExpected);
-
-    cb.Coinbase().vout.back().scriptPubKey = payeeScript;
-    BOOST_REQUIRE(payeeScript != BurnPayee());
-    BOOST_REQUIRE(Seal(cb));
-
-    RequirePaymentBranchEntered(cb);
-    BOOST_REQUIRE_MESSAGE(!ColdStakeCNPayeeIsRegistered(cb.Height(), payeeScript),
-                          "this node already recognises the payee; the arm is not "
-                          "adversarial");
-    const CBlock::ConnectResult refused = ConnectAndRollBack(cb);
-    BOOST_CHECK_MESSAGE(refused == CBlock::CONNECT_RESULT_TRANSIENT,
-                        "a payment to a script this node has never heard of must "
-                        "be refused above the enforcement height, got result "
-                        << (int)refused);
-    BOOST_CHECK(!ConnectResultMayPersistVerdict(refused));
-
-    // Nothing about the block changes; this node only hears about the payee.
-    AnnounceCollateralnode(payeeKey, true);
-    BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(cb.Height(), payeeScript));
-    RequirePaymentBranchEntered(cb);
-    const CBlock::ConnectResult announced = ConnectAndRollBack(cb);
-    BOOST_CHECK_MESSAGE(announced == CBlock::CONNECT_RESULT_OK,
-                        "the same bytes must connect once the payee is known, got "
-                        "result " << (int)announced);
+    // One satoshi over the cap is refused, deterministically.
+    CandidateBlock over;
+    BOOST_REQUIRE(BuildCandidate(over));
+    over.Coinbase().vout[0].nValue += 1;
+    BOOST_REQUIRE(Seal(over));
+    const CBlock::ConnectResult r = ConnectAndRollBack(over);
+    BOOST_CHECK_EQUAL((int)r, (int)CBlock::CONNECT_RESULT_INVALID);
+    BOOST_CHECK(ConnectResultMayPersistVerdict(r));
 }
 
 // With the era closed the branch is never entered: no payment output is added or required.
@@ -558,7 +501,6 @@ BOOST_AUTO_TEST_CASE(a_payment_below_the_expected_share_is_not_a_last_payment)
     paid.Coinbase().vout.back().scriptPubKey = shortScript;
     BOOST_REQUIRE(Seal(paid));
     RequirePaymentBranchEntered(paid);
-    BOOST_REQUIRE(ColdStakeCNPayeeIsRegistered(paid.Height(), shortScript));
     BOOST_REQUIRE_MESSAGE(ProcessBlock(NULL, &paid.block),
                           "the paying block was refused");
     const int nHeightPaid = pindexBest->nHeight;
