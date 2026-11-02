@@ -24,21 +24,6 @@ using namespace std;
 
 
 
-Value getpoolinfo(const Array& params, bool fHelp)
-{
-    if (fHelp || params.size() != 0)
-        throw runtime_error(
-            "getpoolinfo\n"
-            "Returns an object containing anonymous pool-related information.");
-
-    Object obj;
-    obj.push_back(Pair("current_collateralnode",        GetCurrentCollateralNode()));
-    obj.push_back(Pair("state",        colLateralPool.GetState()));
-    obj.push_back(Pair("entries",      colLateralPool.GetEntriesCount()));
-    obj.push_back(Pair("entries_accepted",      colLateralPool.GetCountEntriesAccepted()));
-    return obj;
-}
-
 extern uint8_t PrivacyVNextNetworkIdForWallet();
 
 namespace

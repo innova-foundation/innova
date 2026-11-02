@@ -3372,36 +3372,6 @@ void RelayTransactionLockReq(const CTransaction& tx, const uint256& hash, bool r
 
 }
 
-void RelayCollaTeralFinalTransaction(const int sessionID, const CTransaction& txNew)
-{
-    LOCK(cs_vNodes);
-    BOOST_FOREACH(CNode* pnode, vNodes)
-    {
-        pnode->PushMessage("dsf", sessionID, txNew);
-    }
-}
-
-void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out)
-{
-    LOCK(cs_vNodes);
-
-    BOOST_FOREACH(CNode* pnode, vNodes)
-    {
-        if((CNetAddr)colLateralPool.submittedToCollateralnode != (CNetAddr)pnode->addr) continue;
-        printf("RelayCollaTeralIn - found master, relaying message - %s \n", pnode->addr.ToString().c_str());
-        pnode->PushMessage("dsi", in, nAmount, txCollateral, out);
-    }
-}
-
-void RelayCollaTeralStatus(const int sessionID, const int newState, const int newEntriesCount, const int newAccepted, const std::string error)
-{
-    LOCK(cs_vNodes);
-    BOOST_FOREACH(CNode* pnode, vNodes)
-    {
-        pnode->PushMessage("dssu", sessionID, newState, newEntriesCount, newAccepted, error);
-    }
-}
-
 // A legacy registration ends after the protocol version; an attested one appends the key
 // image and pool payout address, so older peers still parse every announcement.
 void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage, const std::string strPoolPayout)
@@ -3458,15 +3428,6 @@ void SendCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned
     BOOST_FOREACH(CNode* pnode, vNodes)
     {
         pnode->PushMessage("iseep", vin, vchSig, nNow, stop);
-    }
-}
-
-void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage)
-{
-    LOCK(cs_vNodes);
-    BOOST_FOREACH(CNode* pnode, vNodes)
-    {
-        pnode->PushMessage("dsc", sessionID, error, errorMessage);
     }
 }
 

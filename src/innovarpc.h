@@ -363,7 +363,6 @@ extern json_spirit::Value getstakemodifiercheckpoints(const json_spirit::Array& 
 extern json_spirit::Value downloadbootstrap(const json_spirit::Array& params, bool fHelp);
 
 //rpccollateral.cpp
-extern json_spirit::Value getpoolinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value masternode(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value collateralnode(const json_spirit::Array& params, bool fHelp);
 

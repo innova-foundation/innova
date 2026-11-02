@@ -12747,7 +12747,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                     LOCK(cs_vNodes);
                                     for (CNode* pnode : vNodes)
                                     {
-                                        if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
+                                        if (pnode->nVersion >= COLLATERALN_LIST_MIN_PEER_VERSION) {
                                                 printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                                                 PushCollateralnodeListRequest(pnode); //request full mn list
                                         }
@@ -12885,7 +12885,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                 LOCK(cs_vNodes);
                                 for (CNode* pnode : vNodes)
                                 {
-                                    if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
+                                    if (pnode->nVersion >= COLLATERALN_LIST_MIN_PEER_VERSION) {
                                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                                             PushCollateralnodeListRequest(pnode); //request full mn list
                                     }
@@ -17370,8 +17370,6 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 printf("ProcessBlock() : Got BlockPayee for block : - %d\n", pindexBest->nHeight);
             }
 
-            colLateralPool.CheckTimeout();
-            colLateralPool.NewBlock();
             collateralnodePayments.ProcessBlock((pindexBest->nHeight)+10);
 
         }
@@ -18454,18 +18452,7 @@ void static ProcessGetData(CNode* pfrom)
                     }
                 }
                 if (!pushed && inv.type == MSG_TX) {
-                    if(mapCollateralNBroadcastTxes.count(inv.hash)){
-                        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-                        ss.reserve(1000);
-                        ss <<
-                            mapCollateralNBroadcastTxes[inv.hash].tx <<
-                            mapCollateralNBroadcastTxes[inv.hash].vin <<
-                            mapCollateralNBroadcastTxes[inv.hash].vchSig <<
-                            mapCollateralNBroadcastTxes[inv.hash].sigTime;
-
-                        pfrom->PushMessage("dstx", ss);
-                        pushed = true;
-                    } else {
+                    {
                         CTransaction tx;
                         if (mempool.lookup(inv.hash, tx)) {
                             CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);

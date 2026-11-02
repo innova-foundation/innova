@@ -78,7 +78,6 @@
     {"name": "full_milestone_test.sh", "kind": "suite", "nodes": 3, "minutes": 25},
 
     {"name": "blockchain_stress_test.sh", "kind": "suite", "nodes": 3, "minutes": 20},
-    {"name": "coinjoin_stress_test.sh", "kind": "suite", "nodes": 3, "minutes": 20},
     {"name": "cold_staking_test.sh", "kind": "suite", "nodes": 3, "minutes": 25},
     {"name": "privacy_stress_test.sh", "kind": "suite", "nodes": 2, "minutes": 20},
     {"name": "rpc_stress_test.sh", "kind": "suite", "nodes": 1, "minutes": 10},

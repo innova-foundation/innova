@@ -1246,15 +1246,10 @@ void RelayTransaction(const CTransaction& tx, const uint256& hash, bool fForceRe
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss);
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss, bool fForceRelay);
 void RelayTransactionLockReq(const CTransaction& tx, const uint256& hash, bool relayToAll=false);
-void RelayCollaTeralFinalTransaction(const int sessionID, const CTransaction& txNew);
-void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out);
-void RelayCollaTeralStatus(const int sessionID, const int newState, const int newEntriesCount, const int newAccepted, const std::string error="");
 void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage = 0, const std::string strPoolPayout = "");
 void SendCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage = 0, const std::string strPoolPayout = "");
 void RelayCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void SendCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
-void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
-void RelayCollaTeralCollateralNodeContestant();
 
 
 /** Access to the banlist database (banlist.dat) */

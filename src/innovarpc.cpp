@@ -199,7 +199,7 @@ static int HelpGroup(const string& m)
     static const struct { const char* prefix; int group; } table[] = {
         {"getstakinginfo", 5}, {"getfinalitystaking", 5},
         {"z_", 1}, {"n_", 1}, {"iv5", 1}, {"anon", 1}, {"sendanon", 1}, {"sendinntoanon", 1}, {"checkanon", 1},
-        {"estimateanon", 1}, {"reloadanon", 1}, {"getanon", 1}, {"mix", 1}, {"startmixing", 1}, {"stopmixing", 1},
+        {"estimateanon", 1}, {"reloadanon", 1}, {"getanon", 1}, {"mix", 1},
         {"getmixing", 1}, {"listcompromised", 1}, {"getforkinfo", 1}, {"getv5migration", 1}, {"getnewstealth", 1},
         {"liststealth", 1}, {"importstealth", 1}, {"sendtostealth", 1},
         {"getdag", 2}, {"getepoch", 2}, {"getfinality", 2}, {"submitfinality", 2}, {"isblockfinalized", 2},
@@ -481,7 +481,6 @@ static const CRPCCommand vRPCCommands[] =
     { "downloadbootstrap",      &downloadbootstrap,      false,  false},
 
     /* Collateralnode features */
-    { "getpoolinfo",            &getpoolinfo,            true,   false},
     { "masternode",           	&masternode,             true,   false},
     { "collateralnode",           &collateralnode,           true,   false},
 
@@ -1809,7 +1808,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "checkanonbalance"       && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "checkanonbalance"       && n > 1) ConvertTo<int64_t>(params[1]);
 
-    if (strMethod == "getpoolinfo"            && n > 0) ConvertTo<int64_t>(params[0]);
 
     if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
