@@ -816,8 +816,8 @@ std::string HelpMessage()
         "  -salvagewallet         " + _("Attempt to recover private keys from a corrupt wallet.dat") + "\n" +
         "  -statedigestinterval=<n> " + _("Append a chain state digest every n blocks (default: 0, off)") + "\n" +
         "  -statedigestfile=<path> " + _("State digest output (default: <datadir>/statedigest.jsonl)") + "\n" +
-        "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
-        "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
+        "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 288, 0 = all)") + "\n" +
+        "  -checklevel=<n>        " + _("How thorough the block verification is (0-1, default: 1)") + "\n" +
         "  -rebuildforwardlinks   " + _("Force a main-chain forward-link rebuild at startup (now automatic; retained for forcing)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
         "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (requires -replayexpectedheight/-replayexpectedhash), then exit") + "\n" +
@@ -2405,7 +2405,7 @@ bool AppInit2()
     printf("Loading block index...\n");
     nStart = GetTimeMillis();
     if (!LoadBlockIndex())
-        return InitError(_("Error loading blkindex.dat"));
+        return InitError(strLoadBlockIndexError.empty() ? _("Error loading blkindex.dat") : strLoadBlockIndexError);
 
 
     // as LoadBlockIndex can take several minutes, it's possible the user

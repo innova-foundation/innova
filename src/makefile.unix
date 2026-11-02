@@ -335,6 +335,7 @@ TEST_OBJS= \
     obj/test/nyx_ui_tests.o \
     obj/test/base64_tests.o \
     obj/test/getarg_tests.o \
+    obj/test/reorg_robustness_tests.o \
     obj/test/mruset_tests.o \
     obj/test/netbase_tests.o \
     obj/test/ringsig_tests.o \

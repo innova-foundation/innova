@@ -14720,6 +14720,27 @@ static void ReofferDAGUnappliedTxs(CTxDB& txdb, CBlockIndex* pindex,
         tx.AcceptToMemoryPool(txdb);
 }
 
+void CSupplyStage::Note(CBlockIndex* pindex)
+{
+    Entry e = { pindex, pindex->nMint, pindex->nMoneySupply };
+    vEntries.push_back(e);
+}
+
+void CSupplyStage::Restore()
+{
+    for (std::vector<Entry>::reverse_iterator it = vEntries.rbegin(); it != vEntries.rend(); ++it)
+    {
+        it->pindex->nMint = it->nMint;
+        it->pindex->nMoneySupply = it->nMoneySupply;
+    }
+    vEntries.clear();
+}
+
+bool IsReorgResurrectable(const CTransaction& tx)
+{
+    return !(tx.IsCoinBase() || tx.IsCoinStake());
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                        bool* pfPermanentInvalid, bool* pfChainStateMutated,
                        CBestChainEffectJournal* pCommittedEffects,
@@ -14730,6 +14751,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     if (pfChainStateMutated)
         *pfChainStateMutated = false;
     printf("REORGANIZE\n");
+    CSupplyStage supplyStage;
 
     {
         // Deterministic anchor only: the node-local GetFinalizedHeight() streak must not enter
@@ -14856,11 +14878,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!block.DisconnectBlock(txdb, pindex))
             return error("Reorganize() : DisconnectBlock %s failed", pindex->GetBlockHash().ToString().substr(0,20).c_str());
 
-        // Queue memory transactions to resurrect.
-        // We only do this for blocks after the last checkpoint (reorganisation before that
-        // point should only happen with -reindex/-loadblock, or a misbehaving peer.
         BOOST_REVERSE_FOREACH(const CTransaction& tx, block.vtx)
-            if (!(tx.IsCoinBase() || tx.IsCoinStake()) && pindex->nHeight > Checkpoints::GetTotalBlocksEstimate())
+            if (IsReorgResurrectable(tx))
                 vResurrect.push_front(tx);
         CMergesetAcceptRecord recMerged;
         std::vector<CTransaction> vMergedTxs;
@@ -14880,7 +14899,6 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (!block.ReadFromDisk(pindex))
             return error("Reorganize() : ReadFromDisk for connect failed");
 
-        if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
         int nReorgV2Epoch = -1;
         if (fV2EpochReorg &&
@@ -14907,6 +14925,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         if (pfChainStateMutated)
             *pfChainStateMutated = true;
         CBlock::ConnectResult connectResult = CBlock::CONNECT_RESULT_INVALID;
+        supplyStage.Note(pindex);
         if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
             if (ConnectResultMayPersistVerdict(connectResult))
@@ -15033,6 +15052,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         pCommittedEffects->Clear();
         return error("Reorganize() : TxnCommit failed");
     }
+    supplyStage.Commit();
 
     // The effect batch and its final wallet locator were fully allocated before
     // commit.  Marking it durable cannot allocate or throw.
@@ -15114,6 +15134,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
                 ReofferDAGUnappliedTxs(txdb, pindex,
                                        g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash()));
     CollateralNReorgBlock = true;
+    if (!IsInitialBlockDownload() && !vConnect.empty())
+        GetCollateralnodeRanks(vConnect.back());
     printf("REORGANIZE: done\n");
 
     return true;
@@ -15204,6 +15226,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
     // ConnectBlock classifies deterministic invalidity separately from local
     // read/write/resource failure.  Only the former may poison the block index.
     ConnectResult connectResult = CONNECT_RESULT_INVALID;
+    CSupplyStage supplyStage;
+    supplyStage.Note(pindexNew);
     if (!ConnectBlock(txdb, pindexNew, false, true, &connectResult))
     {
         // Read the verdict's text before the abort and the restore can log over it.
@@ -15346,6 +15370,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
         return error("SetBestChain() : TxnCommit failed");
     }
 
+    supplyStage.Commit();
     pCommittedEffects->MarkCommitted();
 
     RefreshCommittedShieldedPoolOrShutdown(txdb, pindexNew,
