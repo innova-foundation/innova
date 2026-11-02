@@ -1524,6 +1524,15 @@ unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
 int GetNumBlocksOfPeers();
 bool IsSynchronized();
+// PoW subsidy height: one below the block's own height before the tighter-drift fork.
+inline int PoWRewardHeight(int nHeight)
+{
+    return (nHeight > 0 && nHeight < FORK_HEIGHT_TIGHTER_DRIFT) ? nHeight - 1 : nHeight;
+}
+// Blocks whose transactions already passed CheckBlock with a checked merkle root.
+bool CheckedTxBlockSeen(const uint256& hash);
+void RecordCheckedTxBlock(const uint256& hash);
+extern int nIBDTestOverride; // tests only: -1 off, 0/1 forces the answer
 bool IsInitialBlockDownload();
 bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pindexMainFork,
                               CBlockIndex* pindexStop, unsigned int nLimit, std::vector<CBlockIndex*>& vOut);
@@ -3007,13 +3016,6 @@ int64_t CollateralnodePaymentWindowSeconds();
 bool CollateralnodePaymentRuleApplies(bool fJustCheck, int64_t nBlockTime,
                                       int64_t nNow, bool fPaymentsEnabled,
                                       bool fIsInitialDownload = false);
-
-// The cold-stake collateralnode payee check has the same shape: the expected payee
-// comes from the gossiped winner schedule and the gossiped node list, so it runs
-// only inside the same window and its refusal is not persistable either.
-bool ColdStakeCNPayeeRuleApplies(bool fJustCheck, int nHeight, int64_t nCNPayment,
-                                 int64_t nBlockTime, int64_t nNow);
-bool ColdStakeCNPayeeIsRegistered(int nHeight, const CScript& payeeScript);
 
 // Whether a ConnectBlock result may be recorded as BLOCK_FAILED_VALID. Reorganize
 // and SetBestChainInner both call this so the persistence rule exists once.

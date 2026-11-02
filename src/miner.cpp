@@ -1695,9 +1695,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             }
         }
 
-        int nRewardHeight = nHeight;
-        if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
-            nRewardHeight = nHeight - 1;
+        const int nRewardHeight = PoWRewardHeight(nHeight);
         // ONE subsidy, split at payment, from the same function every validator
         // calls. The settlement this block owes is netted off the issuance
         // headroom before the subsidy is computed, exactly as ConnectBlock does.
