@@ -101,6 +101,8 @@ static NyxGroupRec Op(int epoch, int op, const std::string& addr = std::string()
     g.addr = addr;
     if (op == NYX_GOP_RENAME)
         g.name = addr;
+    if (op == NYX_GOP_MSG || op == NYX_GOP_SYNC)
+        g.prev = std::string(32, 'a');
     if (NyxGroupOpSigned(op))
     {
         g.prev = std::string(32, 'a');
@@ -143,6 +145,7 @@ BOOST_AUTO_TEST_CASE(group_codec_roundtrip)
     recs.push_back(Op(6, NYX_GOP_RENAME, "new name"));
     recs.push_back(Op(7, NYX_GOP_OWNER, B));
     recs.push_back(Op(65535, NYX_GOP_MSG));
+    recs.push_back(Op(3, NYX_GOP_SYNC));
     for (const NyxGroupRec& g : recs)
     {
         std::string s = NyxEncodeGroup(g);
@@ -159,6 +162,7 @@ BOOST_AUTO_TEST_CASE(group_codec_roundtrip)
         BOOST_CHECK_EQUAL(d.creator, g.creator);
         BOOST_CHECK_EQUAL(d.createTime, g.createTime);
         BOOST_CHECK_EQUAL(d.rnd, g.rnd);
+        BOOST_CHECK_EQUAL(d.prev, g.prev);
     }
 }
 
@@ -255,16 +259,16 @@ BOOST_AUTO_TEST_CASE(group_message_authentication)
 {
     NyxGroupState s;
     BOOST_REQUIRE(NyxGroupApply(s, O, 100, Roster(0, {O, A, B})));
-    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 110, 0));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 110, 0));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, "anon", 110, 0));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 110, 1));        // epoch not seen yet: held back
+    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 110, 0, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 110, 0, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, "anon", 110, 0, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 110, 1, s.head));        // epoch not seen yet: held back
     BOOST_REQUIRE(NyxGroupApply(s, O, 200, Next(s, NYX_GOP_REMOVE, B, O)));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 150, 0));        // former member, any epoch
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 1));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 150, 0, s.head));        // former member, any epoch
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 250, 1, s.head));
     BOOST_REQUIRE(NyxGroupApply(s, O, 300, Next(s, NYX_GOP_ADD, X, O)));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 310, 1));
-    BOOST_CHECK(NyxGroupMsgAllowed(s, X, 310, 2));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 310, 1, s.head));
+    BOOST_CHECK(NyxGroupMsgAllowed(s, X, 310, 2, s.head));
 }
 
 BOOST_AUTO_TEST_CASE(group_out_of_order_converges)
@@ -343,13 +347,13 @@ BOOST_AUTO_TEST_CASE(group_removed_member_backdated_msg_rejected)
     BOOST_REQUIRE(NyxGroupApply(s, O, 200, Next(s, NYX_GOP_RENAME, "r", O)));
     BOOST_REQUIRE(NyxGroupApply(s, O, 300, Next(s, NYX_GOP_REMOVE, B, O)));
     // The sender picks the epoch, so a removed member stamping one before its removal is still refused.
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 1));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 0));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 2));
-    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 50, 1));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 1, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 0, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 50, 2, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 1, s.head));
     BOOST_REQUIRE(NyxGroupApply(s, A, 400, Leave(s, A)));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 1));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 0));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 1, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 50, 0, s.head));
 }
 
 BOOST_AUTO_TEST_CASE(group_leave_reaches_concurrent_new_member)
@@ -666,6 +670,7 @@ BOOST_AUTO_TEST_CASE(v2_group_text_binds_gid)
     NyxGroupRec m;
     m.gid = GID;
     m.op = NYX_GOP_MSG;
+    m.prev = std::string(32, 'a');
     const std::string text = NyxGroupPlain("team", "hello", m, std::vector<std::string>(), 4000);
     NyxGroupRec got;
     std::string body;
@@ -690,14 +695,14 @@ BOOST_AUTO_TEST_CASE(v2_group_removed_member_gets_no_later_copy)
     BOOST_CHECK(NyxGroupOthers(before.members, O) == std::vector<std::string>({A, B}));
     BOOST_CHECK(NyxGroupOthers(s.members, O) == std::vector<std::string>({A}));
     BOOST_CHECK(NyxGroupOthers(s.members, A) == std::vector<std::string>({O}));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 1));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 0));                        // an older epoch does not help
-    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 3, 1));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 1, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 0, s.head));                        // an older epoch does not help
+    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 3, 1, s.head));
     BOOST_REQUIRE(NyxGroupApply(s, O, 4, Next(s, NYX_GOP_ADD, X, O)));
     BOOST_CHECK(NyxGroupOthers(s.members, O) == std::vector<std::string>({A, X}));
-    BOOST_CHECK(NyxGroupMsgAllowed(s, X, 5, 2));
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 5, 1));                        // no voice before the add
-    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 5, 3));                        // epoch ahead of the chain
+    BOOST_CHECK(NyxGroupMsgAllowed(s, X, 5, 2, s.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 5, 1, s.head));                        // no voice before the add
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 5, 3, s.head));                        // epoch ahead of the chain
 }
 
 BOOST_AUTO_TEST_CASE(bad_signature_copy_does_not_shadow_the_owner_op)
@@ -744,6 +749,65 @@ BOOST_AUTO_TEST_CASE(v2_genesis_counts_only_from_its_creator)
     BOOST_CHECK(NyxBuildGroups(ev2)[g.gid].IsMember(B));
     NyxGroupEvent only = Ev(X, 3, "o", NyxGroupChainBundles(g.gid, {NyxEncodeGroup(g)}, 4000)[0]);
     BOOST_CHECK(!NyxGroupFromCreator(only));
+}
+
+
+
+BOOST_AUTO_TEST_CASE(v2_group_missed_removal_epoch_catchup)
+{
+    NyxGroupState owner;
+    const NyxGroupRec genesis = Roster(0, {O, A, B});
+    BOOST_REQUIRE(NyxGroupApply(owner, O, 1, genesis));
+    NyxGroupState stale = owner;
+    const NyxGroupRec removal = Next(owner, NYX_GOP_REMOVE, B, O);
+    BOOST_REQUIRE(NyxGroupApply(owner, O, 2, removal));
+    BOOST_CHECK(!NyxGroupMsgAllowed(owner, A, 3, stale.epoch, stale.head));
+    BOOST_CHECK(NyxGroupMsgAllowed(owner, A, 1, stale.epoch, stale.head, false));
+    BOOST_CHECK(!NyxGroupMsgAllowed(owner, B, 1, stale.epoch, stale.head, false));
+    BOOST_CHECK(!NyxGroupMsgAllowed(stale, O, 3, owner.epoch, owner.head));
+    BOOST_CHECK(!NyxGroupMsgAllowed(owner, A, 3, owner.epoch, stale.head));
+    NyxGroupRec msg = Op(owner.epoch, NYX_GOP_MSG);
+    msg.gid = owner.gid;
+    msg.prev = owner.head;
+    NyxGroupRec decoded;
+    const std::string wire = NyxEncodeGroup(msg);
+    BOOST_REQUIRE(NyxDecodeGroup(wire, decoded));
+    BOOST_CHECK_EQUAL(decoded.prev, owner.head);
+    BOOST_CHECK(!NyxDecodeGroup(wire.substr(0, wire.size() - 32), decoded));
+    msg.prev.clear();
+    BOOST_CHECK(NyxEncodeGroup(msg).empty());
+    msg.prev = owner.head;
+    BOOST_CHECK(NyxGroupRosterPending(stale, O, msg));
+    BOOST_CHECK(!NyxGroupRosterPending(stale, X, msg));
+    BOOST_CHECK(!NyxGroupRosterPending(owner, O, msg));
+    const NyxGroupRec rename = Next(owner, NYX_GOP_RENAME, "renamed", O);
+    BOOST_CHECK(NyxGroupRosterPending(stale, O, rename));
+    NyxGroupRec partial;
+    partial.gid = owner.gid;
+    partial.op = NYX_GOP_CHAIN;
+    partial.chain.push_back(NyxEncodeGroup(rename));
+    BOOST_CHECK(NyxGroupRosterPending(stale, O, partial));
+    const auto request = NyxGroupCatchUpRecords(stale, owner.epoch, owner.head, 4000);
+    BOOST_REQUIRE_EQUAL(request.size(), 1u);
+    BOOST_REQUIRE(NyxDecodeGroup(NyxEncodeGroup(request[0]), decoded));
+    BOOST_CHECK_EQUAL(decoded.op, NYX_GOP_SYNC);
+    BOOST_CHECK_EQUAL(decoded.epoch, stale.epoch);
+    BOOST_CHECK_EQUAL(decoded.prev, stale.head);
+    const auto bundles = NyxGroupCatchUpRecords(owner, decoded.epoch, decoded.prev, 4000);
+    BOOST_REQUIRE_EQUAL(bundles.size(), 1u);
+    BOOST_REQUIRE(NyxDecodeGroup(NyxEncodeGroup(bundles[0]), decoded));
+    for (const auto& raw : decoded.chain)
+    {
+        NyxGroupRec op;
+        BOOST_REQUIRE(NyxDecodeGroup(raw, op));
+        BOOST_REQUIRE(NyxGroupApply(stale, O, 4, op));
+    }
+    BOOST_CHECK_EQUAL(stale.head, owner.head);
+    BOOST_CHECK(!NyxGroupRosterPending(stale, O, msg));
+    BOOST_CHECK(NyxGroupCatchUpRecords(owner, stale.epoch, stale.head, 4000).empty());
+    BOOST_CHECK(NyxGroupMsgAllowed(owner, A, 5, stale.epoch, stale.head));
+    BOOST_CHECK(NyxGroupOthers(stale.members, A) == std::vector<std::string>({O}));
+    BOOST_CHECK(!NyxGroupMsgAllowed(owner, B, 5, stale.epoch, stale.head));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

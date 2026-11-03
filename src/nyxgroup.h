@@ -12,6 +12,7 @@
 #include <vector>
 
 // Group chats by pairwise fan-out: one SMSG per member, each carrying a 'G' record.
+// MSG/SYNC carry prev = roster head.
 // Layout: 'G' 0x01 gid[64 hex] epoch[4 hex] op[2 hex] [prev[32 hex]] payload [sig[130 hex]]; strings are 2-hex length + bytes.
 // The roster is an op log: genesis (ROSTER, epoch 0) whose content the gid binds, then ADD/REMOVE/RENAME/OWNER
 // ops chained by prev and compact-signed by the owner as of the previous op. LEAVE is signed by the leaver and
@@ -33,7 +34,8 @@ enum NyxGroupOp
     NYX_GOP_LEAVE = 4,
     NYX_GOP_RENAME = 5,
     NYX_GOP_OWNER = 6,
-    NYX_GOP_CHAIN = 7,                  // bundle of encoded chain records for a new member
+    NYX_GOP_CHAIN = 7,                  // bundle of encoded chain records
+    NYX_GOP_SYNC = 8,                   // roster catch-up request
 };
 
 /** Chained ops: carry prev and an owner signature. */
@@ -54,7 +56,7 @@ struct NyxGroupRec
     std::string creator;                // roster: gid binding
     int64_t createTime;
     std::string rnd;                    // roster: 32 hex
-    std::string prev;                   // chained: 32 hex, hash of the previous op
+    std::string prev;                   // MSG/SYNC: roster head; chained: 32 hex, hash of the previous op
     std::string sig;                    // chained: 130 hex compact signature
     std::vector<std::string> chain;     // chain bundle
     NyxGroupRec() : epoch(0), op(NYX_GOP_MSG), createTime(0) {}
@@ -114,8 +116,13 @@ struct NyxGroupState
     and be signed by the current owner; LEAVE must be signed by a member and pinned to the head. False (state unchanged) when not honoured. */
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r);
 
-/** Whether a group message from signer is shown: current members only, in the roster at the message epoch. */
-bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64_t ts, int epoch);
+/** Current epoch/head required on receipt; stored messages may use a verified historical head. */
+bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64_t ts, int epoch, const std::string& head, bool fCurrent = true);
+
+/** Catch-up records for a peer's epoch and head; no message body is included. */
+std::vector<NyxGroupRec> NyxGroupCatchUpRecords(const NyxGroupState& s, int epoch, const std::string& head, size_t maxBytes);
+/** A current member advertised a roster this node has not applied yet. */
+bool NyxGroupRosterPending(const NyxGroupState& s, const std::string& sender, const NyxGroupRec& rec);
 
 struct NyxGroupEvent
 {

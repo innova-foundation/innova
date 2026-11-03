@@ -191,11 +191,18 @@ static std::string EncodeBody(const NyxGroupRec& g)
     std::string s(1, 'G');
     s.push_back(NYX_GRP_VER);
     s += g.gid + Hex(g.epoch, 4) + Hex(g.op, 2);
+    if (g.op == NYX_GOP_MSG || g.op == NYX_GOP_SYNC)
+    {
+        if (!IsHexN(g.prev, 32))
+            return std::string();
+        s += g.prev;
+    }
     if (fChained)
         s += g.prev;
     switch (g.op)
     {
     case NYX_GOP_MSG:
+    case NYX_GOP_SYNC:
     case NYX_GOP_LEAVE:
         break;
     case NYX_GOP_ROSTER:
@@ -332,7 +339,7 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
     if (!ReadHex(rec, pos, 2, v))
         return false;
     g.op = (int)v;
-    if (NyxGroupOpSigned(g.op))
+    if (NyxGroupOpSigned(g.op) || g.op == NYX_GOP_MSG || g.op == NYX_GOP_SYNC)
     {
         if ((NyxGroupOpChained(g.op) && g.epoch < 1) || pos + 32 > rec.size())
             return false;
@@ -344,6 +351,7 @@ bool NyxDecodeGroup(const std::string& rec, NyxGroupRec& g)
     switch (g.op)
     {
     case NYX_GOP_MSG:
+    case NYX_GOP_SYNC:
     case NYX_GOP_LEAVE:
         break;
     case NYX_GOP_ROSTER:
@@ -560,7 +568,7 @@ static bool ApplyLeave(NyxGroupState& s, const NyxGroupRec& r)
 
 bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, const NyxGroupRec& r)
 {
-    if (r.op == NYX_GOP_MSG || r.op == NYX_GOP_CHAIN || s.fFrozen)
+    if (r.op == NYX_GOP_MSG || r.op == NYX_GOP_SYNC || r.op == NYX_GOP_CHAIN || s.fFrozen)
         return false;
     if (!s.fValid)
         return r.op == NYX_GOP_ROSTER && ApplyGenesis(s, ts, r);
@@ -575,9 +583,13 @@ bool NyxGroupApply(NyxGroupState& s, const std::string& signer, int64_t ts, cons
     return true;
 }
 
-bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64_t ts, int epoch)
+bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64_t ts, int epoch, const std::string& head, bool fCurrent)
 {
-    if (!s.fValid || signer.empty() || signer == "anon" || epoch > s.epoch)
+    if (!s.fValid || s.fFrozen || signer.empty() || signer == "anon" || epoch < 0 || epoch > s.epoch
+        || (fCurrent && (epoch != s.epoch || head != s.head)))
+        return false;
+    NyxGroupRec op;
+    if ((size_t)epoch >= s.chain.size() || !NyxDecodeGroup(s.chain[epoch], op) || head != NyxGroupOpHash(op))
         return false;
     // Roster at the message's epoch: the latest snapshot at or below it.
     std::map<int, std::set<std::string> >::const_iterator it = s.history.upper_bound(epoch);
@@ -586,6 +598,57 @@ bool NyxGroupMsgAllowed(const NyxGroupState& s, const std::string& signer, int64
     --it;
     // The message epoch is sender-chosen, so a former member is refused outright.
     return it->second.count(signer) && s.IsMember(signer);
+}
+
+bool NyxGroupRosterPending(const NyxGroupState& s, const std::string& sender, const NyxGroupRec& rec)
+{
+    if (!s.fValid || rec.gid != s.gid || !s.IsMember(sender))
+        return false;
+    if (rec.op == NYX_GOP_CHAIN)
+    {
+        for (const auto& raw : rec.chain)
+        {
+            NyxGroupRec op;
+            if (NyxDecodeGroup(raw, op) && NyxGroupRosterPending(s, sender, op))
+                return true;
+        }
+        return false;
+    }
+    return (rec.op == NYX_GOP_MSG || rec.op == NYX_GOP_SYNC || NyxGroupOpChained(rec.op))
+           && rec.epoch > s.epoch;
+}
+
+std::vector<NyxGroupRec> NyxGroupCatchUpRecords(const NyxGroupState& s, int epoch, const std::string& head, size_t maxBytes)
+{
+    std::vector<NyxGroupRec> out;
+    if (!s.fValid || s.fFrozen || (epoch == s.epoch && head == s.head))
+        return out;
+    if (epoch > s.epoch)
+    {
+        NyxGroupRec sync;
+        sync.gid = s.gid;
+        sync.op = NYX_GOP_SYNC;
+        sync.epoch = s.epoch;
+        sync.prev = s.head;
+        out.push_back(sync);
+        return out;
+    }
+    bool ancestor = false;
+    for (const auto& raw : s.chain)
+    {
+        NyxGroupRec op;
+        if (NyxDecodeGroup(raw, op) && op.epoch == epoch && NyxGroupOpHash(op) == head)
+            ancestor = true;
+    }
+    std::vector<std::string> missing;
+    for (const auto& raw : s.chain)
+    {
+        NyxGroupRec op;
+        if (NyxDecodeGroup(raw, op) && op.op != NYX_GOP_ROSTER && (!ancestor || op.epoch > epoch))
+            missing.push_back(raw);
+    }
+    missing.insert(missing.end(), s.leaves.begin(), s.leaves.end());
+    return NyxGroupChainBundles(s.gid, missing, maxBytes);
 }
 
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events)
@@ -598,7 +661,7 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
     std::vector<std::pair<NyxGroupRec, int64_t> > flat;
     for (const NyxGroupEvent& e : events)
     {
-        if (e.rec.op == NYX_GOP_MSG)
+        if (e.rec.op == NYX_GOP_MSG || e.rec.op == NYX_GOP_SYNC)
             continue;
         if (e.rec.op == NYX_GOP_CHAIN)
         {

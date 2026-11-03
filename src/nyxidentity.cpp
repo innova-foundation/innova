@@ -445,8 +445,11 @@ static bool RefreshOwn(const std::string& addr, NyxOwnDevice& d)
     return true;
 }
 
+static void GroupCatchUp();
+
 static void Publish(const std::vector<NyxBytes>& v)
 {
+    GroupCatchUp();
     for (size_t i = 0; i < v.size(); ++i)
     {
         std::string sError;
@@ -1627,6 +1630,8 @@ static void RebuildBundle(const std::string& local, NyxOwnDevice& d, std::vector
     SaveDev(local);
 }
 
+static bool GroupReceive(const std::string& local, const std::string& peer, const NyxGroupRec& rec);
+
 static int Deliver(const std::string& local, const NyxRatchet& r, const NyxBytes& pt)
 {
     NyxEnvelope env;
@@ -1641,7 +1646,8 @@ static int Deliver(const std::string& local, const NyxRatchet& r, const NyxBytes
     {
         NyxGroupRec rec;
         std::string body;
-        if (NyxGroupFromText(env.text, env.groupId, rec, body))
+        if (NyxGroupFromText(env.text, env.groupId, rec, body)
+            && GroupReceive(local, route == NYX_ROUTE_GROUP_SENT ? local : std::string((const char*)r.remoteAddr, 20), rec))
             StoreGroup(local, route == NYX_ROUTE_GROUP_SENT,
                        route == NYX_ROUTE_GROUP_SENT ? (const uint8_t*)local.data() : r.remoteAddr, r.remoteDev,
                        GetTime(), env, r.mode);
@@ -2333,6 +2339,51 @@ static std::map<std::string, NyxGroupState> GroupStates(const std::vector<NyxGro
     return NyxBuildGroups(ev);
 }
 
+struct NyxGroupCatchUp
+{
+    std::string local, peer;
+    NyxGroupRec rec;
+};
+static std::vector<NyxGroupCatchUp> groupCatchUp;
+
+// cs_nyxid held. Keep newer heads so sends remain blocked until catch-up completes.
+static bool GroupReceive(const std::string& local, const std::string& peer, const NyxGroupRec& rec)
+{
+    const bool message = rec.op == NYX_GOP_MSG || rec.op == NYX_GOP_SYNC;
+    const std::vector<unsigned char> raw = ParseHex(rec.gid);
+    const std::string gid(raw.begin(), raw.end());
+    std::vector<NyxGroupRow2> rows;
+    LoadGroupRows(local, gid, rows);
+    const std::map<std::string, NyxGroupState> states = GroupStates(rows);
+    WipeRows(rows);
+    const auto it = states.find(rec.gid);
+    if (it == states.end() || it->second.fFrozen || !it->second.IsMember(AddrStr((const uint8_t*)peer.data())))
+        return !message;
+    const NyxGroupState& st = it->second;
+    if (!message)
+    {
+        NyxGroupRec hint = rec;
+        if (rec.op == NYX_GOP_CHAIN)
+            for (const auto& encoded : rec.chain)
+            {
+                NyxGroupRec op;
+                if (NyxDecodeGroup(encoded, op) && NyxGroupOpChained(op.op) && op.epoch > hint.epoch)
+                    hint = op;
+            }
+        if (peer != local && NyxGroupOpChained(hint.op) && hint.epoch > st.epoch + 1)
+        {
+            hint.prev = NyxGroupOpHash(hint);
+            hint.op = NYX_GOP_SYNC;
+            groupCatchUp.push_back(NyxGroupCatchUp{local, peer, hint});
+        }
+        return true;
+    }
+    if (peer != local && (rec.epoch != st.epoch || rec.prev != st.head))
+        groupCatchUp.push_back(NyxGroupCatchUp{local, peer, rec});
+    return rec.op == NYX_GOP_SYNC || rec.epoch > st.epoch
+           || NyxGroupMsgAllowed(st, AddrStr((const uint8_t*)peer.data()), GetTime(), rec.epoch, rec.prev);
+}
+
 static bool ParseGid(const std::string& sGid, std::string& gid, std::string& sError)
 {
     if (!NyxIsGroupId(sGid))
@@ -2351,7 +2402,12 @@ static bool LoadGroupState(const std::string& local, const std::string& gid, Nyx
     std::vector<NyxGroupRow2> rows;
     LoadGroupRows(local, gid, rows);
     std::map<std::string, NyxGroupState> m = GroupStates(rows);
-    WipeRows(rows);
+    for (auto& row : rows)
+    {
+        if (!row.body.empty())
+            OPENSSL_cleanse(&row.body[0], row.body.size());
+        row.body.clear();
+    }
     std::map<std::string, NyxGroupState>::iterator it = m.find(HexStr(gid.begin(), gid.end()));
     if (it == m.end() || !it->second.fValid)
     {
@@ -2359,6 +2415,14 @@ static bool LoadGroupState(const std::string& local, const std::string& gid, Nyx
         return false;
     }
     st = it->second;
+    for (const auto& row : rows)
+        if (NyxGroupRosterPending(st, AddrStr(row.sender), row.rec))
+        {
+            if (!row.fOut)
+                GroupReceive(local, std::string((const char*)row.sender, 20), row.rec);
+            sError = "Group roster catch-up required; retry after the missing changes arrive.";
+            return false;
+        }
     if (st.fFrozen)
     {
         sError = "Group history conflict: the owner signed two different changes. The group is frozen.";
@@ -2569,6 +2633,62 @@ static bool GroupDispatch(const std::string& sFrom, NyxGroupOut& go, Object& out
     return true;
 }
 
+// Seal replies under the identity lock; dispatch after committing and releasing it.
+static void GroupCatchUp()
+{
+    std::vector<NyxGroupCatchUp> pending;
+    {
+        LOCK(cs_nyxid);
+        pending.swap(groupCatchUp);
+    }
+    for (const auto& request : pending)
+    {
+        NyxGroupOut go;
+        const std::string from = AddrStr((const uint8_t*)request.local.data());
+        std::string error;
+        {
+            LOCK(cs_nyxid);
+            if (!Ready(error))
+                continue;
+            const std::vector<unsigned char> raw = ParseHex(request.rec.gid);
+            const std::string gid(raw.begin(), raw.end());
+            std::vector<NyxGroupRow2> rows;
+            LoadGroupRows(request.local, gid, rows);
+            const auto states = GroupStates(rows);
+            WipeRows(rows);
+            const auto it = states.find(request.rec.gid);
+            const std::string peer = AddrStr((const uint8_t*)request.peer.data());
+            if (it == states.end() || it->second.fFrozen || !it->second.IsMember(from)
+                || !it->second.IsMember(peer))
+                continue;
+            const NyxGroupState& st = it->second;
+            const auto replies = NyxGroupCatchUpRecords(st, request.rec.epoch, request.rec.prev, NYX_PART_BODY_MAX - 600);
+            NyxLocalSide me;
+            NyxKeyring kr;
+            CKey key;
+            CKeyID id;
+            memcpy(id.begin(), request.local.data(), 20);
+            if (replies.empty() || !LiveDevice(request.local, me, kr, error) || !pwalletMain->GetKey(id, key))
+                continue;
+            me.addrKey = &key;
+            DbBatch batch;
+            bool ok = true;
+            for (const auto& reply : replies)
+                if (!GroupSeal(request.local, me, kr, gid,
+                               NyxGroupPlain(st.name, "", reply, std::vector<std::string>(), GroupTextMax()),
+                               std::vector<std::string>(1, peer), go, error))
+                {
+                    ok = false;
+                    break;
+                }
+            if (!ok || !batch.Commit())
+                continue;
+        }
+        Object out;
+        GroupDispatch(from, go, out, error);
+    }
+}
+
 // The op's recipients get every leave the sender knows first, so they converge on the same chain position.
 static bool GroupSealOp(const std::string& local, const NyxLocalSide& me, const NyxKeyring& kr,
                         const std::string& gid, const NyxGroupState& before, const NyxGroupRec& op,
@@ -2659,6 +2779,7 @@ static bool GroupAction(int act, const std::string& sFrom, const std::string& sG
             if (act == NYX_G2_SEND)
             {
                 rec.epoch = st.epoch;
+                rec.prev = st.head;
                 rec.op = NYX_GOP_MSG;
                 if (arg.empty() || !GroupSeal(local, me, kr, gid,
                                               NyxGroupPlain(st.name, arg, rec, std::vector<std::string>(), GroupTextMax()),
@@ -2750,7 +2871,9 @@ bool NyxGroupCreate2(const std::string& from, const std::string& name, const std
 bool NyxGroupSend2(const std::string& from, const std::string& gid, const std::string& text, Object& out,
                    std::string& sError)
 {
-    return GroupAction(NYX_G2_SEND, from, gid, text, std::vector<std::string>(), out, sError);
+    const bool ok = GroupAction(NYX_G2_SEND, from, gid, text, std::vector<std::string>(), out, sError);
+    GroupCatchUp();
+    return ok;
 }
 
 bool NyxGroupChange2(const std::string& op, const std::string& from, const std::string& gid, const std::string& addr,
@@ -2814,7 +2937,7 @@ static const char* GroupOpName(int op)
 static bool GroupRowShown(const NyxGroupState& g, const NyxGroupRow2& r, const std::string& sender)
 {
     if (r.rec.op == NYX_GOP_MSG)
-        return NyxGroupMsgAllowed(g, sender, r.t, r.rec.epoch);
+        return NyxGroupMsgAllowed(g, sender, r.t, r.rec.epoch, r.rec.prev, false);
     // The note of an op is unsigned: only the op's own signer may attach one.
     if (r.rec.op == NYX_GOP_CHAIN)
         return !r.body.empty() && sender == g.owner;
