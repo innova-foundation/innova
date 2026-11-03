@@ -1053,6 +1053,14 @@ int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight, int minProtocol)
     return 0;
 }
 
+void PruneBlockHashCache(std::map<int64_t, uint256>& cache, int64_t nTipHeight)
+{
+    if ((int64_t)cache.size() <= 2 * BLOCK_HASH_CACHE_DEPTH)
+        return;
+    const int64_t nFloor = nTipHeight - BLOCK_HASH_CACHE_DEPTH;
+    cache.erase(cache.begin(), cache.lower_bound(nFloor));
+}
+
 //Get the last hash that matches the modulus given. Processed in reverse order
 bool GetBlockHash(uint256& hash, int nBlockHeight)
 {
@@ -1080,6 +1088,7 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
         if(n >= nBlocksAgo){
             hash = BlockReading->GetBlockHash();
             mapCacheBlockHashes[nBlockHeight] = hash;
+            PruneBlockHashCache(mapCacheBlockHashes, pindexBest->nHeight);
             return true;
         }
         n++;
