@@ -16641,6 +16641,42 @@ void RecordCheckedTxBlock(const uint256& hash)
     setCheckedTxBlocks.insert(hash);
 }
 
+bool CBlock::CheckLegacyPoSShape(bool fCheckSig) const
+{
+    // Caller guarantees vtx[0] is a coinbase.
+    // Coinbase output should be empty if proof-of-stake block
+    // Post-DAG: allow additional zero-value OP_RETURN outputs for DAG parent commitment
+    if (!vtx[0].vout[0].IsEmpty())
+        return DoS(100, error("CheckBlock() : coinbase vout[0] not empty for proof-of-stake block"));
+    // Cap extra outputs (1 empty + up to 2 OP_RETURN for DAG/data)
+    if (vtx[0].vout.size() > 3)
+        return DoS(100, error("CheckBlock() : too many coinbase outputs (%d) for proof-of-stake block", (int)vtx[0].vout.size()));
+    if (vtx[0].vout.size() > 1)
+    {
+        for (unsigned int i = 1; i < vtx[0].vout.size(); i++)
+        {
+            if (vtx[0].vout[i].nValue != 0)
+                return DoS(100, error("CheckBlock() : non-zero coinbase output[%d] in proof-of-stake block", i));
+            // Must be OP_RETURN (DAG commitment or similar data-carrying output)
+            if (vtx[0].vout[i].scriptPubKey.size() < 1 || vtx[0].vout[i].scriptPubKey[0] != OP_RETURN)
+                return DoS(100, error("CheckBlock() : non-OP_RETURN extra coinbase output[%d] in proof-of-stake block", i));
+        }
+    }
+
+    // Second transaction must be coinstake, the rest must not be
+    if (vtx.size() < 2 || !vtx[1].IsCoinStake())
+        return DoS(100, error("CheckBlock() : second tx is not coinstake"));
+
+    // Check coinstake timestamp
+    if (!CheckCoinStakeTimestamp(GetBlockTime(), (int64_t)vtx[1].nTime))
+        return DoS(50, error("CheckBlock() : coinstake timestamp violation nTimeBlock=%" PRId64" nTimeTx=%u", GetBlockTime(), vtx[1].nTime));
+
+    // Check proof-of-stake block signature
+    if (fCheckSig && !CheckBlockSignature())
+        return DoS(100, error("CheckBlock() : bad proof-of-stake block signature"));
+    return true;
+}
+
 bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) const
 {
     BLOCK_PHASE(BP_CHECKBLOCK);
@@ -16704,39 +16740,8 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
             return DoS(100, error("CheckBlock() : more than one coinstake"));
     }
 
-    if (IsProofOfStake())
-    {
-        // Coinbase output should be empty if proof-of-stake block
-        // Post-DAG: allow additional zero-value OP_RETURN outputs for DAG parent commitment
-        if (!vtx[0].vout[0].IsEmpty())
-            return DoS(100, error("CheckBlock() : coinbase vout[0] not empty for proof-of-stake block"));
-        // Cap extra outputs (1 empty + up to 2 OP_RETURN for DAG/data)
-        if (vtx[0].vout.size() > 3)
-            return DoS(100, error("CheckBlock() : too many coinbase outputs (%d) for proof-of-stake block", (int)vtx[0].vout.size()));
-        if (vtx[0].vout.size() > 1)
-        {
-            for (unsigned int i = 1; i < vtx[0].vout.size(); i++)
-            {
-                if (vtx[0].vout[i].nValue != 0)
-                    return DoS(100, error("CheckBlock() : non-zero coinbase output[%d] in proof-of-stake block", i));
-                // Must be OP_RETURN (DAG commitment or similar data-carrying output)
-                if (vtx[0].vout[i].scriptPubKey.size() < 1 || vtx[0].vout[i].scriptPubKey[0] != OP_RETURN)
-                    return DoS(100, error("CheckBlock() : non-OP_RETURN extra coinbase output[%d] in proof-of-stake block", i));
-            }
-        }
-
-        // Second transaction must be coinstake, the rest must not be
-        if (vtx.size() < 2 || !vtx[1].IsCoinStake())
-            return DoS(100, error("CheckBlock() : second tx is not coinstake"));
-
-		// Check coinstake timestamp
-		if (!CheckCoinStakeTimestamp(GetBlockTime(), (int64_t)vtx[1].nTime))
-			return DoS(50, error("CheckBlock() : coinstake timestamp violation nTimeBlock=%" PRId64" nTimeTx=%u", GetBlockTime(), vtx[1].nTime));
-
-		// Check proof-of-stake block signature
-		if (fCheckSig && !CheckBlockSignature())
-            return DoS(100, error("CheckBlock() : bad proof-of-stake block signature"));
-	}
+    if (IsProofOfStake() && !CheckLegacyPoSShape(fCheckSig))
+        return false;
 
     // Warm payload verdicts concurrently before the serial loop. This is the first cold
     // verification of a block's proofs; later passes hit the cache. Only successes are

@@ -191,6 +191,39 @@ BOOST_AUTO_TEST_CASE(checkblock_rejects_second_coinstake_in_pos_block)
     BOOST_CHECK(!block.CheckBlock(false, false, false));
 }
 
+BOOST_AUTO_TEST_CASE(legacy_pos_shape_checks_coinbase_outputs)
+{
+    RegTestChainGuard guard;
+    unsigned int nTime = GetAdjustedTime();
+
+    std::vector<CTransaction> vTxs;
+    vTxs.push_back(MakeCoinbase(nTime));
+    vTxs[0].vout[0].SetEmpty();
+    vTxs.push_back(MakeNullStakeShapedTx(nTime));
+    CBlock block = MakePoWBlock(vTxs);
+    BOOST_REQUIRE(block.IsProofOfStake());
+    BOOST_CHECK(block.CheckLegacyPoSShape(false));
+
+    CBlock bad = block;
+    bad.vtx[0].vout[0].nValue = 1;
+    bad.vtx[0].vout[0].scriptPubKey = CScript() << OP_TRUE;
+    BOOST_CHECK(!bad.CheckLegacyPoSShape(false));
+    BOOST_CHECK(!bad.CheckBlock(false, false, false));
+
+    CBlock extra = block;
+    CTxOut out;
+    out.nValue = 0;
+    out.scriptPubKey = CScript() << OP_TRUE;
+    extra.vtx[0].vout.push_back(out);
+    BOOST_CHECK(!extra.CheckLegacyPoSShape(false));
+
+    CBlock many = block;
+    out.scriptPubKey = CScript() << OP_RETURN;
+    for (int i = 0; i < 3; i++)
+        many.vtx[0].vout.push_back(out);
+    BOOST_CHECK(!many.CheckLegacyPoSShape(false));
+}
+
 BOOST_AUTO_TEST_CASE(checktransaction_rejects_coinstake_with_positive_balance)
 {
     RegTestChainGuard guard;
