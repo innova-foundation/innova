@@ -692,11 +692,15 @@ std::vector<NyxFanoutTarget> NyxFanout(const NyxKeyring& peerKr, const std::vect
 
 int NyxRouteEnvelope(const NyxEnvelope& env, const uint8_t local[20], const uint8_t remote[20])
 {
+    static const uint8_t zero[32] = {0};
     const bool fSelf = memcmp(local, remote, 20) == 0;
+    const bool fGroup = memcmp(env.groupId, zero, 32) != 0;
     if (env.ctype == NYX_CTYPE_MSG && !fSelf && memcmp(env.convAddr, remote, 20) == 0)
-        return NYX_ROUTE_IN;
-    if (env.ctype == NYX_CTYPE_SENT && fSelf && memcmp(env.convAddr, local, 20) != 0)
+        return fGroup ? NYX_ROUTE_GROUP_IN : NYX_ROUTE_IN;
+    if (env.ctype == NYX_CTYPE_SENT && fSelf && !fGroup && memcmp(env.convAddr, local, 20) != 0)
         return NYX_ROUTE_SENT;
+    if (env.ctype == NYX_CTYPE_SENT && fSelf && fGroup && memcmp(env.convAddr, zero, 20) == 0)
+        return NYX_ROUTE_GROUP_SENT;
     return NYX_ROUTE_DROP;
 }
 

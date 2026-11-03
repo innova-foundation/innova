@@ -1216,7 +1216,13 @@ static Value nyx_session(const Array& params)
         "nyx session send <from> <to> <message>     PQXDH/X3DH session message to every live device of <to>\n"
         "nyx session list <address>                 Sessions of this node's device for <address>\n"
         "nyx session messages <address> [peer]      Session inbox and sent messages (decrypted once, stored sealed)\n"
-        "nyx session delete <address> <peer>        Erase the session state with <peer>";
+        "nyx session delete <address> <peer>        Erase the session state with <peer>\n"
+        "nyx session groupcreate <address> <name> <member>...  Group over sessions (max 10 members incl. you)\n"
+        "nyx session groupsend <address> <gid> <message>\n"
+        "nyx session groupadd|groupremove <address> <gid> <member>   Owner only; a removed member gets no later message\n"
+        "nyx session groupleave <address> <gid>\n"
+        "nyx session grouplist <address>\n"
+        "nyx session groupmessages <address> <gid>";
     const std::string op = params.size() > 1 ? params[1].get_str() : "";
     std::string sError;
     bool fOk = false;
@@ -1232,6 +1238,40 @@ static Value nyx_session(const Array& params)
         Array a;
         fOk = op == "list" ? NyxSessList(params[2].get_str(), a, sError)
                            : NyxSessMessages(params[2].get_str(), params.size() == 4 ? params[3].get_str() : "", a, sError);
+        if (!fOk)
+            throw JSONRPCError(-13, sError);
+        return a;
+    }
+    if (op == "groupcreate" && params.size() >= 5)
+    {
+        Object o;
+        std::vector<std::string> m;
+        for (size_t i = 4; i < params.size(); ++i)
+            m.push_back(params[i].get_str());
+        if (!NyxGroupCreate2(params[2].get_str(), params[3].get_str(), m, o, sError))
+            throw JSONRPCError(-13, sError);
+        return o;
+    }
+    if (op == "groupsend" && params.size() == 5)
+    {
+        Object o;
+        if (!NyxGroupSend2(params[2].get_str(), params[3].get_str(), params[4].get_str(), o, sError))
+            throw JSONRPCError(-13, sError);
+        return o;
+    }
+    if (((op == "groupadd" || op == "groupremove") && params.size() == 5) || (op == "groupleave" && params.size() == 4))
+    {
+        Object o;
+        if (!NyxGroupChange2(op.substr(5), params[2].get_str(), params[3].get_str(),
+                             params.size() == 5 ? params[4].get_str() : "", o, sError))
+            throw JSONRPCError(-13, sError);
+        return o;
+    }
+    if ((op == "grouplist" && params.size() == 3) || (op == "groupmessages" && params.size() == 4))
+    {
+        Array a;
+        fOk = op == "grouplist" ? NyxGroupList2(params[2].get_str(), a, sError)
+                                : NyxGroupMessages2(params[2].get_str(), params[3].get_str(), a, sError);
         if (!fOk)
             throw JSONRPCError(-13, sError);
         return a;
@@ -1295,6 +1335,7 @@ Value nyx(const Array& params, bool fHelp)
             "  devices <address>           Live devices of an address\n"
             "  device pair|approve|install|revoke <address> ...\n"
             "  session send|list|messages|delete ...  1:1 post-quantum sessions\n"
+            "  session group* ...          Groups over sessions (nyx session for usage)\n"
         );
 
     std::string subcmd = params[0].get_str();
