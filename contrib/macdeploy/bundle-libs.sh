@@ -59,6 +59,10 @@ finish() {
         otool -l "$f" | awk '/cmd LC_RPATH/{getline; getline; print $2}' | while read -r rp; do
             case "$rp" in /opt/homebrew/*|/usr/local/*) chmod u+w "$f"; install_name_tool -delete_rpath "$rp" "$f" ;; esac
         done
+        # macdeployqt leaves plugin ids pointing at the Homebrew copy
+        case "$(otool -D "$f" | tail -n +2)" in
+            /opt/homebrew/*|/usr/local/*) chmod u+w "$f"; install_name_tool -id "@rpath/$(basename "$f")" "$f" ;;
+        esac
     done
     qtconf="$ROOT/Resources/qt.conf"
     if [ -f "$qtconf" ] && grep -qE '= */' "$qtconf"; then
