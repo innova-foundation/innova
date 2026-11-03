@@ -692,8 +692,8 @@ BOOST_AUTO_TEST_CASE(the_off_chain_round_is_throttled)
                         "the off-chain headers round is not throttled");
 }
 
-// The peer-ahead round is as it was: getblocks and getheaders together.
-BOOST_AUTO_TEST_CASE(a_peer_ahead_still_gets_the_existing_round)
+// The peer-ahead round asks for headers; getblocks is not sent while headers are answered.
+BOOST_AUTO_TEST_CASE(a_peer_ahead_is_asked_for_headers)
 {
     CScopedSyncState state;
     BOOST_REQUIRE(pindexBest != NULL);
@@ -703,8 +703,69 @@ BOOST_AUTO_TEST_CASE(a_peer_ahead_still_gets_the_existing_round)
 
     BOOST_REQUIRE(SendMessages(&peer.node, false));
 
+    BOOST_CHECK_EQUAL(CountCommand(peer.node, "getblocks"), 0U);
+    BOOST_CHECK_EQUAL(CountCommand(peer.node, "getheaders"), 1U);
+    BOOST_CHECK(peer.node.fGetHeadersOutstanding);
+}
+
+// A getheaders left unanswered past the wait falls back to getblocks, and headers are asked again.
+BOOST_AUTO_TEST_CASE(an_unanswered_getheaders_falls_back_to_getblocks)
+{
+    CScopedSyncState state;
+    BOOST_REQUIRE(pindexBest != NULL);
+    TestPeer peer(21119);
+    SetPeerView(peer, nBestHeight + 10, uint256(0));
+    Stall(peer);
+    peer.node.fGetHeadersOutstanding = true;
+    peer.node.nGetHeadersFirstSent = GetTime() - HEADERS_REPLY_WAIT - 1;
+    peer.node.nGetHeadersSent = GetTime() - HEADERS_REPLY_WAIT - 1;
+
+    BOOST_REQUIRE(SendMessages(&peer.node, false));
+
     BOOST_CHECK_EQUAL(CountCommand(peer.node, "getblocks"), 1U);
     BOOST_CHECK_EQUAL(CountCommand(peer.node, "getheaders"), 1U);
+}
+
+// Headers answered but no height gained between two recoveries: getblocks is sent as well.
+BOOST_AUTO_TEST_CASE(no_progress_between_recoveries_adds_getblocks)
+{
+    CScopedSyncState state;
+    BOOST_REQUIRE(pindexBest != NULL);
+    TestPeer peer(21121);
+    SetPeerView(peer, nBestHeight + 10, uint256(0));
+    const int64_t nStart = GetTime();
+    SetMockTime(nStart);
+    Stall(peer);
+    BOOST_REQUIRE(SendMessages(&peer.node, false));
+    BOOST_CHECK_EQUAL(CountCommand(peer.node, "getblocks"), 0U);
+    BOOST_CHECK_EQUAL(peer.node.nStallRecoveryHeight, nBestHeight);
+    // The reply came and added nothing.
+    peer.node.fGetHeadersOutstanding = false;
+    SetMockTime(nStart + 40);
+    Stall(peer);
+    BOOST_REQUIRE(SendMessages(&peer.node, false));
+    SetMockTime(0);
+    BOOST_CHECK_EQUAL(CountCommand(peer.node, "getblocks"), 1U);
+}
+
+// A getheaders retry does not restart the wait the getblocks fallback measures; a reply does.
+BOOST_AUTO_TEST_CASE(a_getheaders_retry_keeps_the_fallback_wait)
+{
+    CScopedSyncState state;
+    BOOST_REQUIRE(pindexBest != NULL);
+    TestPeer peer(21120);
+    const int64_t nEarlier = GetTime() - 100;
+    peer.node.PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
+    BOOST_CHECK(peer.node.fGetHeadersOutstanding);
+    peer.node.nGetHeadersFirstSent = nEarlier;
+    peer.node.PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
+    BOOST_CHECK_EQUAL(peer.node.nGetHeadersFirstSent, nEarlier);
+    BOOST_CHECK(peer.node.nGetHeadersSent > nEarlier);
+    BOOST_CHECK(HeadersRequestUnanswered(peer.node.fGetHeadersOutstanding,
+                                         peer.node.nGetHeadersFirstSent, GetTime()));
+    peer.node.fGetHeadersOutstanding = false;
+    peer.node.PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
+    BOOST_CHECK(peer.node.nGetHeadersFirstSent > nEarlier);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
