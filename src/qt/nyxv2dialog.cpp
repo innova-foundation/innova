@@ -203,6 +203,7 @@ NyxV2Dialog::NyxV2Dialog(QWidget *parent) : QDialog(parent)
         QPushButton* verify = new QPushButton(tr("Fetch and verify"));
         h->addWidget(contactEdit, 1);
         h->addWidget(verify);
+        connect(contactEdit, SIGNAL(textChanged(QString)), this, SLOT(clearContact()));
         l->addLayout(h);
         QLabel* frozenText;
         frozenBanner = Banner("#b3261e", frozenText);
@@ -449,7 +450,17 @@ void NyxV2Dialog::onApprove()
     if (req.isEmpty())
         return;
     Value v;
-    if (!run(QStringList() << "device" << "approve" << self() << req, v))
+    if (!run(QStringList() << "device" << "code" << req, v))
+        return;
+    bool fOk = false;
+    const QString typed = QInputDialog::getText(
+        this, tr("Approve device"),
+        tr("This request has pairing code:\n%1\n\nType the code shown on the new device. Approve only if they "
+           "match.").arg(Str(v, "pairing_code")),
+        QLineEdit::Normal, QString(), &fOk).trimmed();
+    if (!fOk || typed.isEmpty())
+        return;
+    if (!run(QStringList() << "device" << "approve" << self() << req << typed, v))
         return;
     pairText->setPlainText(Str(v, "cert"));
     resultView->setPlainText(tr("Approved. Copy the cert above to the new node and install it there."));
@@ -487,14 +498,23 @@ void NyxV2Dialog::onRevoke()
     }
 }
 
-void NyxV2Dialog::onVerifyContact()
+void NyxV2Dialog::clearContact()
 {
-    const QString c = contactEdit->text().trimmed();
     frozenBanner->hide();
     resetBanner->hide();
     downgradeBox->hide();
+    downgradeBox->setChecked(false);
+    contactStatus->clear();
     contactSafety->clear();
+    resetText->clear();
     shownContact.clear();
+    shownResetHash.clear();
+}
+
+void NyxV2Dialog::onVerifyContact()
+{
+    const QString c = contactEdit->text().trimmed();
+    clearContact();
     if (c.isEmpty())
         return;
     Value v;
@@ -526,24 +546,31 @@ void NyxV2Dialog::onVerifyContact()
         downgradeBox->setVisible(fDown);
         downgradeBox->setChecked(false);
         shownContact = c;
-        resetBanner->show();
+        shownResetHash = Str(r, "keyring_hash");
+        resetBanner->setVisible(!shownResetHash.isEmpty());
     }
 }
 
 void NyxV2Dialog::onAcceptReset()
 {
-    if (shownContact.isEmpty() || shownContact != contactEdit->text().trimmed())
+    if (shownContact.isEmpty() || shownResetHash.isEmpty() || shownContact != contactEdit->text().trimmed())
     {
         resultView->setPlainText(tr("Fetch and verify the contact again before accepting."));
         return;
     }
     QStringList p;
-    p << "keyring" << "accept" << shownContact;
+    p << "keyring" << "accept" << shownContact << shownResetHash;
     if (downgradeBox->isVisible() && downgradeBox->isChecked())
         p << "downgrade";
     Value v;
     if (run(p, v))
+    {
         onVerifyContact();
+        return;
+    }
+    const QString err = resultView->toPlainText();
+    onVerifyContact();
+    resultView->setPlainText(err);
 }
 
 void NyxV2Dialog::refreshThreads()
