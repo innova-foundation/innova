@@ -1440,6 +1440,44 @@ bool NyxAddrRecover(const char* tag, const NyxBytes& fields, const uint8_t sig[6
     return CompactCanonical(sig) && out.RecoverCompact(TaggedHash(tag, fields), std::vector<unsigned char>(sig, sig + 65));
 }
 
+bool NyxOwnChainNext(const NyxKeyring& own, const uint8_t ownHash[32], const std::vector<NyxBytes>& keyrings,
+                     const uint8_t dev[16], const uint8_t certHash[32], NyxBytes& out)
+{
+    uint32_t seq = own.seq;
+    uint8_t h[32];
+    memcpy(h, ownHash, 32);
+    bool fFound = false;
+    for (size_t step = 0; step < keyrings.size(); ++step)
+    {
+        const NyxBytes* pNext = NULL;
+        size_t nNext = 0;
+        for (size_t i = 0; i < keyrings.size(); ++i)
+        {
+            NyxKeyring k;
+            if (keyrings[i].empty() || NyxParseKeyring(&keyrings[i][0], keyrings[i].size(), k) != 0)
+                continue;
+            if (k.epoch == own.epoch && k.seq == seq + 1 && memcmp(k.prevHash, h, 32) == 0
+                && (!pNext || *pNext != keyrings[i]))
+            {
+                pNext = &keyrings[i];
+                ++nNext;
+            }
+        }
+        if (nNext != 1)
+            break;
+        NyxKeyring k;
+        NyxParseKeyring(&(*pNext)[0], pNext->size(), k);
+        const NyxKeyringEntry* e = k.Find(dev);
+        if (!e || memcmp(e->certHash, certHash, 32) != 0)
+            break;
+        NyxHash(*pNext, h);
+        seq = k.seq;
+        out = *pNext;
+        fFound = true;
+    }
+    return fFound;
+}
+
 std::string NyxCloneCheck(const NyxOwnDevice& dev, const uint8_t hostFpNow[32], const NyxBytes* pSeenBundle)
 {
     if (memcmp(dev.hostFp, hostFpNow, 32) != 0)

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <openssl/crypto.h>
 #include <openssl/hmac.h>
+#include <set>
 #include <string.h>
 
 static const char INFO_PQXDH[] = "NyxPQXDH_CURVE25519_SHA-256_ML-KEM-768";
@@ -628,6 +629,77 @@ int NyxSession::FindHs(const uint8_t hsId[32]) const
     return -1;
 }
 
+bool NyxSession::BoundTo(const uint8_t remoteAddr[20]) const
+{
+    for (size_t i = 0; i < states.size(); ++i)
+        if (memcmp(states[i].remoteAddr, remoteAddr, 20) != 0)
+            return false;
+    return true;
+}
+
+int NyxSession::SentCheck(const NyxBytes& tail, const uint8_t* remoteAddr) const
+{
+    if (tail.size() < NYX_TAIL_MIN)
+        return NYX_SENT_NONE;
+    for (size_t i = 0; i < states.size(); ++i)
+    {
+        const NyxRatchet& r = states[i];
+        if (remoteAddr && memcmp(r.remoteAddr, remoteAddr, 20) != 0)
+            continue;
+        uint8_t hdr[NYX_HDR_LEN];
+        const bool fCur = r.fHKs && OpenHeader(r.HKs, r.T, &tail[0], hdr);
+        if (!fCur && !OpenHeader(r.NHKs, r.T, &tail[0], hdr))
+            continue;
+        const bool fOurs = fCur && memcmp(hdr, r.DHsPk, 32) == 0 && Rd32(hdr + 36) < r.Ns;
+        const bool fOld = fCur && memcmp(hdr, r.DHsPk, 32) != 0;
+        OPENSSL_cleanse(hdr, sizeof(hdr));
+        if (fOurs)
+            return NYX_SENT_OURS;
+        // An earlier sending chain cannot be told apart from our own past messages.
+        return fOld ? NYX_SENT_NONE : NYX_SENT_COPY;
+    }
+    return NYX_SENT_NONE;
+}
+
+std::vector<NyxFanoutTarget> NyxFanout(const NyxKeyring& peerKr, const std::vector<std::string>& peerUsable,
+                                       const NyxKeyring* ownKr, const std::vector<std::string>& ownUsable,
+                                       const uint8_t selfDev[16])
+{
+    std::vector<NyxFanoutTarget> v;
+    std::set<std::string> done;
+    const std::string self((const char*)selfDev, 16);
+    for (int k = 0; k < 2; ++k)
+    {
+        const NyxKeyring* kr = k == 0 ? &peerKr : ownKr;
+        const std::vector<std::string>& usable = k == 0 ? peerUsable : ownUsable;
+        if (!kr)
+            continue;
+        for (size_t i = 0; i < usable.size() && v.size() < NYX_FANOUT_MAX; ++i)
+        {
+            const std::string& id = usable[i];
+            if (id.size() != 16 || id == self || !kr->IsLive((const uint8_t*)id.data())
+                || std::find(kr->revoked.begin(), kr->revoked.end(), id) != kr->revoked.end()
+                || !done.insert(std::string(1, (char)k) + id).second)
+                continue;
+            NyxFanoutTarget t;
+            t.fOwn = k == 1;
+            t.dev = id;
+            v.push_back(t);
+        }
+    }
+    return v;
+}
+
+int NyxRouteEnvelope(const NyxEnvelope& env, const uint8_t local[20], const uint8_t remote[20])
+{
+    const bool fSelf = memcmp(local, remote, 20) == 0;
+    if (env.ctype == NYX_CTYPE_MSG && !fSelf && memcmp(env.convAddr, remote, 20) == 0)
+        return NYX_ROUTE_IN;
+    if (env.ctype == NYX_CTYPE_SENT && fSelf && memcmp(env.convAddr, local, 20) != 0)
+        return NYX_ROUTE_SENT;
+    return NYX_ROUTE_DROP;
+}
+
 bool NyxSession::NeedsHandshake(const uint8_t localCert[32], uint32_t localEpoch, const uint8_t remoteCert[32],
                                 uint32_t remoteEpoch, int64_t now) const
 {
@@ -691,6 +763,26 @@ static bool VerifyHs(const NyxCert& certA, const NyxHandshake& hs, const uint8_t
     if (hs.mode == NYX_MODE_PQ)
         return NyxDsaVerify(certA.dsaPk, NyxTagged(NYX_TAG_HS, m), hs.sig);
     return hs.sig.size() == 65 && NyxAddrVerify(hs.addrA, NYX_TAG_HS, m, &hs.sig[0]);
+}
+
+bool NyxIsOwnCopy(const NyxSession& s, const uint8_t local[20], const NyxBytes& body, const NyxCert& ownCert)
+{
+    if (body.empty() || !s.BoundTo(local))
+        return false;
+    if (body[0] == NYX_BODY_RATCHET)
+    {
+        NyxRatchetMsg m;
+        return NyxParseRatchetMsg(&body[0], body.size(), m) == 0 && memcmp(m.devA, ownCert.deviceId, 16) == 0
+            && s.SentCheck(m.tail, local) == NYX_SENT_COPY;
+    }
+    NyxHandshake hs;
+    if (NyxParseHandshake(&body[0], body.size(), hs) != 0 || memcmp(hs.devA, ownCert.deviceId, 16) != 0
+        || memcmp(hs.addrA, local, 20) != 0 || memcmp(hs.addrB, local, 20) != 0)
+        return false;
+    uint8_t hsId[32];
+    NyxHsId(hs, hsId);
+    // An unacked initiator wraps every new tail in its handshake: the tail shows whether this state sent it.
+    return s.FindHs(hsId) >= 0 && s.SentCheck(hs.tail, local) == NYX_SENT_COPY;
 }
 
 bool NyxHsInitiate(const NyxLocalSide& me, const NyxPeerSide& peer, const NyxBundle& b, int64_t now,
