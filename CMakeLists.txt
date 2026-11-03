@@ -530,6 +530,7 @@ set(INNOVA_CXX_SOURCES
     src/qt/privatecollateralwidget.cpp
     src/qt/nullsendmixwidget.cpp
     src/qt/chatwidget.cpp
+    src/qt/nyxv2dialog.cpp
     src/qt/emojipicker.cpp
     src/qt/linkpreview.cpp
     src/qt/walletworker.cpp
@@ -707,6 +708,7 @@ set(INNOVA_HEADERS
     src/qt/privatecollateralwidget.h
     src/qt/nullsendmixwidget.h
     src/qt/chatwidget.h
+    src/qt/nyxv2dialog.h
     src/qt/emojipicker.h
     src/qt/linkpreview.h
     src/qt/walletworker.h

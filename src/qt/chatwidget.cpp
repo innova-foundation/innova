@@ -1,4 +1,5 @@
 #include "chatwidget.h"
+#include "nyxv2dialog.h"
 #include "messagemodel.h"
 #include "walletmodel.h"
 #include "smessage.h"
@@ -2631,7 +2632,20 @@ void ChatWidget::onNewChatClicked()
     QMenu menu(this);
     QAction *aDirect = menu.addAction(tr("New direct message..."));
     QAction *aGroup = menu.addAction(tr("New group..."));
+    QAction *aV2 = 0;
+    if (fNyxV2)
+    {
+        menu.addSeparator();
+        aV2 = menu.addAction(tr("Nyx v2 secure sessions..."));
+    }
     QAction *c = menu.exec(newChatButton->mapToGlobal(QPoint(0, newChatButton->height())));
+    if (c && c == aV2)
+    {
+        NyxV2Dialog *dlg = new NyxV2Dialog(this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+        return;
+    }
     if (c == aDirect)
         startDirectDialog();
     else if (c == aGroup)
