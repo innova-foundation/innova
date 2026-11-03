@@ -943,7 +943,8 @@ int NyxPinApply(NyxPin& pin, const NyxPinInput& in, int64_t now)
     return flags;
 }
 
-bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, int64_t now, std::string& sError)
+bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, int64_t now, std::string& sError,
+                       const uint8_t* expectHash)
 {
     if (!pin.fResetPending)
     {
@@ -957,12 +958,17 @@ bool NyxPinAcceptReset(NyxPin& pin, bool fAllowDowngrade, int64_t now, std::stri
         sError = "Stored reset keyring is unreadable.";
         return false;
     }
+    NyxHash(p.body, p.hash);
+    if (expectHash && memcmp(expectHash, p.hash, 32) != 0)
+    {
+        sError = "The pending reset is not the one shown; fetch the contact again.";
+        return false;
+    }
     if (pin.fPqSeen && p.kr.mode != NYX_MODE_PQ && !fAllowDowngrade)
     {
         sError = "The reset keyring is classical; accepting it is a downgrade from PQ.";
         return false;
     }
-    NyxHash(p.body, p.hash);
     NyxPinInput in;
     in.certs = pin.resetCerts;
     NyxDeviceMap devs;
