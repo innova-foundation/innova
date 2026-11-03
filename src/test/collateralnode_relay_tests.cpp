@@ -288,4 +288,32 @@ BOOST_AUTO_TEST_CASE(relaying_a_learned_entry_is_opt_in)
         "an RFC1918 endpoint was gossiped");
 }
 
+BOOST_AUTO_TEST_CASE(block_hash_cache_keeps_the_recent_window_and_drops_older_heights)
+{
+    std::map<int64_t, uint256> cache;
+    const int64_t nTip = 100000;
+    for (int64_t h = nTip - 2 * BLOCK_HASH_CACHE_DEPTH; h <= nTip; ++h)
+        cache[h] = uint256(h);
+    std::map<int64_t, uint256> before = cache;
+
+    // At or under the bound nothing is dropped.
+    cache.erase(cache.begin());
+    PruneBlockHashCache(cache, nTip);
+    BOOST_CHECK_EQUAL((int64_t)cache.size(), 2 * BLOCK_HASH_CACHE_DEPTH);
+
+    cache = before;
+    PruneBlockHashCache(cache, nTip);
+    BOOST_CHECK_EQUAL((int64_t)cache.size(), BLOCK_HASH_CACHE_DEPTH + 1);
+    BOOST_CHECK_EQUAL(cache.begin()->first, nTip - BLOCK_HASH_CACHE_DEPTH);
+    for (const auto& e : cache)
+        BOOST_CHECK(before[e.first] == e.second);
+
+    // Heights below the window, including negative ones, are dropped.
+    cache = before;
+    cache[-5] = uint256(5);
+    PruneBlockHashCache(cache, nTip);
+    BOOST_CHECK(!cache.count(-5));
+    BOOST_CHECK(cache.count(nTip));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

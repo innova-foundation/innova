@@ -72,6 +72,9 @@ extern CCollateralnodePayments collateralnodePayments;
 extern std::vector<CTxIn> vecCollateralnodeAskedFor;
 extern map<uint256, CCollateralnodePaymentWinner> mapSeenCollateralnodeVotes;
 extern map<int64_t, uint256> mapCacheBlockHashes;
+// Heights kept below the tip in mapCacheBlockHashes; older entries are recomputed on demand.
+static const int64_t BLOCK_HASH_CACHE_DEPTH = 2048;
+void PruneBlockHashCache(map<int64_t, uint256>& cache, int64_t nTipHeight);
 extern unsigned int mnCount;
 
 
