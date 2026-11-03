@@ -592,7 +592,7 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
 {
     struct Op { NyxGroupRec rec; int64_t ts; };
     std::map<std::string, std::map<std::string, NyxGroupRec> > genesis; // gid -> hash -> binding genesis
-    std::map<std::string, std::map<std::string, Op> > ops;               // gid -> op hash -> op
+    std::map<std::string, std::map<std::string, Op> > ops;               // gid -> op encoding -> op
     typedef std::pair<int, std::string> Pos;                             // (epoch, prev)
     std::map<std::string, std::map<Pos, std::map<std::string, NyxGroupRec> > > leaves; // gid -> pos -> encoding -> leave
     std::vector<std::pair<NyxGroupRec, int64_t> > flat;
@@ -628,7 +628,8 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
         }
         else if (NyxGroupOpChained(r.op))
         {
-            Op& o = ops[r.gid].insert(std::make_pair(NyxGroupOpHash(r), Op{r, p.second})).first->second;
+            // Keyed by encoding: the op hash omits the signature, so a bad-signature copy must not shadow the real op.
+            Op& o = ops[r.gid].insert(std::make_pair(NyxEncodeGroup(r), Op{r, p.second})).first->second;
             o.ts = std::min(o.ts, p.second);
         }
     }
@@ -661,8 +662,9 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
                             ApplyLeaveAs(s, *l.first, l.second);
             }
             std::vector<const Op*> next;
+            std::set<std::string> nextHash;
             for (const auto& o : pool)
-                if (Extends(s, o.second.rec))
+                if (Extends(s, o.second.rec) && nextHash.insert(NyxGroupOpHash(o.second.rec)).second)
                     next.push_back(&o.second);
             if (next.empty())
                 break;
@@ -696,6 +698,49 @@ std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEv
         out[g.first] = s;
     }
     return out;
+}
+
+bool NyxGroupFromText(const std::string& text, const unsigned char gid[32], NyxGroupRec& rec, std::string& body)
+{
+    std::string t, ext;
+    NyxSplitPlain(text, t, ext);
+    if (ext.empty())
+        return false;
+    NyxRecords r = NyxParseRecords(ext);
+    if (!r.fGroup || r.group.gid.size() != NYX_GID_HEX)
+        return false;
+    for (size_t i = 0; i < 32; i++)
+        if (r.group.gid[2 * i] != HEXD[gid[i] >> 4] || r.group.gid[2 * i + 1] != HEXD[gid[i] & 15])
+            return false;
+    rec = r.group;
+    body = NyxStripGroupFallback(t);
+    return true;
+}
+
+bool NyxGroupFromCreator(NyxGroupEvent& e)
+{
+    if (e.rec.op == NYX_GOP_ROSTER)
+        return e.rec.creator == e.sender;
+    if (e.rec.op != NYX_GOP_CHAIN)
+        return true;
+    std::vector<std::string> keep;
+    for (const std::string& raw : e.rec.chain)
+    {
+        NyxGroupRec n;
+        if (NyxDecodeGroup(raw, n) && (n.op != NYX_GOP_ROSTER || n.creator == e.sender))
+            keep.push_back(raw);
+    }
+    e.rec.chain.swap(keep);
+    return !e.rec.chain.empty();
+}
+
+std::vector<std::string> NyxGroupOthers(const std::vector<std::string>& members, const std::string& me)
+{
+    std::vector<std::string> v;
+    for (const std::string& m : members)
+        if (m != me)
+            v.push_back(m);
+    return v;
 }
 
 std::string NyxEncodeTyping(bool fTyping)

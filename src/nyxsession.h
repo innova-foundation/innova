@@ -37,6 +37,7 @@ static const size_t NYX_ENV_LEN = 70;                // ctype 1, logicalId 16, c
 static const uint8_t NYX_CTYPE_MSG = 0;
 static const uint8_t NYX_CTYPE_SENT = 1;             // sent-sync to the sender's own devices
 static const size_t NYX_FANOUT_MAX = 31;             // 16 recipient + 15 own devices
+static const size_t NYX_GROUP_COPIES_MAX = 64;       // copies of one group message, all members and own devices
 
 extern const char NYX_TAG_HS[];
 
@@ -215,8 +216,10 @@ enum NyxRoute
     NYX_ROUTE_DROP = 0,
     NYX_ROUTE_IN = 1,           // from a contact: conversation = remote
     NYX_ROUTE_SENT = 2,         // sent-sync from an own device: outgoing in conversation convAddr
+    NYX_ROUTE_GROUP_IN = 3,     // group message from a contact: convAddr = remote, groupId set
+    NYX_ROUTE_GROUP_SENT = 4,   // group sent-sync from an own device: convAddr zero, groupId set
 };
-/** How an opened envelope from remote to local is stored. */
+/** How an opened envelope from remote to local is stored; 1:1 routes need a zero groupId. */
 int NyxRouteEnvelope(const NyxEnvelope& env, const uint8_t local[20], const uint8_t remote[20]);
 
 /** body names this device as sender and s is its session with own device devB: true when its header opens

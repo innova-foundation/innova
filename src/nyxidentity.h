@@ -55,4 +55,15 @@ std::string NyxInboxKey(const std::string& local, int64_t t, const uint8_t logic
                         const uint8_t peer[20]);
 bool NyxSessDelete(const std::string& addr, const std::string& peer, json_spirit::Object& out, std::string& sError);
 
+// v2 groups over 1:1 sessions.
+bool NyxGroupCreate2(const std::string& from, const std::string& name, const std::vector<std::string>& members,
+                     json_spirit::Object& out, std::string& sError);
+bool NyxGroupSend2(const std::string& from, const std::string& gid, const std::string& text, json_spirit::Object& out,
+                   std::string& sError);
+/** op: add|remove (owner, with addr) or leave. */
+bool NyxGroupChange2(const std::string& op, const std::string& from, const std::string& gid, const std::string& addr,
+                     json_spirit::Object& out, std::string& sError);
+bool NyxGroupList2(const std::string& addr, json_spirit::Array& out, std::string& sError);
+bool NyxGroupMessages2(const std::string& addr, const std::string& gid, json_spirit::Array& out, std::string& sError);
+
 #endif // INNOVA_NYXIDENTITY_H

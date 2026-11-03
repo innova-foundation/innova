@@ -658,4 +658,92 @@ BOOST_AUTO_TEST_CASE(group_id_and_typing)
     BOOST_CHECK(NyxParseRecords(NyxEncodeTyping(true)).fTyping);
 }
 
+BOOST_AUTO_TEST_CASE(v2_group_text_binds_gid)
+{
+    unsigned char gid[32];
+    for (int i = 0; i < 32; i++)
+        gid[i] = (unsigned char)strtol(GID.substr(2 * i, 2).c_str(), NULL, 16);
+    NyxGroupRec m;
+    m.gid = GID;
+    m.op = NYX_GOP_MSG;
+    const std::string text = NyxGroupPlain("team", "hello", m, std::vector<std::string>(), 4000);
+    NyxGroupRec got;
+    std::string body;
+    BOOST_REQUIRE(NyxGroupFromText(text, gid, got, body));
+    BOOST_CHECK_EQUAL(body, "hello");
+    BOOST_CHECK_EQUAL(got.gid, GID);
+    gid[31] ^= 1;
+    BOOST_CHECK(!NyxGroupFromText(text, gid, got, body));                 // envelope gid must match the record
+    gid[31] ^= 1;
+    BOOST_CHECK(!NyxGroupFromText("hello", gid, got, body));              // no record
+    BOOST_CHECK(!NyxGroupFromText(NyxComposePlain("x", NyxEncodeTyping(true)), gid, got, body));
+}
+
+BOOST_AUTO_TEST_CASE(v2_group_removed_member_gets_no_later_copy)
+{
+    NyxGroupState s;
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, Roster(0, {O, A, B})));
+    BOOST_CHECK(NyxGroupOthers(s.members, O) == std::vector<std::string>({A, B}));
+    const NyxGroupState before = s;
+    BOOST_REQUIRE(NyxGroupApply(s, O, 2, Next(s, NYX_GOP_REMOVE, B, O)));
+    // The removal itself reaches B; every later send goes to the remaining members only.
+    BOOST_CHECK(NyxGroupOthers(before.members, O) == std::vector<std::string>({A, B}));
+    BOOST_CHECK(NyxGroupOthers(s.members, O) == std::vector<std::string>({A}));
+    BOOST_CHECK(NyxGroupOthers(s.members, A) == std::vector<std::string>({O}));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 1));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, B, 3, 0));                        // an older epoch does not help
+    BOOST_CHECK(NyxGroupMsgAllowed(s, A, 3, 1));
+    BOOST_REQUIRE(NyxGroupApply(s, O, 4, Next(s, NYX_GOP_ADD, X, O)));
+    BOOST_CHECK(NyxGroupOthers(s.members, O) == std::vector<std::string>({A, X}));
+    BOOST_CHECK(NyxGroupMsgAllowed(s, X, 5, 2));
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, X, 5, 1));                        // no voice before the add
+    BOOST_CHECK(!NyxGroupMsgAllowed(s, A, 5, 3));                        // epoch ahead of the chain
+}
+
+BOOST_AUTO_TEST_CASE(bad_signature_copy_does_not_shadow_the_owner_op)
+{
+    NyxGroupState s;
+    const NyxGroupRec g = Roster(0, {O, A, B});
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    const NyxGroupRec rm = Next(s, NYX_GOP_REMOVE, B, O);
+    NyxGroupRec forged = rm;
+    forged.sig = std::string(130, 'e');
+    BOOST_REQUIRE_EQUAL(NyxGroupOpHash(forged), NyxGroupOpHash(rm));
+    std::vector<NyxGroupEvent> ev;
+    ev.push_back(Ev(O, 1, "g", g));
+    ev.push_back(Ev(B, 2, "f", forged));        // arrives first
+    ev.push_back(Ev(O, 3, "r", rm));
+    ev.push_back(Ev(O, 4, "r2", rm));
+    const NyxGroupState r = NyxBuildGroups(ev)[g.gid];
+    BOOST_CHECK(!r.fFrozen);
+    BOOST_CHECK_EQUAL(r.epoch, 1);
+    BOOST_CHECK(!r.IsMember(B));
+}
+
+BOOST_AUTO_TEST_CASE(v2_genesis_counts_only_from_its_creator)
+{
+    const NyxGroupRec g = Roster(0, {O, A, X});
+    NyxGroupEvent e = Ev(X, 1, "g", g);         // X forges a group naming O as creator
+    BOOST_CHECK(!NyxGroupFromCreator(e));
+    e.sender = O;
+    BOOST_CHECK(NyxGroupFromCreator(e));
+    NyxGroupState s;
+    BOOST_REQUIRE(NyxGroupApply(s, O, 1, g));
+    const NyxGroupRec add = Next(s, NYX_GOP_ADD, B, O);
+    const std::vector<NyxGroupRec> b = NyxGroupChainBundles(g.gid, {NyxEncodeGroup(g), NyxEncodeGroup(add)}, 4000);
+    BOOST_REQUIRE_EQUAL(b.size(), 1U);
+    NyxGroupEvent c = Ev(X, 2, "c", b[0]);
+    BOOST_CHECK(NyxGroupFromCreator(c));        // the signed add stays
+    BOOST_CHECK_EQUAL(c.rec.chain.size(), 1U);
+    std::vector<NyxGroupEvent> ev(1, c);
+    BOOST_CHECK(NyxBuildGroups(ev).empty());    // no genesis left to start from
+    NyxGroupEvent c2 = Ev(O, 2, "c", b[0]);
+    BOOST_CHECK(NyxGroupFromCreator(c2));
+    BOOST_CHECK_EQUAL(c2.rec.chain.size(), 2U);
+    std::vector<NyxGroupEvent> ev2(1, c2);
+    BOOST_CHECK(NyxBuildGroups(ev2)[g.gid].IsMember(B));
+    NyxGroupEvent only = Ev(X, 3, "o", NyxGroupChainBundles(g.gid, {NyxEncodeGroup(g)}, 4000)[0]);
+    BOOST_CHECK(!NyxGroupFromCreator(only));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

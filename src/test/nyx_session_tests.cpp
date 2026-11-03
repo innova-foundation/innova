@@ -1049,6 +1049,29 @@ BOOST_AUTO_TEST_CASE(sent_sync_routes_only_between_own_devices)
     BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);
 }
 
+BOOST_AUTO_TEST_CASE(group_envelopes_route_apart_from_one_to_one)
+{
+    uint8_t a[20], b[20];
+    memset(a, 0xaa, 20);
+    memset(b, 0xbb, 20);
+    NyxEnvelope e;
+    memset(e.groupId, 0x47, 32);
+    e.ctype = NYX_CTYPE_MSG;
+    memcpy(e.convAddr, b, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_GROUP_IN);
+    memcpy(e.convAddr, a, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);     // convAddr must name the sender
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_DROP);
+    e.ctype = NYX_CTYPE_SENT;
+    memset(e.convAddr, 0, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_GROUP_SENT);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);     // a contact cannot inject group sent records
+    memcpy(e.convAddr, b, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_DROP);     // group sync names no 1:1 conversation
+    memset(e.groupId, 0, 32);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_SENT);
+}
+
 BOOST_AUTO_TEST_CASE(own_device_session_carries_sent_sync)
 {
     Party a(NYX_MODE_PQ, false);

@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "nyxidentity.h"
+#include "nyxembed.h"
+#include "nyxgroup.h"
 #include "nyxsession.h"
 #include "privacy_vnext/rust/include/nyx_pq.h"
 
@@ -99,8 +101,18 @@ bool NyxStorageKeyResolve(CCryptoKeyStore* ks, const std::string& rec, uint8_t s
     return true;
 }
 
+static std::vector<std::pair<std::string, std::string> >* pBatch = NULL;
+
+// Reads through an open DbBatch first, so a second seal in one batch sees the staged session.
 static bool DbRead(const std::string& key, std::string& v)
 {
+    if (pBatch)
+        for (size_t i = pBatch->size(); i-- > 0;)
+            if ((*pBatch)[i].first == key)
+            {
+                v = (*pBatch)[i].second;
+                return true;
+            }
     LOCK(cs_smsgDB);
     SecMsgDB db;
     if (!db.Open("cw"))
@@ -108,8 +120,7 @@ static bool DbRead(const std::string& key, std::string& v)
     return db.pdb->Get(leveldb::ReadOptions(), key, &v).ok();
 }
 
-// Writes collected by an open DbBatch instead of applied one by one. cs_nyxid held.
-static std::vector<std::pair<std::string, std::string> >* pBatch = NULL;
+// Writes collected by an open DbBatch (pBatch) instead of applied one by one. cs_nyxid held.
 
 static bool DbWrite(const std::string& key, const std::string& v)
 {
@@ -1278,6 +1289,8 @@ static const char NYX_DB_SESS[] = "nys";    // local20 || localDev16 || remoteDe
 static const char NYX_DB_SEEN[] = "nye";    // local20
 static const char NYX_DB_INBOX[] = "nyi";   // local20 || time BE8 || logicalId16 || dir1 || peer20
 static const char NYX_DB_INBOXID[] = "nyj"; // local20 || H(sk, dir, peer, logicalId)16
+static const char NYX_DB_GROUP[] = "nyg";   // local20 || gid32 || time BE8 || logicalId16 || dir1 || sender20
+static const char NYX_DB_GROUPID[] = "nyk"; // local20 || H(sk, gid, dir, sender, logicalId)16
 static const int64_t NYX_HELD_UNPINNED = 60 * 60;
 static const int64_t NYX_HELD_FROZEN = 60 * 60 * 48;
 static const int64_t NYX_PRUNE_EVERY = 60 * 10;
@@ -1447,6 +1460,43 @@ static bool StoreInbox(const std::string& local, bool fOut, const uint8_t peer[2
     return SealPut(key, v) && DbWrite(idKey, std::string(1, (char)1));
 }
 
+// Stores a group envelope once per (gid, direction, sender, logicalId). cs_nyxid held.
+static bool StoreGroup(const std::string& local, bool fOut, const uint8_t sender[20], const uint8_t dev[16],
+                       int64_t t, const NyxEnvelope& env, uint8_t mode)
+{
+    NyxBytes idIn;
+    idIn.reserve(32 + 32 + 1 + 20 + 16);
+    idIn.insert(idIn.end(), skCache, skCache + 32);
+    idIn.insert(idIn.end(), env.groupId, env.groupId + 32);
+    idIn.push_back((uint8_t)fOut);
+    idIn.insert(idIn.end(), sender, sender + 20);
+    idIn.insert(idIn.end(), env.logicalId, env.logicalId + 16);
+    uint8_t h[32];
+    NyxHash(idIn, h);
+    OPENSSL_cleanse(&idIn[0], idIn.size());
+    const std::string idKey = NYX_DB_GROUPID + local + std::string((const char*)h, 16);
+    std::string probe;
+    if (DbRead(idKey, probe))
+        return true;
+    std::string key = NYX_DB_GROUP + local + std::string((const char*)env.groupId, 32);
+    for (int i = 7; i >= 0; --i)
+        key.push_back((char)(t >> (8 * i)));
+    key.append((const char*)env.logicalId, 16);
+    key.push_back((char)fOut);
+    key.append((const char*)sender, 20);
+    std::string v;
+    v.reserve(94 + env.text.size());
+    v.push_back((char)fOut);
+    v.append((const char*)sender, 20);
+    v.append((const char*)dev, 16);
+    v.append((const char*)&t, 8);
+    v.append((const char*)env.logicalId, 16);
+    v.push_back((char)mode);
+    v.append((const char*)env.groupId, 32);
+    v.append(env.text);
+    return SealPut(key, v) && DbWrite(idKey, std::string(1, (char)1));
+}
+
 // Pin for addr, refreshed from the public store; a first pin is made here (TOFU). cs_nyxid held.
 static NyxPin* PinFor(const std::string& addr, bool fRefresh)
 {
@@ -1554,12 +1604,25 @@ static int Deliver(const std::string& local, const NyxRatchet& r, const NyxBytes
 {
     NyxEnvelope env;
     int rv = NYX_RX_DROP;
-    const int route = env.Parse(pt) ? NyxRouteEnvelope(env, (const uint8_t*)local.data(), r.remoteAddr)
-                                    : NYX_ROUTE_DROP;
+    int route = env.Parse(pt) ? NyxRouteEnvelope(env, (const uint8_t*)local.data(), r.remoteAddr)
+                              : NYX_ROUTE_DROP;
     if (route == NYX_ROUTE_IN)
         StoreInbox(local, false, r.remoteAddr, r.remoteDev, GetTime(), env, r.mode);
     else if (route == NYX_ROUTE_SENT)
         StoreInbox(local, true, env.convAddr, r.remoteDev, GetTime(), env, r.mode);
+    else if (route == NYX_ROUTE_GROUP_IN || route == NYX_ROUTE_GROUP_SENT)
+    {
+        NyxGroupRec rec;
+        std::string body;
+        if (NyxGroupFromText(env.text, env.groupId, rec, body))
+            StoreGroup(local, route == NYX_ROUTE_GROUP_SENT,
+                       route == NYX_ROUTE_GROUP_SENT ? (const uint8_t*)local.data() : r.remoteAddr, r.remoteDev,
+                       GetTime(), env, r.mode);
+        else
+            route = NYX_ROUTE_DROP;
+        if (!body.empty())
+            OPENSSL_cleanse(&body[0], body.size());
+    }
     if (route != NYX_ROUTE_DROP)
         rv = NYX_RX_DONE;
     if (!env.text.empty())
@@ -1895,6 +1958,58 @@ static std::map<std::string, NyxBundle> Bundles(const std::string& addr)
     return m;
 }
 
+// Seals pt for one device of tp, starting a handshake when the session needs one; the session is saved
+// (inside the caller's batch). False with o["error"] set. cs_nyxid held.
+static bool SealToDevice(const std::string& local, const NyxLocalSide& me, NyxPin& tp, const std::string& dev,
+                         bool fOwn, const std::map<std::string, NyxBundle>& bundles, const NyxBytes& pt, int64_t now,
+                         Object& o, NyxBytes& body, bool& fFetch)
+{
+    const NyxPinDevice& pd = tp.devices[dev];
+    o.push_back(Pair("device", Hex(pd.cert.deviceId, 16)));
+    o.push_back(Pair("own", fOwn));
+    NyxSession s;
+    LoadSess(local, me.dev->deviceId, pd.cert.deviceId, s);
+    if (!s.BoundTo(tp.addrHash))
+    {
+        o.push_back(Pair("error", "device id is bound to another address"));
+        return false;
+    }
+    if (s.NeedsHandshake(me.certHash, me.epoch, pd.certHash, tp.kr.epoch, now))
+    {
+        std::map<std::string, NyxBundle>::const_iterator itB = bundles.find(dev);
+        NyxPeerSide ps;
+        ps.cert = &pd.cert;
+        memcpy(ps.certHash, pd.certHash, 32);
+        ps.epoch = tp.kr.epoch;
+        ps.seq = tp.kr.seq;
+        NyxRatchet r;
+        std::string why;
+        if (itB == bundles.end())
+        {
+            why = "no bundle published";
+            fFetch = true;
+        }
+        else if (!NyxHsInitiate(me, ps, itB->second, now, r, why))
+            why = "handshake: " + why;
+        if (!why.empty())
+        {
+            o.push_back(Pair("error", why));
+            return false;
+        }
+        s.Push(r);
+    }
+    if (!NyxSessionSeal(s.states[0], pt, now, body))
+    {
+        o.push_back(Pair("error", "could not seal"));
+        return false;
+    }
+    SaveSess(local, me.dev->deviceId, pd.cert.deviceId, s);
+    o.push_back(Pair("handshake", body[0] == NYX_BODY_HANDSHAKE));
+    o.push_back(Pair("opk", s.states[0].fOpk));
+    o.push_back(Pair("bytes", (int)body.size()));
+    return true;
+}
+
 bool NyxSessSend(const std::string& sFrom, const std::string& sTo, const std::string& text, Object& out,
                  std::string& sError)
 {
@@ -1955,56 +2070,13 @@ bool NyxSessSend(const std::string& sFrom, const std::string& sTo, const std::st
         {
             const int k = targets[i].fOwn ? 1 : 0;
             NyxPin& tp = k ? own : *p;
-            const NyxPinDevice& pd = tp.devices[targets[i].dev];
             Object o;
-            o.push_back(Pair("device", Hex(pd.cert.deviceId, 16)));
-            o.push_back(Pair("own", (bool)k));
-            NyxSession s;
-            LoadSess(local, d->deviceId, pd.cert.deviceId, s);
-            if (!s.BoundTo(tp.addrHash))
-            {
-                o.push_back(Pair("error", "device id is bound to another address"));
-                devs.push_back(o);
-                continue;
-            }
-            if (s.NeedsHandshake(me.certHash, me.epoch, pd.certHash, tp.kr.epoch, now))
-            {
-                std::map<std::string, NyxBundle>::iterator itB = bundles[k].find(targets[i].dev);
-                NyxPeerSide ps;
-                ps.cert = &pd.cert;
-                memcpy(ps.certHash, pd.certHash, 32);
-                ps.epoch = tp.kr.epoch;
-                ps.seq = tp.kr.seq;
-                NyxRatchet r;
-                std::string why;
-                if (itB == bundles[k].end())
-                {
-                    why = "no bundle published";
-                    fFetch[k] = true;
-                }
-                else if (!NyxHsInitiate(me, ps, itB->second, now, r, why))
-                    why = "handshake: " + why;
-                if (!why.empty())
-                {
-                    o.push_back(Pair("error", why));
-                    devs.push_back(o);
-                    continue;
-                }
-                s.Push(r);
-            }
             NyxBytes body;
-            if (!NyxSessionSeal(s.states[0], pt[k], now, body))
-            {
-                o.push_back(Pair("error", "could not seal"));
-                devs.push_back(o);
-                continue;
-            }
-            SaveSess(local, d->deviceId, pd.cert.deviceId, s);
-            o.push_back(Pair("handshake", body[0] == NYX_BODY_HANDSHAKE));
-            o.push_back(Pair("opk", s.states[0].fOpk));
-            o.push_back(Pair("bytes", (int)body.size()));
+            const bool fOk =
+                SealToDevice(local, me, tp, targets[i].dev, k, bundles[k], pt[k], now, o, body, fFetch[k]);
             devs.push_back(o);
-            (k ? vSync : vBodies).push_back(body);
+            if (fOk)
+                (k ? vSync : vBodies).push_back(body);
         }
         for (int k = 0; k < 2; ++k)
             OPENSSL_cleanse(&pt[k][0], pt[k].size());
@@ -2167,6 +2239,596 @@ bool NyxSessDelete(const std::string& sAddr, const std::string& sPeer, Object& o
     }
     DbErase(vErase);
     out.push_back(Pair("deleted", (int64_t)vErase.size()));
+    return true;
+}
+
+// v2 groups: the signed roster op log of nyxgroup, carried over 1:1 sessions with the envelope groupId set.
+// Every member device gets its own ratchet copy, so a removed member stops receiving at the op that removes it.
+
+struct NyxGroupRow2
+{
+    bool fOut;
+    uint8_t sender[20];
+    int64_t t;
+    uint8_t logicalId[16];
+    uint8_t mode;
+    std::string gid;            // 32 bytes
+    NyxGroupRec rec;
+    std::string body;
+};
+
+static void WipeRows(std::vector<NyxGroupRow2>& v)
+{
+    for (size_t i = 0; i < v.size(); ++i)
+        if (!v[i].body.empty())
+            OPENSSL_cleanse(&v[i].body[0], v[i].body.size());
+    v.clear();
+}
+
+// Stored group rows of local, of one gid (32 bytes) or all. cs_nyxid held.
+static void LoadGroupRows(const std::string& local, const std::string& gid, std::vector<NyxGroupRow2>& out)
+{
+    std::vector<std::pair<std::string, std::string> > v;
+    PrefixScan(NYX_DB_GROUP + local + gid, v);
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        std::string plain;
+        NyxGroupRow2 row;
+        if (NyxStoreOpen(skCache, v[i].first, v[i].second, plain) && plain.size() >= 94)
+        {
+            row.fOut = plain[0] != 0;
+            memcpy(row.sender, plain.data() + 1, 20);
+            memcpy(&row.t, plain.data() + 37, 8);
+            memcpy(row.logicalId, plain.data() + 45, 16);
+            row.mode = (uint8_t)plain[61];
+            row.gid = plain.substr(62, 32);
+            if (NyxGroupFromText(plain.substr(94), (const unsigned char*)row.gid.data(), row.rec, row.body))
+                out.push_back(row);
+        }
+        if (!plain.empty())
+            OPENSSL_cleanse(&plain[0], plain.size());
+    }
+}
+
+static std::map<std::string, NyxGroupState> GroupStates(const std::vector<NyxGroupRow2>& rows)
+{
+    std::vector<NyxGroupEvent> ev;
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        NyxGroupEvent e;
+        e.sender = AddrStr(rows[i].sender);
+        e.ts = rows[i].t;
+        e.mid = Hex(rows[i].logicalId, 16);
+        e.rec = rows[i].rec;
+        if (NyxGroupFromCreator(e))
+            ev.push_back(e);
+    }
+    return NyxBuildGroups(ev);
+}
+
+static bool ParseGid(const std::string& sGid, std::string& gid, std::string& sError)
+{
+    if (!NyxIsGroupId(sGid))
+    {
+        sError = "Invalid group id.";
+        return false;
+    }
+    const std::vector<unsigned char> v = ParseHex(sGid);
+    gid.assign(v.begin(), v.end());
+    return true;
+}
+
+// Current state of gid for local; refuses unknown, frozen or non-member. cs_nyxid held.
+static bool LoadGroupState(const std::string& local, const std::string& gid, NyxGroupState& st, std::string& sError)
+{
+    std::vector<NyxGroupRow2> rows;
+    LoadGroupRows(local, gid, rows);
+    std::map<std::string, NyxGroupState> m = GroupStates(rows);
+    WipeRows(rows);
+    std::map<std::string, NyxGroupState>::iterator it = m.find(HexStr(gid.begin(), gid.end()));
+    if (it == m.end() || !it->second.fValid)
+    {
+        sError = "Unknown group.";
+        return false;
+    }
+    st = it->second;
+    if (st.fFrozen)
+    {
+        sError = "Group history conflict: the owner signed two different changes. The group is frozen.";
+        return false;
+    }
+    if (!st.IsMember(AddrStr((const uint8_t*)local.data())))
+    {
+        sError = "You are not a member of this group.";
+        return false;
+    }
+    return true;
+}
+
+static bool GroupSign(const CKey& key, NyxGroupRec& rec, std::string& sError)
+{
+    unsigned char d[32];
+    NyxGroupDigest(rec, d);
+    uint256 h;
+    memcpy(h.begin(), d, 32);
+    std::vector<unsigned char> sig;
+    if (!key.SignCompact(h, sig) || sig.size() != 65)
+    {
+        sError = "Signing failed.";
+        return false;
+    }
+    rec.sig = HexStr(sig.begin(), sig.end());
+    return true;
+}
+
+struct NyxGroupOut
+{
+    std::vector<std::pair<std::string, NyxBytes> > bodies;     // (address, body)
+    std::map<std::string, NyxPin> pins;
+    Array members;
+};
+
+static size_t GroupTextMax()
+{
+    return (size_t)nNyxMaxParts * NYX_PART_BODY_MAX - NYX_HS_FIXED_PQ - 200 - NYX_ENV_LEN;
+}
+
+// Seals one group record to every live device of each address in to, and a sent-sync to this address's other
+// devices; stores it as outgoing. Everything is staged in one batch. cs_nyxid held.
+static bool GroupSeal(const std::string& local, const NyxLocalSide& me, const NyxKeyring& kr, const std::string& gid,
+                      const std::string& text, const std::vector<std::string>& to, NyxGroupOut& go,
+                      std::string& sError, bool fAll = false)
+{
+    if (text.empty() || text.size() > GroupTextMax())
+    {
+        sError = "Group message is empty or too long.";
+        return false;
+    }
+    const int64_t now = GetTime();
+    const std::string self = AddrStr((const uint8_t*)local.data());
+    NyxPin own;
+    OwnPin(local, *me.dev, kr, own);
+    struct Dest { std::string addr; NyxPin pin; std::vector<NyxFanoutTarget> targets; };
+    std::vector<Dest> dests;
+    size_t nCopies = 0;
+    for (size_t i = 0; i < to.size(); ++i)
+    {
+        Object m;
+        m.push_back(Pair("member", to[i]));
+        std::string peer, err;
+        if (to[i] == self || !ParseAddr(to[i], peer, NULL, err))
+        {
+            m.push_back(Pair("error", to[i] == self ? "own address" : err));
+            go.members.push_back(m);
+            continue;
+        }
+        NyxPin* p = PinFor(peer, true);
+        err = PinRefusal(p, me.dev->mode);
+        if (!err.empty())
+        {
+            SecureMsgPoGet(std::vector<unsigned char>(peer.begin(), peer.end()));
+            if (fAll)
+            {
+                sError = "Membership changes need every member reachable; " + to[i] + ": " + err;
+                return false;
+            }
+            m.push_back(Pair("error", err));
+            go.members.push_back(m);
+            continue;
+        }
+        Dest d;
+        d.addr = to[i];
+        d.pin = *p;
+        d.targets = NyxFanout(d.pin.kr, NyxPinUsable(d.pin, now), NULL, std::vector<std::string>(), me.dev->deviceId);
+        nCopies += d.targets.size();
+        dests.push_back(d);
+    }
+    Dest mine;
+    mine.addr = self;
+    mine.pin = own;
+    mine.targets = NyxFanout(own.kr, NyxPinUsable(own, now), NULL, std::vector<std::string>(), me.dev->deviceId);
+    nCopies += mine.targets.size();
+    if (nCopies > NYX_GROUP_COPIES_MAX)
+    {
+        sError = strprintf("A group message would need %u copies; the limit is %u.", (unsigned)nCopies,
+                           (unsigned)NYX_GROUP_COPIES_MAX);
+        return false;
+    }
+    NyxEnvelope env;
+    env.ctype = NYX_CTYPE_MSG;
+    GetRandBytes(env.logicalId, 16);
+    memcpy(env.convAddr, local.data(), 20);
+    memcpy(env.groupId, gid.data(), 32);
+    env.text = text;
+    NyxBytes pt[2];
+    pt[0] = env.Serialize();
+    env.ctype = NYX_CTYPE_SENT;
+    memset(env.convAddr, 0, 20);
+    pt[1] = env.Serialize();
+    size_t nSealed = 0;
+    bool fFetchOwn = false;
+    dests.push_back(mine);
+    for (size_t i = 0; i < dests.size(); ++i)
+    {
+        const bool fOwn = i + 1 == dests.size();
+        std::string addr20;
+        ParseAddr(dests[i].addr, addr20, NULL, sError);
+        const std::map<std::string, NyxBundle> bundles = Bundles(addr20);
+        Object m;
+        m.push_back(Pair("member", dests[i].addr));
+        m.push_back(Pair("own", fOwn));
+        Array devs;
+        bool fFetch = false;
+        int nOk = 0;
+        for (size_t j = 0; j < dests[i].targets.size(); ++j)
+        {
+            Object o;
+            NyxBytes body;
+            if (SealToDevice(local, me, dests[i].pin, dests[i].targets[j].dev, fOwn, bundles, pt[fOwn ? 1 : 0], now,
+                             o, body, fFetch))
+            {
+                go.bodies.push_back(std::make_pair(dests[i].addr, body));
+                nOk++;
+            }
+            devs.push_back(o);
+        }
+        if (fFetch)
+        {
+            SecureMsgPoGet(std::vector<unsigned char>(addr20.begin(), addr20.end()));
+            fFetchOwn |= fOwn;
+        }
+        m.push_back(Pair("copies", nOk));
+        m.push_back(Pair("devices", devs));
+        go.members.push_back(m);
+        if (!fOwn && fAll && nOk == 0)
+        {
+            for (int k = 0; k < 2; ++k)
+                OPENSSL_cleanse(&pt[k][0], pt[k].size());
+            OPENSSL_cleanse(&env.text[0], env.text.size());
+            sError = "Membership changes need every member reachable; no session with " + dests[i].addr
+                     + " yet (a key fetch was started), retry shortly.";
+            return false;
+        }
+        if (!fOwn)
+        {
+            nSealed += nOk;
+            go.pins[dests[i].addr] = dests[i].pin;
+        }
+    }
+    sError.clear();
+    for (int k = 0; k < 2; ++k)
+        OPENSSL_cleanse(&pt[k][0], pt[k].size());
+    env.ctype = NYX_CTYPE_MSG;
+    memcpy(env.convAddr, local.data(), 20);
+    StoreGroup(local, true, (const uint8_t*)local.data(), me.dev->deviceId, now, env, me.dev->mode);
+    OPENSSL_cleanse(&env.text[0], env.text.size());
+    if (nSealed == 0 && !to.empty())
+    {
+        sError = "No session could be started with any member device (no verified bundle yet); a key fetch was "
+                 "started, retry shortly.";
+        return false;
+    }
+    return true;
+}
+
+// Sends sealed group bodies outside cs_nyxid.
+static bool GroupDispatch(const std::string& sFrom, NyxGroupOut& go, Object& out, std::string& sError)
+{
+    for (std::map<std::string, NyxPin>::const_iterator it = go.pins.begin(); it != go.pins.end(); ++it)
+        EnsureSmsgKey(it->first, it->second);
+    Array ids, errs;
+    size_t nOther = 0;
+    for (size_t i = 0; i < go.bodies.size(); ++i)
+    {
+        std::string msgid, err;
+        if (SecureMsgV2SendPrivate(go.bodies[i].first, go.bodies[i].second, msgid, err) != 0)
+            errs.push_back(go.bodies[i].first + ": " + err);
+        else
+        {
+            ids.push_back(msgid);
+            nOther += go.bodies[i].first != sFrom;
+        }
+    }
+    out.push_back(Pair("copies", (int)go.bodies.size()));
+    out.push_back(Pair("members", go.members));
+    out.push_back(Pair("msgids", ids));
+    if (!errs.empty())
+        out.push_back(Pair("send_errors", errs));
+    if (nOther == 0 && !go.pins.empty())
+    {
+        sError = errs.empty() ? "Nothing was sent." : "Sealed but not sent: " + errs[0].get_str();
+        return false;
+    }
+    return true;
+}
+
+// The op's recipients get every leave the sender knows first, so they converge on the same chain position.
+static bool GroupSealOp(const std::string& local, const NyxLocalSide& me, const NyxKeyring& kr,
+                        const std::string& gid, const NyxGroupState& before, const NyxGroupRec& op,
+                        const std::string& name, const std::string& body, const std::vector<std::string>& to,
+                        NyxGroupOut& go, std::string& sError, bool fAll)
+{
+    if (before.leaves.empty())
+        return GroupSeal(local, me, kr, gid, NyxGroupPlain(name, body, op, std::vector<std::string>(), GroupTextMax()),
+                         to, go, sError, fAll);
+    std::vector<std::string> recs = before.leaves;
+    recs.push_back(NyxEncodeGroup(op));
+    const std::vector<NyxGroupRec> b = NyxGroupChainBundles(op.gid, recs, NYX_PART_BODY_MAX - 600);
+    for (size_t i = 0; i < b.size(); ++i)
+        if (!GroupSeal(local, me, kr, gid,
+                       NyxGroupPlain(name, i + 1 == b.size() ? body : "", b[i], std::vector<std::string>(),
+                                     GroupTextMax()),
+                       to, go, sError, fAll))
+            return false;
+    return true;
+}
+
+enum { NYX_G2_CREATE, NYX_G2_SEND, NYX_G2_ADD, NYX_G2_REMOVE, NYX_G2_LEAVE };
+
+static bool GroupAction(int act, const std::string& sFrom, const std::string& sGid, const std::string& arg,
+                        const std::vector<std::string>& members, Object& out, std::string& sError)
+{
+    NyxGroupOut go;
+    {
+        LOCK(cs_nyxid);
+        std::string local;
+        CKey key;
+        if (!Ready(sError) || !ParseAddr(sFrom, local, &key, sError))
+            return false;
+        NyxLocalSide me;
+        NyxKeyring kr;
+        if (!LiveDevice(local, me, kr, sError))
+            return false;
+        me.addrKey = &key;
+        const std::string self = AddrStr((const uint8_t*)local.data());
+        const int64_t now = GetTime();
+        std::string gid;
+        NyxGroupState st;
+        DbBatch batch;
+        if (act == NYX_G2_CREATE)
+        {
+            NyxGroupRec rec;
+            rec.op = NYX_GOP_ROSTER;
+            rec.name = NyxCleanText(arg, NYX_GROUP_NAME_MAX);
+            rec.members.push_back(self);
+            for (size_t i = 0; i < members.size(); ++i)
+            {
+                if (!CBitcoinAddress(members[i]).IsValid())
+                {
+                    sError = "Invalid member address " + members[i] + ".";
+                    return false;
+                }
+                if (std::find(rec.members.begin(), rec.members.end(), members[i]) == rec.members.end())
+                    rec.members.push_back(members[i]);
+            }
+            if (rec.members.size() < 2 || rec.members.size() > NYX_GROUP_MAX)
+            {
+                sError = strprintf("A group holds 2 to %u members including you.", (unsigned)NYX_GROUP_MAX);
+                return false;
+            }
+            unsigned char rnd[16];
+            GetRandBytes(rnd, sizeof(rnd));
+            rec.creator = self;
+            rec.createTime = now;
+            rec.rnd = HexStr(rnd, rnd + sizeof(rnd));
+            rec.gid = NyxNewGroupId(self, now, rnd, rec.name, rec.members);
+            std::string e;
+            if (!ParseGid(rec.gid, gid, e))
+                return false;
+            if (!GroupSeal(local, me, kr, gid,
+                           NyxGroupPlain(rec.name, strprintf("created the group with %u members",
+                                                             (unsigned)rec.members.size()),
+                                         rec, std::vector<std::string>(), GroupTextMax()),
+                           NyxGroupOthers(rec.members, self), go, sError))
+                return false;
+            out.push_back(Pair("gid", rec.gid));
+        }
+        else
+        {
+            if (!ParseGid(sGid, gid, sError) || !LoadGroupState(local, gid, st, sError))
+                return false;
+            NyxGroupRec rec;
+            rec.gid = sGid;
+            if (act == NYX_G2_SEND)
+            {
+                rec.epoch = st.epoch;
+                rec.op = NYX_GOP_MSG;
+                if (arg.empty() || !GroupSeal(local, me, kr, gid,
+                                              NyxGroupPlain(st.name, arg, rec, std::vector<std::string>(), GroupTextMax()),
+                                              NyxGroupOthers(st.members, self), go, sError))
+                {
+                    if (sError.empty())
+                        sError = "Group message is empty or too long.";
+                    return false;
+                }
+            }
+            else
+            {
+                const bool fLeave = act == NYX_G2_LEAVE;
+                if (!fLeave && st.owner != self)
+                {
+                    sError = "Only the group owner can do that.";
+                    return false;
+                }
+                if (fLeave && st.owner == self && st.members.size() > 1)
+                {
+                    sError = "The owner cannot leave while other members remain.";
+                    return false;
+                }
+                if (!fLeave && st.epoch >= NYX_GROUP_OPS_MAX)
+                {
+                    sError = "This group has reached its change limit; create a new group.";
+                    return false;
+                }
+                if (act == NYX_G2_ADD && !CBitcoinAddress(arg).IsValid())
+                {
+                    sError = "Invalid member address.";
+                    return false;
+                }
+                rec.op = act == NYX_G2_ADD ? NYX_GOP_ADD : act == NYX_G2_REMOVE ? NYX_GOP_REMOVE : NYX_GOP_LEAVE;
+                rec.epoch = fLeave ? st.epoch : st.epoch + 1;
+                rec.prev = st.head;
+                if (!fLeave)
+                    rec.addr = arg;
+                if (!GroupSign(key, rec, sError))
+                    return false;
+                NyxGroupState t = st;
+                if (!NyxGroupApply(t, st.owner, now, rec))
+                {
+                    sError = "That change is not allowed for this group.";
+                    return false;
+                }
+                // Every remaining member must get the op; the removed one gets it when reachable.
+                const std::vector<std::string> to = NyxGroupOthers(act == NYX_G2_ADD ? st.members : t.members, self);
+                const std::string body = act == NYX_G2_ADD ? "added " + arg
+                                       : act == NYX_G2_REMOVE ? "removed " + arg : "left the group";
+                if (act == NYX_G2_ADD)
+                {
+                    std::vector<std::string> recs = t.chain;
+                    recs.insert(recs.end(), t.leaves.begin(), t.leaves.end());
+                    const std::vector<NyxGroupRec> b = NyxGroupChainBundles(sGid, recs, NYX_PART_BODY_MAX - 600);
+                    for (size_t i = 0; i < b.size(); ++i)
+                        if (!GroupSeal(local, me, kr, gid,
+                                       NyxGroupPlain(t.name, i == 0 ? "added you to the group" : "", b[i],
+                                                     std::vector<std::string>(), GroupTextMax()),
+                                       std::vector<std::string>(1, arg), go, sError, true))
+                            return false;
+                }
+                if (!GroupSealOp(local, me, kr, gid, st, rec, t.name, body, to, go, sError, true))
+                    return false;
+                if (act == NYX_G2_REMOVE)
+                {
+                    std::string e;
+                    GroupSealOp(local, me, kr, gid, st, rec, t.name, body, std::vector<std::string>(1, arg), go, e,
+                                false);
+                }
+                out.push_back(Pair("epoch", rec.epoch));
+            }
+        }
+        if (!batch.Commit())
+        {
+            sError = "Could not store the session state; nothing was sent.";
+            return false;
+        }
+    }
+    return GroupDispatch(sFrom, go, out, sError);
+}
+
+bool NyxGroupCreate2(const std::string& from, const std::string& name, const std::vector<std::string>& members,
+                     Object& out, std::string& sError)
+{
+    return GroupAction(NYX_G2_CREATE, from, "", name, members, out, sError);
+}
+
+bool NyxGroupSend2(const std::string& from, const std::string& gid, const std::string& text, Object& out,
+                   std::string& sError)
+{
+    return GroupAction(NYX_G2_SEND, from, gid, text, std::vector<std::string>(), out, sError);
+}
+
+bool NyxGroupChange2(const std::string& op, const std::string& from, const std::string& gid, const std::string& addr,
+                     Object& out, std::string& sError)
+{
+    const int act = op == "add" ? NYX_G2_ADD : op == "remove" ? NYX_G2_REMOVE : op == "leave" ? NYX_G2_LEAVE : -1;
+    if (act < 0)
+    {
+        sError = "Unknown group change.";
+        return false;
+    }
+    return GroupAction(act, from, gid, addr, std::vector<std::string>(), out, sError);
+}
+
+bool NyxGroupList2(const std::string& sAddr, Array& out, std::string& sError)
+{
+    LOCK(cs_nyxid);
+    std::string local;
+    if (!Ready(sError) || !ParseAddr(sAddr, local, NULL, sError))
+        return false;
+    std::vector<NyxGroupRow2> rows;
+    LoadGroupRows(local, "", rows);
+    const std::map<std::string, NyxGroupState> m = GroupStates(rows);
+    WipeRows(rows);
+    const std::string self = AddrStr((const uint8_t*)local.data());
+    for (std::map<std::string, NyxGroupState>::const_iterator it = m.begin(); it != m.end(); ++it)
+    {
+        const NyxGroupState& g = it->second;
+        Object o;
+        o.push_back(Pair("gid", g.gid));
+        o.push_back(Pair("name", g.name));
+        o.push_back(Pair("owner", g.owner));
+        o.push_back(Pair("epoch", g.epoch));
+        o.push_back(Pair("member", g.IsMember(self)));
+        o.push_back(Pair("frozen", g.fFrozen));
+        Array a;
+        for (size_t i = 0; i < g.members.size(); ++i)
+            a.push_back(g.members[i]);
+        o.push_back(Pair("members", a));
+        out.push_back(o);
+    }
+    return true;
+}
+
+static const char* GroupOpName(int op)
+{
+    switch (op)
+    {
+    case NYX_GOP_MSG: return "msg";
+    case NYX_GOP_ROSTER: return "create";
+    case NYX_GOP_ADD: return "add";
+    case NYX_GOP_REMOVE: return "remove";
+    case NYX_GOP_LEAVE: return "leave";
+    case NYX_GOP_CHAIN: return "chain";
+    default: return "change";
+    }
+}
+
+// Messages only from a member in the roster at their epoch; ops only when applied and sent by their signer;
+// chain bundle notes only from the owner.
+static bool GroupRowShown(const NyxGroupState& g, const NyxGroupRow2& r, const std::string& sender)
+{
+    if (r.rec.op == NYX_GOP_MSG)
+        return NyxGroupMsgAllowed(g, sender, r.t, r.rec.epoch);
+    // The note of an op is unsigned: only the op's own signer may attach one.
+    if (r.rec.op == NYX_GOP_CHAIN)
+        return !r.body.empty() && sender == g.owner;
+    const std::string enc = NyxEncodeGroup(r.rec);
+    if (r.rec.op == NYX_GOP_ROSTER)
+        return sender == r.rec.creator && !g.chain.empty() && g.chain[0] == enc;
+    return (std::find(g.chain.begin(), g.chain.end(), enc) != g.chain.end()
+            || std::find(g.leaves.begin(), g.leaves.end(), enc) != g.leaves.end())
+        && NyxGroupRecover(r.rec) == sender;
+}
+
+bool NyxGroupMessages2(const std::string& sAddr, const std::string& sGid, Array& out, std::string& sError)
+{
+    LOCK(cs_nyxid);
+    std::string local, gid;
+    if (!Ready(sError) || !ParseAddr(sAddr, local, NULL, sError) || !ParseGid(sGid, gid, sError))
+        return false;
+    std::vector<NyxGroupRow2> rows;
+    LoadGroupRows(local, gid, rows);
+    const std::map<std::string, NyxGroupState> m = GroupStates(rows);
+    std::map<std::string, NyxGroupState>::const_iterator st = m.find(sGid);
+    std::set<std::string> shownOps;
+    for (size_t i = 0; st != m.end() && i < rows.size(); ++i)
+    {
+        const NyxGroupRow2& r = rows[i];
+        const std::string sender = AddrStr(r.sender);
+        if (!GroupRowShown(st->second, r, sender)
+            || (r.rec.op != NYX_GOP_MSG && !shownOps.insert(NyxEncodeGroup(r.rec) + r.body).second))
+            continue;
+        Object o;
+        o.push_back(Pair("direction", r.fOut ? "out" : "in"));
+        o.push_back(Pair("sender", sender));
+        o.push_back(Pair("time", r.t));
+        o.push_back(Pair("logical_id", Hex(r.logicalId, 16)));
+        o.push_back(Pair("epoch", r.rec.epoch));
+        o.push_back(Pair("kind", GroupOpName(r.rec.op)));
+        o.push_back(Pair("mode", r.mode == NYX_MODE_PQ ? "pq" : "classical"));
+        o.push_back(Pair("text", r.body));
+        out.push_back(o);
+    }
+    WipeRows(rows);
     return true;
 }
 

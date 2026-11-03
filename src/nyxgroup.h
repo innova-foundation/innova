@@ -129,6 +129,14 @@ struct NyxGroupEvent
     two distinct owner-signed ops at one position, or two binding geneses, freeze the group. Leaves apply at their position. */
 std::map<std::string, NyxGroupState> NyxBuildGroups(const std::vector<NyxGroupEvent>& events);
 
+/** v2 group envelope text: a group plain whose G record names gid (32 raw bytes); body without the fallback. */
+bool NyxGroupFromText(const std::string& text, const unsigned char gid[32], NyxGroupRec& rec, std::string& body);
+/** v2 transport sender check: a genesis, alone or in a chain bundle, counts only when its creator sent it.
+    Strips foreign geneses from a bundle; false when nothing of the event is left. */
+bool NyxGroupFromCreator(NyxGroupEvent& e);
+/** Members other than me: every recipient of a v2 group send; a removed member is no longer listed. */
+std::vector<std::string> NyxGroupOthers(const std::vector<std::string>& members, const std::string& me);
+
 /** Typing record 'T' 0x01 state. */
 std::string NyxEncodeTyping(bool fTyping);
 bool NyxDecodeTyping(const std::string& rec, bool& fTyping);
