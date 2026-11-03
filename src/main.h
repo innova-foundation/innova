@@ -504,10 +504,7 @@ inline int64_t GetSupplyCapAmount()
 // epoch curve-tree snapshot instead of the mutable per-block tree.
 inline int GetForkHeightEpochRootFCMP()
 {
-    extern bool fRegTest;
-    extern bool fTestNet;
-    if (fRegTest || fTestNet) return GetForkHeightDAG();
-    return GetForkHeightDAG();        // mainnet: activate with the DAG fork
+    return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_EPOCH_ROOT_FCMP (GetForkHeightEpochRootFCMP())
 
@@ -516,10 +513,7 @@ inline int GetForkHeightEpochRootFCMP()
 // cert to cover exactly that set. Fresh-chain only (no migration of epoch records).
 inline int GetForkHeightVoteSetRoot()
 {
-    extern bool fRegTest;
-    extern bool fTestNet;
-    if (fRegTest || fTestNet) return GetForkHeightDAG();
-    return GetForkHeightDAG();        // mainnet: pre-launch, activate with the DAG fork
+    return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_VOTESET_ROOT (GetForkHeightVoteSetRoot())
 
