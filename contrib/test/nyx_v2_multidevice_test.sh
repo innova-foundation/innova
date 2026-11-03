@@ -82,9 +82,11 @@ share_key() {
 
 # Pairs node $2 as a new device of $3, approved by node $1; prints the device id.
 pair() {
-    local req cert
-    req=$(RPC "$2" nyx device pair "$3" | field request)
-    cert=$(until_match "$1" '"cert"' nyx device approve "$3" "$req" | field cert)
+    local req code cert
+    req=$(RPC "$2" nyx device pair "$3")
+    code=$(echo "$req" | field pairing_code)
+    req=$(echo "$req" | field request)
+    cert=$(until_match "$1" '"cert"' nyx device approve "$3" "$req" "$code" | field cert)
     RPC "$2" nyx device install "$3" "$cert" | field device
 }
 

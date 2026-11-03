@@ -1154,7 +1154,7 @@ static Value nyx_identity(const Array& params, const std::string& sub)
             "nyx keyring init <address> [pq|classical]   First device for the address (default pq)\n"
             "nyx keyring show <address>                   This node's device and keyring\n"
             "nyx keyring contact <address>                Fetch, verify and pin a contact's keyring\n"
-            "nyx keyring accept <address> [downgrade]     Accept a contact's identity reset\n"
+            "nyx keyring accept <address> <resethash> [downgrade]  Accept the pending reset whose keyring_hash was shown\n"
             "nyx keyring reset <address> [pq|classical]   Replace every device (epoch + 1)\n"
             "nyx keyring confirm <address>                Resolve a keyring conflict or clone alarm on this device";
         if (params.size() < 3)
@@ -1167,7 +1167,12 @@ static Value nyx_identity(const Array& params, const std::string& sub)
         else if (op == "contact")
             fOk = NyxIdContact(addr, o, sError);
         else if (op == "accept")
-            fOk = NyxIdAcceptReset(addr, params.size() > 3 && params[3].get_str() == "downgrade", o, sError);
+        {
+            if (params.size() < 4)
+                throw runtime_error(usage);
+            fOk = NyxIdAcceptReset(addr, params[3].get_str(), params.size() > 4 && params[4].get_str() == "downgrade",
+                                   o, sError);
+        }
         else if (op == "reset")
             fOk = NyxIdKeyringReset(addr, NyxModeArg(params, 3), o, sError);
         else if (op == "confirm")
@@ -1188,16 +1193,25 @@ static Value nyx_identity(const Array& params, const std::string& sub)
     {
         static const char* usage =
             "nyx device pair <address> [pq|classical]     New node: create keys and print a pairing request\n"
-            "nyx device approve <address> <request>       Existing device: sign the new device in (keyring seq + 1)\n"
+            "nyx device code <request>                    Pairing code of a request, to compare with the new device\n"
+            "nyx device approve <address> <request> <code>  Existing device: sign the new device in (keyring seq + 1)\n"
             "nyx device install <address> <cert>          New node: install the approved cert and publish its bundle\n"
             "nyx device revoke <address> <deviceid>       Remove a device (keyring seq + 1)";
         if (params.size() < 3)
             throw runtime_error(usage);
+        if (op == "code" && params.size() == 3)
+        {
+            const std::string code = NyxPairingCode(ParseHex(params[2].get_str()));
+            if (code.empty())
+                throw JSONRPCError(-13, "Malformed pairing request.");
+            o.push_back(Pair("pairing_code", code));
+            return o;
+        }
         const std::string addr = params[2].get_str();
         if (op == "pair")
             fOk = NyxIdPairRequest(addr, NyxModeArg(params, 3), o, sError);
-        else if (op == "approve" && params.size() == 4)
-            fOk = NyxIdApprove(addr, params[3].get_str(), o, sError);
+        else if (op == "approve" && params.size() == 5)
+            fOk = NyxIdApprove(addr, params[3].get_str(), params[4].get_str(), o, sError);
         else if (op == "install" && params.size() == 4)
             fOk = NyxIdInstall(addr, params[3].get_str(), o, sError);
         else if (op == "revoke" && params.size() == 4)

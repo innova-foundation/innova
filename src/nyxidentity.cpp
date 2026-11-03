@@ -748,17 +748,30 @@ bool NyxIdPairRequest(const std::string& sAddr, uint8_t mode, Object& out, std::
     req.insert(req.end(), d.deviceId, d.deviceId + 16);
     req.insert(req.end(), d.ik, d.ik + 32);
     req.insert(req.end(), d.dsaPk.begin(), d.dsaPk.end());
-    NyxBytes fpIn(d.ik, d.ik + 32);
-    fpIn.insert(fpIn.end(), d.dsaPk.begin(), d.dsaPk.end());
-    uint8_t h[32];
-    NyxHash(fpIn, h);
     out.push_back(Pair("device", Hex(d.deviceId, 16)));
-    out.push_back(Pair("pairing_code", Hex(d.deviceId, 16) + Hex(h, 8)));
+    out.push_back(Pair("pairing_code", NyxPairingCode(req)));
     out.push_back(Pair("request", HexStr(req.begin(), req.end())));
     return true;
 }
 
-bool NyxIdApprove(const std::string& sAddr, const std::string& requestHex, Object& out, std::string& sError)
+static bool WellFormedRequest(const std::vector<unsigned char>& req)
+{
+    return req.size() >= 49 && req[0] <= NYX_MODE_PQ
+           && req.size() == 49 + (req[0] == NYX_MODE_PQ ? (size_t)NYX_MLDSA65_PK : 0);
+}
+
+std::string NyxPairingCode(const std::vector<unsigned char>& req)
+{
+    if (!WellFormedRequest(req))
+        return std::string();
+    NyxBytes fpIn(req.begin() + 17, req.end());
+    uint8_t h[32];
+    NyxHash(fpIn, h);
+    return Hex(&req[1], 16) + Hex(h, 8);
+}
+
+bool NyxIdApprove(const std::string& sAddr, const std::string& requestHex, const std::string& expectCode,
+                  Object& out, std::string& sError)
 {
     std::vector<NyxBytes> vPub;
     {
@@ -781,10 +794,17 @@ bool NyxIdApprove(const std::string& sAddr, const std::string& requestHex, Objec
             return false;
         }
         const std::vector<unsigned char> req = ParseHex(requestHex);
-        if (req.size() < 49 || req[0] > NYX_MODE_PQ
-            || req.size() != 49 + (req[0] == NYX_MODE_PQ ? (size_t)NYX_MLDSA65_PK : 0))
+        if (!WellFormedRequest(req))
         {
             sError = "Malformed pairing request.";
+            return false;
+        }
+        std::string code = expectCode;
+        for (size_t i = 0; i < code.size(); ++i)
+            code[i] = tolower((unsigned char)code[i]);
+        if (code.empty() || code != NyxPairingCode(req))
+        {
+            sError = "Pairing code does not match the request.";
             return false;
         }
         NyxKeyring kr;
@@ -1141,14 +1161,21 @@ bool NyxIdContact(const std::string& sAddr, Object& out, std::string& sError)
     return true;
 }
 
-bool NyxIdAcceptReset(const std::string& sAddr, bool fAllowDowngrade, Object& out, std::string& sError)
+bool NyxIdAcceptReset(const std::string& sAddr, const std::string& resetHashHex, bool fAllowDowngrade, Object& out,
+                      std::string& sError)
 {
     LOCK(cs_nyxid);
     std::string addr;
     if (!Ready(sError) || !ParseAddr(sAddr, addr, NULL, sError))
         return false;
+    const std::vector<unsigned char> expect = ParseHex(resetHashHex);
+    if (expect.size() != 32)
+    {
+        sError = "Reset keyring hash must be 32 bytes hex.";
+        return false;
+    }
     std::map<std::string, NyxPin>::iterator it = mapPin.find(addr);
-    if (it == mapPin.end() || !NyxPinAcceptReset(it->second, fAllowDowngrade, GetTime(), sError))
+    if (it == mapPin.end() || !NyxPinAcceptReset(it->second, fAllowDowngrade, GetTime(), sError, &expect[0]))
     {
         if (sError.empty())
             sError = "No pin for this address.";

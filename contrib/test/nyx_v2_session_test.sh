@@ -87,7 +87,7 @@ echo "=== identities ==="
 RPC 0 nyx keyring init "$A" pq | grep -q '"seq" : 1' || fail "A keyring init"
 RPC 1 nyx keyring init "$B" pq | grep -q '"seq" : 1' || fail "B keyring init"
 REQ=$(RPC 2 nyx device pair "$B" | field request)
-CERT=$(until_match 1 '"cert"' nyx device approve "$B" "$REQ" | field cert)
+CERT=$(until_match 1 '"cert"' nyx device approve "$B" "$REQ" "$(RPC 2 nyx device code "$REQ" | field pairing_code)" | field cert)
 RPC 2 nyx device install "$B" "$CERT" | grep -q '"device"' || fail "B second device install"
 OUT=$(until_match 0 '"seq" : 2' nyx keyring contact "$B")
 [ "$(echo "$OUT" | grep -c '"device" :')" = 2 ] && pass "A pinned B with two devices" || fail "A pin of B: $OUT"

@@ -348,12 +348,39 @@ BOOST_AUTO_TEST_CASE(identity_reset_needs_one_click_accept)
     BOOST_CHECK_EQUAL(t.pin.kr.epoch, 1U);
 
     std::string err;
-    BOOST_REQUIRE(NyxPinAcceptReset(t.pin, false, T0 + 340, err));
+    uint8_t other[32];
+    NyxHash(t.pin.krBody, other);
+    BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, T0 + 340, err, other));
+    BOOST_CHECK(t.pin.fResetPending);
+    uint8_t shown[32];
+    NyxHash(r.Serialize(), shown);
+    BOOST_REQUIRE(NyxPinAcceptReset(t.pin, false, T0 + 340, err, shown));
     BOOST_CHECK_EQUAL(t.pin.kr.epoch, 2U);
     BOOST_CHECK_EQUAL(t.pin.devices.size(), 1U);
     BOOST_CHECK(NyxPinCanSend(t.pin));
     BOOST_CHECK(NyxSafetyNumber(t.o.addr, t.pin.kr.epoch, t.pin.devices) != sn1);
     BOOST_CHECK(!NyxPinAcceptReset(t.pin, false, T0 + 340, err));
+}
+
+BOOST_AUTO_TEST_CASE(pairing_code_binds_request)
+{
+    TwoDevices t;
+    const NyxOwnDevice& d = t.o.devs[0];
+    std::vector<unsigned char> req(1, d.mode);
+    req.insert(req.end(), d.deviceId, d.deviceId + 16);
+    req.insert(req.end(), d.ik, d.ik + 32);
+    req.insert(req.end(), d.dsaPk.begin(), d.dsaPk.end());
+    const std::string code = NyxPairingCode(req);
+    BOOST_CHECK_EQUAL(code.size(), 48U);
+    BOOST_CHECK_EQUAL(code, NyxPairingCode(req));
+    std::vector<unsigned char> sub = req;
+    sub[20] ^= 1;
+    BOOST_CHECK(NyxPairingCode(sub) != code);
+    sub = req;
+    sub.back() ^= 1;
+    BOOST_CHECK(NyxPairingCode(sub) != code);
+    sub.pop_back();
+    BOOST_CHECK(NyxPairingCode(sub).empty());
 }
 
 BOOST_AUTO_TEST_CASE(downgrade_refused_after_pq)

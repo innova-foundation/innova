@@ -34,11 +34,15 @@ bool NyxIdKeyringReset(const std::string& addr, uint8_t mode, json_spirit::Objec
 bool NyxIdKeyringConfirm(const std::string& addr, json_spirit::Object& out, std::string& sError);
 bool NyxIdDevices(const std::string& addr, json_spirit::Array& out, std::string& sError);
 bool NyxIdPairRequest(const std::string& addr, uint8_t mode, json_spirit::Object& out, std::string& sError);
-bool NyxIdApprove(const std::string& addr, const std::string& requestHex, json_spirit::Object& out, std::string& sError);
+// Code shown on both devices: device id + 8 bytes of H(ik || dsa pk). Empty if the request is malformed.
+std::string NyxPairingCode(const std::vector<unsigned char>& req);
+bool NyxIdApprove(const std::string& addr, const std::string& requestHex, const std::string& expectCode,
+                  json_spirit::Object& out, std::string& sError);
 bool NyxIdInstall(const std::string& addr, const std::string& certHex, json_spirit::Object& out, std::string& sError);
 bool NyxIdRevoke(const std::string& addr, const std::string& deviceIdHex, json_spirit::Object& out, std::string& sError);
 bool NyxIdContact(const std::string& addr, json_spirit::Object& out, std::string& sError);
-bool NyxIdAcceptReset(const std::string& addr, bool fAllowDowngrade, json_spirit::Object& out, std::string& sError);
+bool NyxIdAcceptReset(const std::string& addr, const std::string& resetHashHex, bool fAllowDowngrade,
+                      json_spirit::Object& out, std::string& sError);
 
 
 // 1:1 sessions.

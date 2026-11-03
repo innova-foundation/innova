@@ -84,8 +84,14 @@ echo "$OUT" | grep -q '"pinned" : true' && echo "$OUT" | grep -q '"pq_seen" : tr
 SN1=$(echo "$OUT" | field safety_number)
 
 echo "=== second device by pairing ==="
-REQ=$(RPC 1 nyx device pair "$ADDR" | field request)
-CERT=$(RPC 0 nyx device approve "$ADDR" "$REQ" | field cert)
+PAIR=$(RPC 1 nyx device pair "$ADDR")
+REQ=$(echo "$PAIR" | field request)
+CODE=$(echo "$PAIR" | field pairing_code)
+[ "$(RPC 0 nyx device code "$REQ" | field pairing_code)" = "$CODE" ] && pass "approver derives the new device's code" \
+    || fail "pairing code mismatch"
+OUT=$(RPC 0 nyx device approve "$ADDR" "$REQ" 00 2>&1)
+echo "$OUT" | grep -q "Pairing code does not match" && pass "approve refuses a wrong code" || fail "wrong code: $OUT"
+CERT=$(RPC 0 nyx device approve "$ADDR" "$REQ" "$CODE" | field cert)
 [ -n "$CERT" ] || fail "approve returned no cert"
 RPC 1 nyx device install "$ADDR" "$CERT" | grep -q '"device"' || fail "install failed"
 OUT=$(contact_until '"seq" : 2')
@@ -122,7 +128,11 @@ echo "$OUT" | grep -q '"epoch" : 2' || fail "reset: $OUT"
 OUT=$(contact_until '"reset_pending" : true')
 echo "$OUT" | grep -q '"can_send" : false' && echo "$OUT" | grep -q "stolen wallet key" \
     && echo "$OUT" | grep -q '"new_safety_number"' && pass "reset held behind a warning" || fail "reset warning: $OUT"
-OUT=$(RPC 2 nyx keyring accept "$ADDR")
+RHASH=$(echo "$OUT" | grep -A8 '"reset" :' | field keyring_hash)
+OLDH=$(echo "$OUT" | field keyring_hash)
+OUT=$(RPC 2 nyx keyring accept "$ADDR" "$OLDH" 2>&1)
+echo "$OUT" | grep -q "not the one shown" && pass "accept refuses a reset other than the one shown" || fail "wrong hash: $OUT"
+OUT=$(RPC 2 nyx keyring accept "$ADDR" "$RHASH")
 echo "$OUT" | grep -q '"epoch" : 2' && echo "$OUT" | grep -q '"can_send" : true' \
     && pass "one-click accept pinned epoch 2" || fail "accept: $OUT"
 SN2=$(echo "$OUT" | field safety_number)
