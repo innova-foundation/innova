@@ -6240,7 +6240,8 @@ static bool NyxPoBodyFromParts(const std::vector<std::vector<unsigned char> >& v
             return false;
         body.insert(body.end(), f.pBody, f.pBody + f.nBody);
     }
-    return !body.empty() && NyxPoParse(&body[0], body.size(), info) == 0;
+    NyxSenderAuth auth;
+    return NyxUnwrapSenderAuth(body, auth) && NyxPoParse(&body[0], body.size(), info) == 0;
 }
 
 bool SecureMsgPoDecodeRecord(const std::string& v, NyxPoStore::Record& rec)
@@ -6742,7 +6743,14 @@ int SecureMsgV2SendPrivate(const std::string& addressTo, const std::vector<unsig
         sError = "Body must be 1.." + boost::lexical_cast<std::string>(nNyxMaxParts * NYX_PART_BODY_MAX) + " bytes.";
         return 1;
     }
-    if (NyxPoIsPublicType(body[0]))
+    std::vector<unsigned char> inner = body;
+    NyxSenderAuth auth;
+    if (!NyxUnwrapSenderAuth(inner, auth))
+    {
+        sError = "Malformed sender auth slot.";
+        return 1;
+    }
+    if (NyxPoIsPublicType(inner[0]))
     {
         sError = "Public body types cannot be sent privately.";
         return 1;
@@ -6803,7 +6811,9 @@ int SecureMsgV2PublishPublic(const std::vector<unsigned char>& body, std::string
         return 1;
     }
     NyxPoInfo info;
-    if (body.empty() || NyxPoParse(&body[0], body.size(), info) != 0)
+    std::vector<unsigned char> inner = body;
+    NyxSenderAuth auth;
+    if (!NyxUnwrapSenderAuth(inner, auth) || NyxPoParse(&inner[0], inner.size(), info) != 0)
     {
         sError = "Body is not a well-formed public object.";
         return 1;
@@ -6917,6 +6927,29 @@ void SecureMsgV2Progress(std::vector<NyxSetProgress>& vPriv, std::vector<NyxSetP
 static int NyxPoVerifyTestOk(const std::vector<uint8_t>&)
 {
     return NYX_PO_OK;
+}
+
+NyxSenderAuthPolicy nyxSenderAuthPolicy;
+
+bool NyxLoadSenderAuthPolicy(std::string& error)
+{
+    error.clear();
+    NyxSenderAuthPolicy policy;
+    int64_t minimum, limit;
+    const std::string topics = GetArg("-nyxauthtopics", "public-bundles");
+    if (!ParseInt64(GetArg("-nyxauthminvalue", "100000000"), &minimum) || minimum < 0
+        || !ParseInt64(GetArg("-nyxauthperepoch", "100"), &limit) || limit < 1 || limit > UINT32_MAX
+        || (topics != "public-bundles" && topics != "open-posting"))
+    {
+        error = "Invalid Nyx sender auth policy: minvalue >= 0, perepoch 1..4294967295, "
+                "topics public-bundles or open-posting";
+        return false;
+    }
+    policy.minNoteValue = minimum;
+    policy.perEpochLimit = (uint32_t)limit;
+    policy.requireOpenPosting = topics == "open-posting";
+    nyxSenderAuthPolicy = policy;
+    return true;
 }
 
 static void SecureMsgV2Init()

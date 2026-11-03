@@ -1534,4 +1534,164 @@ BOOST_AUTO_TEST_CASE(contact_lookup_of_unpinned_address)
     NyxIdForget();
 }
 
+BOOST_AUTO_TEST_CASE(sender_auth_wire)
+{
+    const std::vector<uint8_t> original = Body(5000);
+    NyxSenderAuth auth;
+    auth.proofType = 65535;
+    auth.proof.assign(NYX_SENDER_AUTH_MAX, 0xa5);
+    std::vector<uint8_t> wrapped;
+    BOOST_REQUIRE(NyxWrapSenderAuth(original, auth, wrapped));
+    BOOST_CHECK_EQUAL(wrapped[0], NYX_BODY_SENDER_AUTH);
+    BOOST_CHECK_EQUAL(wrapped[1], NYX_SENDER_AUTH_VERSION);
+    const std::vector<std::vector<uint8_t> > frames = Split(wrapped);
+    NyxReassembler pool(NYX_POOL_PRIVATE);
+    std::vector<uint8_t> body;
+    NyxSenderAuth parsed;
+    for (size_t i = 0; i < frames.size(); ++i)
+    {
+        const NyxAddResult r = pool.Add("a", Parse(frames[i]), 1, body, NULL, NULL, &parsed);
+        BOOST_CHECK_EQUAL(r, i + 1 == frames.size() ? NYX_RA_COMPLETE : NYX_RA_STORED);
+    }
+    BOOST_CHECK(body == original);
+    BOOST_CHECK_EQUAL(parsed.proofType, auth.proofType);
+    BOOST_CHECK(parsed.proof == auth.proof);
+    BOOST_CHECK(!NyxVerifySenderAuth(parsed, NyxSenderAuthContext(), NyxSenderAuthPolicy()));
+    BOOST_CHECK(!NyxFindSenderAuthProofType(0));
+    BOOST_CHECK(!NyxFindSenderAuthProofType(1));
+    BOOST_CHECK(!NyxFindSenderAuthProofType(65535));
+
+    // Unknown slot versions remain structurally readable and unauthenticated.
+    wrapped[1] = 255;
+    BOOST_REQUIRE(NyxUnwrapSenderAuth(wrapped, parsed));
+    BOOST_CHECK(wrapped == original);
+    BOOST_CHECK(!NyxVerifySenderAuth(parsed, NyxSenderAuthContext(), NyxSenderAuthPolicy()));
+    body = original;
+    BOOST_REQUIRE(NyxUnwrapSenderAuth(body, parsed));
+    BOOST_CHECK(body == original);
+    BOOST_CHECK(parsed.proof.empty());
+    BOOST_CHECK(!NyxVerifySenderAuth(parsed, NyxSenderAuthContext(), NyxSenderAuthPolicy()));
+}
+
+BOOST_AUTO_TEST_CASE(sender_auth_public_object_record)
+{
+    const std::vector<uint8_t> original = Bundle(23, true, 1);
+    NyxSenderAuth auth;
+    auth.proofType = 1;
+    auth.proof.assign(32, 0x42);
+    std::vector<uint8_t> wrapped;
+    BOOST_REQUIRE(NyxWrapSenderAuth(original, auth, wrapped));
+    const std::vector<std::vector<uint8_t> > frames = Split(wrapped);
+    const int64_t seen = 1;
+    std::string record((const char*)&seen, sizeof(seen));
+    record.push_back((char)frames.size());
+    for (size_t i = 0; i < frames.size(); ++i)
+    {
+        std::vector<uint8_t> raw(SMSG_HDR_LEN, 0);
+        raw.insert(raw.end(), frames[i].begin(), frames[i].end());
+        const uint32_t n = (uint32_t)raw.size();
+        record.append((const char*)&n, sizeof(n));
+        record.append((const char*)&raw[0], raw.size());
+    }
+    NyxPoStore::Record parsed;
+    BOOST_REQUIRE(SecureMsgPoDecodeRecord(record, parsed));
+    BOOST_CHECK_EQUAL(parsed.info.type, NYX_PO_BUNDLE);
+    BOOST_CHECK_EQUAL(parsed.info.addrHash[0], 23);
+    V2Guard guard(true);
+    std::string id, error;
+    BOOST_CHECK(SecureMsgV2SendPrivate("", wrapped, id, error) != 0);
+    BOOST_CHECK_EQUAL(error, "Public body types cannot be sent privately.");
+}
+
+BOOST_AUTO_TEST_CASE(sender_auth_bounds)
+{
+    NyxSenderAuth auth, parsed;
+    std::vector<uint8_t> wrapped, body = Body(1);
+    auth.proof.assign(NYX_SENDER_AUTH_MAX + 1, 1);
+    BOOST_CHECK(!NyxWrapSenderAuth(body, auth, wrapped));
+    auth.proof.assign(10, 1);
+    BOOST_REQUIRE(NyxWrapSenderAuth(body, auth, wrapped));
+    for (size_t n = 0; n < wrapped.size(); ++n)
+    {
+        std::vector<uint8_t> truncated(wrapped.begin(), wrapped.begin() + n);
+        BOOST_CHECK(!NyxUnwrapSenderAuth(truncated, parsed));
+    }
+    std::vector<uint8_t> nested;
+    BOOST_CHECK(!NyxWrapSenderAuth(wrapped, auth, nested));
+    std::vector<uint8_t> bad = wrapped;
+    bad[18] = NYX_BODY_SENDER_AUTH;
+    BOOST_CHECK(!NyxUnwrapSenderAuth(bad, parsed));
+    bad = wrapped;
+    PutLE32(&bad[4], NYX_SENDER_AUTH_MAX + 1);
+    BOOST_CHECK(!NyxUnwrapSenderAuth(bad, parsed));
+    NyxReassembler pool(NYX_POOL_PUBLIC);
+    const std::vector<std::vector<uint8_t> > frames = Split(bad);
+    std::vector<std::vector<uint8_t> > raw;
+    BOOST_CHECK_EQUAL(pool.Add("a", Parse(frames[0]), 1, body, &frames[0], &raw, &parsed), NYX_RA_BADAUTH);
+    BOOST_CHECK(body.empty());
+    BOOST_CHECK(raw.empty());
+    BOOST_CHECK(parsed.proof.empty());
+    BOOST_CHECK_EQUAL(pool.SetCount(), 0U);
+    body.assign(NYX_MAX_BODY, 1);
+    BOOST_CHECK(!NyxWrapSenderAuth(body, auth, wrapped));
+}
+
+BOOST_AUTO_TEST_CASE(sender_auth_policy)
+{
+    const NyxSenderAuthPolicy saved = nyxSenderAuthPolicy;
+    const std::map<std::string, std::string> savedArgs = mapArgs;
+    struct Restore
+    {
+        NyxSenderAuthPolicy policy;
+        std::map<std::string, std::string> args;
+        ~Restore() { nyxSenderAuthPolicy = policy; mapArgs = args; }
+    } restore = {saved, savedArgs};
+    mapArgs.erase("-nyxauthminvalue");
+    mapArgs.erase("-nyxauthperepoch");
+    mapArgs.erase("-nyxauthtopics");
+    std::string error;
+    BOOST_REQUIRE(NyxLoadSenderAuthPolicy(error));
+    BOOST_CHECK_EQUAL(nyxSenderAuthPolicy.minNoteValue, 100000000);
+    BOOST_CHECK_EQUAL(nyxSenderAuthPolicy.perEpochLimit, 100U);
+    BOOST_CHECK(nyxSenderAuthPolicy.Requires(NYX_AUTH_PUBLIC_BUNDLE));
+    BOOST_CHECK(!nyxSenderAuthPolicy.Requires(NYX_AUTH_OPEN_POSTING));
+    mapArgs["-nyxauthminvalue"] = "200";
+    mapArgs["-nyxauthperepoch"] = "3";
+    mapArgs["-nyxauthtopics"] = "open-posting";
+    BOOST_REQUIRE(NyxLoadSenderAuthPolicy(error));
+    BOOST_CHECK_EQUAL(nyxSenderAuthPolicy.minNoteValue, 200);
+    BOOST_CHECK_EQUAL(nyxSenderAuthPolicy.perEpochLimit, 3U);
+    BOOST_CHECK(nyxSenderAuthPolicy.Requires(NYX_AUTH_PUBLIC_BUNDLE));
+    BOOST_CHECK(nyxSenderAuthPolicy.Requires(NYX_AUTH_OPEN_POSTING));
+    mapArgs["-nyxauthperepoch"] = "0";
+    BOOST_CHECK(!NyxLoadSenderAuthPolicy(error));
+    mapArgs["-nyxauthperepoch"] = "4294967296";
+    BOOST_CHECK(!NyxLoadSenderAuthPolicy(error));
+    mapArgs["-nyxauthperepoch"] = "3";
+    mapArgs["-nyxauthminvalue"] = "-1";
+    BOOST_CHECK(!NyxLoadSenderAuthPolicy(error));
+    mapArgs["-nyxauthminvalue"] = "garbage";
+    BOOST_CHECK(!NyxLoadSenderAuthPolicy(error));
+    mapArgs["-nyxauthminvalue"] = "200";
+    mapArgs["-nyxauthtopics"] = "unknown";
+    BOOST_CHECK(!NyxLoadSenderAuthPolicy(error));
+    BOOST_CHECK_EQUAL(nyxSenderAuthPolicy.perEpochLimit, 3U);
+}
+
+BOOST_AUTO_TEST_CASE(sender_auth_domain_separation)
+{
+    // vote_tag_base(0), pinned in Rust hash_to_point.rs; identical epoch input.
+    const uint8_t voteBase[32] = {
+        0xb7, 0x28, 0xc4, 0xc3, 0xdd, 0x7e, 0x4c, 0x90, 0xc4, 0x5e, 0x97, 0xe9, 0x76, 0x2f,
+        0x8e, 0x7c, 0xf6, 0x6f, 0x6a, 0xf7, 0x0b, 0x4c, 0xb3, 0xa2, 0x72, 0x4b, 0x41, 0x13,
+        0xc7, 0xe3, 0xc7, 0x13
+    };
+    BOOST_CHECK(std::string(NYX_MESSAGE_AUTH_TAG_BASE_DOMAIN) != "Innova/IV5/Vote/TagBase/v1");
+    uint8_t messageBase[32], nextBase[32];
+    NyxMessageAuthTagBase(0, messageBase);
+    NyxMessageAuthTagBase(1, nextBase);
+    BOOST_CHECK(memcmp(messageBase, voteBase, 32) != 0);
+    BOOST_CHECK(memcmp(messageBase, nextBase, 32) != 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
