@@ -17518,6 +17518,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             {
                 for (const uint256& hashMissing : vMissingDAGParents)
                     pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+                // Headers toward the merge parent bring its side branch as one forward run.
+                RequestOrphanAncestry(pfrom, pindexBest, vMissingDAGParents[0], false);
             }
             return true;
         }
@@ -17549,7 +17551,9 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             const bool fBehind = IsInitialBlockDownload() ||
                                  nPeerHeight > nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER;
             bool fAhead = false;
-            if (fBehind && !mapOrphanBlocks.count(pblock->hashPrevBlock))
+            // A gap block was asked for by hash and parks; its parent becomes the next gap.
+            if (fBehind && !mapOrphanBlocks.count(pblock->hashPrevBlock) &&
+                !IsOrphanGapHashForPeer(pfrom->GetId(), hash))
             {
                 LOCK(cs_mapAlreadyAskedFor);
                 fAhead = !mapAlreadyAskedFor.count(CInv(MSG_BLOCK, pblock->hashPrevBlock));
@@ -17558,7 +17562,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
             }
             if (fAhead)
             {
-                pfrom->PushGetBlocks(pindexBest, uint256(0));
+                if (!pfrom->HeaderFetchActive())
+                    pfrom->PushGetBlocks(pindexBest, uint256(0));
                 return error("ProcessBlock() : %s is ahead of the sync front, not parked", hash.ToString().substr(0,20).c_str());
             }
         }
@@ -18627,6 +18632,101 @@ bool HeaderForksBelowCheckpoint(int nHeaderHeight, int nBestHeight, int nCheckpo
     return nCheckpointHeight > 0 && nBestHeight >= nCheckpointHeight && nHeaderHeight <= nCheckpointHeight;
 }
 
+bool HeadersRequestOpen(bool fOutstanding, int64_t nSent, int64_t nNow)
+{
+    return fOutstanding && nNow - nSent <= HEADERS_REPLY_WAIT;
+}
+
+bool HeadersRequestUnanswered(bool fOutstanding, int64_t nSent, int64_t nNow)
+{
+    return fOutstanding && nNow - nSent > HEADERS_REPLY_WAIT;
+}
+
+bool ShouldExtendHeaderFetch(size_t nQueued, size_t nNext, int nTailHeight, int nPeerHeight,
+                             bool fRequestOpen, int64_t nLastSent, int64_t nNow)
+{
+    if (fRequestOpen || nQueued == 0 || nPeerHeight <= nTailHeight)
+        return false;
+    // At most once a second, so replies that add nothing do not spin.
+    if (nNow - nLastSent < 1)
+        return false;
+    const size_t nLeft = nNext < nQueued ? nQueued - nNext : 0;
+    return nLeft < HEADER_FETCH_REFILL;
+}
+
+bool MergeHeaderFetchRun(std::vector<uint256>& vQueue, size_t& nNext, int& nTailHeight,
+                         const uint256& hashRunParent, bool fParentIndexed,
+                         const std::vector<uint256>& vRun, int nRunTailHeight)
+{
+    if (vRun.empty())
+        return true;
+    if (!vQueue.empty() && hashRunParent == vQueue.back())
+    {
+        if (vQueue.size() - std::min(nNext, vQueue.size()) + vRun.size() > HEADER_FETCH_MAX)
+            return false;
+        vQueue.insert(vQueue.end(), vRun.begin(), vRun.end());
+    }
+    else if (nNext >= vQueue.size() || (fParentIndexed && nRunTailHeight > nTailHeight))
+    {
+        // A run from the index reaching past the tail is the peer's current chain and replaces
+        // an unlinked queue; a shorter one, such as a side branch, leaves it in place.
+        if (vRun.size() > HEADER_FETCH_MAX)
+            return false;
+        vQueue = vRun;
+        nNext = 0;
+    }
+    else
+        return false;
+    nTailHeight = nRunTailHeight;
+    if (nNext >= HEADER_FETCH_COMPACT)
+    {
+        vQueue.erase(vQueue.begin(), vQueue.begin() + nNext);
+        nNext = 0;
+    }
+    return true;
+}
+
+void ReleaseExpiredBlockRequests(CNode* pnode)
+{
+    if (pnode->vExpiredBlockRequests.empty())
+        return;
+    LOCK(cs_mapAlreadyAskedFor);
+    for (const std::pair<uint256, int64_t>& expired : pnode->vExpiredBlockRequests)
+    {
+        std::map<CInv, int64_t>::iterator mi = mapAlreadyAskedFor.find(CInv(MSG_BLOCK, expired.first));
+        // Only this peer's own request: a later ask by another peer keeps its entry.
+        if (mi != mapAlreadyAskedFor.end() && mi->second < (expired.second + 1) * 1000000)
+            mapAlreadyAskedFor.erase(mi);
+    }
+    pnode->vExpiredBlockRequests.clear();
+}
+
+void PruneStaleBlockAskRecords(int64_t nNowUs)
+{
+    const int64_t nTimeoutUs = CNode::BlockInFlightTimeout() * 1000000;
+    const int64_t nCutoff = nNowUs - nTimeoutUs;
+    // Asks pushed further ahead than one timeout are repeat announcements, not live requests.
+    const int64_t nCeiling = nNowUs + nTimeoutUs;
+    LOCK(cs_mapAlreadyAskedFor);
+    for (std::map<CInv, int64_t>::iterator it = mapAlreadyAskedFor.begin(); it != mapAlreadyAskedFor.end(); )
+    {
+        if (it->first.type == MSG_BLOCK && (it->second < nCutoff || it->second > nCeiling))
+            mapAlreadyAskedFor.erase(it++);
+        else
+            ++it;
+    }
+}
+
+void CNode::PushGetHeaders(const CBlockLocator& locator, const uint256& hashStop)
+{
+    const int64_t nNow = GetTime();
+    if (!fGetHeadersOutstanding)
+        nGetHeadersFirstSent = nNow;
+    fGetHeadersOutstanding = true;
+    nGetHeadersSent = nNow;
+    PushMessage("getheaders", locator, hashStop);
+}
+
 // Header hashes and PoW verdicts, computed without cs_main. Legacy PoS headers carry nNonce == 0,
 // so whether the verdict applies is decided under the lock, where the parent height is known.
 void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
@@ -18757,8 +18857,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (!pfrom->fClient && !pfrom->fOneShot &&
             (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)))
         {
-            pfrom->PushGetBlocks(pindexBest, uint256(0));
-            pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
+            pfrom->PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
         }
 
         pfrom->fSuccessfullyConnected = true;
@@ -18979,7 +19078,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             else if (inv.type == MSG_BLOCK && mapOrphanBlocks.count(inv.hash)) {
                 pfrom->PushGetBlocks(pindexBest, GetOrphanRoot(mapOrphanBlocks[inv.hash].pblock));
 				//PushGetBlocks(pfrom, pindexBest, GetOrphanRoot(mapOrphanBlocks[inv.hash]));
-            } else if (nInv == nLastBlock) {
+            } else if (nInv == nLastBlock && !pfrom->HeaderFetchActive()) {
                 // In case we are on a very long side-chain, it is possible that we already have
                 // the last block in an inv bundle sent in response to getblocks. Try to detect
                 // this situation and push another getblocks to continue.
@@ -19184,6 +19283,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     {
         std::vector<CBlock> vHeaders;
         vRecv >> vHeaders;
+        pfrom->fGetHeadersOutstanding = false;
 
         if (vHeaders.empty())
             return true;
@@ -19215,6 +19315,13 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         const bool fFillPeer = !fSPVMode && IsOrphanGapGatedPeer(pfrom->GetId());
         std::vector<uint256> vFill;
         bool fFillOpen = fFillPeer;
+        // For an ungated peer, the header-linked run rooted in the index or at the tail of its
+        // fetch queue. It becomes or extends the queue SendMessages fetches from.
+        const bool fQueuePeer = !fSPVMode && !fFillPeer;
+        std::vector<uint256> vRun;
+        uint256 hashRunParent;
+        int nRunTailHeight = -1;
+        bool fRunOpen = fQueuePeer;
         for (size_t nHeader = 0; nHeader < vHeaders.size(); nHeader++)
         {
             const CBlock& header = vHeaders[nHeader];
@@ -19241,12 +19348,26 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             {
                 nParentHeight = nPrevHeaderHeight;
             }
+            else if (!fHavePrevHeader && fQueuePeer && !pfrom->vHeaderFetch.empty() &&
+                     header.hashPrevBlock == pfrom->vHeaderFetch.back())
+            {
+                nParentHeight = pfrom->nHeaderFetchTailHeight;
+            }
             else
             {
                 if (fDebug) printf("Header %s has unknown parent %s, waiting for in-flight blocks\n",
                        hash.ToString().substr(0,20).c_str(),
                        header.hashPrevBlock.ToString().substr(0,20).c_str());
-                pfrom->PushGetBlocks(pindexBest, uint256(0));
+                if (fQueuePeer && !pfrom->vHeaderFetch.empty())
+                {
+                    // A continuation that no longer links: restart from this node's chain.
+                    pfrom->vHeaderFetch.clear();
+                    pfrom->nHeaderFetchNext = 0;
+                    pfrom->nHeaderFetchTailHeight = -1;
+                    pfrom->PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
+                }
+                else
+                    pfrom->PushGetBlocks(pindexBest, uint256(0));
                 break;
             }
 
@@ -19332,6 +19453,24 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     else if (!vFill.empty())
                         fFillOpen = false;
                 }
+                // The window part is also asked directly, as before. The run ends at a held orphan, as the window ask does.
+                if (fRunOpen)
+                {
+                    if (fForwardOfHeldOrphan || mapOrphanBlocks.count(hash))
+                        fRunOpen = false;
+                    else if (vRun.empty() ? (pindexPrev != NULL ||
+                                             (!pfrom->vHeaderFetch.empty() &&
+                                              header.hashPrevBlock == pfrom->vHeaderFetch.back()))
+                                          : header.hashPrevBlock == vRun.back())
+                    {
+                        if (vRun.empty())
+                            hashRunParent = header.hashPrevBlock;
+                        vRun.push_back(hash);
+                        nRunTailHeight = nHeaderHeight;
+                    }
+                    else if (!vRun.empty())
+                        fRunOpen = false;
+                }
                 if (!fForwardOfHeldOrphan && !mapOrphanBlocks.count(hash) &&
                     nHeaderHeight <= nBestHeight + (int)MAX_BLOCKS_IN_FLIGHT_PER_PEER)
                     pfrom->AskFor(CInv(MSG_BLOCK, hash));
@@ -19343,6 +19482,19 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             nPrevHeaderHeight = nHeaderHeight;
             fHavePrevHeader = true;
         }
+
+        if (!vRun.empty() &&
+            !MergeHeaderFetchRun(pfrom->vHeaderFetch, pfrom->nHeaderFetchNext,
+                                 pfrom->nHeaderFetchTailHeight, hashRunParent,
+                                 mapBlockIndex.count(hashRunParent) > 0, vRun, nRunTailHeight))
+        {
+            if (fDebug)
+                printf("header fetch: run of %u not linked to the queue peer=%d\n",
+                       (unsigned int)vRun.size(), (int)pfrom->GetId());
+        }
+        else if (!vRun.empty() && fDebug)
+            printf("header fetch: %u queued to height %d peer=%d\n", (unsigned int)vRun.size(),
+                   pfrom->nHeaderFetchTailHeight, (int)pfrom->GetId());
 
         if (!vFill.empty())
         {
@@ -19529,17 +19681,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         // Chain sync forward after accepting a new block, bounded so duplicate
         // orphan/header churn cannot amplify getblocks/getheaders loops.
-        if (fAccepted && pfrom->ShouldRequestBlockCatchup())
+        // The header queue extends itself; otherwise headers are asked, getblocks only when
+        // the last getheaders went unanswered.
+        if (fAccepted && !pfrom->HeaderFetchActive() && pfrom->ShouldRequestBlockCatchup())
         {
-            pfrom->PushGetBlocks(pindexBest, uint256(0));
-            if (pfrom->fPreferHeaders)
-                pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
+            const int64_t nCatchupNow = GetTime();
+            if (HeadersRequestUnanswered(pfrom->fGetHeadersOutstanding, pfrom->nGetHeadersFirstSent, nCatchupNow))
+                pfrom->PushGetBlocks(pindexBest, uint256(0));
+            else if (!HeadersRequestOpen(pfrom->fGetHeadersOutstanding, pfrom->nGetHeadersSent, nCatchupNow))
+                pfrom->PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
         }
 
         if (fSecMsgEnabled)
             SecureMsgScanBlock(block);
 
-        if (IsInitialBlockDownload() && pfrom->nExpectedBatchSize > 0)
+        if (IsInitialBlockDownload() && pfrom->nExpectedBatchSize > 0 && !pfrom->HeaderFetchActive())
         {
             pfrom->nBlocksReceivedInBatch++;
 
@@ -20146,28 +20302,33 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         {
             mapLastStallRecovery[pto->addrName] = nNow;
             pto->nLastBlockRecv = nNow;
-            {
-                LOCK(cs_mapAlreadyAskedFor);
-                for (auto it = mapAlreadyAskedFor.begin(); it != mapAlreadyAskedFor.end(); )
-                {
-                    if (it->first.type == MSG_BLOCK)
-                        it = mapAlreadyAskedFor.erase(it);
-                    else
-                        ++it;
-                }
-            }
+            // Only this peer's stale requests are released; other peers keep theirs. Records past
+            // the in-flight timeout belong to no live request and are dropped.
+            pto->ExpireBlockInFlight(nNow, 15);
+            ReleaseExpiredBlockRequests(pto);
+            PruneStaleBlockAskRecords(nNow * 1000000);
+            const bool fHeadersUnanswered =
+                HeadersRequestUnanswered(pto->fGetHeadersOutstanding, pto->nGetHeadersFirstSent, nNow);
+            const bool fNoProgress = pto->nStallRecoveryHeight == nHeight;
+            pto->nStallRecoveryHeight = nHeight;
             if (pBest != NULL)
             {
                 if (fWeAhead)
                     PushBlockAnnouncement(pto, pBest->GetBlockHeader(), true);
-                else
+                else if (fHeadersUnanswered || fNoProgress)
                     pto->PushGetBlocks(pBest, uint256(0));
             }
 
-            // getblocks cannot recover a lost window (served invs are not re-offered); headers can.
-            // A peer whose best block is off this node's main chain is asked the same way.
-            if ((fPeerAhead || fPeerOffChain) && pBest != NULL && pto->setBlocksInFlight.empty())
-                pto->PushMessage("getheaders", CBlockLocator(pBest), uint256(0));
+            // Headers are the fetch source: the queue is rebuilt from this node's chain. A peer
+            // whose best block is off this node's main chain is asked the same way.
+            if ((fPeerAhead || fPeerOffChain) && pBest != NULL &&
+                !HeadersRequestOpen(pto->fGetHeadersOutstanding, pto->nGetHeadersSent, nNow))
+            {
+                pto->vHeaderFetch.clear();
+                pto->nHeaderFetchNext = 0;
+                pto->nHeaderFetchTailHeight = -1;
+                pto->PushGetHeaders(CBlockLocator(pBest), uint256(0));
+            }
 
             // A gated peer is re-asked only for the roots under orphans it delivered, bounded by
             // one in-flight window.
@@ -20190,7 +20351,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             // Equal height on a different chain: ask for headers from this node's locator, with
             // the same throttle and in-flight gate as above.
             mapLastStallRecovery[pto->addrName] = nNow;
-            pto->PushMessage("getheaders", CBlockLocator(pBest), uint256(0));
+            pto->PushGetHeaders(CBlockLocator(pBest), uint256(0));
             if (fDebug)
                 printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds reason=peer-off-chain in_flight=0\n",
                        pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock);
@@ -20206,7 +20367,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     //
     if (pto->fStartSync && !fImporting && !fReindex) {
         pto->fStartSync = false;
-        pto->PushGetBlocks(pindexBest, uint256(0));
+        if (!HeadersRequestOpen(pto->fGetHeadersOutstanding, pto->nGetHeadersSent, GetTime()))
+            pto->PushGetHeaders(CBlockLocator(pindexBest), uint256(0));
     }
 
     {
@@ -20378,6 +20540,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         vector<CInv> vGetData;
         int64_t nNow = GetTime() * 1000000;
         pto->ExpireBlockInFlight();
+        ReleaseExpiredBlockRequests(pto);
         // While this peer holds an orphan whose ancestors are being fetched, ask it only for
         // those ancestors. Deferred entries keep their place. The gate is this peer's own entry.
         const std::vector<uint256> vOwnGap = GetOrphanGapHashesForPeer(pto->GetId());
@@ -20547,6 +20710,75 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             // at the front again.
             pto->nAskForScanFrom = 0;
         }
+
+        // Header-driven fetch for an ungated peer, oldest first, within the in-flight window. A
+        // block another peer was asked for within the in-flight timeout is left to that peer;
+        // the cursor moves only over blocks already held.
+        if (!fGapGated && pto->HeaderFetchActive())
+        {
+            TRY_LOCK(cs_main, lockMain);
+            if (lockMain)
+            {
+                const int64_t nAskedSince = nNow - CNode::BlockInFlightTimeout() * 1000000;
+                const size_t nEnd = std::min(pto->vHeaderFetch.size(),
+                                             pto->nHeaderFetchNext + HEADER_FETCH_LOOKAHEAD);
+                bool fPrefix = true;
+                for (size_t i = pto->nHeaderFetchNext;
+                     i < nEnd && pto->setBlocksInFlight.size() < MAX_BLOCKS_IN_FLIGHT_PER_PEER; i++)
+                {
+                    const CInv inv(MSG_BLOCK, pto->vHeaderFetch[i]);
+                    if (mapBlockIndex.count(inv.hash) || mapOrphanBlocks.count(inv.hash))
+                    {
+                        if (fPrefix)
+                            pto->nHeaderFetchNext = i + 1;
+                        continue;
+                    }
+                    fPrefix = false;
+                    if (pto->IsBlockInFlight(inv.hash) || IsOrphanBlockRequestSuppressed(inv.hash) ||
+                        IsOrphanRequestDeferred(inv.hash, nTimeNow) ||
+                        IsBlockDeclinedByPeer(pto->GetId(), inv.hash, nTimeNow))
+                        continue;
+                    {
+                        LOCK(cs_mapAlreadyAskedFor);
+                        std::map<CInv, int64_t>::iterator mi = mapAlreadyAskedFor.find(inv);
+                        // A record dated ahead of now is a scheduled ask, not a sent request.
+                        if (mi != mapAlreadyAskedFor.end() && mi->second > nAskedSince &&
+                            mi->second <= nNow)
+                            continue;
+                        if (mi == mapAlreadyAskedFor.end() && mapAlreadyAskedFor.size() >= MAX_ASKFOR_SIZE)
+                            break;
+                        mapAlreadyAskedFor[inv] = nNow;
+                    }
+                    if (fDebugNet)
+                        printf("sending getdata: %s (headers)\n", inv.ToString().c_str());
+                    vGetData.push_back(inv);
+                    pto->MarkBlockInFlight(inv.hash);
+                }
+            }
+        }
+
+        // Extend the queue from its tail before it runs dry, while the peer is ahead of it.
+        if (!fGapGated && !pto->vHeaderFetch.empty())
+        {
+            const int nPeerBest = std::max(pto->nBestKnownHeight, pto->nChainHeight);
+            const int64_t nSecs = nNow / 1000000;
+            if (ShouldExtendHeaderFetch(pto->vHeaderFetch.size(), pto->nHeaderFetchNext,
+                                        pto->nHeaderFetchTailHeight, nPeerBest,
+                                        HeadersRequestOpen(pto->fGetHeadersOutstanding,
+                                                           pto->nGetHeadersSent, nSecs),
+                                        pto->nGetHeadersSent, nSecs))
+            {
+                TRY_LOCK(cs_main, lockMain);
+                if (lockMain && pindexBest != NULL)
+                {
+                    std::vector<uint256> vHave(1, pto->vHeaderFetch.back());
+                    const CBlockLocator locBest(pindexBest);
+                    vHave.insert(vHave.end(), locBest.GetHave().begin(), locBest.GetHave().end());
+                    pto->PushGetHeaders(CBlockLocator(vHave), uint256(0));
+                }
+            }
+        }
+
         if (!vGetData.empty())
             pto->PushMessage("getdata", vGetData);
     }

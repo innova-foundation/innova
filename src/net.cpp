@@ -939,7 +939,7 @@ void CNode::copyStats(CNodeStats &stats)
     stats.hashBestKnownBlock = hashBestKnownBlock.ToString();
     X(nLastBlockRecv);
     X(nLastHeightUpdate);
-    ExpireBlockInFlight();
+    // Read only: expiry belongs to the message thread, which owns the in-flight state.
     stats.nBlocksInFlight = (int)setBlocksInFlight.size();
     stats.nAskForSize = (int)mapAskFor.size();
     X(nMisbehavior);

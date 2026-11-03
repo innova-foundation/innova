@@ -22,6 +22,7 @@
 #include "bloom.h"
 
 class CNode;
+class CBlockLocator;
 class CBlockIndex;
 extern int nBestHeight;
 
@@ -490,6 +491,21 @@ public:
     CBlockIndex* pindexAncestryFrom;
     uint256 hashAncestryStop;
 
+    // Header-linked run from an indexed block, the fetch source for an ungated peer, and the
+    // first entry not yet held. Tail height and request times drive the next getheaders.
+    std::vector<uint256> vHeaderFetch;
+    size_t nHeaderFetchNext;
+    int nHeaderFetchTailHeight;
+    int64_t nGetHeadersSent;
+    // First getheaders since the last headers reply; the getblocks fallback waits on it.
+    int64_t nGetHeadersFirstSent;
+    bool fGetHeadersOutstanding;
+    // Chain height at this peer's last stall recovery; unchanged at the next one means
+    // answered headers brought nothing, and getblocks is used as well.
+    int nStallRecoveryHeight;
+    // Requests this peer let expire, with their request time, released once per pass.
+    std::vector<std::pair<uint256, int64_t> > vExpiredBlockRequests;
+
     // getdaghdrs: open request time, exhausted flag, serve-rate bucket.
     int64_t nDAGHeadersRequestMs;
     bool fDAGHeadersExhausted;
@@ -543,6 +559,12 @@ public:
         }
         nAskForScanFrom = 0;
         nAncestryFillNext = 0;
+        nHeaderFetchNext = 0;
+        nHeaderFetchTailHeight = -1;
+        nGetHeadersSent = 0;
+        nGetHeadersFirstSent = 0;
+        fGetHeadersOutstanding = false;
+        nStallRecoveryHeight = -1;
         nDAGHeadersRequestMs = 0;
         fDAGHeadersExhausted = false;
         nDAGHeadersServeTokens = 0;
@@ -1068,13 +1090,15 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         return false;
     }
 
-    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    void ExpireBlockInFlight(int64_t nNow = GetTime(), int64_t nTimeoutIn = 0)
     {
-        const int64_t nTimeout = BlockInFlightTimeout();
+        const int64_t nTimeout = nTimeoutIn > 0 ? nTimeoutIn : BlockInFlightTimeout();
         for (std::map<uint256, int64_t>::iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); )
         {
             if (nNow - it->second > nTimeout)
             {
+                if (vExpiredBlockRequests.size() < 4 * MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                    vExpiredBlockRequests.push_back(*it);
                 setBlocksInFlight.erase(it->first);
                 it = mapBlockInFlightSince.erase(it);
             }
@@ -1103,6 +1127,13 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         setBlocksInFlight.erase(hashBlock);
         mapBlockInFlightSince.erase(hashBlock);
     }
+
+    bool HeaderFetchActive() const
+    {
+        return nHeaderFetchNext < vHeaderFetch.size();
+    }
+
+    void PushGetHeaders(const CBlockLocator& locator, const uint256& hashStop);
 
     bool ShouldRequestBlockCatchup(int64_t nMinInterval = 5)
     {

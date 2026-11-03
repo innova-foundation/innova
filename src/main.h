@@ -1534,6 +1534,25 @@ bool CollectSideBranchHeaders(const std::set<uint256>& setHave, CBlockIndex* pin
 int OrphanCountTowardCap(NodeId id, int nHeld, int64_t nNow);
 int OrphanPeerHardCeiling(int64_t nMaxEntries);
 bool HeaderForksBelowCheckpoint(int nHeaderHeight, int nBestHeight, int nCheckpointHeight);
+// Header-driven block fetch: a getheaders reply is awaited this long before getblocks is used,
+// the queue is extended below HEADER_FETCH_REFILL entries left, and holds at most HEADER_FETCH_MAX.
+static const int64_t HEADERS_REPLY_WAIT = 15;
+static const size_t HEADER_FETCH_REFILL = 1024;
+static const size_t HEADER_FETCH_MAX = 4096;
+static const size_t HEADER_FETCH_COMPACT = 2048;
+// Entries scanned past the first block not yet held, per pass.
+static const size_t HEADER_FETCH_LOOKAHEAD = 512;
+// Clears the shared ask record of the block requests a peer let expire.
+void ReleaseExpiredBlockRequests(CNode* pnode);
+// Drops block ask records older, or dated further ahead, than the in-flight timeout.
+void PruneStaleBlockAskRecords(int64_t nNowUs);
+bool HeadersRequestOpen(bool fOutstanding, int64_t nSent, int64_t nNow);
+bool HeadersRequestUnanswered(bool fOutstanding, int64_t nSent, int64_t nNow);
+bool ShouldExtendHeaderFetch(size_t nQueued, size_t nNext, int nTailHeight, int nPeerHeight,
+                             bool fRequestOpen, int64_t nLastSent, int64_t nNow);
+bool MergeHeaderFetchRun(std::vector<uint256>& vQueue, size_t& nNext, int& nTailHeight,
+                         const uint256& hashRunParent, bool fParentIndexed,
+                         const std::vector<uint256>& vRun, int nRunTailHeight);
 void PrecheckHeaders(const std::vector<CBlock>& vHeaders, std::vector<uint256>& vHashOut,
                      std::vector<char>& vPowOkOut);
 bool ScanPeersForCatchup(const std::vector<CNode*>& vPeers, int64_t nNow, int nHeight,

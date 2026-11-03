@@ -250,7 +250,7 @@ BOOST_AUTO_TEST_CASE(orphans_parked_long_ago_stop_counting_toward_the_cap)
     for (int i = 0; i < 761; i++)
     {
         const uint256 hash((uint64_t)(0x0c0000 + i));
-        mapOrphanBlocks[hash] = COrphanBlock(NULL, 100, uint256(0), i < 700 ? nNow - 120 : nNow - 5);
+        mapOrphanBlocks[hash] = COrphanBlock(NULL, 100, uint256((uint64_t)0), i < 700 ? nNow - 120 : nNow - 5);
         mapOrphanBlocksByNode[hash] = (i == 760) ? (NodeId)8 : (NodeId)7;
     }
     BOOST_CHECK_EQUAL(OrphanCountTowardCap(7, 10, nNow), 10);
@@ -398,6 +398,187 @@ BOOST_AUTO_TEST_CASE(leveldb_cache_shrinks_in_place)
     BOOST_CHECK_EQUAL(nBefore, 1000);
     BOOST_CHECK(nAfter <= 16 * 1 + 16);
     delete cache;
+}
+
+static std::vector<uint256> FetchRun(uint64_t nFirst, size_t n)
+{
+    std::vector<uint256> v;
+    for (size_t i = 0; i < n; i++)
+        v.push_back(uint256(nFirst + i));
+    return v;
+}
+
+BOOST_AUTO_TEST_CASE(header_fetch_run_appends_at_the_tail_and_replaces_from_the_index)
+{
+    std::vector<uint256> vQueue;
+    size_t nNext = 0;
+    int nTail = -1;
+    const std::vector<uint256> vFirst = FetchRun(0x5f0001ull, 2000);
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, uint256((uint64_t)7), true, vFirst, 2100));
+    BOOST_CHECK_EQUAL(vQueue.size(), 2000u);
+    BOOST_CHECK_EQUAL(nTail, 2100);
+
+    // Linked at the tail: appended, the cursor kept.
+    nNext = 10;
+    const std::vector<uint256> vNext = FetchRun(0x6f0001ull, 500);
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, vFirst.back(), false, vNext, 2600));
+    BOOST_CHECK_EQUAL(vQueue.size(), 2500u);
+    BOOST_CHECK_EQUAL(nNext, 10u);
+    BOOST_CHECK(vQueue.back() == vNext.back());
+    BOOST_CHECK_EQUAL(nTail, 2600);
+
+    // Neither linked nor rooted in the index while entries remain: refused, queue unchanged.
+    const std::vector<uint256> vLoose = FetchRun(0x7f0001ull, 5);
+    BOOST_CHECK(!MergeHeaderFetchRun(vQueue, nNext, nTail, uint256((uint64_t)9), false, vLoose, 3000));
+    BOOST_CHECK_EQUAL(vQueue.size(), 2500u);
+    BOOST_CHECK_EQUAL(nTail, 2600);
+
+    // Rooted in the index: the peer's current chain replaces the queue.
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, uint256((uint64_t)9), true, vLoose, 3000));
+    BOOST_CHECK_EQUAL(vQueue.size(), 5u);
+    BOOST_CHECK_EQUAL(nNext, 0u);
+    BOOST_CHECK_EQUAL(nTail, 3000);
+
+    // A shorter run from the index, such as a side branch, leaves the queue in place.
+    const std::vector<uint256> vSide = FetchRun(0x8f0001ull, 3);
+    BOOST_CHECK(!MergeHeaderFetchRun(vQueue, nNext, nTail, uint256((uint64_t)13), true, vSide, 2990));
+    BOOST_CHECK_EQUAL(vQueue.size(), 5u);
+    BOOST_CHECK_EQUAL(nTail, 3000);
+
+    // A drained queue takes any run.
+    nNext = vQueue.size();
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, uint256((uint64_t)11), false, vFirst, 5000));
+    BOOST_CHECK_EQUAL(vQueue.size(), 2000u);
+    BOOST_CHECK_EQUAL(nNext, 0u);
+}
+
+BOOST_AUTO_TEST_CASE(header_fetch_queue_is_bounded_and_compacted)
+{
+    std::vector<uint256> vQueue = FetchRun(0x100001ull, 2000);
+    size_t nNext = 0;
+    int nTail = 2000;
+    // A run that would put more than the cap ahead of the cursor is refused.
+    const std::vector<uint256> vMore = FetchRun(0x200001ull, 2000);
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, vQueue.back(), false, vMore, 4000));
+    const std::vector<uint256> vOver = FetchRun(0x300001ull, 2000);
+    BOOST_CHECK(!MergeHeaderFetchRun(vQueue, nNext, nTail, vQueue.back(), false, vOver, 6000));
+    BOOST_CHECK_EQUAL(vQueue.size(), 4000u);
+
+    // Held entries before the cursor are dropped once past the compaction mark.
+    nNext = 3000;
+    const uint256 hashAtCursor = vQueue[nNext];
+    BOOST_CHECK(MergeHeaderFetchRun(vQueue, nNext, nTail, vQueue.back(), false, vOver, 6000));
+    BOOST_CHECK_EQUAL(nNext, 0u);
+    BOOST_CHECK(vQueue.front() == hashAtCursor);
+    BOOST_CHECK_EQUAL(vQueue.size(), 3000u);
+    BOOST_CHECK_EQUAL(nTail, 6000);
+}
+
+BOOST_AUTO_TEST_CASE(header_fetch_extends_below_the_refill_mark_while_the_peer_is_ahead)
+{
+    const int64_t nNow = 1000000;
+    BOOST_CHECK(ShouldExtendHeaderFetch(2000, 1500, 2000, 9000, false, nNow - 5, nNow));
+    BOOST_CHECK(!ShouldExtendHeaderFetch(2000, 100, 2000, 9000, false, nNow - 5, nNow));
+    BOOST_CHECK(!ShouldExtendHeaderFetch(2000, 1500, 2000, 2000, false, nNow - 5, nNow));
+    BOOST_CHECK(!ShouldExtendHeaderFetch(2000, 1500, 2000, 9000, true, nNow - 5, nNow));
+    BOOST_CHECK(!ShouldExtendHeaderFetch(0, 0, -1, 9000, false, nNow - 5, nNow));
+    // At most once a second, drained or not.
+    BOOST_CHECK(!ShouldExtendHeaderFetch(2000, 2000, 2000, 9000, false, nNow, nNow));
+    BOOST_CHECK(ShouldExtendHeaderFetch(2000, 2000, 2000, 9000, false, nNow - 1, nNow));
+}
+
+BOOST_AUTO_TEST_CASE(getblocks_is_the_fallback_only_after_an_unanswered_getheaders)
+{
+    const int64_t nNow = 1000000;
+    BOOST_CHECK(!HeadersRequestUnanswered(false, nNow - 100, nNow));
+    BOOST_CHECK(!HeadersRequestUnanswered(true, nNow - HEADERS_REPLY_WAIT, nNow));
+    BOOST_CHECK(HeadersRequestUnanswered(true, nNow - HEADERS_REPLY_WAIT - 1, nNow));
+    BOOST_CHECK(HeadersRequestOpen(true, nNow - HEADERS_REPLY_WAIT, nNow));
+    BOOST_CHECK(!HeadersRequestOpen(true, nNow - HEADERS_REPLY_WAIT - 1, nNow));
+    BOOST_CHECK(!HeadersRequestOpen(false, nNow, nNow));
+}
+
+BOOST_AUTO_TEST_CASE(expired_requests_release_only_this_peers_ask_record)
+{
+    const int64_t nNow = GetTime();
+    Peer peer;
+    const uint256 hashOwn((uint64_t)0x5e0001ull);
+    const uint256 hashRetaken((uint64_t)0x5e0002ull);
+    const uint256 hashFresh((uint64_t)0x5e0003ull);
+    const uint256 hashOther((uint64_t)0x5e0004ull);
+    const int64_t nOld = nNow - 100;
+    peer.node.setBlocksInFlight.insert(hashOwn);
+    peer.node.mapBlockInFlightSince[hashOwn] = nOld;
+    peer.node.setBlocksInFlight.insert(hashRetaken);
+    peer.node.mapBlockInFlightSince[hashRetaken] = nOld;
+    peer.node.setBlocksInFlight.insert(hashFresh);
+    peer.node.mapBlockInFlightSince[hashFresh] = nNow;
+    {
+        LOCK(cs_mapAlreadyAskedFor);
+        mapAlreadyAskedFor[CInv(MSG_BLOCK, hashOwn)] = nOld * 1000000;
+        // Asked again by another peer after this one.
+        mapAlreadyAskedFor[CInv(MSG_BLOCK, hashRetaken)] = (nNow - 2) * 1000000;
+        mapAlreadyAskedFor[CInv(MSG_BLOCK, hashFresh)] = nNow * 1000000;
+        mapAlreadyAskedFor[CInv(MSG_BLOCK, hashOther)] = nOld * 1000000;
+    }
+    peer.node.ExpireBlockInFlight(nNow, 15);
+    BOOST_CHECK_EQUAL(peer.node.vExpiredBlockRequests.size(), 2u);
+    BOOST_CHECK(peer.node.setBlocksInFlight.count(hashFresh));
+    ReleaseExpiredBlockRequests(&peer.node);
+    BOOST_CHECK(peer.node.vExpiredBlockRequests.empty());
+    {
+        LOCK(cs_mapAlreadyAskedFor);
+        BOOST_CHECK(!mapAlreadyAskedFor.count(CInv(MSG_BLOCK, hashOwn)));
+        BOOST_CHECK(mapAlreadyAskedFor.count(CInv(MSG_BLOCK, hashRetaken)));
+        BOOST_CHECK(mapAlreadyAskedFor.count(CInv(MSG_BLOCK, hashFresh)));
+        // Another peer's stale record is not this peer's to clear.
+        BOOST_CHECK(mapAlreadyAskedFor.count(CInv(MSG_BLOCK, hashOther)));
+        mapAlreadyAskedFor.erase(CInv(MSG_BLOCK, hashRetaken));
+        mapAlreadyAskedFor.erase(CInv(MSG_BLOCK, hashFresh));
+        mapAlreadyAskedFor.erase(CInv(MSG_BLOCK, hashOther));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(stale_block_ask_records_are_pruned_and_fresh_ones_kept)
+{
+    const int64_t nNowUs = GetTime() * 1000000;
+    const int64_t nTimeoutUs = CNode::BlockInFlightTimeout() * 1000000;
+    const CInv invOld(MSG_BLOCK, uint256((uint64_t)0x5d0001ull));
+    const CInv invFresh(MSG_BLOCK, uint256((uint64_t)0x5d0002ull));
+    const CInv invLater(MSG_BLOCK, uint256((uint64_t)0x5d0003ull));
+    const CInv invTx(MSG_TX, uint256((uint64_t)0x5d0004ull));
+    const CInv invFar(MSG_BLOCK, uint256((uint64_t)0x5d0005ull));
+    {
+        LOCK(cs_mapAlreadyAskedFor);
+        mapAlreadyAskedFor[invOld] = nNowUs - nTimeoutUs - 1000000;
+        mapAlreadyAskedFor[invFresh] = nNowUs - 1000000;
+        mapAlreadyAskedFor[invLater] = nNowUs + 5 * 1000000;
+        mapAlreadyAskedFor[invFar] = nNowUs + nTimeoutUs + 1000000;
+        mapAlreadyAskedFor[invTx] = nNowUs - nTimeoutUs - 1000000;
+    }
+    PruneStaleBlockAskRecords(nNowUs);
+    LOCK(cs_mapAlreadyAskedFor);
+    BOOST_CHECK(!mapAlreadyAskedFor.count(invOld));
+    BOOST_CHECK(mapAlreadyAskedFor.count(invFresh));
+    BOOST_CHECK(mapAlreadyAskedFor.count(invLater));
+    BOOST_CHECK(!mapAlreadyAskedFor.count(invFar));
+    BOOST_CHECK(mapAlreadyAskedFor.count(invTx));
+    mapAlreadyAskedFor.erase(invFresh);
+    mapAlreadyAskedFor.erase(invLater);
+    mapAlreadyAskedFor.erase(invTx);
+}
+
+BOOST_AUTO_TEST_CASE(peer_stats_do_not_expire_in_flight_requests)
+{
+    Peer peer;
+    const uint256 hash((uint64_t)0x5d0011ull);
+    peer.node.setBlocksInFlight.insert(hash);
+    peer.node.mapBlockInFlightSince[hash] = GetTime() - 1000;
+    CNodeStats stats;
+    peer.node.copyStats(stats);
+    BOOST_CHECK_EQUAL(stats.nBlocksInFlight, 1);
+    BOOST_CHECK(peer.node.vExpiredBlockRequests.empty());
+    BOOST_CHECK(peer.node.setBlocksInFlight.count(hash));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
