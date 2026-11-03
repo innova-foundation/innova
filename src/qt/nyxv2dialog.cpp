@@ -509,6 +509,7 @@ void NyxV2Dialog::clearContact()
     resetText->clear();
     shownContact.clear();
     shownResetHash.clear();
+    resultView->clear();
 }
 
 void NyxV2Dialog::onVerifyContact()
