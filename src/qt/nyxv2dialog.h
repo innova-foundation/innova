@@ -40,6 +40,7 @@ private slots:
     void onRevoke();
     void onVerifyContact();
     void onAcceptReset();
+    void clearContact();
     void refreshThreads();
     void onThreadSelected();
     void onSend();
@@ -73,6 +74,7 @@ private:
     QLabel *resetText;
     QCheckBox *downgradeBox;
     QString shownContact;
+    QString shownResetHash;
 
     // Threads
     QListWidget *threadList;
