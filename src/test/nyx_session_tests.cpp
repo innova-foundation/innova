@@ -915,4 +915,295 @@ BOOST_AUTO_TEST_CASE(envelope_and_parsers)
     BOOST_CHECK_NE(NyxParseRatchetMsg(&short11[0], short11.size(), m), 0);
 }
 
+namespace {
+
+NyxKeyringEntry Entry(uint8_t b)
+{
+    NyxKeyringEntry e;
+    memset(e.deviceId, b, 16);
+    memset(e.certHash, b, 32);
+    return e;
+}
+
+std::string Id(uint8_t b)
+{
+    return std::string(16, (char)b);
+}
+
+// A second device of p's address, certified and listed at seq 1 next to the first.
+struct TwoDevices
+{
+    Party& a;
+    NyxOwnDevice dev2;
+    NyxPin own;
+
+    TwoDevices(Party& p) : a(p)
+    {
+        uint8_t fp[32] = {6};
+        BOOST_REQUIRE(NyxDeviceCreate(dev2, a.addr, a.dev.mode, fp));
+        NyxCert c;
+        BOOST_REQUIRE(NyxBuildCert(dev2, a.key, T0, 1, NULL, c));
+        dev2.certBody = c.Serialize();
+        NyxKeyringEntry e;
+        memcpy(e.deviceId, dev2.deviceId, 16);
+        NyxHash(dev2.certBody, e.certHash);
+        a.kr.live.push_back(e);
+        BOOST_REQUIRE(NyxBuildKeyring(a.kr, a.key, NULL));
+        a.dev.keyringBody = a.kr.Serialize();
+        dev2.keyringBody = a.dev.keyringBody;
+        a.net.keyrings.assign(1, a.dev.keyringBody);
+        a.net.certs.push_back(dev2.certBody);
+        memcpy(own.addrHash, a.addr, 20);
+        BOOST_REQUIRE(NyxPinApply(own, a.net, T0 + 5) & NYX_PIN_PINNED);
+        BOOST_REQUIRE_EQUAL(own.devices.size(), 2U);
+    }
+
+    NyxLocalSide Local2()
+    {
+        NyxLocalSide me;
+        me.dev = &dev2;
+        NyxHash(dev2.certBody, me.certHash);
+        me.epoch = a.kr.epoch;
+        me.seq = a.kr.seq;
+        me.addrKey = &a.key;
+        return me;
+    }
+
+    NyxPeerSide Side(const uint8_t dev[16])
+    {
+        const NyxPinDevice& d = own.devices[NyxId(dev)];
+        NyxPeerSide ps;
+        ps.cert = &d.cert;
+        memcpy(ps.certHash, d.certHash, 32);
+        ps.epoch = own.kr.epoch;
+        ps.seq = own.kr.seq;
+        return ps;
+    }
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(fanout_covers_live_devices_and_skips_self_revoked_and_repeats)
+{
+    NyxKeyring peer, own;
+    peer.live.push_back(Entry(1));
+    peer.live.push_back(Entry(2));
+    own.live.push_back(Entry(7));
+    own.live.push_back(Entry(8));
+    own.live.push_back(Entry(9));
+    own.revoked.push_back(Id(9));
+    std::vector<std::string> pu, ou;
+    pu.push_back(Id(1));
+    pu.push_back(Id(2));
+    pu.push_back(Id(2));
+    pu.push_back(Id(3));           // usable cert but not live
+    ou.push_back(Id(7));           // the sending device
+    ou.push_back(Id(8));
+    ou.push_back(Id(9));           // revoked
+    uint8_t selfDev[16];
+    memset(selfDev, 7, 16);
+    std::vector<NyxFanoutTarget> v = NyxFanout(peer, pu, &own, ou, selfDev);
+    BOOST_REQUIRE_EQUAL(v.size(), 3U);
+    BOOST_CHECK(!v[0].fOwn && v[0].dev == Id(1));
+    BOOST_CHECK(!v[1].fOwn && v[1].dev == Id(2));
+    BOOST_CHECK(v[2].fOwn && v[2].dev == Id(8));
+    BOOST_CHECK_EQUAL(NyxFanout(peer, pu, NULL, ou, selfDev).size(), 2U);
+
+    NyxKeyring big;
+    std::vector<std::string> bu, ou2;
+    for (int i = 0; i < 16; ++i)
+    {
+        big.live.push_back(Entry(32 + i));
+        bu.push_back(Id(32 + i));
+    }
+    NyxKeyring own2;
+    for (int i = 0; i < 16; ++i)
+    {
+        own2.live.push_back(Entry(64 + i));
+        ou2.push_back(Id(64 + i));
+    }
+    memset(selfDev, 64, 16);
+    v = NyxFanout(big, bu, &own2, ou2, selfDev);
+    BOOST_CHECK_EQUAL(v.size(), NYX_FANOUT_MAX);
+}
+
+BOOST_AUTO_TEST_CASE(sent_sync_routes_only_between_own_devices)
+{
+    uint8_t a[20], b[20];
+    memset(a, 0xaa, 20);
+    memset(b, 0xbb, 20);
+    NyxEnvelope e;
+    e.ctype = NYX_CTYPE_MSG;
+    memcpy(e.convAddr, b, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_IN);
+    memcpy(e.convAddr, a, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);     // convAddr must name the sender
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_DROP);     // no plain message between own devices
+    e.ctype = NYX_CTYPE_SENT;
+    memcpy(e.convAddr, b, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_SENT);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);     // a contact cannot inject sent records
+    memcpy(e.convAddr, a, 20);
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, a), NYX_ROUTE_DROP);
+    e.ctype = 7;
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(e, a, b), NYX_ROUTE_DROP);
+}
+
+BOOST_AUTO_TEST_CASE(own_device_session_carries_sent_sync)
+{
+    Party a(NYX_MODE_PQ, false);
+    TwoDevices td(a);
+    BOOST_REQUIRE(NyxDeviceTopUpOpks(td.dev2, T0));
+    NyxBundle b2;
+    BOOST_REQUIRE(NyxBuildBundle(td.dev2, a.key, T0, b2));
+    NyxRatchet r1;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(NyxHsInitiate(a.Local(), td.Side(td.dev2.deviceId), b2, T0 + 10, r1, err), err);
+    NyxSession s1, s2;
+    s1.Push(r1);
+
+    NyxEnvelope e;
+    e.ctype = NYX_CTYPE_SENT;
+    memset(e.logicalId, 5, 16);
+    memset(e.convAddr, 0xbb, 20);
+    e.text = "copy";
+    NyxBytes body;
+    BOOST_REQUIRE(NyxSessionSeal(s1.states[0], e.Serialize(), T0 + 20, body));
+    NyxHandshake hs;
+    BOOST_REQUIRE_EQUAL(NyxParseHandshake(&body[0], body.size(), hs), 0);
+    BOOST_CHECK(memcmp(hs.addrA, hs.addrB, 20) == 0);
+    NyxRatchet r2;
+    uint32_t opk = NYX_OPK_NONE;
+    BOOST_REQUIRE_MESSAGE(NyxHsRespond(td.Local2(), td.Side(a.dev.deviceId), hs, T0 + 30, r2, opk, err), err);
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(NyxRatchetDecrypt(r2, hs.tail, T0 + 30, pt), NYX_DR_OK);
+    NyxEnvelope got;
+    BOOST_REQUIRE(got.Parse(pt));
+    BOOST_CHECK_EQUAL(NyxRouteEnvelope(got, a.addr, r2.remoteAddr), NYX_ROUTE_SENT);
+    BOOST_CHECK_EQUAL(got.text, "copy");
+}
+
+BOOST_AUTO_TEST_CASE(copy_of_a_device_detected_by_its_sending_chain)
+{
+    Pair p;
+    NyxBytes pt;
+    BOOST_REQUIRE_EQUAL(p.ToB(p.FromA("start"), pt), NYX_DR_OK);
+    BOOST_REQUIRE_EQUAL(p.ToA(p.FromB("ack"), pt), NYX_DR_OK);
+    NyxSession clone = p.sa;
+    NyxBytes t1, c1, c2, fromB;
+    BOOST_REQUIRE(NyxRatchetEncrypt(p.sa.states[0], Pt("a"), T0 + 40, t1));
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(t1), NYX_SENT_OURS);
+    BOOST_REQUIRE(NyxRatchetEncrypt(clone.states[0], Pt("c"), T0 + 40, c1));
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(c1), NYX_SENT_OURS);   // same index as one this device sent
+    BOOST_REQUIRE(NyxRatchetEncrypt(clone.states[0], Pt("c"), T0 + 40, c2));
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(c2), NYX_SENT_COPY);
+    BOOST_REQUIRE(NyxRatchetEncrypt(p.sb.states[0], Pt("b"), T0 + 40, fromB));
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(fromB), NYX_SENT_NONE);
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(NyxBytes(NYX_TAIL_MIN + 3, 0)), NYX_SENT_NONE);
+    BOOST_CHECK_EQUAL(p.sa.SentCheck(NyxBytes(4, 0)), NYX_SENT_NONE);
+}
+
+BOOST_AUTO_TEST_CASE(own_keyring_follows_only_its_chain)
+{
+    Party a(NYX_MODE_CLASSICAL, false);
+    const NyxBytes b1 = a.dev.keyringBody;
+    uint8_t h1[32], ch[32];
+    NyxHash(b1, h1);
+    NyxHash(a.dev.certBody, ch);
+    NyxKeyring k2 = a.kr;
+    k2.seq = 2;
+    memcpy(k2.prevHash, h1, 32);
+    BOOST_REQUIRE(NyxBuildKeyring(k2, a.key, &a.dev));
+    const NyxBytes b2 = k2.Serialize();
+    uint8_t h2[32];
+    NyxHash(b2, h2);
+    NyxKeyring k3 = k2;
+    k3.seq = 3;
+    memcpy(k3.prevHash, h2, 32);
+    BOOST_REQUIRE(NyxBuildKeyring(k3, a.key, &a.dev));
+    const NyxBytes b3 = k3.Serialize();
+    std::vector<NyxBytes> net;
+    net.push_back(b3);
+    net.push_back(b1);
+    net.push_back(b2);
+    NyxBytes out;
+    BOOST_REQUIRE(NyxOwnChainNext(a.kr, h1, net, a.dev.deviceId, ch, out));
+    BOOST_CHECK(out == b3);
+
+    // A fork from seq 1 at a higher seq is not adopted from seq 2.
+    NyxKeyring f = a.kr;
+    f.seq = 4;
+    memcpy(f.prevHash, h1, 32);
+    BOOST_REQUIRE(NyxBuildKeyring(f, a.key, &a.dev));
+    std::vector<NyxBytes> forked(1, f.Serialize());
+    BOOST_CHECK(!NyxOwnChainNext(k2, h2, forked, a.dev.deviceId, ch, out));
+
+    // An epoch reset keeping this device listed is never followed.
+    NyxKeyring r = a.kr;
+    r.epoch = 2;
+    r.seq = 2;
+    memcpy(r.prevHash, h1, 32);
+    BOOST_REQUIRE(NyxBuildKeyring(r, a.key, &a.dev));
+    BOOST_CHECK(!NyxOwnChainNext(a.kr, h1, std::vector<NyxBytes>(1, r.Serialize()), a.dev.deviceId, ch, out));
+
+    // Two successors at one seq: stop.
+    NyxKeyring k2b = k2;
+    k2b.ts += 1;
+    BOOST_REQUIRE(NyxBuildKeyring(k2b, a.key, &a.dev));
+    std::vector<NyxBytes> two;
+    two.push_back(b2);
+    two.push_back(k2b.Serialize());
+    BOOST_CHECK(!NyxOwnChainNext(a.kr, h1, two, a.dev.deviceId, ch, out));
+
+    // A successor that drops this device or changes its cert stops the walk.
+    uint8_t other[32];
+    memset(other, 1, 32);
+    BOOST_CHECK(!NyxOwnChainNext(a.kr, h1, net, a.dev.deviceId, other, out));
+}
+
+BOOST_AUTO_TEST_CASE(own_copy_detection_covers_handshake_wrapped_tails_and_ignores_foreign_slots)
+{
+    Party a(NYX_MODE_PQ, false);
+    TwoDevices td(a);
+    NyxBundle b2;
+    BOOST_REQUIRE(NyxBuildBundle(td.dev2, a.key, T0, b2));
+    NyxRatchet r1;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(NyxHsInitiate(a.Local(), td.Side(td.dev2.deviceId), b2, T0 + 10, r1, err), err);
+    NyxSession s1;
+    s1.Push(r1);
+    NyxSession clone = s1;
+    NyxCert c1;
+    BOOST_REQUIRE_EQUAL(NyxParseCert(&a.dev.certBody[0], a.dev.certBody.size(), c1), 0);
+    NyxBytes m1, k1, k2;
+    BOOST_REQUIRE(NyxSessionSeal(s1.states[0], Pt("mine"), T0 + 20, m1));
+    BOOST_REQUIRE(NyxSessionSeal(clone.states[0], Pt("c1"), T0 + 20, k1));
+    BOOST_REQUIRE(NyxSessionSeal(clone.states[0], Pt("c2"), T0 + 20, k2));
+    BOOST_REQUIRE_EQUAL(m1[0], NYX_BODY_HANDSHAKE);
+    BOOST_REQUIRE_EQUAL(k2[0], NYX_BODY_HANDSHAKE);
+    BOOST_CHECK(!NyxIsOwnCopy(s1, a.addr, m1, c1));
+    BOOST_CHECK(!NyxIsOwnCopy(s1, a.addr, k1, c1));
+    BOOST_CHECK(NyxIsOwnCopy(s1, a.addr, k2, c1));
+
+    // The same slot held by another address (a contact reusing a sibling's device id) proves nothing.
+    NyxSession foreign = s1;
+    memset(foreign.states[0].remoteAddr, 0x77, 20);
+    BOOST_CHECK(!foreign.BoundTo(a.addr));
+    BOOST_CHECK(s1.BoundTo(a.addr));
+    BOOST_CHECK(!NyxIsOwnCopy(foreign, a.addr, k2, c1));
+    NyxHandshake hs;
+    BOOST_REQUIRE_EQUAL(NyxParseHandshake(&k2[0], k2.size(), hs), 0);
+    BOOST_CHECK_EQUAL(foreign.SentCheck(hs.tail, a.addr), NYX_SENT_NONE);
+    BOOST_CHECK_EQUAL(foreign.SentCheck(hs.tail), NYX_SENT_COPY);
+
+    // A handshake this state never made proves nothing: it may be one of ours evicted since.
+    NyxSession other;
+    NyxRatchet r2;
+    BOOST_REQUIRE(NyxHsInitiate(a.Local(), td.Side(td.dev2.deviceId), b2, T0 + 5, r2, err));
+    other.Push(r2);
+    NyxBytes fresh;
+    BOOST_REQUIRE(NyxSessionSeal(s1.states[0], Pt("x"), T0 + 20, fresh));
+    BOOST_CHECK(!NyxIsOwnCopy(other, a.addr, fresh, c1));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

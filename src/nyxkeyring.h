@@ -197,6 +197,10 @@ const NyxOpk* NyxDeviceOpk(const NyxOwnDevice& dev, uint32_t id);
 void NyxDeviceEraseOpk(NyxOwnDevice& dev, uint32_t id);
 bool NyxAddrRecover(const char* tag, const NyxBytes& fields, const uint8_t sig[65], CPubKey& out);
 
+/** Walks keyrings linked from own (same epoch, seq + 1, prevHash = previous body hash) and returns in out the
+ *  furthest one that still lists dev with certHash; stops at a fork. Resets and forks are never adopted. */
+bool NyxOwnChainNext(const NyxKeyring& own, const uint8_t ownHash[32], const std::vector<NyxBytes>& keyrings,
+                     const uint8_t dev[16], const uint8_t certHash[32], NyxBytes& out);
 /** Non-empty reason when the device looks cloned: host fingerprint changed, or a bundle for its id it did not publish. */
 std::string NyxCloneCheck(const NyxOwnDevice& dev, const uint8_t hostFpNow[32], const NyxBytes* pSeenBundle);
 

@@ -34,6 +34,9 @@ static const size_t NYX_TAIL_MIN = 12 + NYX_ENC_HDR_LEN + 12 + 16;
 static const size_t NYX_HS_FIXED_CLASSICAL = 230 + 8 + 65;
 static const size_t NYX_HS_FIXED_PQ = 230 + 1088 + 8 + 3309;
 static const size_t NYX_ENV_LEN = 70;                // ctype 1, logicalId 16, convAddr 20, groupId 32, flags 1
+static const uint8_t NYX_CTYPE_MSG = 0;
+static const uint8_t NYX_CTYPE_SENT = 1;             // sent-sync to the sender's own devices
+static const size_t NYX_FANOUT_MAX = 31;             // 16 recipient + 15 own devices
 
 extern const char NYX_TAG_HS[];
 
@@ -165,10 +168,60 @@ struct NyxSession
     /** New state becomes current; the oldest beyond NYX_SESSION_STATES is wiped. */
     void Push(const NyxRatchet& r);
     int FindHs(const uint8_t hsId[32]) const;
+    /** Header of tail opens under a sending header key of a state: NYX_SENT_NONE, NYX_SENT_OURS when that state
+     *  produced it (current chain, N < Ns), NYX_SENT_COPY when it did not (a copy of this device sent it). */
+    int SentCheck(const NyxBytes& tail, const uint8_t* remoteAddr = NULL) const;
+    /** True when every state belongs to remoteAddr (a device id slot is never shared across addresses). */
+    bool BoundTo(const uint8_t remoteAddr[20]) const;
     /** True when the next send must start a new handshake. */
     bool NeedsHandshake(const uint8_t localCert[32], uint32_t localEpoch, const uint8_t remoteCert[32],
                         uint32_t remoteEpoch, int64_t now) const;
 };
+
+/** Plaintext envelope carried inside every ratchet message. */
+struct NyxEnvelope
+{
+    uint8_t ctype;
+    uint8_t logicalId[16];
+    uint8_t convAddr[20];
+    uint8_t groupId[32];
+    uint8_t flags;
+    std::string text;
+    NyxEnvelope();
+    NyxBytes Serialize() const;
+    bool Parse(const NyxBytes& v);
+};
+
+enum NyxSentCheck
+{
+    NYX_SENT_NONE = 0,
+    NYX_SENT_OURS = 1,
+    NYX_SENT_COPY = 2,
+};
+
+struct NyxFanoutTarget
+{
+    bool fOwn;                  // sent-sync copy to this address's own device
+    std::string dev;            // 16-byte device id
+};
+/** Recipient devices, then this address's other devices for sent-sync: live and usable only, never the
+ *  sending device, each once, at most NYX_FANOUT_MAX. ownKr NULL sends no sync copies. */
+std::vector<NyxFanoutTarget> NyxFanout(const NyxKeyring& peerKr, const std::vector<std::string>& peerUsable,
+                                       const NyxKeyring* ownKr, const std::vector<std::string>& ownUsable,
+                                       const uint8_t selfDev[16]);
+
+enum NyxRoute
+{
+    NYX_ROUTE_DROP = 0,
+    NYX_ROUTE_IN = 1,           // from a contact: conversation = remote
+    NYX_ROUTE_SENT = 2,         // sent-sync from an own device: outgoing in conversation convAddr
+};
+/** How an opened envelope from remote to local is stored. */
+int NyxRouteEnvelope(const NyxEnvelope& env, const uint8_t local[20], const uint8_t remote[20]);
+
+/** body names this device as sender and s is its session with own device devB: true when its header opens
+ *  under a sending key of s (ratchet, or the tail of a handshake s made) but s did not produce it. */
+bool NyxIsOwnCopy(const NyxSession& s, const uint8_t local[20], const NyxBytes& body, const NyxCert& ownCert);
 
 /** Seen handshake ids -> handshake ts. Drops entries past the acceptance window; false when still full. */
 bool NyxSeenPrune(std::map<std::string, int64_t>& seen, int64_t now);
@@ -206,19 +259,5 @@ bool NyxHsRespond(const NyxLocalSide& me, const NyxPeerSide& peer, const NyxHand
 
 /** Wire body for the next message of r: 0x10 while the initiator is unacked, else 0x11. */
 bool NyxSessionSeal(NyxRatchet& r, const NyxBytes& pt, int64_t now, NyxBytes& body);
-
-/** Plaintext envelope carried inside every ratchet message. */
-struct NyxEnvelope
-{
-    uint8_t ctype;
-    uint8_t logicalId[16];
-    uint8_t convAddr[20];
-    uint8_t groupId[32];
-    uint8_t flags;
-    std::string text;
-    NyxEnvelope();
-    NyxBytes Serialize() const;
-    bool Parse(const NyxBytes& v);
-};
 
 #endif // INNOVA_NYXSESSION_H
