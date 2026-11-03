@@ -24,6 +24,76 @@ static uint32_t GetLE32(const uint8_t* p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+const char NYX_MESSAGE_AUTH_TAG_BASE_DOMAIN[] = "Innova/Nyx/MessageAuth/TagBase/v1";
+
+void NyxMessageAuthTagBase(uint64_t epoch, uint8_t out[32])
+{
+    // Opaque PQ base; never reuse the IV5 vote's curve base.
+    std::vector<uint8_t> input(NYX_MESSAGE_AUTH_TAG_BASE_DOMAIN,
+        NYX_MESSAGE_AUTH_TAG_BASE_DOMAIN + sizeof(NYX_MESSAGE_AUTH_TAG_BASE_DOMAIN) - 1);
+    for (int i = 0; i < 8; ++i)
+        input.push_back((uint8_t)(epoch >> (8 * i)));
+    NyxSha256(&input[0], input.size(), out);
+}
+
+const NyxSenderAuthProofType* NyxFindSenderAuthProofType(uint16_t)
+{
+    return NULL;
+}
+
+bool NyxVerifySenderAuth(const NyxSenderAuth& auth, const NyxSenderAuthContext& context,
+                         const NyxSenderAuthPolicy& policy)
+{
+    if (auth.version != NYX_SENDER_AUTH_VERSION || auth.proof.empty()
+        || auth.proof.size() > NYX_SENDER_AUTH_MAX || policy.minNoteValue < 0
+        || !policy.perEpochLimit || context.useIndex >= policy.perEpochLimit)
+        return false;
+    const NyxSenderAuthProofType* type = NyxFindSenderAuthProofType(auth.proofType);
+    return type && type->postQuantum && type->provesUnspent && type->verify
+        && type->verify(auth, context, policy);
+}
+
+bool NyxWrapSenderAuth(const std::vector<uint8_t>& body, const NyxSenderAuth& auth,
+                       std::vector<uint8_t>& out)
+{
+    if (body.empty() || body[0] == NYX_BODY_SENDER_AUTH || auth.proof.size() > NYX_SENDER_AUTH_MAX
+        || body.size() > NYX_MAX_BODY - 8 - auth.proof.size())
+    {
+        out.clear();
+        return false;
+    }
+    std::vector<uint8_t> v(8);
+    v[0] = NYX_BODY_SENDER_AUTH;
+    v[1] = auth.version;
+    v[2] = (uint8_t)auth.proofType;
+    v[3] = (uint8_t)(auth.proofType >> 8);
+    PutLE32(&v[4], (uint32_t)auth.proof.size());
+    v.insert(v.end(), auth.proof.begin(), auth.proof.end());
+    v.insert(v.end(), body.begin(), body.end());
+    out.swap(v);
+    return true;
+}
+
+bool NyxUnwrapSenderAuth(std::vector<uint8_t>& body, NyxSenderAuth& auth)
+{
+    auth = NyxSenderAuth();
+    if (body.empty())
+        return false;
+    if (body[0] != NYX_BODY_SENDER_AUTH)
+        return true;
+    if (body.size() < 9)
+        return false;
+    const uint32_t n = GetLE32(&body[4]);
+    if (n > NYX_SENDER_AUTH_MAX || n >= body.size() - 8
+        || body[8 + n] == NYX_BODY_SENDER_AUTH)
+        return false;
+    auth.version = body[1];
+    auth.proofType = (uint16_t)body[2] | ((uint16_t)body[3] << 8);
+    auth.proof.assign(body.begin() + 8, body.begin() + 8 + n);
+    body.erase(body.begin(), body.begin() + 8 + n);
+    return true;
+}
+
 uint32_t NyxPartLen(uint32_t totalLen, uint8_t count, uint8_t idx)
 {
     if (count == 0 || idx >= count)
@@ -156,9 +226,11 @@ bool NyxReassembler::EvictWeakest(const std::string* pOwner, const Key& keep)
 
 NyxAddResult NyxReassembler::Add(const std::string& owner, const NyxFrame& f, int64_t nNow,
                                  std::vector<uint8_t>& bodyOut, const std::vector<uint8_t>* pRaw,
-                                 std::vector<std::vector<uint8_t> >* vRawOut)
+                                 std::vector<std::vector<uint8_t> >* vRawOut, NyxSenderAuth* authOut)
 {
     bodyOut.clear();
+    if (authOut)
+        *authOut = NyxSenderAuth();
     if (vRawOut)
         vRawOut->clear();
 
@@ -235,6 +307,16 @@ NyxAddResult NyxReassembler::Add(const std::string& owner, const NyxFrame& f, in
         bodyOut.clear();
         return NYX_RA_BADHASH;
     }
+    NyxSenderAuth auth;
+    if (!NyxUnwrapSenderAuth(bodyOut, auth))
+    {
+        bodyOut.clear();
+        if (vRawOut)
+            vRawOut->clear();
+        return NYX_RA_BADAUTH;
+    }
+    if (authOut)
+        *authOut = auth;
     return NYX_RA_COMPLETE;
 }
 

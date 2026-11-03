@@ -4,6 +4,8 @@
 #ifndef INNOVA_NYXPARTS_H
 #define INNOVA_NYXPARTS_H
 
+#include "nyxauth.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -80,6 +82,7 @@ enum NyxAddResult
     NYX_RA_COMPLETE,
     NYX_RA_MISMATCH,    // part disagrees with its set; set dropped
     NYX_RA_BADHASH,     // reassembled body does not match totalHash; set dropped
+    NYX_RA_BADAUTH,     // malformed sender auth wrapper; set dropped
     NYX_RA_REFUSED,     // could not be held within the caps
 };
 
@@ -101,7 +104,8 @@ public:
 
     /** pRaw, when given, is kept with the part and returned in vRawOut on completion. */
     NyxAddResult Add(const std::string& owner, const NyxFrame& f, int64_t nNow, std::vector<uint8_t>& bodyOut,
-                     const std::vector<uint8_t>* pRaw = NULL, std::vector<std::vector<uint8_t> >* vRawOut = NULL);
+                     const std::vector<uint8_t>* pRaw = NULL, std::vector<std::vector<uint8_t> >* vRawOut = NULL,
+                     NyxSenderAuth* authOut = NULL);
     void Expire(int64_t nNow);
     void FreeOwner(const std::string& owner);
     void Clear();

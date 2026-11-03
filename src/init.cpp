@@ -869,6 +869,9 @@ std::string HelpMessage()
         "  -nosmsg                                  " + _("Force secure messaging off, overriding -smsg.") + "\n" +
         "  -debugsmsg                               " + _("Log extra debug messages.") + "\n" +
         "  -nyxv2                                   " + _("Accept and relay Nyx v2 objects to v2 peers (default: 0)") + "\n" +
+        "  -nyxauthminvalue=<n>                     " + _("Sender auth minimum unspent note value, atomic units (default: 100000000; reserved)") + "\n" +
+        "  -nyxauthperepoch=<n>                     " + _("Sender auth uses per note per epoch (default: 100; reserved)") + "\n" +
+        "  -nyxauthtopics=<scope>                   " + _("Sender auth scope: public-bundles or open-posting (default: public-bundles; reserved)") + "\n" +
         "  -nyxmaxparts=<n>                         " + _("Most parts a sent v2 message may use, 1..64 (default: 64)") + "\n" +
         "  -smsgscanchain                           " + _("Scan the block chain for public key addresses on startup.") + "\n";
 
@@ -3003,6 +3006,12 @@ bool AppInit2()
 
     // ********************************************************* Step 10.1: startup secure messaging
 
+    if (!fNoSmsg && GetBoolArg("-nyxv2", false))
+    {
+        std::string authError;
+        if (!NyxLoadSenderAuthPolicy(authError))
+            return InitError(authError);
+    }
     SecureMsgStart(fNoSmsg, GetBoolArg("-smsgscanchain"));
 
     // ********************************************************* Step 11: start node
