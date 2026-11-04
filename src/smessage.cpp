@@ -3015,7 +3015,7 @@ void SecureMsgCollectGroupThread(const std::string& gid, std::vector<NyxThreadMs
     {
         if (r.ev.rec.gid != gid || r.ev.rec.op != NYX_GOP_MSG || !seen.insert(r.ev.mid).second)
             continue;
-        if (NyxIsBlocked(r.ev.sender) || !NyxGroupMsgAllowed(st->second, r.ev.sender, r.ev.ts, r.ev.rec.epoch))
+        if (NyxIsBlocked(r.ev.sender) || !NyxGroupMsgAllowed(st->second, r.ev.sender, r.ev.ts, r.ev.rec.epoch, r.ev.rec.prev, false))
             continue;
         out.push_back(r.msg);
         mine.push_back(r.fMine);
@@ -3214,7 +3214,14 @@ int SecureMsgGroupSend(const std::string& gid, const std::string& body, const st
     }
     NyxGroupRec rec;
     rec.gid = gid;
-    rec.epoch = g.epoch;
+    NyxGroupState st;
+    if (!NyxLoadGroupState(gid, st))
+    {
+        sError = "Unknown group.";
+        return 1;
+    }
+    rec.epoch = st.epoch;
+    rec.prev = st.head;
     rec.op = NYX_GOP_MSG;
     return NyxGroupFanout(g.myAddr, g.name, body, rec, extraRecs, Others(g.members, g.myAddr), sError);
 }
