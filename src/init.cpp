@@ -834,7 +834,7 @@ std::string HelpMessage()
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestmergeset=<n>     " + _("Regtest only: mergeset acceptance activation height (an epoch's first height)") + "\n" +
         "  -regtestcnpayee=<n>     " + _("Regtest only: deterministic CN payee activation height (default: 711)") + "\n" +
-        "  -regtestcnpayeedropundo=<n> " + _("Regtest only: drop CN payee state and the newest <n> undo records at startup") + "\n" +
+        "  -regtestcnpayeedropundo=<n> " + _("Regtest only: drop the newest <n> CN payee undo records at startup (state too with -regtestcnpayeedropstate)") + "\n" +
         "  -regtestmigration=<n>    " + _("Regtest only: fee-exempt migration activation height") + "\n" +
         "  -mergesetpayee=<address> " + _("Address a merged copy of this node's blocks is paid to (default: the block's payout)") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
@@ -2420,14 +2420,14 @@ bool AppInit2()
     };
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
-    // Regtest only: drop payee state and the newest undo records, as a database
-    // synced past activation by a release without the payee rule would lack them.
+    // Regtest only: drop the newest payee undo records (and with -regtestcnpayeedropstate
+    // the state), as a database synced past activation without the payee rule lacks them.
     if (fRegTest && mapArgs.count("-regtestcnpayeedropundo"))
     {
         LOCK(cs_main);
         CTxDB txdb;
         int nDrop = (int)GetArg("-regtestcnpayeedropundo", 0);
-        txdb.EraseCNPayeeState();
+        if (GetBoolArg("-regtestcnpayeedropstate")) txdb.EraseCNPayeeState();
         for (const CBlockIndex* p = pindexBest; p && nDrop > 0; p = p->pprev, --nDrop)
             txdb.EraseCNPayeeUndo(p->GetBlockHash());
     }

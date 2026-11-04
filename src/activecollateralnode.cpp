@@ -13,12 +13,12 @@
 #include <limits>
 
 static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key,
-                                    const CPubKey& pubkey, std::string& reason)
+                                    const CPubKey& pubkey, std::string& reason,
+                                    bool* pfConfirmed = NULL)
 {
+    if (pfConfirmed) *pfConfirmed = false;
     if (!pwalletMain) { reason = "Wallet not initialized"; return false; }
     LOCK2(cs_main, pwalletMain->cs_wallet);
-    if (pwalletMain->IsLocked() || fWalletUnlockStakingOnly)
-    { reason = "Unlock the wallet for CN registration"; return false; }
     CTxDB db("r");
     CCNPayeeState state;
     if (!LoadCNPayeeState(db, pindexBest, state))
@@ -26,7 +26,11 @@ static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key
     const auto coin = state.coins.find(collateral);
     if (coin == state.coins.end())
     { reason = "CN collateral is not an unspent confirmed 25000 INN output"; return false; }
-    if (coin->second.registrationHeight >= 0 && coin->second.pubkey == pubkey) return true;
+    if (coin->second.registrationHeight >= 0 && coin->second.pubkey == pubkey)
+    {
+        if (pfConfirmed) *pfConfirmed = true;
+        return true;
+    }
 
     uint64_t sequence = coin->second.sequence;
     CPubKey pendingPubkey;
@@ -45,6 +49,9 @@ static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key
         }
     }
     if (pendingPubkey == pubkey) return true;
+    // Only a new registration needs the full unlock.
+    if (pwalletMain->IsLocked() || fWalletUnlockStakingOnly)
+    { reason = "Unlock the wallet for CN registration"; return false; }
     if (sequence == std::numeric_limits<uint64_t>::max())
     { reason = "CN registration sequence exhausted"; return false; }
 
@@ -91,6 +98,45 @@ static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key
     if (!pwalletMain->CommitTransaction(transaction, reserve))
     { reason = "CN registration broadcast failed"; return false; }
     return true;
+}
+
+// Collaterals started before registration was required, or whose attempt failed,
+// are retried until confirmed. Keys are looked up in the wallet at retry time.
+struct CCNRegistrationRetry { CKeyID keyCollateral; CPubKey pubKeyCollateralnode; };
+static CCriticalSection cs_cnRegistrationRetry;
+static std::map<COutPoint, CCNRegistrationRetry> mapCNRegistrationRetry;
+
+static void QueueCNRegistration(const COutPoint& collateral, const CPubKey& pubKeyCollateral,
+                                const CPubKey& pubKeyCollateralnode)
+{
+    LOCK(cs_cnRegistrationRetry);
+    CCNRegistrationRetry& retry = mapCNRegistrationRetry[collateral];
+    retry.keyCollateral = pubKeyCollateral.GetID();
+    retry.pubKeyCollateralnode = pubKeyCollateralnode;
+}
+
+void RetryCNRegistrations()
+{
+    if (!pwalletMain || GetCNRegistrationPolicy(nBestHeight + 1) == CN_REGISTRATION_UNUSED) return;
+    std::map<COutPoint, CCNRegistrationRetry> pending;
+    {
+        LOCK(cs_cnRegistrationRetry);
+        pending = mapCNRegistrationRetry;
+    }
+    for (const auto& entry : pending)
+    {
+        CKey key;
+        if (!pwalletMain->GetKey(entry.second.keyCollateral, key)) continue;
+        std::string reason;
+        bool fConfirmed = false;
+        if (!BroadcastCNRegistration(entry.first, key, entry.second.pubKeyCollateralnode, reason, &fConfirmed))
+            printf("RetryCNRegistrations() - %s: %s\n", entry.first.ToString().c_str(), reason.c_str());
+        if (fConfirmed)
+        {
+            LOCK(cs_cnRegistrationRetry);
+            mapCNRegistrationRetry.erase(entry.first);
+        }
+    }
 }
 
 //
@@ -463,8 +509,11 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     {
         const CNRegistrationPolicy policy = GetCNRegistrationPolicy(nBestHeight + 1);
         std::string registrationError;
+        if (FORK_HEIGHT_CN_PAYEE != PRIVACY_VNEXT_HEIGHT_UNSET)
+            QueueCNRegistration(vin.prevout, pubKeyCollateralAddress, pubKeyCollateralnode);
         if (policy != CN_REGISTRATION_UNUSED &&
-            !BroadcastCNRegistration(vin.prevout, keyCollateralAddress, pubKeyCollateralnode, registrationError))
+            !BroadcastCNRegistration(vin.prevout, keyCollateralAddress, pubKeyCollateralnode,
+                                     registrationError))
         {
             if (policy == CN_REGISTRATION_REQUIRED)
             {

@@ -57,11 +57,15 @@ bool CheckCNRegistrationTx(const CCNPayeeState& state, const CTransaction& tx);
 void ApplyCNPayeeTx(CCNPayeeState& state, const CTransaction& tx, int nHeight,
                     CCNPayeeUndo* undo = NULL);
 bool SelectCNPayee(const CCNPayeeState& state, int nParentHeight, CScript& payee);
-bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state);
+// nMaxReplay bounds the blocks replayed from the nearest cached state; -1 is unbounded.
+static const int CN_PAYEE_MEMPOOL_MAX_REPLAY = 100;
+bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state,
+                      int nMaxReplay = -1);
 bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index);
 // Startup registration: absent without a configured fork, best effort in the lead-in
 // window, required from activation.
-static const int CN_REGISTRATION_LEAD_BLOCKS = 5000;
+// About seven days at the post-DAG one-second spacing.
+static const int CN_REGISTRATION_LEAD_BLOCKS = 7 * 24 * 60 * 60;
 enum CNRegistrationPolicy { CN_REGISTRATION_UNUSED, CN_REGISTRATION_OPTIONAL, CN_REGISTRATION_REQUIRED };
 inline CNRegistrationPolicy GetCNRegistrationPolicy(int nNextHeight)
 {
@@ -70,6 +74,9 @@ inline CNRegistrationPolicy GetCNRegistrationPolicy(int nNextHeight)
     if (nNextHeight >= FORK_HEIGHT_CN_PAYEE - CN_REGISTRATION_LEAD_BLOCKS) return CN_REGISTRATION_OPTIONAL;
     return CN_REGISTRATION_UNUSED;
 }
+
+// Re-attempts queued CN registrations once the lead-in starts; drops confirmed ones.
+void RetryCNRegistrations();
 
 bool CheckCNPayeePayment(int nHeight, const CTransaction& reward, const CScript& payee,
                          int64_t nPayment, const std::vector<CTxOut>& reserved);

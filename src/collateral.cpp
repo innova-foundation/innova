@@ -238,6 +238,8 @@ void ThreadCheckCollaTeralPool(void* parg)
             activeCollateralnode.ManageStatus();
         }
 
+        if (c % (10 * 60) == 0) RetryCNRegistrations();
+
         //if(c % (60*5) == 0){
         if(c % 60 == 0) {
             LOCK(cs_collateralnodes);

@@ -179,19 +179,26 @@ sync_pair 2 0
 test "$(template 2 | field payee)" = "$ADDRESS"
 echo "PASS: fresh chain replay recovers the registered payee"
 
-# An upgraded node lacks payee state and undo for blocks it connected before the
-# upgrade; it must still reorganize through them.
+# An upgraded node lacks undo for blocks it connected before the upgrade; it must
+# still reorganize through them, restoring a collateral spent on the dropped branch.
+VOUT="$(rpc 0 getrawtransaction "$TXID" 1 | python3 -c 'import json,sys; print(next(o["n"] for o in json.load(sys.stdin)["vout"] if o["value"] == 25000))')"
+DEST="$(rpc 0 getnewaddress | tr -d '"[:space:]')"
+RAW="$(rpc 0 createrawtransaction "[{\"txid\":\"$TXID\",\"vout\":$VOUT}]" "{\"$DEST\":24999}" | tr -d '"[:space:]')"
+SIGNED="$(rpc 0 signrawtransaction "$RAW" | field hex)"
 H="$(height 0)"
 stop 1
+rpc 0 sendrawtransaction "$SIGNED" >/dev/null
 mine_to 0 "$((H+3))"
 for ((k=0; k<120; k++)); do [ "$(best 2)" = "$(best 0)" ] && break; sleep 1; done
 test "$(best 2)" = "$(best 0)"
+assert_amount 2 0
 stop 2
 start 2 -regtestcnpayeedropundo=10
 start 1
 mine_to 1 "$((H+6))"
 sync_pair 2 1
 test "$(height 2)" = "$((H+6))"
+grep -q 'UndoCNPayeeState() : no undo for' "$TEST_DIR/node2/regtest/debug.log"
 test "$(template 2 | field payee)" = "$ADDRESS"
 test "$(template 2 | field payee_script)" = "$(template 1 | field payee_script)"
 stop 2
@@ -202,11 +209,8 @@ sync_pair 0 1
 test "$(best 0)" = "$(best 1)"
 echo "PASS: upgraded node reorganizes through blocks without payee undo"
 
-VOUT="$(rpc 0 getrawtransaction "$TXID" 1 | python3 -c 'import json,sys; print(next(o["n"] for o in json.load(sys.stdin)["vout"] if o["value"] == 25000))')"
-DEST="$(rpc 0 getnewaddress | tr -d '"[:space:]')"
-RAW="$(rpc 0 createrawtransaction "[{\"txid\":\"$TXID\",\"vout\":$VOUT}]" "{\"$DEST\":24999}" | tr -d '"[:space:]')"
-SIGNED="$(rpc 0 signrawtransaction "$RAW" | field hex)"
-rpc 0 sendrawtransaction "$SIGNED" >/dev/null
+# The spend left the chain in the reorganization; confirm it now.
+rpc 0 sendrawtransaction "$SIGNED" >/dev/null 2>&1 || true
 mine_to 0 "$(($(height 0)+1))"
 sync_pair 1 0
 assert_amount 0 0

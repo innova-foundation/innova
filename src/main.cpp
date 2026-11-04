@@ -4160,7 +4160,8 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         if (hasRegistration)
         {
             CCNPayeeState state;
-            if (!LoadCNPayeeState(txdb, pindexBest, state) || !CheckCNRegistrationTx(state, tx))
+            if (!LoadCNPayeeState(txdb, pindexBest, state, CN_PAYEE_MEMPOOL_MAX_REPLAY) ||
+                !CheckCNRegistrationTx(state, tx))
                 return error("CTxMemPool::accept() : invalid CN registration");
         }
     }
@@ -10738,19 +10739,32 @@ bool SelectCNPayee(const CCNPayeeState& state, int nParentHeight, CScript& payee
     return found;
 }
 
-// Replays the active chain to parent. With backfill, also writes the undo of every
-// post-activation block, so blocks connected before an upgrade can be disconnected.
+// Applies the blocks above base (an ancestor of parent) up to parent; with no usable
+// base, replays from genesis. With backfill, also persists the undo of every
+// post-activation block replayed, so blocks connected before an upgrade can be
+// disconnected. Undo depends only on a block's ancestry, so it is written on a
+// separate handle and survives an abort of the caller's transaction.
 static bool ReplayCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state,
-                               bool fBackfill)
+                               bool fBackfill, const CCNPayeeState* base, int nMaxBlocks)
 {
     state = CCNPayeeState();
     if (!parent) return true;
     std::vector<const CBlockIndex*> chain;
-    for (const CBlockIndex* p = parent; p; p = p->pprev) chain.push_back(p);
+    const CBlockIndex* p = parent;
+    for (; p; p = p->pprev)
+    {
+        if (base && p->GetBlockHash() == base->hashTip) break;
+        if (nMaxBlocks >= 0 && (int)chain.size() >= nMaxBlocks) return false;
+        chain.push_back(p);
+    }
+    if (p) state = *base;
+
+    std::unique_ptr<CTxDB> backfill;
+    int nPending = 0;
     for (auto it = chain.rbegin(); it != chain.rend(); ++it)
     {
         if (fRequestShutdown) return false;
-        const CBlockIndex* p = *it;
+        p = *it;
         CBlock block;
         if (!block.ReadFromDisk(p)) return error("ReplayCNPayeeState() : block %d unreadable", p->nHeight);
         std::set<uint256> skipped;
@@ -10772,14 +10786,34 @@ static bool ReplayCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeS
         }
         for (const CTransaction& tx : block.vtx)
             if (!skipped.count(tx.GetHash())) ApplyCNPayeeTx(state, tx, p->nHeight, pundo);
-        if (fUndo && !txdb.WriteCNPayeeUndo(p->GetBlockHash(), undo))
+        if (!fUndo) continue;
+        if (!backfill)
+        {
+            backfill.reset(new CTxDB());
+            if (!backfill->TxnBegin()) return error("ReplayCNPayeeState() : undo batch unavailable");
+        }
+        if (!backfill->WriteCNPayeeUndo(p->GetBlockHash(), undo))
             return error("ReplayCNPayeeState() : undo write at %d failed", p->nHeight);
+        if (++nPending >= 10000)
+        {
+            if (!backfill->TxnCommit() || !backfill->TxnBegin())
+                return error("ReplayCNPayeeState() : undo commit at %d failed", p->nHeight);
+            nPending = 0;
+        }
     }
+    if (backfill && !backfill->TxnCommit()) return error("ReplayCNPayeeState() : undo commit failed");
     state.hashTip = parent->GetBlockHash();
     return true;
 }
 
-bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state)
+// Shared between template creation, validation and the mempool. Caller holds cs_main.
+// The cache only counts as backfilled when a writable handle built it; its blocks below
+// activation need no undo.
+static CCNPayeeState cnPayeeBootstrap;
+static bool fCNPayeeBootstrapBackfilled = false;
+
+bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state,
+                      int nMaxReplay)
 {
     state = CCNPayeeState();
     if (!parent) return true;
@@ -10787,19 +10821,33 @@ bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& sta
     if (status == TXDB_READ_ERROR) return false;
     if (status == TXDB_READ_FOUND && state.hashTip == parent->GetBlockHash()) return true;
 
-    // Share the bootstrap between template creation and validation. Caller holds cs_main.
-    // A read-only handle cannot backfill, so its result is not cached as backfilled.
-    static CCNPayeeState bootstrap;
-    static bool fBootstrapBackfilled = false;
     const bool fBackfill = !txdb.IsReadOnly();
-    if (bootstrap.hashTip == parent->GetBlockHash() && (fBootstrapBackfilled || !fBackfill))
+    const bool fCacheBackfilled = fCNPayeeBootstrapBackfilled ||
+        !IsCNPayeeActiveAtHeight(parent->nHeight);
+    if (cnPayeeBootstrap.hashTip == parent->GetBlockHash() && (fCacheBackfilled || !fBackfill))
     {
-        state = bootstrap;
+        state = cnPayeeBootstrap;
         return true;
     }
-    if (!ReplayCNPayeeState(txdb, parent, state, fBackfill)) return false;
-    bootstrap = state;
-    fBootstrapBackfilled = fBackfill;
+    // Extend from the persisted state or the cache when either is an ancestor. A base
+    // that is not backfilled cannot seed a backfilling replay.
+    const CCNPayeeState* base = NULL;
+    CCNPayeeState persisted = state;
+    if (status == TXDB_READ_FOUND) base = &persisted;
+    else if (!(cnPayeeBootstrap.hashTip == 0) && (fCNPayeeBootstrapBackfilled || !fBackfill))
+        base = &cnPayeeBootstrap;
+    if (!ReplayCNPayeeState(txdb, parent, state, fBackfill, base, nMaxReplay))
+    {
+        if (base == &persisted && cnPayeeBootstrap.hashTip != persisted.hashTip &&
+            !(cnPayeeBootstrap.hashTip == 0) && (fCNPayeeBootstrapBackfilled || !fBackfill) &&
+            ReplayCNPayeeState(txdb, parent, state, fBackfill, &cnPayeeBootstrap, nMaxReplay))
+            ;
+        else if (nMaxReplay >= 0 ||
+                 !ReplayCNPayeeState(txdb, parent, state, fBackfill, NULL, -1))
+            return false;
+    }
+    cnPayeeBootstrap = state;
+    fCNPayeeBootstrapBackfilled = fBackfill || (base == &cnPayeeBootstrap && fCNPayeeBootstrapBackfilled);
     return true;
 }
 
@@ -10823,10 +10871,11 @@ bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index)
         state.hashTip = parent;
         return txdb.WriteCNPayeeState(state) && txdb.EraseCNPayeeUndo(hash);
     }
-    // State or undo predates this version: rebuild at the parent and backfill the
-    // undo of every earlier active block, so a deeper disconnect takes the fast path.
+    // State or undo predates this version: rebuild at the parent, backfilling the undo
+    // of every earlier active block so a deeper disconnect takes the fast path.
     if (txdb.IsReadOnly()) return error("UndoCNPayeeState() : read-only database");
-    if (!ReplayCNPayeeState(txdb, index->pprev, state, true)) return false;
+    printf("UndoCNPayeeState() : no undo for %s, rebuilding at parent\n", hash.ToString().substr(0,20).c_str());
+    if (!LoadCNPayeeState(txdb, index->pprev, state)) return false;
     txdb.EraseCNPayeeUndo(hash);
     return txdb.WriteCNPayeeState(state);
 }
