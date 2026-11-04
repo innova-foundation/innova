@@ -10738,24 +10738,13 @@ bool SelectCNPayee(const CCNPayeeState& state, int nParentHeight, CScript& payee
     return found;
 }
 
-bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state)
+// Replays the active chain to parent. With backfill, also writes the undo of every
+// post-activation block, so blocks connected before an upgrade can be disconnected.
+static bool ReplayCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state,
+                               bool fBackfill)
 {
     state = CCNPayeeState();
     if (!parent) return true;
-    const TxDBReadStatus status = txdb.ReadCNPayeeState(state);
-    if (status == TXDB_READ_ERROR) return false;
-    if (status == TXDB_READ_FOUND && state.hashTip == parent->GetBlockHash()) return true;
-
-    // Share the bootstrap between template creation and validation. Caller holds cs_main.
-    static CCNPayeeState bootstrap;
-    if (bootstrap.hashTip == parent->GetBlockHash())
-    {
-        state = bootstrap;
-        return true;
-    }
-
-    // Bootstrap once from the recorded active chain, including accepted merged txs.
-    state = CCNPayeeState();
     std::vector<const CBlockIndex*> chain;
     for (const CBlockIndex* p = parent; p; p = p->pprev) chain.push_back(p);
     for (auto it = chain.rbegin(); it != chain.rend(); ++it)
@@ -10769,34 +10758,74 @@ bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& sta
         if (p->nHeight >= FORK_HEIGHT_DAG &&
             txdb.ReadDAGSkippedTxsStatus(block, skipped, error) != TXDB_READ_FOUND)
             return false;
+        const bool fUndo = fBackfill && IsCNPayeeActiveAtHeight(p->nHeight);
+        CCNPayeeUndo undo;
+        CCNPayeeUndo* pundo = fUndo ? &undo : NULL;
         if (IsMergesetActiveAtHeight(p->nHeight))
         {
             CMergesetAcceptRecord rec;
             std::vector<CTransaction> merged;
             if (!txdb.ReadMergesetAccept(p->GetBlockHash(), rec) ||
                 !ReadMergesetAcceptedTxs(rec, merged)) return false;
-            for (const CTransaction& tx : merged) ApplyCNPayeeTx(state, tx, p->nHeight);
+            for (const CTransaction& tx : merged) ApplyCNPayeeTx(state, tx, p->nHeight, pundo);
         }
         for (const CTransaction& tx : block.vtx)
-            if (!skipped.count(tx.GetHash())) ApplyCNPayeeTx(state, tx, p->nHeight);
+            if (!skipped.count(tx.GetHash())) ApplyCNPayeeTx(state, tx, p->nHeight, pundo);
+        if (fUndo && !txdb.WriteCNPayeeUndo(p->GetBlockHash(), undo)) return false;
     }
     state.hashTip = parent->GetBlockHash();
-    bootstrap = state;
     return true;
+}
+
+bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state)
+{
+    state = CCNPayeeState();
+    if (!parent) return true;
+    const TxDBReadStatus status = txdb.ReadCNPayeeState(state);
+    if (status == TXDB_READ_ERROR) return false;
+    if (status == TXDB_READ_FOUND && state.hashTip == parent->GetBlockHash()) return true;
+
+    // Share the bootstrap between template creation and validation. Caller holds cs_main.
+    // A read-only handle cannot backfill, so its result is not cached as backfilled.
+    static CCNPayeeState bootstrap;
+    static bool fBootstrapBackfilled = false;
+    const bool fBackfill = !txdb.IsReadOnly();
+    if (bootstrap.hashTip == parent->GetBlockHash() && (fBootstrapBackfilled || !fBackfill))
+    {
+        state = bootstrap;
+        return true;
+    }
+    if (!ReplayCNPayeeState(txdb, parent, state, fBackfill)) return false;
+    bootstrap = state;
+    fBootstrapBackfilled = fBackfill;
+    return true;
+}
+
+static void ApplyCNPayeeUndo(CCNPayeeState& state, const CCNPayeeUndo& undo)
+{
+    for (const auto& coin : undo.previous)
+        if (coin.second.height < 0) state.coins.erase(coin.first);
+        else state.coins[coin.first] = coin.second;
 }
 
 bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index)
 {
     CCNPayeeState state;
     CCNPayeeUndo undo;
-    if (txdb.ReadCNPayeeState(state) != TXDB_READ_FOUND ||
-        state.hashTip != index->GetBlockHash() ||
-        !txdb.ReadCNPayeeUndo(index->GetBlockHash(), undo)) return false;
-    for (const auto& coin : undo.previous)
-        if (coin.second.height < 0) state.coins.erase(coin.first);
-        else state.coins[coin.first] = coin.second;
-    state.hashTip = index->pprev ? index->pprev->GetBlockHash() : uint256();
-    return txdb.WriteCNPayeeState(state) && txdb.EraseCNPayeeUndo(index->GetBlockHash());
+    const uint256 hash = index->GetBlockHash();
+    const uint256 parent = index->pprev ? index->pprev->GetBlockHash() : uint256();
+    if (txdb.ReadCNPayeeState(state) == TXDB_READ_FOUND && state.hashTip == hash &&
+        txdb.ReadCNPayeeUndo(hash, undo))
+    {
+        ApplyCNPayeeUndo(state, undo);
+        state.hashTip = parent;
+        return txdb.WriteCNPayeeState(state) && txdb.EraseCNPayeeUndo(hash);
+    }
+    // State or undo predates this version: rebuild at the parent and backfill the
+    // undo of every earlier active block, so a deeper disconnect takes the fast path.
+    if (txdb.IsReadOnly() || !ReplayCNPayeeState(txdb, index->pprev, state, true)) return false;
+    txdb.EraseCNPayeeUndo(hash);
+    return txdb.WriteCNPayeeState(state);
 }
 
 bool CheckCNPayeePayment(int nHeight, const CTransaction& reward, const CScript& payee,

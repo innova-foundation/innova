@@ -834,6 +834,7 @@ std::string HelpMessage()
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestmergeset=<n>     " + _("Regtest only: mergeset acceptance activation height (an epoch's first height)") + "\n" +
         "  -regtestcnpayee=<n>     " + _("Regtest only: deterministic CN payee activation height (default: 711)") + "\n" +
+        "  -regtestcnpayeedropundo=<n> " + _("Regtest only: drop CN payee state and the newest <n> undo records at startup") + "\n" +
         "  -regtestmigration=<n>    " + _("Regtest only: fee-exempt migration activation height") + "\n" +
         "  -mergesetpayee=<address> " + _("Address a merged copy of this node's blocks is paid to (default: the block's payout)") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
@@ -2418,6 +2419,18 @@ bool AppInit2()
         return false;
     };
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
+
+    // Regtest only: drop payee state and the newest undo records, as a database
+    // synced past activation by a release without the payee rule would lack them.
+    if (fRegTest && mapArgs.count("-regtestcnpayeedropundo"))
+    {
+        LOCK(cs_main);
+        CTxDB txdb;
+        int nDrop = (int)GetArg("-regtestcnpayeedropundo", 0);
+        txdb.EraseCNPayeeState();
+        for (const CBlockIndex* p = pindexBest; p && nDrop > 0; p = p->pprev, --nDrop)
+            txdb.EraseCNPayeeUndo(p->GetBlockHash());
+    }
 
     // Missing block data is repaired first; the checks that read it run after a restart.
     const bool fBlockDataRepair = IsBlockDataRepairPending();

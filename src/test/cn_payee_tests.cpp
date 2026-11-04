@@ -476,4 +476,22 @@ BOOST_AUTO_TEST_CASE(registration_state_and_undo_survive_reopening)
     else BOOST_REQUIRE(reopened.EraseCNPayeeState());
 }
 
+BOOST_AUTO_TEST_CASE(startup_registration_is_gated_by_activation)
+{
+    Heights heights;
+    fRegTest = false;
+    fTestNet = false;
+    BOOST_CHECK(GetCNRegistrationPolicy(1) == CN_REGISTRATION_UNUSED);
+    BOOST_CHECK(GetCNRegistrationPolicy(8790000 - CN_REGISTRATION_LEAD_BLOCKS - 1) == CN_REGISTRATION_UNUSED);
+    BOOST_CHECK(GetCNRegistrationPolicy(8790000 - CN_REGISTRATION_LEAD_BLOCKS) == CN_REGISTRATION_OPTIONAL);
+    BOOST_CHECK(GetCNRegistrationPolicy(8789999) == CN_REGISTRATION_OPTIONAL);
+    BOOST_CHECK(GetCNRegistrationPolicy(8790000) == CN_REGISTRATION_REQUIRED);
+    fTestNet = true;
+    BOOST_CHECK(GetCNRegistrationPolicy(1) == CN_REGISTRATION_UNUSED);
+    BOOST_CHECK(GetCNRegistrationPolicy(9000000) == CN_REGISTRATION_UNUSED);
+    fRegTest = true;
+    BOOST_CHECK(GetCNRegistrationPolicy(199) == CN_REGISTRATION_OPTIONAL);
+    BOOST_CHECK(GetCNRegistrationPolicy(200) == CN_REGISTRATION_REQUIRED);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

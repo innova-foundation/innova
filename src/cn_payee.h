@@ -59,6 +59,18 @@ void ApplyCNPayeeTx(CCNPayeeState& state, const CTransaction& tx, int nHeight,
 bool SelectCNPayee(const CCNPayeeState& state, int nParentHeight, CScript& payee);
 bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state);
 bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index);
+// Startup registration: absent without a configured fork, best effort in the lead-in
+// window, required from activation.
+static const int CN_REGISTRATION_LEAD_BLOCKS = 5000;
+enum CNRegistrationPolicy { CN_REGISTRATION_UNUSED, CN_REGISTRATION_OPTIONAL, CN_REGISTRATION_REQUIRED };
+inline CNRegistrationPolicy GetCNRegistrationPolicy(int nNextHeight)
+{
+    if (FORK_HEIGHT_CN_PAYEE == PRIVACY_VNEXT_HEIGHT_UNSET) return CN_REGISTRATION_UNUSED;
+    if (IsCNPayeeActiveAtHeight(nNextHeight)) return CN_REGISTRATION_REQUIRED;
+    if (nNextHeight >= FORK_HEIGHT_CN_PAYEE - CN_REGISTRATION_LEAD_BLOCKS) return CN_REGISTRATION_OPTIONAL;
+    return CN_REGISTRATION_UNUSED;
+}
+
 bool CheckCNPayeePayment(int nHeight, const CTransaction& reward, const CScript& payee,
                          int64_t nPayment, const std::vector<CTxOut>& reserved);
 

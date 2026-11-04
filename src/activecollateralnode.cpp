@@ -85,7 +85,7 @@ static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key
     if (!created || !CheckCNRegistrationTx(state, transaction))
     {
         if (created) reason = "CN registration funding changed";
-        for (const COutPoint& point : transaction.vReservedCoins) pwalletMain->UnlockCoin(point);
+        for (COutPoint point : transaction.vReservedCoins) pwalletMain->UnlockCoin(point);
         return false;
     }
     if (!pwalletMain->CommitTransaction(transaction, reserve))
@@ -459,9 +459,21 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
                 return false;
             }
     }
-    if (attestationKeyImage == 0 &&
-        !BroadcastCNRegistration(vin.prevout, keyCollateralAddress, pubKeyCollateralnode, retErrorMessage))
-        return false;
+    if (attestationKeyImage == 0)
+    {
+        const CNRegistrationPolicy policy = GetCNRegistrationPolicy(nBestHeight + 1);
+        std::string registrationError;
+        if (policy != CN_REGISTRATION_UNUSED &&
+            !BroadcastCNRegistration(vin.prevout, keyCollateralAddress, pubKeyCollateralnode, registrationError))
+        {
+            if (policy == CN_REGISTRATION_REQUIRED)
+            {
+                retErrorMessage = registrationError;
+                return false;
+            }
+            printf("CActiveCollateralnode::Register() - CN registration deferred: %s\n", registrationError.c_str());
+        }
+    }
 
     bool found = false;
     LOCK(cs_collateralnodes);
