@@ -11,6 +11,7 @@
 #include "dag.h"
 #include "finality.h"
 #include "ringsig.h"
+#include "cn_payee.h"
 #include "curvetree.h"
 
 #include <map>
@@ -476,6 +477,27 @@ protected:
 
 public:
     bool TxnBegin();
+    TxDBReadStatus ReadCNPayeeState(CCNPayeeState& state)
+    {
+        return ReadExactStatus(std::string("cnPayee2state"), state);
+    }
+    bool WriteCNPayeeState(const CCNPayeeState& state)
+    {
+        return Write(std::string("cnPayee2state"), state);
+    }
+    bool EraseCNPayeeState() { return Erase(std::string("cnPayee2state")); }
+    bool ReadCNPayeeUndo(const uint256& hash, CCNPayeeUndo& undo)
+    {
+        return ReadExact(std::make_pair(std::string("cnPayee2undo"), hash), undo);
+    }
+    bool WriteCNPayeeUndo(const uint256& hash, const CCNPayeeUndo& undo)
+    {
+        return Write(std::make_pair(std::string("cnPayee2undo"), hash), undo);
+    }
+    bool EraseCNPayeeUndo(const uint256& hash)
+    {
+        return Erase(std::make_pair(std::string("cnPayee2undo"), hash));
+    }
     bool TxnCommit(bool fSync = false);
     bool IsTxnActive() const { return activeBatch != NULL; }
     bool TxnAbort()

@@ -163,13 +163,15 @@ Value getforkinfo(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "getforkinfo\n"
-            "Returns the mergeset fork and transparent migration window heights.\n"
+            "Returns fork and transparent migration window heights.\n"
             "\nResult:\n"
             "{\n"
             "  \"height\": n,                       (numeric) current block height\n"
             "  \"mergeset_fork_height\": n,         (numeric) mergeset activation height\n"
             "  \"mergeset_blocks_left\": n,         (numeric) blocks until activation, 0 once active\n"
             "  \"mergeset_active\": true|false,\n"
+            "  \"cn_payee_fork_height\": n,        (numeric) deterministic CN payee activation\n"
+            "  \"cn_payee_active\": true|false,\n"
             "  \"migration_start_height\": n,       (numeric) first height of the free migration window\n"
             "  \"migration_end_height\": n,         (numeric) first height the window is closed\n"
             "  \"migration_active\": true|false,\n"
@@ -187,6 +189,8 @@ Value getforkinfo(const Array& params, bool fHelp)
     result.push_back(Pair("mergeset_blocks_left",
                           IsMergesetConfigured() && nHeight < nMergeset ? nMergeset - nHeight : 0));
     result.push_back(Pair("mergeset_active", IsMergesetActiveAtHeight(nHeight)));
+    result.push_back(Pair("cn_payee_fork_height", FORK_HEIGHT_CN_PAYEE));
+    result.push_back(Pair("cn_payee_active", IsCNPayeeActiveAtHeight(nHeight)));
     result.push_back(Pair("migration_start_height", FORK_HEIGHT_MIGRATION));
     result.push_back(Pair("migration_end_height", nMigrationEnd));
     result.push_back(Pair("migration_active", IsMigrationActiveAtHeight(nHeight)));

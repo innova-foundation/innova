@@ -786,6 +786,7 @@ set(INNOVA_HEADERS
     src/privacy_vnext_builder.h
     src/privacy_vnext_store.h
     src/subsidy.h
+    src/cn_payee.h
     src/finality_note.h
     src/dag.h
     src/dagreach.h

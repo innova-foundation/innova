@@ -698,6 +698,25 @@ inline int GetForkHeightMergeset()
 }
 #define FORK_HEIGHT_MERGESET (GetForkHeightMergeset())
 
+extern int nRegtestCNPayeeHeight;
+static const int MAINNET_CN_PAYEE_HEIGHT = 8790000;
+static const int CN_PAYEE_MIN_DEPTH = 100;
+
+inline int GetForkHeightCNPayee()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return nRegtestCNPayeeHeight;
+    return fTestNet ? PRIVACY_VNEXT_HEIGHT_UNSET : MAINNET_CN_PAYEE_HEIGHT;
+}
+#define FORK_HEIGHT_CN_PAYEE (GetForkHeightCNPayee())
+
+inline bool IsCNPayeeActiveAtHeight(int nHeight)
+{
+    return FORK_HEIGHT_CN_PAYEE != PRIVACY_VNEXT_HEIGHT_UNSET &&
+           nHeight >= FORK_HEIGHT_CN_PAYEE;
+}
+
 inline bool IsMergesetConfigured()
 {
     return FORK_HEIGHT_MERGESET != PRIVACY_VNEXT_HEIGHT_UNSET;

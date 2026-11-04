@@ -12,6 +12,7 @@
 #include "mstimestamp.h"
 #include "finality.h"
 #include "subsidy.h"
+#include "cn_payee.h"
 #include "namecoin.h"
 
 #include <cmath>
@@ -710,7 +711,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
 	//Only if it isn't Proof of Stake?
 	if (!fProofOfStake)
     {
-        bCollateralNodePayment = CollateralnodePaymentsEnabledAtHeight(nHeight);
+        bCollateralNodePayment = IsCNPayeeActiveAtHeight(nHeight) ||
+                                 CollateralnodePaymentsEnabledAtHeight(nHeight);
         if(fDebug && fDebugCN) { printf("CreateNewBlock(): Collateralnode Payments : %i\n", bCollateralNodePayment); }
 	}
 
@@ -841,7 +843,17 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             bool hasPayment = true;
             bool found = false;
             CScript payee;
-            if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
+            if (IsCNPayeeActiveAtHeight(nHeight))
+            {
+                CCNPayeeState state;
+                if (!LoadCNPayeeState(txdb, pindexPrev, state))
+                {
+                    printf("CreateNewBlock: public collateral state unavailable\n");
+                    return NULL;
+                }
+                hasPayment = SelectCNPayee(state, pindexPrev->nHeight, payee);
+            }
+            else if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
                 found = false;
                 if (vecCollateralnodes.size() > 0) {
                 GetCollateralnodeRanks(pindexBest);
@@ -1780,7 +1792,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees, int
             pblock->vtx[0].vout[payments-1].nValue = collateralnodePayment;
             blockValue -= collateralnodePayment;
         }
-        else if (fMergesetReward)
+        else if (fMergesetReward && !IsCNPayeeActiveAtHeight(nHeight))
         {
             blockValue -= subsidySplit.Collateralnode() + mergesetReward.nExtraCollateralnode;
         }

@@ -833,6 +833,7 @@ std::string HelpMessage()
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestmergeset=<n>     " + _("Regtest only: mergeset acceptance activation height (an epoch's first height)") + "\n" +
+        "  -regtestcnpayee=<n>     " + _("Regtest only: deterministic CN payee activation height (default: 711)") + "\n" +
         "  -regtestmigration=<n>    " + _("Regtest only: fee-exempt migration activation height") + "\n" +
         "  -mergesetpayee=<address> " + _("Address a merged copy of this node's blocks is paid to (default: the block's payout)") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
@@ -1574,6 +1575,16 @@ bool AppInit2()
         fRegtestMergesetEmission = GetBoolArg("-regtestmergesetemission", false);
         printf("Mergeset acceptance fork height: %d (regtest only)%s\n", nRegtestMergesetHeight,
                fRegtestMergesetEmission ? ", mainnet emission curve" : "");
+    }
+
+    if (mapArgs.count("-regtestcnpayee"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestcnpayee requires -regtest"));
+        const int64_t nF = GetArg("-regtestcnpayee", (int64_t)711);
+        if (nF < FORK_HEIGHT_DAG || nF > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+            return InitError(_("-regtestcnpayee is out of range"));
+        nRegtestCNPayeeHeight = (int)nF;
     }
 
     if (mapArgs.count("-regtestmigration"))

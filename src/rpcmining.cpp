@@ -959,10 +959,16 @@ Value getblocktemplate(const Array& params, bool fHelp)
     // ---- Collateralnode info ---
 
     const bool bCollateralnodePayments =
+        IsCNPayeeActiveAtHeight(pindexPrev->nHeight + 1) ||
         CollateralnodePaymentsEnabledAtHeight(pindexPrev->nHeight + 1);
     if(fDebug && fDebugCN) { printf("GetBlockTemplate(): Collateralnode Payments : %i\n", bCollateralnodePayments); }
 
-    if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
+    if (IsCNPayeeActiveAtHeight(pindexPrev->nHeight + 1))
+    {
+        if (nCNPaymentIndex > 0 && nCNPaymentIndex < (int)pblock->vtx[0].vout.size())
+            payee = pblock->vtx[0].vout[nCNPaymentIndex].scriptPubKey;
+    }
+    else if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
         //no collateralnode detected
 		bool found = false;
                 if (vecCollateralnodes.size() > 0) {
@@ -1034,7 +1040,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
     }
     int64_t nTmplCNBase = FinalityCollateralnodePaymentBase(pblock->vtx[0].GetValueOut(),
                                                            nTmplFinalityReward);
-    if (IsMergesetActiveAtHeight(nTmplHeight)) {
+    if (IsMergesetActiveAtHeight(nTmplHeight) || IsCNPayeeActiveAtHeight(nTmplHeight)) {
         // From the template it serves: its CN output, or none (option 3c).
         const bool fHasCN = nCNPaymentIndex > 0 && nCNPaymentIndex < (int)pblock->vtx[0].vout.size();
         CTxDestination destCN;

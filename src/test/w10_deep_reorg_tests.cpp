@@ -5,6 +5,12 @@
 
 namespace {
 
+class W10TestTxDB : public CTxDB
+{
+public:
+    using CTxDB::Read;
+};
+
 class W10Chain
 {
     std::vector<uint256> hashes;
@@ -159,7 +165,7 @@ BOOST_AUTO_TEST_CASE(refusal_preserves_validity_and_stored_indexes)
     BOOST_CHECK(!txdb.ReadBlockFailReason(root->GetBlockHash(), reason));
     BOOST_CHECK(!txdb.ReadBlockFailReason(candidate->GetBlockHash(), reason));
 
-    CTxDB reopened;
+    W10TestTxDB reopened;
     CDiskBlockIndex disk;
     BOOST_REQUIRE(reopened.Read(std::make_pair(std::string("blockindex"), candidate->GetBlockHash()), disk));
     BOOST_CHECK(disk.GetBlockHash() == candidate->GetBlockHash());

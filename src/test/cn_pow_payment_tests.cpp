@@ -22,6 +22,7 @@
 #include "../key.h"
 #include "../main.h"
 #include "../miner.h"
+#include "../cn_payee.h"
 #include "../script.h"
 #include "../subsidy.h"
 #include "../txdb.h"
@@ -40,9 +41,34 @@ const int MAINNET_CN_PAYMENT_ERA_HEIGHT = 2085001;
 
 struct CNPaymentEraGuard
 {
-    int nSaved;
-    CNPaymentEraGuard() : nSaved(nRegtestCNPaymentsHeight) {}
-    ~CNPaymentEraGuard() { nRegtestCNPaymentsHeight = nSaved; }
+    int nSaved, nSavedPayee;
+    CNPaymentEraGuard() : nSaved(nRegtestCNPaymentsHeight), nSavedPayee(nRegtestCNPayeeHeight)
+    {
+        nRegtestCNPayeeHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+    }
+    ~CNPaymentEraGuard()
+    {
+        nRegtestCNPaymentsHeight = nSaved;
+        nRegtestCNPayeeHeight = nSavedPayee;
+    }
+};
+
+struct PublicCollateralStateGuard
+{
+    CCNPayeeState saved;
+    TxDBReadStatus status;
+    PublicCollateralStateGuard()
+    {
+        CTxDB db;
+        status = db.ReadCNPayeeState(saved);
+        BOOST_REQUIRE(status != TXDB_READ_ERROR);
+    }
+    ~PublicCollateralStateGuard()
+    {
+        CTxDB db;
+        if (status == TXDB_READ_FOUND) db.WriteCNPayeeState(saved);
+        else db.EraseCNPayeeState();
+    }
 };
 
 // The network flags are read by the gate helpers themselves, so the mainnet and
@@ -458,6 +484,8 @@ BOOST_AUTO_TEST_CASE(a_payee_this_node_does_not_recognise_is_refused)
 
     BOOST_REQUIRE(pindexBest != NULL);
     nRegtestCNPaymentsHeight = pindexBest->nHeight + 1;
+    nRegtestCNPayeeHeight = pindexBest->nHeight + 2;
+    BOOST_REQUIRE(!IsCNPayeeActiveAtHeight(pindexBest->nHeight + 1));
 
     CKey payeeKey;
     payeeKey.MakeNewKey(true);
@@ -623,6 +651,60 @@ BOOST_AUTO_TEST_CASE(a_payment_below_the_expected_share_is_not_a_last_payment)
     BOOST_CHECK_MESSAGE(mnUnpaid.nBlockLastPaid == 1,
                         "a never-paid collateralnode must end at 1; got "
                         << mnUnpaid.nBlockLastPaid);
+}
+
+BOOST_AUTO_TEST_CASE(deterministic_payment_is_enforced_by_connect_even_without_gossip)
+{
+    CNPaymentEraGuard eraGuard;
+    CollateralnodeViewGuard cnGuard;
+    DetachedWalletGuard walletGuard;
+    nRegtestCNPaymentsHeight = 0;
+    BOOST_REQUIRE(fRegTest);
+    while (pindexBest->nHeight < CN_PAYEE_MIN_DEPTH)
+    {
+        CandidateBlock cb;
+        BOOST_REQUIRE(BuildCandidate(cb));
+        BOOST_REQUIRE(Seal(cb));
+        BOOST_REQUIRE(ProcessBlock(NULL, &cb.block));
+    }
+    PublicCollateralStateGuard stateGuard;
+    CKey key;
+    key.MakeNewKey(true);
+    const CScript expected = PayToKey(key);
+    CCNPayeeState state;
+    state.hashTip = pindexBest->GetBlockHash();
+    CCNPayeeCoin coin;
+    coin.height = coin.registrationHeight = pindexBest->nHeight - CN_PAYEE_MIN_DEPTH;
+    coin.script = expected;
+    coin.pubkey = key.GetPubKey();
+    state.coins[COutPoint(uint256(987654), 0)] = coin;
+    {
+        CTxDB db;
+        BOOST_REQUIRE(db.WriteCNPayeeState(state));
+    }
+    nRegtestCNPayeeHeight = pindexBest->nHeight + 1;
+    CandidateBlock good;
+    BOOST_REQUIRE(BuildCandidate(good));
+    BOOST_REQUIRE(Seal(good));
+    BOOST_CHECK(ConnectAndRollBack(good) == CBlock::CONNECT_RESULT_OK);
+    CandidateBlock wrong = good;
+    bool changed = false;
+    for (CTxOut& out : wrong.Coinbase().vout)
+        if (out.scriptPubKey == expected)
+        {
+            out.scriptPubKey = BurnPayee();
+            changed = true;
+        }
+    BOOST_REQUIRE(changed);
+    BOOST_REQUIRE(Seal(wrong));
+    BOOST_CHECK(ConnectAndRollBack(wrong) == CBlock::CONNECT_RESULT_INVALID);
+    AnnounceCollateralnode(key, true);
+    BOOST_CHECK(ConnectAndRollBack(wrong) == CBlock::CONNECT_RESULT_INVALID);
+    CandidateBlock omitted = good;
+    for (CTxOut& out : omitted.Coinbase().vout)
+        if (out.scriptPubKey == expected) out.nValue = 0;
+    BOOST_REQUIRE(Seal(omitted));
+    BOOST_CHECK(ConnectAndRollBack(omitted) == CBlock::CONNECT_RESULT_INVALID);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

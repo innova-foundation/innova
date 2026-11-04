@@ -8,6 +8,90 @@
 #include "collateralnodeconfig.h"
 #include <boost/lexical_cast.hpp>
 #include "clientversion.h"
+#include "cn_payee.h"
+#include "coincontrol.h"
+#include <limits>
+
+static bool BroadcastCNRegistration(const COutPoint& collateral, const CKey& key,
+                                    const CPubKey& pubkey, std::string& reason)
+{
+    if (!pwalletMain) { reason = "Wallet not initialized"; return false; }
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    if (pwalletMain->IsLocked() || fWalletUnlockStakingOnly)
+    { reason = "Unlock the wallet for CN registration"; return false; }
+    CTxDB db("r");
+    CCNPayeeState state;
+    if (!LoadCNPayeeState(db, pindexBest, state))
+    { reason = "CN registration state unavailable"; return false; }
+    const auto coin = state.coins.find(collateral);
+    if (coin == state.coins.end())
+    { reason = "CN collateral is not an unspent confirmed 25000 INN output"; return false; }
+    if (coin->second.registrationHeight >= 0 && coin->second.pubkey == pubkey) return true;
+
+    uint64_t sequence = coin->second.sequence;
+    CPubKey pendingPubkey;
+    for (const auto& entry : pwalletMain->mapWallet)
+    {
+        if (!mempool.exists(entry.first) || !CheckCNRegistrationTx(state, entry.second)) continue;
+        for (const CTxOut& out : entry.second.vout)
+        {
+            CCNRegistration pending;
+            if (out.nValue == 0 && DecodeCNRegistration(out.scriptPubKey, pending) == CN_REG_VALID &&
+                pending.collateral == collateral && pending.sequence > sequence)
+            {
+                sequence = pending.sequence;
+                pendingPubkey = pending.pubkey;
+            }
+        }
+    }
+    if (pendingPubkey == pubkey) return true;
+    if (sequence == std::numeric_limits<uint64_t>::max())
+    { reason = "CN registration sequence exhausted"; return false; }
+
+    std::vector<COutput> funds;
+    pwalletMain->AvailableCoins(funds, true);
+    CCoinControl control;
+    CTransaction funding;
+    for (const COutput& fund : funds)
+    {
+        const CTxOut& out = fund.tx->vout[fund.i];
+        CTxDestination destination;
+        if (!fund.fSpendable || fund.nDepth <= 0 || out.nValue == GetMNCollateral() * COIN ||
+            out.nValue < 2 * std::max(nTransactionFee, MIN_TX_FEE) + MIN_TXOUT_AMOUNT ||
+            !ExtractDestination(out.scriptPubKey, destination) || !boost::get<CKeyID>(&destination)) continue;
+        COutPoint point(fund.tx->GetHash(), fund.i);
+        if (point == collateral) continue;
+        control.Select(point);
+        funding.vin.push_back(CTxIn(point));
+        break;
+    }
+    if (!control.HasSelected())
+    { reason = "CN registration needs normal confirmed wallet funds for its fee"; return false; }
+    CCNRegistration registration;
+    registration.collateral = collateral;
+    registration.pubkey = pubkey;
+    registration.inputsHash = CNRegistrationInputsHash(funding);
+    registration.sequence = sequence + 1;
+    if (!key.SignCompact(CNRegistrationHash(registration), registration.signature) ||
+        !VerifyCNRegistration(registration, coin->second.script, funding))
+    { reason = "CN registration signature failed"; return false; }
+    const CScript script = CNRegistrationScript(registration);
+    CWalletTx transaction;
+    CReserveKey reserve(pwalletMain);
+    int64_t fee = 0;
+    int32_t change = -1;
+    const std::vector<std::pair<CScript, int64_t> > outputs(1, std::make_pair(script, 0));
+    const bool created = pwalletMain->CreateTransaction(outputs, transaction, reserve, fee, change, &control, NULL, &reason);
+    if (!created || !CheckCNRegistrationTx(state, transaction))
+    {
+        if (created) reason = "CN registration funding changed";
+        for (const COutPoint& point : transaction.vReservedCoins) pwalletMain->UnlockCoin(point);
+        return false;
+    }
+    if (!pwalletMain->CommitTransaction(transaction, reserve))
+    { reason = "CN registration broadcast failed"; return false; }
+    return true;
+}
 
 //
 // Bootup the collateralnode, look for a 25000 INN input and register on the network
@@ -112,11 +196,6 @@ void CActiveCollateralnode::ManageStatus()
 
             printf("CActiveCollateralnode::ManageStatus() - Is a capable CollateralNode!\n");
 
-            status = COLLATERALNODE_IS_CAPABLE;
-            notCapableReason = "";
-
-            pwalletMain->LockCoin(vin.prevout);
-
             // send to all nodes
             CPubKey pubKeyCollateralnode;
             CKey keyCollateralnode;
@@ -128,8 +207,14 @@ void CActiveCollateralnode::ManageStatus()
             }
 
             if(!Register(vin, service, keyCollateralAddress, pubKeyCollateralAddress, keyCollateralnode, pubKeyCollateralnode, errorMessage)) {
+                status = COLLATERALNODE_NOT_CAPABLE;
+                notCapableReason = errorMessage;
                 printf("CActiveCollateralnode::ManageStatus() - Error on Register: %s\n", errorMessage.c_str());
+                return;
             }
+            pwalletMain->LockCoin(vin.prevout);
+            status = COLLATERALNODE_IS_CAPABLE;
+            notCapableReason = "";
 
             return;
         } else {
@@ -365,22 +450,21 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
         return false;
     }
 
-    bool found = false;
-    bool dup = false;
-    LOCK(cs_collateralnodes);
-    for (CCollateralNode& mn : vecCollateralnodes)
     {
-        if(mn.pubkey == pubKeyCollateralAddress) {
-            dup = true;
-        }
+        LOCK(cs_collateralnodes);
+        for (const CCollateralNode& mn : vecCollateralnodes)
+            if (mn.pubkey == pubKeyCollateralAddress)
+            {
+                retErrorMessage = "Failed, CN already in list, use a different pubkey";
+                return false;
+            }
     }
-    if (dup) {
-        retErrorMessage = "Failed, CN already in list, use a different pubkey";
-        printf("CActiveCollateralnode::Register() FAILED! CN Already in List. "
-               "Change your collateral address to a different address for this CN: %s\n",
-               retErrorMessage.c_str());
+    if (attestationKeyImage == 0 &&
+        !BroadcastCNRegistration(vin.prevout, keyCollateralAddress, pubKeyCollateralnode, retErrorMessage))
         return false;
-    }
+
+    bool found = false;
+    LOCK(cs_collateralnodes);
     for (CCollateralNode& mn : vecCollateralnodes)
     {
         if(mn.vin == vin) {

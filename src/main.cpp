@@ -26,6 +26,7 @@
 #include "curvetree.h"
 #include "finality.h"
 #include "subsidy.h"
+#include "cn_payee.h"
 #include "muhash.h"
 
 static void ApplyTxToUtxoMuHash(MuHash3072& hash, const CTransaction& tx,
@@ -270,6 +271,7 @@ int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestMergesetHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestCNPayeeHeight = 711;
 int nRegtestMigrationHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestMergesetEmission = false;
 int nRegtestIDNSResetHeight = 0;
@@ -1460,6 +1462,14 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
          {
              CMixRendezvousRecord rendezvousRecord;
              if (DecodeMixRendezvousScript(txout.scriptPubKey, rendezvousRecord))
+             {
+                 nDataOut++;
+                 continue;
+             }
+         }
+         {
+             CCNRegistration registration;
+             if (txout.nValue == 0 && DecodeCNRegistration(txout.scriptPubKey, registration) == CN_REG_VALID)
              {
                  nDataOut++;
                  continue;
@@ -4138,6 +4148,22 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         return error("CTxMemPool::accept() : name transaction %s rejected: %s",
                      tx.GetHash().ToString().substr(0,10).c_str(),
                      strNameReason.c_str());
+
+    if (IsCNPayeeActiveAtHeight(nEffectiveMempoolHeight) && !tx.IsShielded() && tx.nVersion != ANON_TXN_VERSION)
+    {
+        bool hasRegistration = false;
+        for (const CTxOut& out : tx.vout)
+        {
+            CCNRegistration registration;
+            if (DecodeCNRegistration(out.scriptPubKey, registration) != CN_REG_NONE) hasRegistration = true;
+        }
+        if (hasRegistration)
+        {
+            CCNPayeeState state;
+            if (!LoadCNPayeeState(txdb, pindexBest, state) || !CheckCNRegistrationTx(state, tx))
+                return error("CTxMemPool::accept() : invalid CN registration");
+        }
+    }
 
     // Rather not work on nonstandard transactions (unless -testnet)
     string reason;
@@ -9866,6 +9892,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
 bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 {
+    if (pindex && IsCNPayeeActiveAtHeight(pindex->nHeight) &&
+        !UndoCNPayeeState(txdb, pindex))
+        return error("DisconnectBlock() : public collateral undo unavailable");
     // Name, wallet and UI effects are journaled by best-chain callers and replayed after
     // commit; the argument is kept for source compatibility and never dispatches here.
     (void)fWriteNames;
@@ -10545,6 +10574,245 @@ bool SeedGenesisCommitments(CTxDB& txdb,
     return true;
 }
 
+
+static const uint32_t CN_REGISTRATION_MAGIC = 0x524e4349; // ICNR
+
+uint256 CNRegistrationHash(const CCNRegistration& registration)
+{
+    CHashWriter hash(SER_GETHASH, 0);
+    hash << CN_REGISTRATION_MAGIC << registration.collateral << registration.pubkey << registration.version
+         << registration.inputsHash << registration.sequence;
+    return hash.GetHash();
+}
+
+uint256 CNRegistrationInputsHash(const CTransaction& tx)
+{
+    CHashWriter hash(SER_GETHASH, 0);
+    hash << CN_REGISTRATION_MAGIC << uint64_t(tx.vin.size());
+    for (const CTxIn& in : tx.vin) hash << in.prevout;
+    return hash.GetHash();
+}
+
+CScript CNRegistrationScript(const CCNRegistration& registration)
+{
+    CDataStream data(SER_NETWORK, 0);
+    data << CN_REGISTRATION_MAGIC << registration;
+    return CScript() << OP_RETURN << std::vector<unsigned char>(data.begin(), data.end());
+}
+
+CNRegistrationDecode DecodeCNRegistration(const CScript& script, CCNRegistration& registration)
+{
+    CScript::const_iterator pc = script.begin();
+    opcodetype opcode;
+    std::vector<unsigned char> data;
+    if (!script.GetOp(pc, opcode) || opcode != OP_RETURN ||
+        !script.GetOp(pc, opcode, data) || data.size() < 4 ||
+        data[0] != 'I' || data[1] != 'C' || data[2] != 'N' || data[3] != 'R')
+        return CN_REG_NONE;
+    if (pc != script.end() || data.size() > 213) return CN_REG_INVALID;
+    try
+    {
+        CDataStream bytes(data, SER_NETWORK, 0);
+        uint32_t magic;
+        std::vector<unsigned char> pubkey;
+        bytes >> magic >> registration.version >> registration.collateral >> pubkey
+              >> registration.inputsHash >> registration.sequence >> registration.signature;
+        registration.pubkey = CPubKey(pubkey);
+        if (!bytes.empty() || registration.version != 2 || registration.sequence == 0 ||
+            registration.collateral.IsNull() || !registration.pubkey.IsFullyValid() ||
+            registration.signature.size() != 65 || registration.signature[0] < 27 ||
+            registration.signature[0] > 34 || script != CNRegistrationScript(registration))
+            return CN_REG_INVALID;
+    }
+    catch (const std::exception&) { return CN_REG_INVALID; }
+    return CN_REG_VALID;
+}
+
+bool VerifyCNRegistration(const CCNRegistration& registration, const CScript& collateralScript,
+                          const CTransaction& tx)
+{
+    CTxDestination dest;
+    // The collateral owner authorizes these exact funding outpoints.
+    if (registration.version != 2 || registration.sequence == 0 || tx.vin.empty() ||
+        registration.inputsHash != CNRegistrationInputsHash(tx) || !registration.pubkey.IsFullyValid() ||
+        registration.signature.size() != 65 || registration.signature[0] < 27 ||
+        registration.signature[0] > 34 || !ExtractDestination(collateralScript, dest)) return false;
+    const CKeyID* key = boost::get<CKeyID>(&dest);
+    CPubKey recovered;
+    return key && recovered.RecoverCompact(CNRegistrationHash(registration), registration.signature) &&
+           recovered.GetID() == *key;
+}
+
+bool CheckCNRegistrationTx(const CCNPayeeState& state, const CTransaction& tx)
+{
+    if (tx.IsShielded() || tx.nVersion == ANON_TXN_VERSION) return true;
+    std::map<COutPoint, uint64_t> sequences;
+    for (const CTxOut& out : tx.vout)
+    {
+        CCNRegistration registration;
+        const CNRegistrationDecode decoded = DecodeCNRegistration(out.scriptPubKey, registration);
+        if (decoded == CN_REG_NONE) continue;
+        if (decoded != CN_REG_VALID || out.nValue != 0 || tx.IsCoinBase() || tx.IsCoinStake()) return false;
+        const auto coin = state.coins.find(registration.collateral);
+        if (coin == state.coins.end() ||
+            !VerifyCNRegistration(registration, coin->second.script, tx)) return false;
+        const auto previous = sequences.find(registration.collateral);
+        const uint64_t sequence = previous == sequences.end() ? coin->second.sequence : previous->second;
+        if (registration.sequence <= sequence) return false;
+        sequences[registration.collateral] = registration.sequence;
+        for (const CTxIn& in : tx.vin)
+            if (in.prevout == registration.collateral) return false;
+    }
+    return true;
+}
+
+static void RememberCNPayeeCoin(const CCNPayeeState& state, const COutPoint& out,
+                                 CCNPayeeUndo* undo)
+{
+    if (!undo || undo->previous.count(out)) return;
+    CNPayeeCoins::const_iterator it = state.coins.find(out);
+    undo->previous[out] = it == state.coins.end()
+        ? CCNPayeeCoin() : it->second;
+}
+
+void ApplyCNPayeeTx(CCNPayeeState& state, const CTransaction& tx, int nHeight,
+                     CCNPayeeUndo* undo)
+{
+    for (const CTxIn& in : tx.vin)
+    {
+        if (!state.coins.count(in.prevout)) continue;
+        RememberCNPayeeCoin(state, in.prevout, undo);
+        state.coins.erase(in.prevout);
+    }
+    const uint256 txid = tx.GetHash();
+    for (unsigned int n = 0; n < tx.vout.size(); ++n)
+    {
+        const CTxOut& out = tx.vout[n];
+        CTxDestination dest;
+        if (out.nValue != GetMNCollateral() * COIN ||
+            !ExtractDestination(out.scriptPubKey, dest) || !boost::get<CKeyID>(&dest))
+            continue;
+        const COutPoint point(txid, n);
+        RememberCNPayeeCoin(state, point, undo);
+        CCNPayeeCoin coin;
+        coin.height = nHeight;
+        coin.script = GetScriptForDestination(dest);
+        state.coins[point] = coin;
+    }
+    if (tx.IsShielded() || tx.nVersion == ANON_TXN_VERSION || tx.IsCoinBase() || tx.IsCoinStake()) return;
+    // Invalid records do not replace a valid registration.
+    for (const CTxOut& out : tx.vout)
+    {
+        CCNRegistration registration;
+        if (out.nValue != 0 || DecodeCNRegistration(out.scriptPubKey, registration) != CN_REG_VALID) continue;
+        auto coin = state.coins.find(registration.collateral);
+        if (coin == state.coins.end() || registration.sequence <= coin->second.sequence ||
+            !VerifyCNRegistration(registration, coin->second.script, tx)) continue;
+        RememberCNPayeeCoin(state, coin->first, undo);
+        coin->second.registrationHeight = nHeight;
+        coin->second.pubkey = registration.pubkey;
+        coin->second.sequence = registration.sequence;
+    }
+}
+
+bool SelectCNPayee(const CCNPayeeState& state, int nParentHeight, CScript& payee)
+{
+    payee.clear();
+    uint256 best;
+    bool found = false;
+    for (const auto& coin : state.coins)
+    {
+        if (coin.second.height > nParentHeight - CN_PAYEE_MIN_DEPTH ||
+            coin.second.registrationHeight < 0 ||
+            coin.second.registrationHeight > nParentHeight - CN_PAYEE_MIN_DEPTH) continue;
+        CHashWriter score(SER_GETHASH, 0);
+        score << state.hashTip << coin.first;
+        const uint256 hash = score.GetHash();
+        if (!found || hash < best)
+        {
+            found = true;
+            best = hash;
+            payee = coin.second.script;
+        }
+    }
+    return found;
+}
+
+bool LoadCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeState& state)
+{
+    state = CCNPayeeState();
+    if (!parent) return true;
+    const TxDBReadStatus status = txdb.ReadCNPayeeState(state);
+    if (status == TXDB_READ_ERROR) return false;
+    if (status == TXDB_READ_FOUND && state.hashTip == parent->GetBlockHash()) return true;
+
+    // Share the bootstrap between template creation and validation. Caller holds cs_main.
+    static CCNPayeeState bootstrap;
+    if (bootstrap.hashTip == parent->GetBlockHash())
+    {
+        state = bootstrap;
+        return true;
+    }
+
+    // Bootstrap once from the recorded active chain, including accepted merged txs.
+    state = CCNPayeeState();
+    std::vector<const CBlockIndex*> chain;
+    for (const CBlockIndex* p = parent; p; p = p->pprev) chain.push_back(p);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+    {
+        if (fRequestShutdown) return false;
+        const CBlockIndex* p = *it;
+        CBlock block;
+        if (!block.ReadFromDisk(p)) return false;
+        std::set<uint256> skipped;
+        std::string error;
+        if (p->nHeight >= FORK_HEIGHT_DAG &&
+            txdb.ReadDAGSkippedTxsStatus(block, skipped, error) != TXDB_READ_FOUND)
+            return false;
+        if (IsMergesetActiveAtHeight(p->nHeight))
+        {
+            CMergesetAcceptRecord rec;
+            std::vector<CTransaction> merged;
+            if (!txdb.ReadMergesetAccept(p->GetBlockHash(), rec) ||
+                !ReadMergesetAcceptedTxs(rec, merged)) return false;
+            for (const CTransaction& tx : merged) ApplyCNPayeeTx(state, tx, p->nHeight);
+        }
+        for (const CTransaction& tx : block.vtx)
+            if (!skipped.count(tx.GetHash())) ApplyCNPayeeTx(state, tx, p->nHeight);
+    }
+    state.hashTip = parent->GetBlockHash();
+    bootstrap = state;
+    return true;
+}
+
+bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index)
+{
+    CCNPayeeState state;
+    CCNPayeeUndo undo;
+    if (txdb.ReadCNPayeeState(state) != TXDB_READ_FOUND ||
+        state.hashTip != index->GetBlockHash() ||
+        !txdb.ReadCNPayeeUndo(index->GetBlockHash(), undo)) return false;
+    for (const auto& coin : undo.previous)
+        if (coin.second.height < 0) state.coins.erase(coin.first);
+        else state.coins[coin.first] = coin.second;
+    state.hashTip = index->pprev ? index->pprev->GetBlockHash() : uint256();
+    return txdb.WriteCNPayeeState(state) && txdb.EraseCNPayeeUndo(index->GetBlockHash());
+}
+
+bool CheckCNPayeePayment(int nHeight, const CTransaction& reward, const CScript& payee,
+                          int64_t nPayment, const std::vector<CTxOut>& reserved)
+{
+    if (!IsCNPayeeActiveAtHeight(nHeight) || payee.empty() || nPayment == 0) return true;
+    std::multiset<std::pair<CScript, int64_t> > outputs;
+    for (const CTxOut& out : reward.vout) outputs.insert(std::make_pair(out.scriptPubKey, out.nValue));
+    for (const CTxOut& out : reserved)
+    {
+        const auto it = outputs.find(std::make_pair(out.scriptPubKey, out.nValue));
+        if (it == outputs.end()) return false;
+        outputs.erase(it);
+    }
+    return outputs.count(std::make_pair(payee, nPayment)) != 0;
+}
 
 // The coinstake's allowance: one subsidy, split at payment. Post-DAG PoS blocks are
 // rejected, so the finality reserve is zero here; routed through the split anyway.
@@ -11522,6 +11790,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
     }
 
+    CCNPayeeState payeeState;
+    CScript deterministicPayee;
+    const bool fCNPayee = IsCNPayeeActiveAtHeight(pindex->nHeight);
+    if (fCNPayee)
+    {
+        if (!LoadCNPayeeState(txdb, pindex->pprev, payeeState))
+            return TransientFailure(error("ConnectBlock() : public collateral state unavailable"));
+        SelectCNPayee(payeeState, pindex->nHeight - 1, deterministicPayee);
+    }
+
     std::vector<CFinalityVote> vFinalityVotes;
     FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
     if (!ExtractFinalityVotesFromBlockForHeight(
@@ -11943,6 +12221,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     // Extra coinbase money this block is allowed to mint on top of the block subsidy.
     // Non-zero on exactly one block per epoch -- the settlement block below.
     int64_t nFinalityRewardOut = 0;
+    std::vector<CTxOut> vPayeeReserved;
     if (!vFinalityVotes.empty())
     {
         if (!CheckFinalityStakeProofsNotSpentInBlock(activeBlock, vFinalityVotes))
@@ -12016,6 +12295,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
                                                 nFinalityRewardOut, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));
+            if (fCNPayee &&
+                !BuildFinalitySettlementOutputs(vSettlementVotes, nSettlementBudget,
+                                                vPayeeReserved, nFinalityRewardOut, &strSettleError))
+                return TransientFailure(error("ConnectBlock() : settlement outputs unavailable"));
         }
     }
 
@@ -12167,6 +12450,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 setOutputs.insert(std::make_pair(out.scriptPubKey, out.nValue));
             for (const std::pair<CScript, int64_t>& payout : mergesetReward.vPayouts)
             {
+                if (fCNPayee) vPayeeReserved.push_back(CTxOut(payout.second, payout.first));
                 std::multiset<std::pair<CScript, int64_t> >::iterator it = setOutputs.find(payout);
                 if (it == setOutputs.end())
                     return DoS(100, error("ConnectBlock() : coinbase omits a merged block's payout"));
@@ -12180,12 +12464,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             // An unpaid CN share goes to finality voters.
             const int64_t nCNShare = subsidySplit.Collateralnode() + mergesetReward.nExtraCollateralnode;
-            if (vtx[0].GetValueOut() <= nAllowedCoinbase - nCNShare)
+            if (!fCNPayee && vtx[0].GetValueOut() <= nAllowedCoinbase - nCNShare)
             {
                 mergeset.rec.nWithheldCN = nCNShare;
                 fCNSharedToStakers = true;
             }
         }
+
+        if (fCNPayee &&
+            !CheckCNPayeePayment(pindex->nHeight, vtx[0], deterministicPayee,
+                CBlockSubsidySplit::CollateralnodeShareOfBase(
+                    FinalityCollateralnodePaymentBase(nAllowedCoinbase, nFinalityRewardOut)),
+                vPayeeReserved))
+            return DoS(100, error("ConnectBlock() : deterministic collateralnode payment missing or wrong"));
 
         if (vtx[0].GetValueOut() > nAllowedCoinbase)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
@@ -12585,7 +12876,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
                         // The payee comes from gossiped state, so it has the same node-local gate as the
                         // payment rule and its refusal is never written into the block index.
-                        if (ColdStakeCNPayeeRuleApplies(fJustCheck, pindex->nHeight, nCNPayment,
+                        if (!fCNPayee && ColdStakeCNPayeeRuleApplies(fJustCheck, pindex->nHeight, nCNPayment,
                                                         pindex->GetBlockTime(), GetTime()) &&
                             !ColdStakeCNPayeeIsRegistered(pindex->nHeight,
                                                           coinstake.vout[i].scriptPubKey))
@@ -12621,7 +12912,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     if(fDebug) { printf("CheckBlock() : Collateralnode payments %s\n",
                         CollateralnodePayments ? "enabled" : "disabled"); }
 
-    if (CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
+    if (!fCNPayee && CollateralnodePaymentRuleApplies(fJustCheck, pindex->GetBlockTime(), GetTime(),
                                          CollateralnodePayments, fIsInitialDownload))
     {
         BLOCK_PHASE(BP_CB_CNPAY);
@@ -13418,6 +13709,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                    nAnonValidateCount, nAnonValidateMicros,
                    nPrivateStakeValidateCount, nPrivateStakeValidateMicros);
         return Connected();
+    }
+
+    if (fCNPayee)
+    {
+        CCNPayeeUndo undo;
+        for (const CTransaction& tx : mergeset.vAcceptedTx)
+            ApplyCNPayeeTx(payeeState, tx, pindex->nHeight, &undo);
+        for (const CTransaction& tx : activeBlock.vtx)
+            ApplyCNPayeeTx(payeeState, tx, pindex->nHeight, &undo);
+        payeeState.hashTip = pindex->GetBlockHash();
+        if (!txdb.WriteCNPayeeState(payeeState) ||
+            !txdb.WriteCNPayeeUndo(payeeState.hashTip, undo))
+            return TransientFailure(error("ConnectBlock() : public collateral state write failed"));
     }
 
     // Write queued txindex changes
