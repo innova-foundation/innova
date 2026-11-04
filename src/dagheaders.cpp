@@ -373,6 +373,7 @@ static void ReceiveDAGHeaders(CNode* pfrom, CDataStream& vRecv)
             break;
         }
         nAdded++;
+        nBestHeaderHeight = std::max(nBestHeaderHeight, nHeight);
         hashSyncLast = hash;
         nSyncLastHeight = nHeight;
 

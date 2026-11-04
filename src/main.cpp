@@ -281,6 +281,7 @@ int nRegtestColdStakingHeight = 0;
 bool fRegtestShieldedVNextRehearsal = false;
 bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;
+int nBestHeaderHeight = -1;
 bool CollateralNReorgBlock = true;
 uint256 nBestChainTrust = 0;
 uint256 nBestInvalidTrust = 0;
@@ -14796,13 +14797,6 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
             return error("Reorganize() : pfork->pprev is null");
     }
 
-    // Mergeset fork: no reorg deeper than the finality depth.
-    if (pindexBest && IsMergesetActiveAtHeight(pindexBest->nHeight) &&
-        pindexBest->nHeight - pfork->nHeight > MERGESET_FINALITY_DEPTH &&
-        !IsInitialBlockDownload() && !GetBoolArg("-allowdeepreorg", false))
-        return error("Reorganize() : rejected - fork at %d is deeper than the finality depth below %d (-allowdeepreorg)",
-                     pfork->nHeight, pindexBest->nHeight);
-
     // List of what to disconnect
     vector<CBlockIndex*> vDisconnect;
     for (CBlockIndex* pindex = pindexBest; pindex != pfork; pindex = pindex->pprev)
@@ -15412,10 +15406,16 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
 }
 
 bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid,
-                          CBlockFailReason* pFailReason)
+                          CBlockFailReason* pFailReason, bool* pfReorgPolicyRefused)
 {
     BLOCK_PHASE(BP_SETBESTCHAIN);
     if (pfPermanentInvalid) *pfPermanentInvalid = false;
+    if (pfReorgPolicyRefused) *pfReorgPolicyRefused = false;
+    if (!AllowReorgByDepthPolicy(pindexBest, pindexNew))
+    {
+        if (pfReorgPolicyRefused) *pfReorgPolicyRefused = true;
+        return false;
+    }
     const bool fIsInitialDownload = IsInitialBlockDownload();
     uint256 hash = GetHash();
     CBestChainEffectJournal committedEffects;
@@ -15820,6 +15820,8 @@ static bool ReselectBestValidChain(CTxDB& txdb)
         CBlockIndex* pbest = vCandidates[i];
         if (pbest->IsInvalid())
             continue; // flagged by an earlier candidate's failure below
+        if (!AllowReorgByDepthPolicy(pindexBest, pbest))
+            continue;
         int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
         const ReorgFinalityVerdict switchVerdict = BestChainSwitchVerdict(
             pbest, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
@@ -15842,8 +15844,11 @@ static bool ReselectBestValidChain(CTxDB& txdb)
                          pbest->GetBlockHash().ToString().substr(0,20).c_str());
         bool fPermanentInvalid = false;
         CBlockFailReason failReason;
-        if (block.SetBestChain(txdb, pbest, &fPermanentInvalid, &failReason))
+        bool fPolicyRefused = false;
+        if (block.SetBestChain(txdb, pbest, &fPermanentInvalid, &failReason, &fPolicyRefused))
             return true;
+        if (fPolicyRefused)
+            continue;
         if (!fPermanentInvalid)
             return error("ReselectBestValidChain() : switching to %s failed transiently",
                          pbest->GetBlockHash().ToString().substr(0,20).c_str());
@@ -15914,6 +15919,51 @@ static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector
         else
             vChanged[i]->SetFailedChild();
     }
+}
+
+int GetMaxReorgDepth()
+{
+    return (int)GetArg("-maxreorgdepth", MAX_REORG_DEPTH);
+}
+
+bool AllowReorgByDepthPolicy(const CBlockIndex* pTip, const CBlockIndex* pCandidate)
+{
+    const int nMaxDepth = GetMaxReorgDepth();
+    if (nMaxDepth == 0 || !pTip || !pCandidate || pCandidate == pTip ||
+        pCandidate->pprev == pTip)
+        return true;
+
+    const CBlockIndex* pa = pTip;
+    const CBlockIndex* pb = pCandidate;
+    while (pa && pb && pa != pb)
+    {
+        if (pa->nHeight > pb->nHeight)
+            pa = pa->pprev;
+        else if (pb->nHeight > pa->nHeight)
+            pb = pb->pprev;
+        else
+        {
+            pa = pa->pprev;
+            pb = pb->pprev;
+        }
+    }
+    // Extensions and administrative rollbacks do not switch branches.
+    if (!pa || !pb || pa == pTip || pb == pCandidate ||
+        pa->nHeight < FORK_HEIGHT_DAG || pTip->nHeight - pa->nHeight <= nMaxDepth)
+        return true;
+
+    // Header lag also exempts regtest, whose IBD check ends at the first block.
+    const int nHeaderHeight = std::max(pCandidate->nHeight,
+        std::max(nBestHeaderHeight, DAGHeaderSkeleton().TopHeight()));
+    if (fImporting || fReindex || IsInitialBlockDownload() ||
+        (int64_t)nHeaderHeight - pTip->nHeight > MAX_REORG_DEPTH)
+        return true;
+
+    printf("Reorg depth policy: refused candidate %s at height %d, fork %d, tip %d, "
+           "maximum depth %d; kept as a valid side branch (-maxreorgdepth=0 disables)\n",
+           pCandidate->GetBlockHash().ToString().substr(0,20).c_str(),
+           pCandidate->nHeight, pa->nHeight, pTip->nHeight, nMaxDepth);
+    return false;
 }
 
 // A retained post-DAG PoW index must carry its DAG vertex; clearing the flag of one
@@ -16151,6 +16201,11 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         fAttemptBestChain = pindexNew->nChainTrust > nBestChainTrust;
         if (!fAttemptBestChain || hashPrevBlock == hashBestChain)
             return true;
+        if (!AllowReorgByDepthPolicy(pindexBest, pindexNew))
+        {
+            fAttemptBestChain = false;
+            return true;
+        }
         int nForkHeight = 0, nFinalCur = 0, nFinalLatch = 0, nAsOfEpoch = 0;
         const ReorgFinalityVerdict switchVerdict = BestChainSwitchVerdict(
             pindexNew, nForkHeight, nFinalCur, nFinalLatch, nAsOfEpoch);
@@ -16367,8 +16422,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                      "epoch %d; resync required", nSwitchAsOfEpoch);
     }
 
-    if (fDAGDataInitialized && !fAttemptBestChain)
-    {
+    const auto PersistSideDAGBlock = [&]() {
         // A side branch must survive restart immediately, but its index and
         // DAG graph are one invariant and therefore one transaction.
         const int64_t nDAGTimer = GetTimeMillis();
@@ -16404,6 +16458,13 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         }
         fBlockIndexPersisted = true;
         nDAGWriteMs = GetTimeMillis() - nDAGTimer;
+        return true;
+    };
+
+    if (fDAGDataInitialized && !fAttemptBestChain)
+    {
+        if (!PersistSideDAGBlock())
+            return false;
     }
     else if (!fDAGDataInitialized)
     {
@@ -16435,7 +16496,9 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     {
         bool fPermanentInvalid = false;
         CBlockFailReason failReason;
-        if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid, &failReason))
+        bool fPolicyRefused = false;
+        if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid, &failReason, &fPolicyRefused) &&
+            !fPolicyRefused)
         {
             if (fPermanentInvalid)
             {
@@ -16501,6 +16564,10 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             delete pindexNew;
             return false;
         }
+        // A changed sync exemption may defer selection at the final check.
+        if (fPolicyRefused && fDAGDataInitialized && !fBlockIndexPersisted &&
+            !PersistSideDAGBlock())
+            return false;
     }
 
     // A late merge parent repairs its children's V3 scores; re-run selection now so arrival
@@ -16511,6 +16578,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         bool fLateSwitchable = pLateBest && pLateBest != pindexBest &&
                                !pLateBest->IsInvalid() &&
                                pLateBest->nChainTrust > nBestChainTrust;
+        if (fLateSwitchable)
+            fLateSwitchable = AllowReorgByDepthPolicy(pindexBest, pLateBest);
         if (fLateSwitchable)
         {
             // Same decision as above: a late best tip this node may not follow is left
@@ -16533,10 +16602,11 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         {
             CBlock lateBestBlock;
             bool fLatePermanentInvalid = false;
+            bool fLatePolicyRefused = false;
             CBlockFailReason lateFailReason;
             if (!lateBestBlock.ReadFromDisk(pLateBest) ||
                 !lateBestBlock.SetBestChain(txdb, pLateBest, &fLatePermanentInvalid,
-                                            &lateFailReason))
+                                            &lateFailReason, &fLatePolicyRefused))
             {
                 if (fLatePermanentInvalid)
                 {
@@ -16564,7 +16634,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                         StartShutdown();
                     }
                 }
-                else
+                else if (!fLatePolicyRefused)
                     printf("AddToBlockIndex() : late-parent best-tip reselection deferred after "
                            "transient read/DB failure\n");
             }
@@ -19331,6 +19401,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             {
                 pindexLast = mapBlockIndex[hash];
                 pfrom->UpdateBestKnownBlock(pindexLast->nHeight, hash);
+                if (!pindexLast->IsInvalid())
+                    nBestHeaderHeight = std::max(nBestHeaderHeight, pindexLast->nHeight);
                 hashPrevHeader = hash;
                 nPrevHeaderHeight = pindexLast->nHeight;
                 fHavePrevHeader = true;
@@ -19392,6 +19464,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 pfrom->Misbehaving(10, "header timestamp too far in future");
                 return error("header %s timestamp too far in future", hash.ToString().c_str());
             }
+
+            nBestHeaderHeight = std::max(nBestHeaderHeight, nHeaderHeight);
 
             if (fSPVMode)
             {

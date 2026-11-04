@@ -686,7 +686,6 @@ inline bool IsIV5NoteVoteActiveAtHeight(int nHeight)
 extern int nRegtestMergesetHeight;
 extern bool fRegtestMergesetEmission;   // regtest: run the mainnet emission curve from the fork
 static const int MERGESET_MAX_BLOCKS = 64;
-static const int MERGESET_FINALITY_DEPTH = 86400;
 static const int MAINNET_MERGESET_HEIGHT = 8547840;
 
 inline int GetForkHeightMergeset()
@@ -1032,6 +1031,7 @@ extern unsigned int nNodeLifespan;
 extern bool CollateralNReorgBlock;
 extern int nCoinbaseMaturity;
 extern int nBestHeight;
+extern int nBestHeaderHeight; // checked headers, cs_main
 extern uint256 nBestChainTrust;
 extern uint256 nBestInvalidTrust;
 extern uint256 hashBestChain;
@@ -1288,6 +1288,12 @@ bool RebuildMainChainForwardLinks();
 // invalidateblock / reconsiderblock RPC support (defined in main.cpp; assume cs_main held).
 bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
 bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError, bool* pfFlagsCleared = NULL);
+
+// Local chain-selection policy; 0 disables the depth limit.
+static const int MAX_REORG_DEPTH = 1440;
+int GetMaxReorgDepth();
+// Assumes cs_main held. Refusals never change block validity.
+bool AllowReorgByDepthPolicy(const CBlockIndex* pTip, const CBlockIndex* pCandidate);
 
 /** Why an index was flagged BLOCK_FAILED_VALID, persisted beside the flag and erased with
  *  it. The failing block can differ from the flagged one: a reorg that fails at an ancestor
@@ -3006,8 +3012,9 @@ public:
                       bool fJustCheck=false, bool fWriteNames = true,
                       ConnectResult* pResult = NULL);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
+    // Policy refusals leave the index valid; callers retain its data.
     bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid = NULL,
-                      CBlockFailReason* pFailReason = NULL);
+                      CBlockFailReason* pFailReason = NULL, bool* pfReorgPolicyRefused = NULL);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);
     bool CheckBlock(bool fCheckPOW=true, bool fCheckMerkleRoot=true, bool fCheckSig=true) const;
     bool AcceptBlock();
