@@ -815,6 +815,7 @@ std::string HelpMessage()
         "  -statedigestfile=<path> " + _("State digest output (default: <datadir>/statedigest.jsonl)") + "\n" +
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 288, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-1, default: 1)") + "\n" +
+        "  -maxreorgdepth=<n>     " + _("Local maximum post-DAG reorganization depth outside sync (default: 1440, 0 disables)") + "\n" +
         "  -rebuildforwardlinks   " + _("Force a main-chain forward-link rebuild at startup (now automatic; retained for forcing)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
         "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (requires -replayexpectedheight/-replayexpectedhash), then exit") + "\n" +
@@ -1394,6 +1395,13 @@ bool AppInit2()
     if (fTestNet && fRegTest)
     {
         return InitError(_("Cannot use -testnet and -regtest together"));
+    }
+
+    if (mapArgs.count("-maxreorgdepth"))
+    {
+        int32_t nDepth;
+        if (!ParseInt32(mapArgs["-maxreorgdepth"], &nDepth) || nDepth < 0)
+            return InitError(_("-maxreorgdepth must be an integer from 0 to 2147483647"));
     }
 
     if (fRegTest)

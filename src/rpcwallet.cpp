@@ -183,6 +183,7 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("unconfirmed",   ValueFromAmount(bal.nUnconfirmed)));
     obj.push_back(Pair("immature",      ValueFromAmount(bal.nImmature)));
     obj.push_back(Pair("blocks",        (int)nBestHeight));
+    obj.push_back(Pair("max_reorg_depth", GetMaxReorgDepth()));
     obj.push_back(Pair("timeoffset",    (int64_t)GetTimeOffset()));
     obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     obj.push_back(Pair("connections",   (int)vNodes.size()));

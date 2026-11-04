@@ -471,6 +471,7 @@ obj/test/idag_connect_rule_tests.o obj/test/iv5_privacy_coverage_tests.o \
     obj/test/finality_claim_tests.o \
     obj/test/coinbase_binding_height_tests.o \
     obj/test/reorg_finality_ancestry_tests.o \
+    obj/test/w10_deep_reorg_tests.o \
     obj/test/finality_cert_ancestry_tests.o \
     obj/test/finality_cert_precedence_tests.o \
     obj/test/dag_merge_set_bound_tests.o \
