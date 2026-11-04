@@ -12,8 +12,12 @@ separate outstanding release requirements below.
 Based on `iv5-5204-noE` at `58c4ad4b`: sync rework, cache bound,
 Nyx v2 and W10 reorg-depth policy. All commits on `iv5-5204-full`
 are already present as patch-equivalent commits in this base; do not merge
-that older cherry-picked history again. The excluded Nyx groups fix remains
-outside this candidate.
+that older cherry-picked history again.
+
+The source branches `iv5-w10`, `iv5-nyx-f`, `iv5-nyx` and `iv5-f2`
+are now merged too. This includes the previously excluded groups roster-epoch
+and catch-up fix (`3b058fd3`), DAG-aligned fork-gate simplification
+(`09d05fb3`), and `CheckLegacyPoSShape` extraction and tests (`b70ae15f`).
 
 Includes the uncommitted payee rework copied from `iv5-fork` at `31a57ea8`,
 including transaction-bound registrations, sequence numbers, unit tests and
@@ -32,6 +36,10 @@ The completed payee re-review (`payee2-review.log`, Nov 4) found:
    on testnet where activation is disabled. Gate the prerequisite so legacy
    startup works without separate confirmed fee funds and with staking-only
    unlock where it previously did. Add regression coverage.
+
+Fixes for both findings landed upstream in `56c1610c`, with replay error
+diagnostics in `d0655267`; both are retained here. Validate those fixes and
+their regression tests rather than assuming the earlier review is clean.
 
 The previous Dell result was BUILD_FAIL, SUITE_RC=127 and fail=1 for all
 listed regtests. Its first compile error was protected `CTxDB::Read` access

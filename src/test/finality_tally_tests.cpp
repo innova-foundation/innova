@@ -3301,4 +3301,20 @@ BOOST_AUTO_TEST_CASE(a_note_vote_after_the_transparent_window_is_counted_by_the_
     }
 }
 
+BOOST_AUTO_TEST_CASE(dag_aligned_gates_match_the_dag_fork_on_every_network)
+{
+    const bool fRegSaved = fRegTest, fTestSaved = fTestNet;
+    const bool nets[3][2] = {{false, false}, {false, true}, {true, false}};
+    for (int i = 0; i < 3; i++)
+    {
+        fRegTest = nets[i][0];
+        fTestNet = nets[i][1];
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_EPOCH_ROOT_FCMP, GetForkHeightDAG());
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_VOTESET_ROOT, GetForkHeightDAG());
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_EPOCH_STATE_V2, GetForkHeightDAG());
+    }
+    fRegTest = fRegSaved;
+    fTestNet = fTestSaved;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
