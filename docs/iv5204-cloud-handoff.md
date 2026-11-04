@@ -2,6 +2,13 @@
 
 Branch: `iv5204`. This is an integration candidate, not a validated release.
 
+Both `nyx-v2` (`4be7a039`) and `nyx-v2-c-fixes` (`6a53de7c`) are
+merged into this branch's history. Their functionality and session fixes
+were already present in the candidate through equivalent or newer changes;
+conflicts retain the newer pairing/reset checks, multidevice fanout and
+stricter archived-session promotion rules. These merges do not remove the
+separate outstanding release requirements below.
+
 Based on `iv5-5204-noE` at `58c4ad4b`: sync rework, cache bound,
 Nyx v2 and W10 reorg-depth policy. All commits on `iv5-5204-full`
 are already present as patch-equivalent commits in this base; do not merge
