@@ -693,7 +693,8 @@ inline int GetForkHeightMergeset()
 #define FORK_HEIGHT_MERGESET (GetForkHeightMergeset())
 
 extern int nRegtestCNPayeeHeight;
-static const int MAINNET_CN_PAYEE_HEIGHT = 8790000;
+// Deterministic payee is dormant on mainnet until a release sets its height.
+static const int MAINNET_CN_PAYEE_HEIGHT = PRIVACY_VNEXT_HEIGHT_UNSET;
 static const int CN_PAYEE_MIN_DEPTH = 100;
 
 inline int GetForkHeightCNPayee()

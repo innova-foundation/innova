@@ -95,13 +95,13 @@ BOOST_AUTO_TEST_CASE(network_activation_and_legacy_boundary)
 {
     Heights heights;
     fRegTest = false;
-    BOOST_CHECK_EQUAL(FORK_HEIGHT_CN_PAYEE, 8790000);
+    BOOST_CHECK_EQUAL(FORK_HEIGHT_CN_PAYEE, PRIVACY_VNEXT_HEIGHT_UNSET);
     BOOST_CHECK_EQUAL(FORK_HEIGHT_MERGESET, 8547840);
     BOOST_CHECK(!IsCNPayeeActiveAtHeight(8789999));
-    BOOST_CHECK(IsCNPayeeActiveAtHeight(8790000));
+    BOOST_CHECK(!IsCNPayeeActiveAtHeight(8790000));
     CTransaction empty;
     BOOST_CHECK(CheckCNPayeePayment(8789999, empty, Payee(1), COIN, {}));
-    BOOST_CHECK(!CheckCNPayeePayment(8790000, empty, Payee(1), COIN, {}));
+    BOOST_CHECK(CheckCNPayeePayment(8790000, empty, Payee(1), COIN, {}));
     fTestNet = true;
     BOOST_CHECK_EQUAL(FORK_HEIGHT_CN_PAYEE, PRIVACY_VNEXT_HEIGHT_UNSET);
     BOOST_CHECK(!IsCNPayeeActiveAtHeight(PRIVACY_VNEXT_HEIGHT_UNSET));
@@ -482,10 +482,7 @@ BOOST_AUTO_TEST_CASE(startup_registration_is_gated_by_activation)
     fRegTest = false;
     fTestNet = false;
     BOOST_CHECK(GetCNRegistrationPolicy(1) == CN_REGISTRATION_UNUSED);
-    BOOST_CHECK(GetCNRegistrationPolicy(8790000 - CN_REGISTRATION_LEAD_BLOCKS - 1) == CN_REGISTRATION_UNUSED);
-    BOOST_CHECK(GetCNRegistrationPolicy(8790000 - CN_REGISTRATION_LEAD_BLOCKS) == CN_REGISTRATION_OPTIONAL);
-    BOOST_CHECK(GetCNRegistrationPolicy(8789999) == CN_REGISTRATION_OPTIONAL);
-    BOOST_CHECK(GetCNRegistrationPolicy(8790000) == CN_REGISTRATION_REQUIRED);
+    BOOST_CHECK(GetCNRegistrationPolicy(8790000) == CN_REGISTRATION_UNUSED);
     fTestNet = true;
     BOOST_CHECK(GetCNRegistrationPolicy(1) == CN_REGISTRATION_UNUSED);
     BOOST_CHECK(GetCNRegistrationPolicy(9000000) == CN_REGISTRATION_UNUSED);
