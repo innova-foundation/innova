@@ -10752,12 +10752,12 @@ static bool ReplayCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeS
         if (fRequestShutdown) return false;
         const CBlockIndex* p = *it;
         CBlock block;
-        if (!block.ReadFromDisk(p)) return false;
+        if (!block.ReadFromDisk(p)) return error("ReplayCNPayeeState() : block %d unreadable", p->nHeight);
         std::set<uint256> skipped;
-        std::string error;
+        std::string strSkipError;
         if (p->nHeight >= FORK_HEIGHT_DAG &&
-            txdb.ReadDAGSkippedTxsStatus(block, skipped, error) != TXDB_READ_FOUND)
-            return false;
+            txdb.ReadDAGSkippedTxsStatus(block, skipped, strSkipError) != TXDB_READ_FOUND)
+            return error("ReplayCNPayeeState() : skipped txs at %d unavailable", p->nHeight);
         const bool fUndo = fBackfill && IsCNPayeeActiveAtHeight(p->nHeight);
         CCNPayeeUndo undo;
         CCNPayeeUndo* pundo = fUndo ? &undo : NULL;
@@ -10766,12 +10766,14 @@ static bool ReplayCNPayeeState(CTxDB& txdb, const CBlockIndex* parent, CCNPayeeS
             CMergesetAcceptRecord rec;
             std::vector<CTransaction> merged;
             if (!txdb.ReadMergesetAccept(p->GetBlockHash(), rec) ||
-                !ReadMergesetAcceptedTxs(rec, merged)) return false;
+                !ReadMergesetAcceptedTxs(rec, merged))
+                return error("ReplayCNPayeeState() : merged txs at %d unavailable", p->nHeight);
             for (const CTransaction& tx : merged) ApplyCNPayeeTx(state, tx, p->nHeight, pundo);
         }
         for (const CTransaction& tx : block.vtx)
             if (!skipped.count(tx.GetHash())) ApplyCNPayeeTx(state, tx, p->nHeight, pundo);
-        if (fUndo && !txdb.WriteCNPayeeUndo(p->GetBlockHash(), undo)) return false;
+        if (fUndo && !txdb.WriteCNPayeeUndo(p->GetBlockHash(), undo))
+            return error("ReplayCNPayeeState() : undo write at %d failed", p->nHeight);
     }
     state.hashTip = parent->GetBlockHash();
     return true;
@@ -10823,7 +10825,8 @@ bool UndoCNPayeeState(CTxDB& txdb, const CBlockIndex* index)
     }
     // State or undo predates this version: rebuild at the parent and backfill the
     // undo of every earlier active block, so a deeper disconnect takes the fast path.
-    if (txdb.IsReadOnly() || !ReplayCNPayeeState(txdb, index->pprev, state, true)) return false;
+    if (txdb.IsReadOnly()) return error("UndoCNPayeeState() : read-only database");
+    if (!ReplayCNPayeeState(txdb, index->pprev, state, true)) return false;
     txdb.EraseCNPayeeUndo(hash);
     return txdb.WriteCNPayeeState(state);
 }
