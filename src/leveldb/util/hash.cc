@@ -34,10 +34,10 @@ uint32_t Hash(const char* data, size_t n, uint32_t seed) {
   // Pick up remaining bytes
   switch (limit - data) {
     case 3:
-      h += data[2] << 16;
+      h += static_cast<uint32_t>(static_cast<int32_t>(data[2])) << 16;
       FALLTHROUGH_INTENDED;
     case 2:
-      h += data[1] << 8;
+      h += static_cast<uint32_t>(static_cast<int32_t>(data[1])) << 8;
       FALLTHROUGH_INTENDED;
     case 1:
       h += data[0];
