@@ -355,12 +355,17 @@ OBJS= \
     obj/scrypt-arm.o \
     obj/smessage.o \
     obj/dagreach.o \
+    obj/nyxcert.o \
     obj/nyxembed.o \
     obj/nyxext.o \
     obj/nyxgroup.o \
+    obj/nyxidentity.o \
+    obj/nyxkeyring.o \
     obj/nyxparts.o \
     obj/nyxpo.o \
     obj/nyxsafety.o \
+    obj/nyxsession.o \
+    obj/nyxsessionwire.o \
     obj/nyxui.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
@@ -456,12 +461,17 @@ OBJS= \
     obj/scrypt-arm.o \
     obj/smessage.o \
     obj/dagreach.o \
+    obj/nyxcert.o \
     obj/nyxembed.o \
     obj/nyxext.o \
     obj/nyxgroup.o \
+    obj/nyxidentity.o \
+    obj/nyxkeyring.o \
     obj/nyxparts.o \
     obj/nyxpo.o \
     obj/nyxsafety.o \
+    obj/nyxsession.o \
+    obj/nyxsessionwire.o \
     obj/nyxui.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
